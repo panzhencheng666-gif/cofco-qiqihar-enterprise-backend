@@ -1,0 +1,89 @@
+package com.cofco.qiqihar.graintrade.masterdata.infrastructure;
+
+import com.cofco.qiqihar.graintrade.masterdata.domain.FieldDefinition;
+import com.cofco.qiqihar.graintrade.masterdata.domain.ObjectType;
+import com.cofco.qiqihar.graintrade.masterdata.domain.Region;
+import java.util.List;
+import javax.sql.DataSource;
+import org.flywaydb.core.Flyway;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+class JdbcMasterDataRepositoryTest {
+
+    private static final String URL = environment(
+            "QIQIHAR_TEST_DB_URL",
+            "jdbc:postgresql://127.0.0.1:5432/qiqihar_enterprise_test");
+    private static final String USERNAME = environment("QIQIHAR_TEST_DB_USERNAME", System.getenv("USER"));
+    private static final String PASSWORD = environment("QIQIHAR_TEST_DB_PASSWORD", "");
+
+    private final JdbcMasterDataRepository repository = new JdbcMasterDataRepository(dataSource());
+
+    @BeforeAll
+    static void migrateTestDatabase() {
+        Flyway.configure().dataSource(URL, USERNAME, PASSWORD).load().migrate();
+    }
+
+    @Test
+    void loadsConfirmedProductsCultivarsAndRegionHierarchy() {
+        assertThat(repository.findProducts())
+                .extracting(product -> product.name())
+                .containsExactly("玉米", "大豆", "稻谷");
+        assertThat(repository.findCultivarsByProductCode("SOYBEAN"))
+                .extracting(cultivar -> cultivar.name())
+                .containsExactly("黑农84", "东生22");
+
+        List<Region> regions = repository.findRegions();
+        assertThat(regions).hasSize(29);
+        assertThat(regions).filteredOn(region -> region.parentCode() == null)
+                .extracting(Region::name)
+                .containsExactly("齐齐哈尔市", "黑河市", "呼伦贝尔市");
+        assertThat(regions).filteredOn(region -> "150700".equals(region.parentCode()))
+                .extracting(Region::name)
+                .containsExactly("阿荣旗", "莫力达瓦达斡尔族自治旗", "鄂伦春自治旗", "扎兰屯市");
+    }
+
+    @Test
+    void filtersMarketAndProductionObjectTypesByExplicitProductApplicability() {
+        assertThat(names(repository.findObjectTypes("SOYBEAN", "MARKET")))
+                .containsExactly("贸易商", "深加工", "批发市场", "承储企业")
+                .doesNotContain("米厂");
+        assertThat(names(repository.findObjectTypes("RICE", "MARKET")))
+                .containsExactly("贸易商", "深加工", "批发市场", "承储企业", "米厂");
+        assertThat(names(repository.findObjectTypes("CORN", "MARKET")))
+                .containsExactly("贸易商", "深加工", "批发市场", "承储企业", "养殖厂", "饲料厂");
+        assertThat(names(repository.findObjectTypes("SOYBEAN", "PRODUCTION")))
+                .containsExactly("农户", "村委会", "农技站");
+    }
+
+    @Test
+    void loadsProductSpecificQualityPageDefinitionsInConfiguredOrder() {
+        List<FieldDefinition> riceFields = repository
+                .findPageDefinition("RICE", "MARKET", "QUALITY").orElseThrow().fields();
+        List<FieldDefinition> soybeanFields = repository
+                .findPageDefinition("SOYBEAN", "MARKET", "QUALITY").orElseThrow().fields();
+
+        assertThat(riceFields).extracting(FieldDefinition::name)
+                .containsExactly("水分", "出米率", "出糙率", "杂质");
+        assertThat(soybeanFields).extracting(FieldDefinition::name)
+                .containsExactly("蛋白", "出油率", "不完善粒", "水分", "杂质");
+        assertThat(repository.findPageDefinition("CORN", "MARKET", "QUALITY")).isEmpty();
+        assertThat(repository.findBusinessPeriods()).isEmpty();
+    }
+
+    private List<String> names(List<ObjectType> objectTypes) {
+        return objectTypes.stream().map(ObjectType::name).toList();
+    }
+
+    private static DataSource dataSource() {
+        return new DriverManagerDataSource(URL, USERNAME, PASSWORD);
+    }
+
+    private static String environment(String name, String fallback) {
+        String value = System.getenv(name);
+        return value == null || value.isBlank() ? fallback : value;
+    }
+}
