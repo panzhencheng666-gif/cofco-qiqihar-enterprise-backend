@@ -143,3 +143,43 @@
 - 后端最终 `mvn package`：54 tests，0 failures，0 errors；可执行 jar 构建成功。
 - 前端最终 `npm run verify`：Prettier 通过；ESLint 0 warnings/errors；dependency-cruiser 35 modules/66 dependencies、0 violations；Vitest 8 files/19 tests 全部通过；TypeScript/Vite build 105 modules transformed。
 - 两仓 `git diff --check` 均通过。旧 dashboard backend/frontend 仓库存在任务开始前的脏状态，本轮仅作只读状态确认，未向旧仓库写入文件。
+
+## Round 2 复核修复（2026-08-02）
+
+### 提交
+
+- 后端修复提交：`4c57def`（`fix: add canonical paged market read model`）。
+- 前端修复提交：`427d1e2`（`fix: use canonical server-paged market records`）。
+
+### 契约与分层结果
+
+- 正式列表端点统一为 canonical `GET /api/v1/market-records`，查询包含 `productCode`、`pageKind`、`pageNumber`、`pageSize` 和 `filter.*`；响应统一为 `{data:{items,pageNumber,pageSize,totalElements,totalPages}}`。
+- 后端前置了 Task 6 的只读市场查询基础：`market` 模块严格拆分 domain/application/interfaceadapter/infrastructure；domain 仅包含不可变 record/query，事务边界在 application reader，PostgreSQL/JDBC/JSON 仅在 infrastructure，HTTP DTO 仅在 interfaceadapter。未实现写入、提交或审核。
+- V7 建立 `market.market_record_projection` 正式 PostgreSQL 读投影并通过页面 presentation 外键约束上下文；生产迁移没有 `INSERT`，41 条分页记录只存在于测试数据库 fixture。
+- 前端 repository 直接解码服务端分页 DTO；第一页、第二页和末页与后端 Spring/PostgreSQL 集成测试使用同一 `id + values` 行结构和 `41 / 20 / 3` 分页基数，不再对裸数组二次 `slice`。
+- 页面定义加载后对 deep link/history 白名单化：仅保留 definition filters，pageSize 必须属于定义 options，非法页码归一为默认页；超出末页的合法页码依据服务端 metadata 归一并重新查询。
+- 损坏 percent encoding 显示中文受控地址错误，不抛 `URIError`；domain/pageKind/productCode 与动态产品导航不一致时归一到首个真实适用上下文；页面定义返回的 key 不一致时显示中文受控错误。产品导航失败可中文重试。
+- `/api/v1/master-data/products` 保持零参数返回全部产品；domain/pageKind 同时提供时过滤；只给一个、空白或不完整组合返回受控 `400 INVALID_PAGE_APPLICABILITY`。
+
+### V5 恢复与前向迁移
+
+- V5 使用 git 提交 `8e0cc83` 的原文件内容恢复，SHA-256 为 `b7969f210f73ffd3654b33444691f0fba32474eab51a5d4a7faea0043a214404`；`git diff --exit-code 8e0cc83 -- V1...V5` 通过。
+- Flyway 固定 V1–V5 checksum：V1 `578287895`、V2 `-1029775028`、V3 `-1102740881`、V4 `2052234299`、V5 `-1133431193`。
+- V6 承接 Round 1 曾直接写入 V5 的 VIEW 删除、同页字段唯一、默认 page size 外键、presentation 必有 pagination 等修复；迁移测试先执行旧 V5，再升级 V6/V7，并验证二次启动幂等。
+- pagination 复合 key 的 UPDATE constraint trigger 分别检查 OLD 与 NEW identity。专门的回归测试先在临时缺少 UPDATE/OLD 检查时红灯，确认 key 移动被放行；恢复检查后迁移测试 4/4 通过，旧 presentation 不会失去 pagination。
+
+### Round 2 RED → GREEN
+
+- 后端初始迁移 RED：恢复原 V5 后，3 项中 2 项失败，分别证明 latest 前向修复缺失及删除 pagination 未被拒绝。
+- 后端 OLD-key 专项 RED：`FlywayMigrationReplayTest` 4 项中 1 项失败，报错为“Expecting code to raise a throwable”，证明 UPDATE 移动复合 key 时旧 presentation 未校验；实现 OLD+NEW 后 4/4 通过。
+- 前端初始 RED：`App.spec.tsx` 与新 HTTP adapter spec 共 8/8 失败，覆盖旧端点/裸数组、缺少 pageKind、非法 filter/pageSize、损坏编码、上下文错配、history 和产品导航 retry。
+- 前端定向 GREEN：App 与 HTTP adapter 2 files、10 tests 全部通过。
+- 后端定向 GREEN：market REST、master-data REST、ArchitectureTest 共 11 tests 全部通过；Flyway 迁移回放 4 tests 全部通过。
+- 首次后端全量门禁为 58 tests 中 1 项架构失败：V5 定向 Flyway 构造绕过受保护测试数据库入口。将 target-version 构造收回 `ProtectedTestDatabase` 后门禁通过；随后增加 PostgreSQL 动态 filter 跨契约测试，最终为 59/59。
+
+### 最终门禁与扫描
+
+- 后端最终 `JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home mvn verify`：59 tests，0 failures，0 errors；可执行 jar 构建成功。
+- 前端最终 `npm run verify`：Prettier、ESLint、dependency-cruiser 全部通过；9 files、27 tests 全部通过；TypeScript/Vite build 105 modules transformed。
+- 两仓 `git diff --check` 通过。正式源码扫描未发现 `/api/v1/market-collections`，未发现 `records.slice`、`items.slice` 或 `.slice(start` 的客户端分页；前端非测试源码未发现 `CORN/SOYBEAN/RICE/玉米/大豆/稻谷/2026-07-31/2026-08-02` 业务 hardcode；V7 未发现 `INSERT` 或测试记录。
+- 旧 dashboard backend/frontend 仓库继续保持只读；未修改计划或 ledger。
