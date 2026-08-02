@@ -288,3 +288,30 @@ Round 5 的 5 项 Important 与 3 项 Minor 已全部完成。实现提交：
 - 最终验证前曾误用 pnpm 改写本地 `node_modules` 布局；未跟踪 `pnpm-lock.yaml` 已精确删除，并以 `npm ci` 恢复 `package-lock.json` 环境。源码和 lockfile 均未切换包管理器；恢复后架构探针立即通过。
 - 冻结迁移 SHA-256 保持：V17 `d33fd96f416c3362c562ed716a5296fa2d506c317cc1161cd85a238a869e5ab3`、V18 `06fc9bf97a30d8e9db8a1fb546d54e6daee239478e3437a45d1c086c39efd2ae`、V19 `c7dd9c6d4064ebfc947b359260f4be8a0023b72fdcdb550c41e83cdaa2438a7c`、V20 `b300decdfe59730f5f0325034be3637fafc5e9c3b3c25a4e31d9054d7d1347e5`、V21 `b8446a51c15fac0c4de3f358b78c2595b0494ede809ff279270c9f9d27763cad`、V22 `c5bb425053bf90fd1b4e44c0b292197bb724a6c97f843a777b4b7aa7c5ba1f10`。V23 SHA-256 为 `c726ab4eeb3c386b55a117c4866d700c7ce2d12eaaa3687cb44f0f5446d2661b`。
 - 两个正式仓库均保留 `codex/formal-rebuild` 分支；未 push、未合并。旧 dashboard 与旧 enterprise-web 全程只读。
+
+## Review Round 6 修复附录
+
+Round 6 仅处理 2 项 Important 与 1 项 Minor。实现提交：
+
+- 后端：`b90ec30`（`fix: classify market monitoring field sources`）
+- 前端：`ba03025`（`fix: separate production mutation ownership`）
+
+### V24 市场页面字段来源图
+
+- V17–V23 完全冻结；新增前向迁移 `V24__classify_market_monitoring_page_fields.sql`。来源判定不硬编码 `MKT_REGION`，而是由三类正式数据库元数据组成：CORE=`market_core_field_definition`、FACT=`market_fact_definition`、SYSTEM_PROJECTION=`market_monitoring_projection_field_definition`。`MKT_STATUS` 作为显式 `RECORD_STATUS` projection 定义登记，仍是合法页面字段。
+- 新增 `market_core_typed_binding_requirement` registry，声明 12 个正式 typed binding。V24 preflight 同时要求每个 `MARKET/MONITORING` mount 恰好归属一个来源、每个 typed binding 全局恰好一份 definition、每个产品页面恰好挂载一份各 typed binding，并要求显式 required projection 挂载。
+- 回放在 V22 删除 `MKT_REGION` core definition 后先成功安装 V23，再安装 V24；V24 给出包含 `MKT_REGION` 的 source-invariant 诊断，Flyway 保持 version=23、三产品挂载和 V20 业务值不变。恢复正式 definition 后 V24 成功；独立 Boot 测试证明正常空库 V1→V24 连续两次启动稳定。
+- V24 在 page definition、page field、core definition、fact definition、projection definition 与 typed requirement registry 全部安装 `DEFERRABLE INITIALLY DEFERRED` constraint trigger。最终态守卫拒绝删除产品必需 typed mount、删除被挂载 core、删除被挂载 fact source、删除 required `MKT_STATUS` projection，同时允许同事务按任意顺序完成合法图变更。
+
+### 独立 mutation owner 与事实响应元数据
+
+- 生产写命令 owner 改为独立 `{token, requestVersionAtStart}`；普通 VIEW/NEW 只推进 request version，不再使 mutation 失去 ownership。mutation resolve 无条件执行一次列表 refresh；reject 即使普通请求已推进仍保留写错误。写命令只在 UI request version 未推进时关闭自己的 editor/return UI，因此后来打开的 VIEW/NEW editor 不被覆盖。
+- mutation owner 在 finally 精确释放，`loading` 由普通 pending requests 与独立 mutation owner 联合计算；mixed resolve/reject 后均恢复，下一次 mutation 可执行。现有参数化 mixed 测试只增加必要断言：resolve refresh=1、reject 错误可见、later editor 保持，不新增同义矩阵。
+- 市场 fixture 的 `factField` 不再写死 `DECIMAL`、`null`、`18`；`label`、`valueType`、`unit`、`description`、`precision`、`scale` 全部取共享 fact definition，`sortOrder` 取正式产品/对象 applicability contract，category 仍由共享 category/filter 驱动。现有 contract mutation 测试增加一条响应映射断言。
+
+### Round 6 最小验证证据
+
+- Backend RED：`FlywayMigrationReplayTest` 8 项中仅主回放 1 项按预期失败，明确因为不存在 V24、无法产生 `V24 preflight ... MKT_REGION` 诊断。GREEN：回放 8/8、Boot 1/1，共 9/9；未运行 backend full suite。
+- Frontend RED：两份定向测试共 37 项，仅新增的 mixed resolve、mixed reject 与 fact response mutation 3 项失败；GREEN 37/37。随后仅对 4 个改动文件执行 Prettier 与 ESLint，并执行 `tsc -b`，全部通过。
+- 未运行 full frontend suite、Chromium E2E 或 repeat3。V17–V23 工作树 diff 为 0；V24 SHA-256 为 `f5928b46bc7a58a8d60d6d160931509497fa3adebb3016f4db64440ec65bf48b`。市场 V23 canonical SHA 保持 `16bbb60018df7c34f7a0cc2ccef4e577fcc75813139506d1108b6368ba5ac278`。
+- 两个正式仓库均保留 `codex/formal-rebuild` 分支；未 push、未合并。旧 dashboard 与旧 enterprise-web 保持只读。
