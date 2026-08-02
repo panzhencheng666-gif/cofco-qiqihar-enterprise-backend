@@ -1,25 +1,53 @@
 package com.cofco.qiqihar.graintrade.shared.interfaceadapter;
 
+import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.Map;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.ServletWebRequest;
+import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
 @RestControllerAdvice
-public class GlobalExceptionHandler {
+public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
-    @ExceptionHandler(IllegalArgumentException.class)
-    ResponseEntity<ApiErrorResponse> handleIllegalArgument(
-            IllegalArgumentException exception,
+    @Override
+    protected ResponseEntity<Object> handleExceptionInternal(
+            Exception exception,
+            Object body,
+            HttpHeaders headers,
+            HttpStatusCode statusCode,
+            WebRequest request) {
+        HttpStatus status = HttpStatus.resolve(statusCode.value());
+        String code = status == null ? "HTTP_" + statusCode.value() : status.name();
+        String message = status == null ? "Request failed" : status.getReasonPhrase();
+        ApiErrorResponse response = ApiErrorResponse.of(
+                code,
+                message,
+                Map.of(),
+                traceId(request));
+        return super.handleExceptionInternal(exception, response, headers, statusCode, request);
+    }
+
+    @ExceptionHandler(ClientRequestException.class)
+    ResponseEntity<ApiErrorResponse> handleClientRequest(
+            ClientRequestException exception,
             HttpServletRequest request) {
-        return error(HttpStatus.BAD_REQUEST, "BAD_REQUEST", exception.getMessage(), request);
+        return error(
+                HttpStatus.BAD_REQUEST,
+                exception.code(),
+                exception.clientMessage(),
+                request);
     }
 
     @ExceptionHandler(Exception.class)
@@ -49,6 +77,12 @@ public class GlobalExceptionHandler {
         Object traceId = request.getAttribute(RequestTraceFilter.TRACE_ID_ATTRIBUTE);
         return traceId instanceof String value && !value.isBlank()
                 ? value
+                : UUID.randomUUID().toString();
+    }
+
+    private String traceId(WebRequest request) {
+        return request instanceof ServletWebRequest servletWebRequest
+                ? traceId(servletWebRequest.getRequest())
                 : UUID.randomUUID().toString();
     }
 }
