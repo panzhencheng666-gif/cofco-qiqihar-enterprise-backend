@@ -1,6 +1,8 @@
 package com.cofco.qiqihar.graintrade.market.interfaceadapter;
 
 import com.cofco.qiqihar.graintrade.market.application.MarketRecordReader;
+import com.cofco.qiqihar.graintrade.market.application.MarketMonitoringService;
+import com.cofco.qiqihar.graintrade.market.application.MarketListItem;
 import com.cofco.qiqihar.graintrade.market.domain.MarketRecord;
 import com.cofco.qiqihar.graintrade.market.domain.MarketRecordQuery;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
@@ -14,6 +16,7 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.util.MultiValueMap;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -27,13 +30,16 @@ public class MarketRecordController {
             Pattern.compile("^filter\\.([A-Za-z0-9][A-Za-z0-9_-]*)$");
 
     private final MarketRecordReader reader;
+    private final MarketMonitoringService monitoring;
 
-    public MarketRecordController(MarketRecordReader reader) {
+    @Autowired
+    public MarketRecordController(MarketRecordReader reader, MarketMonitoringService monitoring) {
         this.reader = reader;
+        this.monitoring = monitoring;
     }
 
     @GetMapping("/api/v1/market-records")
-    ApiResponse<PageResponse> records(
+    ApiResponse<?> records(
             @RequestParam MultiValueMap<String, String> parameters) {
         ParsedParameters parsed = parse(parameters);
         MarketRecordQuery query = new MarketRecordQuery(
@@ -42,6 +48,9 @@ public class MarketRecordController {
                 parsed.pageNumber(),
                 parsed.pageSize(),
                 parsed.filters());
+        if ("MONITORING".equals(query.pageKind())) {
+            return new ApiResponse<>(MonitoringPageResponse.from(monitoring.list(query)));
+        }
         return new ApiResponse<>(PageResponse.from(reader.read(query)));
     }
 
@@ -99,6 +108,21 @@ public class MarketRecordController {
                     page.pageSize(),
                     page.totalElements(),
                     page.totalPages());
+        }
+    }
+
+    record MonitoringItemResponse(String id, Map<String, String> values, List<String> allowedActions, long version) {
+        static MonitoringItemResponse from(MarketListItem item) {
+            return new MonitoringItemResponse(
+                    item.id(), item.values(), item.allowedActions(), item.version());
+        }
+    }
+
+    record MonitoringPageResponse(List<MonitoringItemResponse> items, int pageNumber, int pageSize,
+            long totalElements, int totalPages) {
+        static MonitoringPageResponse from(PagedResult<MarketListItem> page) {
+            return new MonitoringPageResponse(page.items().stream().map(MonitoringItemResponse::from).toList(),
+                    page.pageNumber(), page.pageSize(), page.totalElements(), page.totalPages());
         }
     }
 }
