@@ -22,7 +22,14 @@ class BusinessPageKeyTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new BusinessPageKey("MARKET", "", "RICE"))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new BusinessPageKey("MARKET", "QUALITY", null))
+        assertThatThrownBy(() -> new BusinessPageKey("MARKET", "QUALITY", " "))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void allowsAProductIndependentPageIdentity() {
+        BusinessPageKey key = new BusinessPageKey("WORKFLOW", "WORK_ITEMS", null);
+
+        assertThat(key.productCode()).isNull();
     }
 }

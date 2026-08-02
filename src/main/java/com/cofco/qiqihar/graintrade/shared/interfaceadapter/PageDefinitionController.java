@@ -24,11 +24,11 @@ public class PageDefinitionController {
     ApiResponse<PageDefinitionResponse> definition(
             @PathVariable String domain,
             @PathVariable String pageKind,
-            @RequestParam String productCode) {
+            @RequestParam(required = false) String productCode) {
         BusinessPageDefinition definition = query.find(new BusinessPageKey(
                 requireKeyPart(domain),
                 requireKeyPart(pageKind),
-                requireKeyPart(productCode)));
+                optionalProductCode(productCode)));
         return new ApiResponse<>(PageDefinitionResponse.from(definition));
     }
 
@@ -120,6 +120,13 @@ public class PageDefinitionController {
     private static String requireKeyPart(String value) {
         if (value == null || value.isBlank()) {
             throw new ClientRequestException("INVALID_PAGE_KEY", "Page key parts must not be blank");
+        }
+        return value;
+    }
+
+    private static String optionalProductCode(String value) {
+        if (value != null && value.isBlank()) {
+            throw new ClientRequestException("INVALID_PAGE_KEY", "Page product code must not be blank");
         }
         return value;
     }

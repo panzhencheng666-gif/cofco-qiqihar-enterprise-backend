@@ -44,4 +44,24 @@ class JdbcPageDefinitionRepositoryTest {
     void doesNotSynthesizeAnUnconfirmedCornQualityDefinition() {
         assertThat(repository.find(new BusinessPageKey("MARKET", "QUALITY", "CORN"))).isEmpty();
     }
+
+    @Test
+    void loadsTheProductIndependentWorkflowDefinition() {
+        BusinessPageDefinition definition = repository
+                .find(new BusinessPageKey("WORKFLOW", "WORK_ITEMS", null))
+                .orElseThrow();
+
+        assertThat(definition.title()).isEqualTo("任务列表");
+        assertThat(definition.filters()).extracting(BusinessPageDefinition.Filter::label)
+                .containsExactly("状态", "业务域", "地区", "产品");
+        assertThat(definition.filters().getFirst().options())
+                .extracting(BusinessPageDefinition.Option::label)
+                .containsExactly("待填报", "待审核", "退回补充", "异常处理");
+        assertThat(definition.columnGroups().getFirst().fields())
+                .extracting(BusinessPageDefinition.Field::label)
+                .containsExactly(
+                        "任务", "业务域", "地区", "产品", "业务期间", "截止时间",
+                        "流程节点", "状态", "责任人");
+        assertThat(definition.actions()).isEmpty();
+    }
 }

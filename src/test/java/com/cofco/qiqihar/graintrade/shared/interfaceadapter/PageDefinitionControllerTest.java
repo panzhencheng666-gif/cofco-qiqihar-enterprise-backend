@@ -39,6 +39,18 @@ class PageDefinitionControllerTest {
                 .andExpect(jsonPath("$.data.pagination.pageSizeOptions", contains(20, 50)));
     }
 
+    @Test
+    void exposesAProductIndependentDefinitionWithoutAProductQueryParameter() throws Exception {
+        PageDefinitionQuery query = key -> fixture(key);
+        MockMvc mockMvc = MockMvcBuilders.standaloneSetup(new PageDefinitionController(query)).build();
+
+        mockMvc.perform(get("/api/v1/page-definitions/WORKFLOW/WORK_ITEMS"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.domain").value("WORKFLOW"))
+                .andExpect(jsonPath("$.data.pageKind").value("WORK_ITEMS"))
+                .andExpect(jsonPath("$.data.productCode").doesNotExist());
+    }
+
     private BusinessPageDefinition fixture(BusinessPageKey key) {
         return new BusinessPageDefinition(
                 key,

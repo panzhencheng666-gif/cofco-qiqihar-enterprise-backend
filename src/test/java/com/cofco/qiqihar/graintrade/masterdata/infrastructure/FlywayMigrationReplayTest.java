@@ -60,9 +60,15 @@ class FlywayMigrationReplayTest {
                         Map.entry("4", 2052234299),
                         Map.entry("5", -1133431193));
 
+        MigrateResult versionEightResult = DATABASE.flywayToVersion("8").migrate();
+        assertThat(versionEightResult.migrationsExecuted).isEqualTo(3);
+        insertMarketUpgradeFixture();
+
         MigrateResult upgradeResult = flyway().migrate();
-        assertThat(upgradeResult.migrationsExecuted).isEqualTo(3);
+        assertThat(upgradeResult.migrationsExecuted).isEqualTo(2);
         assertThat(migrationChecksums()).containsAllEntriesOf(versionFiveChecksums);
+        assertThat(marketRecordCount()).isOne();
+        deleteMarketUpgradeFixture();
         assertThat(marketRecordCount()).isZero();
 
         Map<String, Long> firstCounts = masterDataCounts();
@@ -70,13 +76,13 @@ class FlywayMigrationReplayTest {
         MigrateResult secondResult = flyway().migrate();
 
         assertThat(secondResult.migrationsExecuted).isZero();
-        assertThat(migrationChecksums()).hasSize(8);
+        assertThat(migrationChecksums()).hasSize(10);
         assertThat(masterDataCounts()).isEqualTo(firstCounts);
         assertThat(firstCounts).containsEntry("region", 29L)
                 .containsEntry("product", 3L)
                 .containsEntry("cultivar", 2L)
                 .containsEntry("object_type", 10L)
-                .containsEntry("page_definition_field", 9L);
+                .containsEntry("page_definition_field", 18L);
     }
 
     @Test
@@ -233,6 +239,101 @@ class FlywayMigrationReplayTest {
                 """);
     }
 
+    @Test
+    @Order(6)
+    void supportsOneStrongProductIndependentPageIdentityAndWorkflowStartsEmpty() throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    INSERT INTO platform.page_definition
+                        (product_code, business_domain, page_kind)
+                    VALUES (NULL, 'WORKFLOW', 'MIGRATION_TEST')
+                    """);
+            assertThatThrownBy(() -> statement.execute("""
+                            INSERT INTO platform.page_definition
+                                (product_code, business_domain, page_kind)
+                            VALUES (NULL, 'WORKFLOW', 'MIGRATION_TEST')
+                            """))
+                    .isInstanceOf(SQLException.class);
+
+            try (ResultSet rows = statement.executeQuery("""
+                    SELECT count(*)
+                    FROM workflow.work_item_status
+                    WHERE code IN ('TO_FILL', 'TO_REVIEW', 'RETURNED', 'EXCEPTION')
+                    """)) {
+                rows.next();
+                assertThat(rows.getLong(1)).isEqualTo(4);
+            }
+            try (ResultSet rows = statement.executeQuery(
+                    "SELECT count(*) FROM workflow.work_item_status")) {
+                rows.next();
+                assertThat(rows.getLong(1)).isEqualTo(4);
+            }
+            try (ResultSet rows = statement.executeQuery("SELECT count(*) FROM workflow.work_item")) {
+                rows.next();
+                assertThat(rows.getLong(1)).isZero();
+            }
+        } finally {
+            try (Connection connection = DATABASE.openConnection();
+                    Statement statement = connection.createStatement()) {
+                statement.execute("""
+                        DELETE FROM platform.page_definition
+                        WHERE product_code IS NULL
+                          AND business_domain = 'WORKFLOW'
+                          AND page_kind = 'MIGRATION_TEST'
+                        """);
+            }
+        }
+    }
+
+    @Test
+    @Order(7)
+    void enforcesPendingStatusAndCompletedScopeStateAtTheDatabaseBoundary() throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    INSERT INTO platform.business_period
+                        (code, name, starts_on, ends_on, sort_order)
+                    VALUES ('WORK_SCOPE_PERIOD', '工作流约束期间', DATE '2026-08-01', DATE '2026-08-31', 9990)
+                    """);
+            statement.execute("INSERT INTO workflow.workflow_node (code, label) VALUES ('WORK_SCOPE_NODE', '约束节点')");
+            statement.execute("""
+                    INSERT INTO workflow.responsible_party
+                        (party_type, external_code, display_name)
+                    VALUES ('USER', 'WORK_SCOPE_USER', '约束责任人')
+                    """);
+
+            assertInsertRejected("""
+                    INSERT INTO workflow.work_item
+                        (task_name, business_domain, region_code, product_code,
+                         business_period_code, due_at, workflow_node_id, status_code,
+                         responsible_party_id, completed_at)
+                    SELECT '非法待办', 'MARKET', '230202', 'SOYBEAN', 'WORK_SCOPE_PERIOD', now(),
+                           node_id, NULL, responsible_party_id, NULL
+                    FROM workflow.workflow_node CROSS JOIN workflow.responsible_party
+                    WHERE code = 'WORK_SCOPE_NODE' AND external_code = 'WORK_SCOPE_USER'
+                    """);
+            assertInsertRejected("""
+                    INSERT INTO workflow.work_item
+                        (task_name, business_domain, region_code, product_code,
+                         business_period_code, due_at, workflow_node_id, status_code,
+                         responsible_party_id, completed_at)
+                    SELECT '非法已办', 'MARKET', '230202', 'SOYBEAN', 'WORK_SCOPE_PERIOD', now(),
+                           node_id, 'TO_FILL', responsible_party_id, now()
+                    FROM workflow.workflow_node CROSS JOIN workflow.responsible_party
+                    WHERE code = 'WORK_SCOPE_NODE' AND external_code = 'WORK_SCOPE_USER'
+                    """);
+        } finally {
+            try (Connection connection = DATABASE.openConnection();
+                    Statement statement = connection.createStatement()) {
+                statement.execute("DELETE FROM workflow.work_item WHERE task_name LIKE '非法%'");
+                statement.execute("DELETE FROM workflow.responsible_party WHERE external_code = 'WORK_SCOPE_USER'");
+                statement.execute("DELETE FROM workflow.workflow_node WHERE code = 'WORK_SCOPE_NODE'");
+                statement.execute("DELETE FROM platform.business_period WHERE code = 'WORK_SCOPE_PERIOD'");
+            }
+        }
+    }
+
     private Flyway flyway() {
         return DATABASE.flyway();
     }
@@ -249,6 +350,25 @@ class FlywayMigrationReplayTest {
 
     private Flyway flywayToVersionFive() {
         return DATABASE.flywayToVersion("5");
+    }
+
+    private void insertMarketUpgradeFixture() throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    INSERT INTO market.market_record_projection
+                        (record_id, product_code, business_domain, page_kind, observed_at, values)
+                    VALUES ('upgrade-preserved', 'SOYBEAN', 'MARKET', 'QUALITY', now(),
+                            '{"subjectName":"升级保留记录"}'::jsonb)
+                    """);
+        }
+    }
+
+    private void deleteMarketUpgradeFixture() throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute("DELETE FROM market.market_record_projection WHERE record_id = 'upgrade-preserved'");
+        }
     }
 
     private String sha256(Path path) {

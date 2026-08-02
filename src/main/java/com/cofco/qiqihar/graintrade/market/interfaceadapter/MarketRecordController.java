@@ -6,6 +6,7 @@ import com.cofco.qiqihar.graintrade.market.domain.MarketRecordQuery;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
+import com.cofco.qiqihar.graintrade.shared.interfaceadapter.StrictQueryParameters;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,51 +46,26 @@ public class MarketRecordController {
     }
 
     private static ParsedParameters parse(MultiValueMap<String, String> parameters) {
-        Map<String, String> core = new LinkedHashMap<>();
+        StrictQueryParameters parsed = StrictQueryParameters.parse(
+                parameters,
+                name -> CORE_PARAMETERS.contains(name) || FILTER_PARAMETER.matcher(name).matches(),
+                MarketRecordController::invalidQuery);
         Map<String, String> filters = new LinkedHashMap<>();
-        parameters.forEach((name, values) -> {
-            if (values == null || values.size() != 1) {
-                throw invalidQuery();
-            }
-            String value = values.get(0);
-            if (value == null || value.isBlank()) {
-                throw invalidQuery();
-            }
-            if (CORE_PARAMETERS.contains(name)) {
-                core.put(name, value);
-                return;
-            }
+        parsed.values().forEach((name, value) -> {
             Matcher filter = FILTER_PARAMETER.matcher(name);
-            if (!filter.matches()) {
-                throw invalidQuery();
+            if (filter.matches()) {
+                filters.put(filter.group(1), value);
             }
-            filters.put(filter.group(1), value);
         });
 
-        String productCode = required(core, "productCode");
-        String pageKind = required(core, "pageKind");
-        int pageNumber = parseInteger(core.getOrDefault("pageNumber", "0"));
-        int pageSize = parseInteger(required(core, "pageSize"));
+        String productCode = parsed.required("productCode");
+        String pageKind = parsed.required("pageKind");
+        int pageNumber = parsed.integer("pageNumber", 0);
+        int pageSize = parsed.integer("pageSize", -1);
         if (pageNumber < 0 || pageSize < 1) {
             throw invalidQuery();
         }
         return new ParsedParameters(productCode, pageKind, pageNumber, pageSize, filters);
-    }
-
-    private static String required(Map<String, String> parameters, String name) {
-        String value = parameters.get(name);
-        if (value == null) {
-            throw invalidQuery();
-        }
-        return value;
-    }
-
-    private static int parseInteger(String value) {
-        try {
-            return Integer.parseInt(value);
-        } catch (NumberFormatException exception) {
-            throw invalidQuery();
-        }
     }
 
     private static ClientRequestException invalidQuery() {

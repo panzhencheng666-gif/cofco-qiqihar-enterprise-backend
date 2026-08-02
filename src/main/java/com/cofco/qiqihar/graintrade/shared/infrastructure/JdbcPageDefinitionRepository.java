@@ -3,6 +3,7 @@ package com.cofco.qiqihar.graintrade.shared.infrastructure;
 import com.cofco.qiqihar.graintrade.shared.application.PageDefinitionRepository;
 import com.cofco.qiqihar.graintrade.shared.domain.BusinessPageDefinition;
 import com.cofco.qiqihar.graintrade.shared.domain.BusinessPageKey;
+import java.sql.Types;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,7 +26,7 @@ public class JdbcPageDefinitionRepository implements PageDefinitionRepository {
         Optional<String> title = sql("""
                         SELECT title
                         FROM platform.page_presentation
-                        WHERE product_code = :productCode
+                        WHERE product_code IS NOT DISTINCT FROM :productCode
                           AND business_domain = :domain
                           AND page_kind = :pageKind
                         """, key)
@@ -50,7 +51,7 @@ public class JdbcPageDefinitionRepository implements PageDefinitionRepository {
         return sql("""
                         SELECT code, label
                         FROM platform.page_breadcrumb
-                        WHERE product_code = :productCode
+                        WHERE product_code IS NOT DISTINCT FROM :productCode
                           AND business_domain = :domain
                           AND page_kind = :pageKind
                         ORDER BY sort_order
@@ -66,7 +67,7 @@ public class JdbcPageDefinitionRepository implements PageDefinitionRepository {
         return sql("""
                         SELECT code, label, control_type, placeholder
                         FROM platform.page_filter_definition
-                        WHERE product_code = :productCode
+                        WHERE product_code IS NOT DISTINCT FROM :productCode
                           AND business_domain = :domain
                           AND page_kind = :pageKind
                         ORDER BY sort_order
@@ -91,7 +92,7 @@ public class JdbcPageDefinitionRepository implements PageDefinitionRepository {
         return sql("""
                         SELECT value, label
                         FROM platform.page_filter_option
-                        WHERE product_code = :productCode
+                        WHERE product_code IS NOT DISTINCT FROM :productCode
                           AND business_domain = :domain
                           AND page_kind = :pageKind
                           AND filter_code = :filterCode
@@ -108,7 +109,7 @@ public class JdbcPageDefinitionRepository implements PageDefinitionRepository {
         sql("""
                         SELECT filter_code, value
                         FROM platform.page_default_value
-                        WHERE product_code = :productCode
+                        WHERE product_code IS NOT DISTINCT FROM :productCode
                           AND business_domain = :domain
                           AND page_kind = :pageKind
                         ORDER BY filter_code
@@ -126,7 +127,7 @@ public class JdbcPageDefinitionRepository implements PageDefinitionRepository {
         return sql("""
                         SELECT code, label
                         FROM platform.page_column_group
-                        WHERE product_code = :productCode
+                        WHERE product_code IS NOT DISTINCT FROM :productCode
                           AND business_domain = :domain
                           AND page_kind = :pageKind
                         ORDER BY sort_order
@@ -145,7 +146,7 @@ public class JdbcPageDefinitionRepository implements PageDefinitionRepository {
                         SELECT field.code, field.name, field.value_type, link.unit, link.description
                         FROM platform.page_column_group_field link
                         JOIN platform.field_definition field ON field.code = link.field_code
-                        WHERE link.product_code = :productCode
+                        WHERE link.product_code IS NOT DISTINCT FROM :productCode
                           AND link.business_domain = :domain
                           AND link.page_kind = :pageKind
                           AND link.group_code = :groupCode
@@ -165,7 +166,7 @@ public class JdbcPageDefinitionRepository implements PageDefinitionRepository {
         return sql("""
                         SELECT code, label, action_scope
                         FROM platform.page_action
-                        WHERE product_code = :productCode
+                        WHERE product_code IS NOT DISTINCT FROM :productCode
                           AND business_domain = :domain
                           AND page_kind = :pageKind
                         ORDER BY sort_order
@@ -181,7 +182,7 @@ public class JdbcPageDefinitionRepository implements PageDefinitionRepository {
         int defaultPageSize = sql("""
                         SELECT default_page_size
                         FROM platform.page_pagination
-                        WHERE product_code = :productCode
+                        WHERE product_code IS NOT DISTINCT FROM :productCode
                           AND business_domain = :domain
                           AND page_kind = :pageKind
                         """, key)
@@ -190,7 +191,7 @@ public class JdbcPageDefinitionRepository implements PageDefinitionRepository {
         List<Integer> sizes = sql("""
                         SELECT page_size
                         FROM platform.page_size_option
-                        WHERE product_code = :productCode
+                        WHERE product_code IS NOT DISTINCT FROM :productCode
                           AND business_domain = :domain
                           AND page_kind = :pageKind
                         ORDER BY sort_order
@@ -202,7 +203,7 @@ public class JdbcPageDefinitionRepository implements PageDefinitionRepository {
 
     private JdbcClient.StatementSpec sql(String sql, BusinessPageKey key) {
         return jdbc.sql(sql)
-                .param("productCode", key.productCode())
+                .param("productCode", key.productCode(), Types.VARCHAR)
                 .param("domain", key.domain())
                 .param("pageKind", key.pageKind());
     }

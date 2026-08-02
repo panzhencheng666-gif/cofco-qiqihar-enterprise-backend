@@ -5,7 +5,9 @@ public record BusinessPageKey(String domain, String pageKind, String productCode
     public BusinessPageKey {
         requireText(domain, "domain");
         requireText(pageKind, "pageKind");
-        requireText(productCode, "productCode");
+        if (productCode != null) {
+            requireText(productCode, "productCode");
+        }
     }
 
     private static void requireText(String value, String name) {
