@@ -1,5 +1,41 @@
 # Task 5 implementation report — production monitoring
 
+## Round-four disposition
+
+All Important findings in `task-5-review-round4.md` are fixed. No migration or backend production-code change was required, and V1–V16 remain untouched.
+
+- The shared list controller now adopts every newly decided query synchronously in `queryRef` before starting a search or invoking a route callback. This covers initial normalization, history restore, user filter changes, page and page-size changes, out-of-range page clamping, and history normalization; the render path never mutates the ref.
+- Search request-version ordering still suppresses stale responses. A write finishing in the narrow window after a restored search starts but before the query state effect/render can now refresh only the restored query, never the previous filter/page query.
+- The real App regression is parameterized across `create`, `saveDraft`, `submit`, `approve`, and `returnForCorrection`. Each repository write remains pending while real browser back/forward restores page 1 plus the FARMER filter; the first restored search stays pending while the write settles. The test proves both subsequent searches use the latest query, an older pending result cannot overwrite the latest result, and the final filter/page/result/hash remain aligned.
+- Architecture probes are tracked fixtures under `scripts/architecture-fixtures`, outside `src`, the production TypeScript project, and the normal source dependency graph. They use an independent TypeScript root/config while importing the production boundary rule.
+- The read-only probe covers resolved React, application-to-barrel-to-UI, application-to-barrel-to-infrastructure, domain-to-application-to-barrel-to-UI, and a TypeScript path alias to UI. The architecture test launches two guards concurrently, compares their exact result, and proves `git status` is unchanged. The guard has no filesystem write/delete operations, so concurrent execution and interruption cannot leave source-tree residue.
+- The REST integration suite now parameterizes CORN, SOYBEAN, and RICE across FARMER, VILLAGE_COMMITTEE, and AGRICULTURAL_TECH_STATION using only formal V16 facts selected and checked through the definition endpoint.
+- All six FARMER/VILLAGE contexts create, detail, list, submit, return, and save records containing a formal quality, cost, insurance, and subsidy fact. All three agricultural-tech-station contexts create/detail/list quality-only records.
+- Nine negative agricultural-tech-station cases independently submit COST, INSURANCE, and SUBSIDY facts for each product. Every request returns stable `INAPPLICABLE_PRODUCTION_FACT` 400, and actor-scoped record plus all four fact-table counts prove no partial business write. Cleanup deletes only actor-scoped production records and never mutates master data.
+
+## Round-four TDD evidence
+
+- Query race RED: all five real App write paths searched the restored `{pageNumber: 1, objectTypeCode: FARMER}` query and then incorrectly searched the old `{pageNumber: 0, values: {}}` query when the deferred write settled before the query-ref effect. After synchronous query adoption, the shared/App targeted suite passed 54/54.
+- Architecture RED: the initial contract failed because stable fixtures did not exist. After fixtures were added, two concurrent executions of the former guard produced no comparable JSON result because it still created/deleted fixed files in `src`. The read-only guard then passed its parallel Node test and the normal source graph remained at zero violations.
+- The backend finding was a missing proof rather than a failing production behavior: after a test-only table-name typo in the partial-write counter was corrected, the new 23-case formal REST suite passed without any backend production or migration change. This is intentionally a test-only backend commit rather than a manufactured implementation change.
+
+## Round-four verification
+
+- Backend: `JAVA_HOME=/opt/homebrew/Cellar/openjdk@21/21.0.12/libexec/openjdk.jdk/Contents/Home mvn verify` — BUILD SUCCESS; 136 tests, 0 failures/errors/skips; PostgreSQL validated and replayed all 16 migrations from empty and staged schemas; executable JAR built.
+- Frontend: `npm run verify` — Prettier, ESLint, normal dependency-cruiser (54 modules / 138 dependencies, zero violations), concurrent read-only architecture test (1/1), 15 Vitest files / 88 tests, TypeScript, and Vite production build all passed.
+- `git diff --check` passed in both repositories before the implementation/test commits. V1–V16, frontend `.idea/`, and legacy repositories remained untouched. No push was performed.
+
+## Round-four commits
+
+- Backend test matrix: `1a22ed8 test(production): cover round-four object matrix`
+- Frontend implementation: `942bcb8 fix(production): address round-four frontend review`
+- This report is committed separately after both repository hashes were known.
+
+## Round-four hand-off
+
+- All round-four findings have targeted regression coverage; a fifth independent review is the next gate.
+- Task 9 still owns full authentication/authorization and auditing. Task 5 continues to use the authenticated servlet principal through `CurrentActor`.
+
 ## Round-three disposition
 
 All Critical, Important, and Minor findings in `task-5-review-round3.md` are fixed.
