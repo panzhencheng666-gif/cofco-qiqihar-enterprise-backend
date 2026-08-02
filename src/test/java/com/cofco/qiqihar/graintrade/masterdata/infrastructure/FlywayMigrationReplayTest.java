@@ -124,9 +124,23 @@ class FlywayMigrationReplayTest {
         assertVersionTwentyCoreValuePreserved();
         deleteVersionTwentyTwoInapplicableFactCorruption();
 
-        MigrateResult versionTwentyThreeResult = flyway().migrate();
+        deleteVersionTwentyTwoTypedDefinitionFixture();
+        MigrateResult versionTwentyThreeResult = DATABASE.flywayToVersion("23").migrate();
         assertThat(versionTwentyThreeResult.migrationsExecuted).isOne();
         assertVersionTwentyCoreValuePreserved();
+
+        assertThatThrownBy(() -> DATABASE.flywayToVersion("24").migrate())
+                .hasMessageContaining("V24 preflight market page field source invariant failed")
+                .hasMessageContaining("MKT_REGION");
+        assertThat(currentMigrationVersion()).isEqualTo("23");
+        assertThat(marketRegionCoreDefinitionCount()).isZero();
+        assertThat(marketRegionMonitoringMountCount()).isEqualTo(3);
+        assertVersionTwentyCoreValuePreserved();
+        restoreVersionTwentyTwoTypedDefinitionFixture();
+
+        MigrateResult versionTwentyFourResult = flyway().migrate();
+        assertThat(versionTwentyFourResult.migrationsExecuted).isOne();
+        assertVersionTwentyFourDefinitionGraphGuards();
         exerciseVersionTwentyFixtureThroughFormalService();
 
         deleteVersionTwentyOneWitnessFixture();
@@ -139,7 +153,7 @@ class FlywayMigrationReplayTest {
         MigrateResult secondResult = flyway().migrate();
 
         assertThat(secondResult.migrationsExecuted).isZero();
-        assertThat(migrationChecksums()).hasSize(23);
+        assertThat(migrationChecksums()).hasSize(24);
         assertThat(masterDataCounts()).isEqualTo(firstCounts);
         assertThat(firstCounts).containsEntry("region", 29L)
                 .containsEntry("product", 3L)
@@ -705,6 +719,94 @@ class FlywayMigrationReplayTest {
                     DELETE FROM market.market_record_fact
                     WHERE record_id = 'v20-core-upgrade' AND fact_code = 'SALES_VOLUME'
                     """);
+        }
+    }
+
+    private void deleteVersionTwentyTwoTypedDefinitionFixture() throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    DELETE FROM platform.market_core_field_definition
+                    WHERE code = 'MKT_REGION'
+                    """);
+        }
+    }
+
+    private void restoreVersionTwentyTwoTypedDefinitionFixture() throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    INSERT INTO platform.market_core_field_definition(
+                        code, label, control_type, unit, decimal_precision, decimal_scale,
+                        sort_order, description, domain_binding, capability, required)
+                    VALUES ('MKT_REGION', '地区', 'REGION_HIERARCHY', NULL, NULL, NULL,
+                            20, NULL, 'REGION', 'GENERIC', true)
+                    """);
+        }
+    }
+
+    private void assertVersionTwentyFourDefinitionGraphGuards() throws SQLException {
+        assertThat(count("""
+                SELECT count(*)
+                FROM platform.market_monitoring_projection_field_definition
+                WHERE field_code = 'MKT_STATUS' AND projection_kind = 'RECORD_STATUS'
+                  AND required_on_page
+                """)).isOne();
+
+        assertTransactionRejected("""
+                DELETE FROM platform.page_definition_field
+                WHERE product_code = 'CORN' AND business_domain = 'MARKET'
+                  AND page_kind = 'MONITORING' AND field_code = 'MKT_REGION'
+                """);
+        assertTransactionRejected("""
+                DELETE FROM platform.market_core_field_definition
+                WHERE code = 'MKT_REGION'
+                """);
+        assertTransactionRejected(
+                """
+                INSERT INTO platform.field_definition(code, name, value_type)
+                VALUES ('V24_FACT_SOURCE', 'V24事实来源', 'DECIMAL')
+                """,
+                """
+                INSERT INTO platform.market_fact_definition(
+                    code, category, label, unit, decimal_precision, decimal_scale)
+                VALUES ('V24_FACT_SOURCE', 'QUALITY', 'V24事实来源', NULL, 18, 4)
+                """,
+                """
+                INSERT INTO platform.page_definition_field(
+                    product_code, business_domain, page_kind, field_code, sort_order)
+                VALUES ('CORN', 'MARKET', 'MONITORING', 'V24_FACT_SOURCE', 9410)
+                """,
+                "SET CONSTRAINTS ALL IMMEDIATE",
+                "SET CONSTRAINTS ALL DEFERRED",
+                "DELETE FROM platform.market_fact_definition WHERE code = 'V24_FACT_SOURCE'");
+        assertTransactionRejected("""
+                DELETE FROM platform.market_monitoring_projection_field_definition
+                WHERE field_code = 'MKT_STATUS'
+                """);
+    }
+
+    private long marketRegionCoreDefinitionCount() throws SQLException {
+        return count("""
+                SELECT count(*) FROM platform.market_core_field_definition
+                WHERE code = 'MKT_REGION'
+                """);
+    }
+
+    private long marketRegionMonitoringMountCount() throws SQLException {
+        return count("""
+                SELECT count(*) FROM platform.page_definition_field
+                WHERE business_domain = 'MARKET' AND page_kind = 'MONITORING'
+                  AND field_code = 'MKT_REGION'
+                """);
+    }
+
+    private long count(String sql) throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement();
+                ResultSet row = statement.executeQuery(sql)) {
+            row.next();
+            return row.getLong(1);
         }
     }
 
