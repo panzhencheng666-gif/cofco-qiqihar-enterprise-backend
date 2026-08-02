@@ -66,7 +66,7 @@ class MarketRecordRestIntegrationTest {
                         WHERE product_code = 'SOYBEAN'
                           AND business_domain = 'MARKET'
                           AND page_kind = 'QUALITY'
-                          AND code = 'subjectName'
+                          AND code IN ('subjectName', '.subjectName')
                         """)
                 .update();
     }
@@ -102,6 +102,73 @@ class MarketRecordRestIntegrationTest {
                 .andExpect(jsonPath("$.data.totalPages").value(1))
                 .andExpect(jsonPath("$.data.items.length()").value(1))
                 .andExpect(jsonPath("$.data.items[0].id").value("record-21"));
+    }
+
+    @Test
+    void rejectsRepeatedFilterValuesInsteadOfSelectingTheFirstOne() throws Exception {
+        assertInvalidQuery(get("/api/v1/market-records")
+                .queryParam("productCode", "SOYBEAN")
+                .queryParam("pageKind", "QUALITY")
+                .queryParam("pageNumber", "0")
+                .queryParam("pageSize", "20")
+                .queryParam("filter.subjectName", "", "记录21"));
+    }
+
+    @Test
+    void rejectsRepeatedCoreParameters() throws Exception {
+        assertInvalidQuery(get("/api/v1/market-records")
+                .queryParam("productCode", "SOYBEAN")
+                .queryParam("pageKind", "QUALITY")
+                .queryParam("pageNumber", "0")
+                .queryParam("pageSize", "20", "50"));
+    }
+
+    @Test
+    void rejectsUnknownCoreParameterSpellings() throws Exception {
+        assertInvalidQuery(get("/api/v1/market-records")
+                .queryParam("productCode", "SOYBEAN")
+                .queryParam("pageKind", "QUALITY")
+                .queryParam("pageNumber", "0")
+                .queryParam("pageSize", "20")
+                .queryParam("pageNubmer", "2"));
+    }
+
+    @Test
+    void rejectsAnEmptyFilterCode() throws Exception {
+        assertInvalidQuery(get("/api/v1/market-records")
+                .queryParam("productCode", "SOYBEAN")
+                .queryParam("pageKind", "QUALITY")
+                .queryParam("pageNumber", "0")
+                .queryParam("pageSize", "20")
+                .queryParam("filter.", "记录21"));
+    }
+
+    @Test
+    void rejectsMalformedFilterParameterNames() throws Exception {
+        JdbcClient.create(dataSource).sql("""
+                        INSERT INTO platform.page_filter_definition
+                            (product_code, business_domain, page_kind, code, label,
+                             control_type, placeholder, sort_order)
+                        VALUES ('SOYBEAN', 'MARKET', 'QUALITY', '.subjectName', '畸形测试字段',
+                                'TEXT', '', 20)
+                        """)
+                .update();
+        assertInvalidQuery(get("/api/v1/market-records")
+                .queryParam("productCode", "SOYBEAN")
+                .queryParam("pageKind", "QUALITY")
+                .queryParam("pageNumber", "0")
+                .queryParam("pageSize", "20")
+                .queryParam("filter..subjectName", "记录21"));
+    }
+
+    @Test
+    void rejectsBlankSingleFilterValuesInsteadOfExpandingTheResultSet() throws Exception {
+        assertInvalidQuery(get("/api/v1/market-records")
+                .queryParam("productCode", "SOYBEAN")
+                .queryParam("pageKind", "QUALITY")
+                .queryParam("pageNumber", "0")
+                .queryParam("pageSize", "20")
+                .queryParam("filter.subjectName", "   "));
     }
 
     @Test
@@ -147,5 +214,13 @@ class MarketRecordRestIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].values.subjectName").value(firstSubject))
                 .andExpect(jsonPath("$.data.items[0].values.score").value(firstScore))
                 .andExpect(jsonPath("$.data.items[0].values.note").value(nullValue()));
+    }
+
+    private void assertInvalidQuery(
+            org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder request)
+            throws Exception {
+        mockMvc.perform(request)
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_MARKET_RECORD_QUERY"));
     }
 }
