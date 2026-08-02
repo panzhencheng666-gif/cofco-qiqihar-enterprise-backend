@@ -6,6 +6,7 @@ import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.builder.SpringApplicationBuilder;
@@ -39,25 +40,41 @@ class BootFlywayStartupTest {
     }
 
     @Test
-    void twoRealApplicationStartupsApplyMigrationsOnlyOnce() throws SQLException {
-        startAndCloseApplication();
-        assertThat(installedMigrationCount()).isEqualTo(3);
-        assertThat(productCount()).isEqualTo(3);
+    void commandLineTestDatabaseWinsOverConflictingHigherPriorityDefaultsAcrossTwoStartups() throws SQLException {
+        String previousUrl = System.getProperty("spring.datasource.url");
+        System.setProperty(
+                "spring.datasource.url",
+                "jdbc:postgresql://127.0.0.1:5432/qiqihar_enterprise_forbidden");
+        try {
+            startAndCloseApplication();
+            assertThat(installedMigrationCount()).isEqualTo(4);
+            assertThat(productCount()).isEqualTo(3);
 
-        startAndCloseApplication();
-        assertThat(installedMigrationCount()).isEqualTo(3);
-        assertThat(productCount()).isEqualTo(3);
+            startAndCloseApplication();
+            assertThat(installedMigrationCount()).isEqualTo(4);
+            assertThat(productCount()).isEqualTo(3);
+        } finally {
+            if (previousUrl == null) {
+                System.clearProperty("spring.datasource.url");
+            } else {
+                System.setProperty("spring.datasource.url", previousUrl);
+            }
+        }
     }
 
     private void startAndCloseApplication() {
-        try (ConfigurableApplicationContext ignored = new SpringApplicationBuilder(GrainTradeApplication.class)
-                .properties(
-                        "spring.main.web-application-type=none",
-                        "spring.datasource.url=" + URL,
-                        "spring.datasource.username=" + USERNAME,
-                        "spring.datasource.password=" + PASSWORD)
-                .run()) {
-            // Closing this context simulates a complete process lifecycle before the next startup.
+        try (ConfigurableApplicationContext context = new SpringApplicationBuilder(GrainTradeApplication.class)
+                .properties("spring.main.web-application-type=none")
+                .run(
+                        "--spring.datasource.url=" + URL,
+                        "--spring.datasource.username=" + USERNAME,
+                        "--spring.datasource.password=" + PASSWORD)) {
+            DataSource dataSource = context.getBean(DataSource.class);
+            try (Connection connection = dataSource.getConnection()) {
+                assertThat(connection.getMetaData().getURL()).isEqualTo(URL);
+            } catch (SQLException exception) {
+                throw new IllegalStateException("Could not verify the application DataSource URL", exception);
+            }
         }
     }
 

@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.masterdata.interfaceadapter;
 
 import com.cofco.qiqihar.graintrade.masterdata.application.MasterDataQuery;
+import com.cofco.qiqihar.graintrade.masterdata.domain.BusinessBatch;
 import com.cofco.qiqihar.graintrade.masterdata.domain.BusinessPeriod;
 import com.cofco.qiqihar.graintrade.masterdata.domain.Cultivar;
 import com.cofco.qiqihar.graintrade.masterdata.domain.FieldDefinition;
@@ -57,6 +58,16 @@ class MasterDataControllerTest {
                         .value(contains("贸易商", "深加工", "批发市场", "承储企业")));
     }
 
+    @Test
+    void returnsBusinessBatchesFilteredByPeriodInTheSuccessEnvelope() throws Exception {
+        mockMvc.perform(get("/api/v1/master-data/business-batches")
+                        .queryParam("businessPeriodCode", "PERIOD_2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[*].name").value(contains("第一批", "第二批")))
+                .andExpect(jsonPath("$.data[*].businessPeriodCode")
+                        .value(contains("PERIOD_2026", "PERIOD_2026")));
+    }
+
     private static final class ContractQuery implements MasterDataQuery {
 
         @Override
@@ -86,6 +97,13 @@ class MasterDataControllerTest {
         @Override
         public List<BusinessPeriod> businessPeriods() {
             return List.of();
+        }
+
+        @Override
+        public List<BusinessBatch> businessBatches(String businessPeriodCode) {
+            return List.of(
+                    new BusinessBatch("BATCH_1", "第一批", businessPeriodCode),
+                    new BusinessBatch("BATCH_2", "第二批", businessPeriodCode));
         }
 
         @Override

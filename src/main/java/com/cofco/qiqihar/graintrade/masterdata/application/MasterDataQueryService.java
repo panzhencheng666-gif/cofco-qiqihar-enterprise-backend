@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade.masterdata.application;
 
+import com.cofco.qiqihar.graintrade.masterdata.domain.BusinessBatch;
 import com.cofco.qiqihar.graintrade.masterdata.domain.BusinessPeriod;
 import com.cofco.qiqihar.graintrade.masterdata.domain.Cultivar;
 import com.cofco.qiqihar.graintrade.masterdata.domain.ObjectType;
@@ -44,6 +45,11 @@ public class MasterDataQueryService implements MasterDataQuery {
     @Override
     public List<BusinessPeriod> businessPeriods() {
         return repository.findBusinessPeriods();
+    }
+
+    @Override
+    public List<BusinessBatch> businessBatches(String businessPeriodCode) {
+        return repository.findBusinessBatchesByPeriodCode(businessPeriodCode);
     }
 
     @Override

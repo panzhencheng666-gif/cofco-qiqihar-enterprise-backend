@@ -1,9 +1,13 @@
 package com.cofco.qiqihar.graintrade.masterdata.infrastructure;
 
 import com.cofco.qiqihar.graintrade.masterdata.domain.FieldDefinition;
+import com.cofco.qiqihar.graintrade.masterdata.domain.BusinessBatch;
 import com.cofco.qiqihar.graintrade.masterdata.domain.ObjectType;
 import com.cofco.qiqihar.graintrade.masterdata.domain.Region;
 import java.util.List;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.Statement;
 import javax.sql.DataSource;
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
@@ -74,12 +78,54 @@ class JdbcMasterDataRepositoryTest {
         assertThat(repository.findBusinessPeriods()).isEmpty();
     }
 
+    @Test
+    void loadsOnlyRequestedPeriodBatchesInStableOrder() throws Exception {
+        insertBusinessBatchFixtures();
+        try {
+            List<BusinessBatch> batches = repository.findBusinessBatchesByPeriodCode("PERIOD_2026");
+
+            assertThat(batches).extracting(BusinessBatch::name)
+                    .containsExactly("第一批", "第二批");
+            assertThat(batches).extracting(BusinessBatch::businessPeriodCode)
+                    .containsOnly("PERIOD_2026");
+            assertThat(repository.findBusinessBatchesByPeriodCode("PERIOD_2025")).isEmpty();
+        } finally {
+            deleteBusinessBatchFixtures();
+        }
+    }
+
     private List<String> names(List<ObjectType> objectTypes) {
         return objectTypes.stream().map(ObjectType::name).toList();
     }
 
     private static DataSource dataSource() {
         return new DriverManagerDataSource(URL, USERNAME, PASSWORD);
+    }
+
+    private void insertBusinessBatchFixtures() throws Exception {
+        try (Connection connection = DriverManager.getConnection(URL, USERNAME, PASSWORD);
+                Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    INSERT INTO platform.business_period
+                        (code, name, starts_on, ends_on, sort_order)
+                    VALUES ('PERIOD_2026', '2026业务期', DATE '2026-01-01', DATE '2026-12-31', 10)
+                    """);
+            statement.execute("""
+                    INSERT INTO platform.business_batch
+                        (code, name, business_period_code, sort_order)
+                    VALUES
+                        ('BATCH_2', '第二批', 'PERIOD_2026', 20),
+                        ('BATCH_1', '第一批', 'PERIOD_2026', 10)
+                    """);
+        }
+    }
+
+    private void deleteBusinessBatchFixtures() throws Exception {
+        try (Connection connection = DriverManager.getConnection(URL, USERNAME, PASSWORD);
+                Statement statement = connection.createStatement()) {
+            statement.execute("DELETE FROM platform.business_batch WHERE business_period_code = 'PERIOD_2026'");
+            statement.execute("DELETE FROM platform.business_period WHERE code = 'PERIOD_2026'");
+        }
     }
 
     private static String environment(String name, String fallback) {

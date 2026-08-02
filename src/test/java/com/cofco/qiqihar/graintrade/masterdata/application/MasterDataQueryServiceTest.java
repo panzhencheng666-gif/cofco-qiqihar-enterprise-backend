@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.masterdata.application;
 
 import com.cofco.qiqihar.graintrade.masterdata.domain.BusinessPeriod;
+import com.cofco.qiqihar.graintrade.masterdata.domain.BusinessBatch;
 import com.cofco.qiqihar.graintrade.masterdata.domain.Cultivar;
 import com.cofco.qiqihar.graintrade.masterdata.domain.ObjectType;
 import com.cofco.qiqihar.graintrade.masterdata.domain.PageDefinition;
@@ -38,7 +39,18 @@ class MasterDataQueryServiceTest {
         assertThat(transaction.readOnly()).isTrue();
     }
 
-    private static final class EmptyRepository implements MasterDataRepository {
+    @Test
+    void delegatesBusinessBatchFilteringToTheOutputPort() {
+        CapturingBatchRepository repository = new CapturingBatchRepository();
+        MasterDataQueryService service = new MasterDataQueryService(repository);
+
+        assertThat(service.businessBatches("PERIOD_2026"))
+                .extracting(BusinessBatch::name)
+                .containsExactly("第一批", "第二批");
+        assertThat(repository.requestedPeriodCode).isEqualTo("PERIOD_2026");
+    }
+
+    private static class EmptyRepository implements MasterDataRepository {
 
         @Override
         public List<Region> findRegions() {
@@ -66,8 +78,26 @@ class MasterDataQueryServiceTest {
         }
 
         @Override
+        public List<BusinessBatch> findBusinessBatchesByPeriodCode(String businessPeriodCode) {
+            return List.of();
+        }
+
+        @Override
         public Optional<PageDefinition> findPageDefinition(String productCode, String domain, String pageKind) {
             return Optional.empty();
+        }
+    }
+
+    private static final class CapturingBatchRepository extends EmptyRepository {
+
+        private String requestedPeriodCode;
+
+        @Override
+        public List<BusinessBatch> findBusinessBatchesByPeriodCode(String businessPeriodCode) {
+            requestedPeriodCode = businessPeriodCode;
+            return List.of(
+                    new BusinessBatch("BATCH_1", "第一批", businessPeriodCode),
+                    new BusinessBatch("BATCH_2", "第二批", businessPeriodCode));
         }
     }
 }

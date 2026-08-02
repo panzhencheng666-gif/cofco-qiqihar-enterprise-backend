@@ -10,10 +10,15 @@ import java.util.Map;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.output.MigrateResult;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestMethodOrder;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class FlywayMigrationReplayTest {
 
     private static final String URL = environment(
@@ -40,11 +45,12 @@ class FlywayMigrationReplayTest {
     }
 
     @Test
+    @Order(1)
     void appliesVersionedMigrationsOnceAndKeepsChecksumsAndDataStableOnSecondStartup() throws SQLException {
         Flyway firstStartup = flyway();
         MigrateResult firstResult = firstStartup.migrate();
 
-        assertThat(firstResult.migrationsExecuted).isEqualTo(3);
+        assertThat(firstResult.migrationsExecuted).isEqualTo(4);
         assertThat(existingBusinessSchemas()).containsExactlyInAnyOrder(BUSINESS_SCHEMAS);
         Map<String, Integer> firstChecksums = migrationChecksums();
         Map<String, Long> firstCounts = masterDataCounts();
@@ -53,12 +59,60 @@ class FlywayMigrationReplayTest {
 
         assertThat(secondResult.migrationsExecuted).isZero();
         assertThat(migrationChecksums()).isEqualTo(firstChecksums);
+        assertThat(firstChecksums).containsEntry("1", 578287895)
+                .containsEntry("2", -1029775028)
+                .containsEntry("3", -1102740881);
         assertThat(masterDataCounts()).isEqualTo(firstCounts);
         assertThat(firstCounts).containsEntry("region", 29L)
                 .containsEntry("product", 3L)
                 .containsEntry("cultivar", 2L)
                 .containsEntry("object_type", 10L)
                 .containsEntry("page_definition_field", 9L);
+    }
+
+    @Test
+    @Order(2)
+    void rejectsInvalidPageDefaultsAndRegionHierarchyAtTheDatabaseBoundary() throws SQLException {
+        insertInvariantFixtures();
+        try {
+            assertInsertRejected("""
+                    INSERT INTO platform.page_default_context
+                        (business_domain, page_kind, default_business_batch_code)
+                    VALUES ('MARKET', 'QUALITY', 'BATCH_A')
+                    """);
+            assertInsertRejected("""
+                    INSERT INTO platform.page_default_context
+                        (business_domain, page_kind, default_business_period_code, default_business_batch_code)
+                    VALUES ('MARKET', 'QUALITY', 'PERIOD_B', 'BATCH_A')
+                    """);
+            assertInsertRejected("""
+                    INSERT INTO platform.page_default_context
+                        (business_domain, page_kind, default_product_code)
+                    VALUES ('MARKET', 'QUALITY', 'CORN')
+                    """);
+            assertInsertRejected("""
+                    INSERT INTO platform.region
+                        (code, name, parent_code, administrative_level, sort_order)
+                    VALUES ('990001', '非法地市', '230200', 'PREFECTURE', 990001)
+                    """);
+            assertInsertRejected("""
+                    INSERT INTO platform.region
+                        (code, name, parent_code, administrative_level, sort_order)
+                    VALUES ('990002', '无父区县', NULL, 'COUNTY', 990002)
+                    """);
+            assertInsertRejected("""
+                    INSERT INTO platform.region
+                        (code, name, parent_code, administrative_level, sort_order)
+                    VALUES ('990003', '自引用区县', '990003', 'COUNTY', 990003)
+                    """);
+            assertInsertRejected("""
+                    INSERT INTO platform.region
+                        (code, name, parent_code, administrative_level, sort_order)
+                    VALUES ('990004', '区县下区县', '230202', 'COUNTY', 990004)
+                    """);
+        } finally {
+            deleteInvariantFixtures();
+        }
     }
 
     private Flyway flyway() {
@@ -107,6 +161,43 @@ class FlywayMigrationReplayTest {
             }
         }
         return schemas;
+    }
+
+    private void insertInvariantFixtures() throws SQLException {
+        try (Connection connection = DriverManager.getConnection(URL, USERNAME, PASSWORD);
+                Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    INSERT INTO platform.business_period
+                        (code, name, starts_on, ends_on, sort_order)
+                    VALUES
+                        ('PERIOD_A', '约束测试期间A', DATE '2026-01-01', DATE '2026-06-30', 9001),
+                        ('PERIOD_B', '约束测试期间B', DATE '2026-07-01', DATE '2026-12-31', 9002)
+                    """);
+            statement.execute("""
+                    INSERT INTO platform.business_batch
+                        (code, name, business_period_code, sort_order)
+                    VALUES ('BATCH_A', '约束测试批次A', 'PERIOD_A', 9001)
+                    """);
+        }
+    }
+
+    private void deleteInvariantFixtures() throws SQLException {
+        try (Connection connection = DriverManager.getConnection(URL, USERNAME, PASSWORD);
+                Statement statement = connection.createStatement()) {
+            statement.execute("DELETE FROM platform.page_default_context WHERE business_domain = 'MARKET' AND page_kind = 'QUALITY'");
+            statement.execute("DELETE FROM platform.business_batch WHERE code = 'BATCH_A'");
+            statement.execute("DELETE FROM platform.business_period WHERE code IN ('PERIOD_A', 'PERIOD_B')");
+            statement.execute("DELETE FROM platform.region WHERE code LIKE '99%'");
+        }
+    }
+
+    private void assertInsertRejected(String sql) {
+        assertThatThrownBy(() -> {
+            try (Connection connection = DriverManager.getConnection(URL, USERNAME, PASSWORD);
+                    Statement statement = connection.createStatement()) {
+                statement.execute(sql);
+            }
+        }).isInstanceOf(SQLException.class);
     }
 
     private static String environment(String name, String fallback) {

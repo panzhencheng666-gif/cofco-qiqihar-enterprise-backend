@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.masterdata.interfaceadapter;
 
 import com.cofco.qiqihar.graintrade.masterdata.application.MasterDataQuery;
+import com.cofco.qiqihar.graintrade.masterdata.domain.BusinessBatch;
 import com.cofco.qiqihar.graintrade.masterdata.domain.BusinessPeriod;
 import com.cofco.qiqihar.graintrade.masterdata.domain.Cultivar;
 import com.cofco.qiqihar.graintrade.masterdata.domain.FieldDefinition;
@@ -57,6 +58,13 @@ public class MasterDataController {
         return new ApiResponse<>(query.businessPeriods().stream().map(BusinessPeriodResponse::from).toList());
     }
 
+    @GetMapping("/business-batches")
+    ApiResponse<List<BusinessBatchResponse>> businessBatches(@RequestParam String businessPeriodCode) {
+        return new ApiResponse<>(query.businessBatches(businessPeriodCode).stream()
+                .map(BusinessBatchResponse::from)
+                .toList());
+    }
+
     @GetMapping("/page-definitions")
     ApiResponse<PageDefinitionResponse> pageDefinition(
             @RequestParam String productCode,
@@ -93,6 +101,12 @@ public class MasterDataController {
     public record BusinessPeriodResponse(String code, String name, LocalDate startsOn, LocalDate endsOn) {
         static BusinessPeriodResponse from(BusinessPeriod period) {
             return new BusinessPeriodResponse(period.code(), period.name(), period.startsOn(), period.endsOn());
+        }
+    }
+
+    public record BusinessBatchResponse(String code, String name, String businessPeriodCode) {
+        static BusinessBatchResponse from(BusinessBatch batch) {
+            return new BusinessBatchResponse(batch.code(), batch.name(), batch.businessPeriodCode());
         }
     }
 

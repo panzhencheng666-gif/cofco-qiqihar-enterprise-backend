@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.masterdata.infrastructure;
 
 import com.cofco.qiqihar.graintrade.masterdata.application.MasterDataRepository;
+import com.cofco.qiqihar.graintrade.masterdata.domain.BusinessBatch;
 import com.cofco.qiqihar.graintrade.masterdata.domain.BusinessPeriod;
 import com.cofco.qiqihar.graintrade.masterdata.domain.Cultivar;
 import com.cofco.qiqihar.graintrade.masterdata.domain.FieldDefinition;
@@ -92,6 +93,22 @@ public class JdbcMasterDataRepository implements MasterDataRepository {
                         row.getString("name"),
                         row.getObject("starts_on", java.time.LocalDate.class),
                         row.getObject("ends_on", java.time.LocalDate.class)))
+                .list();
+    }
+
+    @Override
+    public List<BusinessBatch> findBusinessBatchesByPeriodCode(String businessPeriodCode) {
+        return jdbc.sql("""
+                        SELECT code, name, business_period_code
+                        FROM platform.business_batch
+                        WHERE business_period_code = :businessPeriodCode
+                        ORDER BY sort_order
+                        """)
+                .param("businessPeriodCode", businessPeriodCode)
+                .query((row, rowNumber) -> new BusinessBatch(
+                        row.getString("code"),
+                        row.getString("name"),
+                        row.getString("business_period_code")))
                 .list();
     }
 
