@@ -71,6 +71,21 @@ class MasterDataRestIntegrationTest {
     }
 
     @Test
+    void rejectsIncompleteOrBlankProductPageApplicabilityQueries() throws Exception {
+        mockMvc.perform(get("/api/v1/master-data/products").queryParam("domain", "MARKET"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_PAGE_APPLICABILITY"));
+        mockMvc.perform(get("/api/v1/master-data/products").queryParam("pageKind", "QUALITY"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_PAGE_APPLICABILITY"));
+        mockMvc.perform(get("/api/v1/master-data/products")
+                        .queryParam("domain", " ")
+                        .queryParam("pageKind", "QUALITY"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_PAGE_APPLICABILITY"));
+    }
+
+    @Test
     void missingPageDefinitionUsesTheEstablishedErrorEnvelope() throws Exception {
         mockMvc.perform(get("/api/v1/master-data/page-definitions")
                         .queryParam("productCode", "CORN")

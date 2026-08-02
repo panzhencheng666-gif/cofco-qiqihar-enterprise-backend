@@ -11,6 +11,7 @@ import com.cofco.qiqihar.graintrade.masterdata.domain.PageDefinition;
 import com.cofco.qiqihar.graintrade.masterdata.domain.Product;
 import com.cofco.qiqihar.graintrade.masterdata.domain.Region;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
+import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import java.time.LocalDate;
 import java.util.List;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -38,7 +39,15 @@ public class MasterDataController {
     ApiResponse<List<NamedResponse>> products(
             @RequestParam(required = false) String domain,
             @RequestParam(required = false) String pageKind) {
-        List<Product> products = domain == null || pageKind == null
+        boolean neitherProvided = domain == null && pageKind == null;
+        boolean complete = domain != null && !domain.isBlank()
+                && pageKind != null && !pageKind.isBlank();
+        if (!neitherProvided && !complete) {
+            throw new ClientRequestException(
+                    "INVALID_PAGE_APPLICABILITY",
+                    "domain and pageKind must be provided together");
+        }
+        List<Product> products = neitherProvided
                 ? query.products()
                 : query.productsWithPageDefinition(domain, pageKind);
         return new ApiResponse<>(products.stream().map(NamedResponse::from).toList());

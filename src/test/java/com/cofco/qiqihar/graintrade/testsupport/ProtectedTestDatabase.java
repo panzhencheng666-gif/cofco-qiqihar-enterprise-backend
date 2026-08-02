@@ -9,6 +9,7 @@ import java.util.Objects;
 import java.util.Properties;
 import javax.sql.DataSource;
 import org.flywaydb.core.Flyway;
+import org.flywaydb.core.api.MigrationVersion;
 import org.springframework.jdbc.datasource.DelegatingDataSource;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
@@ -77,6 +78,13 @@ public final class ProtectedTestDatabase {
 
     public Flyway flyway() {
         return Flyway.configure().dataSource(dataSource()).load();
+    }
+
+    public Flyway flywayToVersion(String targetVersion) {
+        return Flyway.configure()
+                .dataSource(dataSource())
+                .target(MigrationVersion.fromVersion(targetVersion))
+                .load();
     }
 
     public String[] springApplicationArguments() {

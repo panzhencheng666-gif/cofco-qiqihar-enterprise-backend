@@ -5,6 +5,10 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.flywaydb.core.Flyway;
@@ -40,21 +44,33 @@ class FlywayMigrationReplayTest {
     @Test
     @Order(1)
     void appliesVersionedMigrationsOnceAndKeepsChecksumsAndDataStableOnSecondStartup() throws SQLException {
-        Flyway firstStartup = flyway();
-        MigrateResult firstResult = firstStartup.migrate();
+        MigrateResult versionFiveResult = flywayToVersionFive().migrate();
 
-        assertThat(firstResult.migrationsExecuted).isEqualTo(5);
+        assertThat(versionFiveResult.migrationsExecuted).isEqualTo(5);
+        assertThat(sha256(Path.of(
+                        "src/main/resources/db/migration/V5__create_business_page_definition_kernel.sql")))
+                .isEqualTo("b7969f210f73ffd3654b33444691f0fba32474eab51a5d4a7faea0043a214404");
         assertThat(existingBusinessSchemas()).containsExactlyInAnyOrder(BUSINESS_SCHEMAS);
-        Map<String, Integer> firstChecksums = migrationChecksums();
+        Map<String, Integer> versionFiveChecksums = migrationChecksums();
+        assertThat(versionFiveChecksums)
+                .containsExactly(
+                        Map.entry("1", 578287895),
+                        Map.entry("2", -1029775028),
+                        Map.entry("3", -1102740881),
+                        Map.entry("4", 2052234299),
+                        Map.entry("5", -1133431193));
+
+        MigrateResult upgradeResult = flyway().migrate();
+        assertThat(upgradeResult.migrationsExecuted).isEqualTo(2);
+        assertThat(migrationChecksums()).containsAllEntriesOf(versionFiveChecksums);
+        assertThat(marketRecordCount()).isZero();
+
         Map<String, Long> firstCounts = masterDataCounts();
 
         MigrateResult secondResult = flyway().migrate();
 
         assertThat(secondResult.migrationsExecuted).isZero();
-        assertThat(migrationChecksums()).isEqualTo(firstChecksums);
-        assertThat(firstChecksums).containsEntry("1", 578287895)
-                .containsEntry("2", -1029775028)
-                .containsEntry("3", -1102740881);
+        assertThat(migrationChecksums()).hasSize(7);
         assertThat(masterDataCounts()).isEqualTo(firstCounts);
         assertThat(firstCounts).containsEntry("region", 29L)
                 .containsEntry("product", 3L)
@@ -142,8 +158,83 @@ class FlywayMigrationReplayTest {
                 .contains("not sourced from the golden screenshot");
     }
 
+    @Test
+    @Order(4)
+    void rejectsMovingPaginationWhenTheOldPresentationWouldBecomeIncomplete() throws SQLException {
+        insertPaginationMoveFixtures();
+        try {
+            assertThatThrownBy(() -> {
+                try (Connection connection = DATABASE.openConnection();
+                        Statement statement = connection.createStatement()) {
+                    connection.setAutoCommit(false);
+                    try {
+                        statement.execute("SET CONSTRAINTS ALL DEFERRED");
+                        statement.execute("""
+                                DELETE FROM platform.page_size_option
+                                WHERE product_code = 'CORN'
+                                  AND business_domain = 'MARKET'
+                                  AND page_kind = 'MOVE_NEW'
+                                """);
+                        statement.execute("""
+                                DELETE FROM platform.page_pagination
+                                WHERE product_code = 'CORN'
+                                  AND business_domain = 'MARKET'
+                                  AND page_kind = 'MOVE_NEW'
+                                """);
+                        statement.execute("""
+                                UPDATE platform.page_pagination
+                                SET page_kind = 'MOVE_NEW'
+                                WHERE product_code = 'CORN'
+                                  AND business_domain = 'MARKET'
+                                  AND page_kind = 'MOVE_OLD'
+                                """);
+                        statement.execute("""
+                                UPDATE platform.page_size_option
+                                SET page_kind = 'MOVE_NEW'
+                                WHERE product_code = 'CORN'
+                                  AND business_domain = 'MARKET'
+                                  AND page_kind = 'MOVE_OLD'
+                                """);
+                        connection.commit();
+                    } finally {
+                        connection.rollback();
+                    }
+                }
+            }).isInstanceOf(SQLException.class)
+                    .hasMessageContaining("Every page presentation requires pagination configuration");
+
+            assertThat(paginationCount("MOVE_OLD")).isOne();
+            assertThat(paginationCount("MOVE_NEW")).isOne();
+        } finally {
+            deletePaginationMoveFixtures();
+        }
+    }
+
     private Flyway flyway() {
         return DATABASE.flyway();
+    }
+
+    private long marketRecordCount() throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement();
+                ResultSet resultSet = statement.executeQuery(
+                        "SELECT count(*) FROM market.market_record_projection")) {
+            resultSet.next();
+            return resultSet.getLong(1);
+        }
+    }
+
+    private Flyway flywayToVersionFive() {
+        return DATABASE.flywayToVersion("5");
+    }
+
+    private String sha256(Path path) {
+        try {
+            return HexFormat.of().formatHex(
+                    MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(path)));
+        } catch (Exception exception) {
+            throw new IllegalStateException("Could not hash migration", exception);
+        }
     }
 
     private Map<String, Integer> migrationChecksums() throws SQLException {
@@ -215,6 +306,72 @@ class FlywayMigrationReplayTest {
             statement.execute("DELETE FROM platform.business_batch WHERE code = 'BATCH_A'");
             statement.execute("DELETE FROM platform.business_period WHERE code IN ('PERIOD_A', 'PERIOD_B')");
             statement.execute("DELETE FROM platform.region WHERE code LIKE '99%'");
+        }
+    }
+
+    private void insertPaginationMoveFixtures() throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement()) {
+            connection.setAutoCommit(false);
+            statement.execute("SET CONSTRAINTS ALL DEFERRED");
+            statement.execute("""
+                    INSERT INTO platform.page_definition
+                        (product_code, business_domain, page_kind)
+                    VALUES
+                        ('CORN', 'MARKET', 'MOVE_OLD'),
+                        ('CORN', 'MARKET', 'MOVE_NEW')
+                    """);
+            statement.execute("""
+                    INSERT INTO platform.page_presentation
+                        (product_code, business_domain, page_kind, title)
+                    VALUES
+                        ('CORN', 'MARKET', 'MOVE_OLD', '旧分页移动测试'),
+                        ('CORN', 'MARKET', 'MOVE_NEW', '新分页移动测试')
+                    """);
+            statement.execute("""
+                    INSERT INTO platform.page_pagination
+                        (product_code, business_domain, page_kind, default_page_size)
+                    VALUES
+                        ('CORN', 'MARKET', 'MOVE_OLD', 20),
+                        ('CORN', 'MARKET', 'MOVE_NEW', 20)
+                    """);
+            statement.execute("""
+                    INSERT INTO platform.page_size_option
+                        (product_code, business_domain, page_kind, page_size, sort_order)
+                    VALUES
+                        ('CORN', 'MARKET', 'MOVE_OLD', 20, 10),
+                        ('CORN', 'MARKET', 'MOVE_NEW', 20, 10)
+                    """);
+            connection.commit();
+        }
+    }
+
+    private void deletePaginationMoveFixtures() throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    DELETE FROM platform.page_definition
+                    WHERE product_code = 'CORN'
+                      AND business_domain = 'MARKET'
+                      AND page_kind IN ('MOVE_OLD', 'MOVE_NEW')
+                    """);
+        }
+    }
+
+    private long paginationCount(String pageKind) throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                java.sql.PreparedStatement statement = connection.prepareStatement("""
+                        SELECT count(*)
+                        FROM platform.page_pagination
+                        WHERE product_code = 'CORN'
+                          AND business_domain = 'MARKET'
+                          AND page_kind = ?
+                        """)) {
+            statement.setString(1, pageKind);
+            try (ResultSet row = statement.executeQuery()) {
+                row.next();
+                return row.getLong(1);
+            }
         }
     }
 
