@@ -33,42 +33,76 @@ public class MarketRecordController {
 
     @GetMapping("/api/v1/market-records")
     ApiResponse<PageResponse> records(
-            @RequestParam String productCode,
-            @RequestParam String pageKind,
-            @RequestParam(defaultValue = "0") int pageNumber,
-            @RequestParam int pageSize,
             @RequestParam MultiValueMap<String, String> parameters) {
-        if (productCode.isBlank() || pageKind.isBlank() || pageNumber < 0 || pageSize < 1) {
-            throw invalidQuery();
-        }
+        ParsedParameters parsed = parse(parameters);
         MarketRecordQuery query = new MarketRecordQuery(
-                productCode, pageKind, pageNumber, pageSize, filters(parameters));
+                parsed.productCode(),
+                parsed.pageKind(),
+                parsed.pageNumber(),
+                parsed.pageSize(),
+                parsed.filters());
         return new ApiResponse<>(PageResponse.from(reader.read(query)));
     }
 
-    private static Map<String, String> filters(MultiValueMap<String, String> parameters) {
+    private static ParsedParameters parse(MultiValueMap<String, String> parameters) {
+        Map<String, String> core = new LinkedHashMap<>();
         Map<String, String> filters = new LinkedHashMap<>();
         parameters.forEach((name, values) -> {
             if (values == null || values.size() != 1) {
                 throw invalidQuery();
             }
+            String value = values.get(0);
+            if (value == null || value.isBlank()) {
+                throw invalidQuery();
+            }
             if (CORE_PARAMETERS.contains(name)) {
+                core.put(name, value);
                 return;
             }
             Matcher filter = FILTER_PARAMETER.matcher(name);
-            String value = values.get(0);
-            if (!filter.matches() || value == null || value.isBlank()) {
+            if (!filter.matches()) {
                 throw invalidQuery();
             }
             filters.put(filter.group(1), value);
         });
-        return filters;
+
+        String productCode = required(core, "productCode");
+        String pageKind = required(core, "pageKind");
+        int pageNumber = parseInteger(core.getOrDefault("pageNumber", "0"));
+        int pageSize = parseInteger(required(core, "pageSize"));
+        if (pageNumber < 0 || pageSize < 1) {
+            throw invalidQuery();
+        }
+        return new ParsedParameters(productCode, pageKind, pageNumber, pageSize, filters);
+    }
+
+    private static String required(Map<String, String> parameters, String name) {
+        String value = parameters.get(name);
+        if (value == null) {
+            throw invalidQuery();
+        }
+        return value;
+    }
+
+    private static int parseInteger(String value) {
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException exception) {
+            throw invalidQuery();
+        }
     }
 
     private static ClientRequestException invalidQuery() {
         return new ClientRequestException(
                 "INVALID_MARKET_RECORD_QUERY", "Market record query context is invalid");
     }
+
+    private record ParsedParameters(
+            String productCode,
+            String pageKind,
+            int pageNumber,
+            int pageSize,
+            Map<String, String> filters) {}
 
     record RecordResponse(String id, Map<String, Object> values) {
         static RecordResponse from(MarketRecord record) {

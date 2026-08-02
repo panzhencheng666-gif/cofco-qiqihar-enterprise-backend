@@ -124,6 +124,56 @@ class MarketRecordRestIntegrationTest {
     }
 
     @Test
+    void rejectsBlankAndValidRepeatedPageSizesBeforeNumericConversion() throws Exception {
+        assertInvalidQuery(get("/api/v1/market-records")
+                .queryParam("productCode", "SOYBEAN")
+                .queryParam("pageKind", "QUALITY")
+                .queryParam("pageNumber", "0")
+                .queryParam("pageSize", "", "20"));
+    }
+
+    @Test
+    void rejectsNonNumericAndValidRepeatedPageNumbersBeforeNumericConversion() throws Exception {
+        assertInvalidQuery(get("/api/v1/market-records")
+                .queryParam("productCode", "SOYBEAN")
+                .queryParam("pageKind", "QUALITY")
+                .queryParam("pageNumber", "abc", "0")
+                .queryParam("pageSize", "20"));
+    }
+
+    @Test
+    void rejectsASingleBlankPageSizeWithTheControlledQueryError() throws Exception {
+        assertInvalidQuery(get("/api/v1/market-records")
+                .queryParam("productCode", "SOYBEAN")
+                .queryParam("pageKind", "QUALITY")
+                .queryParam("pageNumber", "0")
+                .queryParam("pageSize", ""));
+    }
+
+    @Test
+    void rejectsASingleNonNumericPageNumberWithTheControlledQueryError() throws Exception {
+        assertInvalidQuery(get("/api/v1/market-records")
+                .queryParam("productCode", "SOYBEAN")
+                .queryParam("pageKind", "QUALITY")
+                .queryParam("pageNumber", "abc")
+                .queryParam("pageSize", "20"));
+    }
+
+    @Test
+    void acceptsLegalNumericPaginationParameters() throws Exception {
+        mockMvc.perform(get("/api/v1/market-records")
+                        .queryParam("productCode", "SOYBEAN")
+                        .queryParam("pageKind", "QUALITY")
+                        .queryParam("pageNumber", "2")
+                        .queryParam("pageSize", "20"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.pageNumber").value(2))
+                .andExpect(jsonPath("$.data.pageSize").value(20))
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].id").value("record-41"));
+    }
+
+    @Test
     void rejectsUnknownCoreParameterSpellings() throws Exception {
         assertInvalidQuery(get("/api/v1/market-records")
                 .queryParam("productCode", "SOYBEAN")
