@@ -219,3 +219,26 @@
 - `git diff --exit-code 4c57def -- V1...V7` 通过；V1–V7 SHA-256 分别为 `843903c9...`、`6373625c...`、`59054dce...`、`52b5b3e0...`、`b7969f21...`、`ba67fe85...`、`7413c84e...`，均未改写。
 - 两仓 `git diff --check` 通过。正式源码无旧 `/api/v1/market-collections`；前端无 `records.slice`、`items.slice` 或 `.slice(start` 二次分页；前端非测试源码无产品/日期业务 hardcode；V8 无生产 seed。
 - 旧 dashboard backend/frontend 仓库继续保持只读；未修改计划或 ledger。
+
+## Round 4 复核修复（2026-08-02）
+
+### 提交
+
+- 后端修复提交：`5d08e2b`（`fix: reject ambiguous market query parameters`）。
+- 前端无代码或测试改动；仍执行 fresh 全量门禁。
+
+### 协议形状与多值校验
+
+- `MarketRecordController` 只允许 `productCode`、`pageKind`、`pageNumber`、`pageSize` 四个核心参数，或符合 `filter.<identifier>` 的筛选参数；未知非 filter 参数、拼写错误、空 code、重复点号和其他畸形名称统一返回受控 `400 INVALID_MARKET_RECORD_QUERY`。
+- 每个出现的 request parameter 必须恰有一个值；重复核心参数和重复 filter 均在构造 `MarketRecordQuery` 前拒绝，不再调用 `getFirst()` 静默选值。
+- 单个 filter 值的空白语义明确为非法请求，避免空值被丢弃后扩大结果集。合法单值 `filter.subjectName=记录21` 仍由 application 的 PageDefinition 白名单验证并返回唯一记录。
+- 页面定义白名单没有移动到 controller。畸形名测试先在 test definition 中故意声明 `.subjectName`，请求 `filter..subjectName` 仍由协议层拒绝，证明 400 不依赖 application 的“未定义 filter”结果。
+
+### RED → GREEN 与最终门禁
+
+- 真实 Spring/PostgreSQL REST RED：11 tests 中 6 failures、0 errors。重复空+有效 filter、重复核心 pageSize、`pageNubmer` 拼写错误、`filter.` 空 code、已声明 `.subjectName` 对应的畸形参数名、单值空白 filter 均期望 400 而实际返回 200；合法单值 filter 和其余既有场景保持通过。
+- 实现 controller 协议形状/多值校验后，同一目标测试 11/11 通过，0 failures、0 errors。
+- 后端 fresh `JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home mvn verify`：72 tests，0 failures，0 errors；可执行 jar 构建成功。
+- 前端 fresh `npm run verify`：Prettier、ESLint、dependency-cruiser 全部通过；9 files、27 tests 全部通过；TypeScript/Vite build 105 modules transformed。
+- `git diff --exit-code a97695a -- src/main/resources/db/migration` 通过，本轮未改写 V1–V8。两仓 `git diff --check` 通过；扫描无旧 endpoint、`getFirst()` 歧义读取、客户端二次分页、前端生产业务 hardcode 或新增生产 seed。
+- 旧 dashboard backend/frontend 仓库继续保持只读；未修改计划或 ledger。
