@@ -2,6 +2,7 @@ package com.cofco.qiqihar.graintrade.shared.interfaceadapter;
 
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
+import com.cofco.qiqihar.graintrade.shared.application.AuthenticationRequiredException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.Map;
 import java.util.UUID;
@@ -83,6 +84,12 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                 exception.code(),
                 exception.clientMessage(),
                 request);
+    }
+
+    @ExceptionHandler(AuthenticationRequiredException.class)
+    ResponseEntity<ApiErrorResponse> handleAuthenticationRequired(
+            AuthenticationRequiredException exception, HttpServletRequest request) {
+        return error(HttpStatus.UNAUTHORIZED, "AUTHENTICATION_REQUIRED", "Authentication is required", request);
     }
 
     @ExceptionHandler(Exception.class)
