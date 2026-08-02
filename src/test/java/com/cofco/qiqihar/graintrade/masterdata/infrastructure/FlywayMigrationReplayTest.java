@@ -1,7 +1,7 @@
 package com.cofco.qiqihar.graintrade.masterdata.infrastructure;
 
+import com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabase;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -21,21 +21,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class FlywayMigrationReplayTest {
 
-    private static final String URL = environment(
-            "QIQIHAR_TEST_DB_URL",
-            "jdbc:postgresql://127.0.0.1:5432/qiqihar_enterprise_test");
-    private static final String USERNAME = environment("QIQIHAR_TEST_DB_USERNAME", System.getenv("USER"));
-    private static final String PASSWORD = environment("QIQIHAR_TEST_DB_PASSWORD", "");
+    private static final ProtectedTestDatabase DATABASE = ProtectedTestDatabase.shared();
     private static final String[] BUSINESS_SCHEMAS = {
         "platform", "production", "market", "logistics", "supply", "reporting", "workflow", "overview"
     };
 
     @BeforeAll
     static void resetDedicatedTestDatabase() throws SQLException {
-        if (!URL.matches("jdbc:postgresql://[^/]+/qiqihar_enterprise_test(?:\\?.*)?")) {
-            throw new IllegalStateException("Migration replay may only reset qiqihar_enterprise_test");
-        }
-        try (Connection connection = DriverManager.getConnection(URL, USERNAME, PASSWORD);
+        try (Connection connection = DATABASE.openConnection();
                 Statement statement = connection.createStatement()) {
             for (String schema : BUSINESS_SCHEMAS) {
                 statement.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
@@ -116,12 +109,12 @@ class FlywayMigrationReplayTest {
     }
 
     private Flyway flyway() {
-        return Flyway.configure().dataSource(URL, USERNAME, PASSWORD).load();
+        return DATABASE.flyway();
     }
 
     private Map<String, Integer> migrationChecksums() throws SQLException {
         Map<String, Integer> checksums = new LinkedHashMap<>();
-        try (Connection connection = DriverManager.getConnection(URL, USERNAME, PASSWORD);
+        try (Connection connection = DATABASE.openConnection();
                 Statement statement = connection.createStatement();
                 ResultSet rows = statement.executeQuery(
                         "SELECT version, checksum FROM public.flyway_schema_history "
@@ -138,7 +131,7 @@ class FlywayMigrationReplayTest {
         for (String table : new String[] {
                 "region", "product", "cultivar", "object_type", "page_definition_field"
         }) {
-            try (Connection connection = DriverManager.getConnection(URL, USERNAME, PASSWORD);
+            try (Connection connection = DATABASE.openConnection();
                     Statement statement = connection.createStatement();
                     ResultSet row = statement.executeQuery("SELECT count(*) FROM platform." + table)) {
                 row.next();
@@ -150,7 +143,7 @@ class FlywayMigrationReplayTest {
 
     private java.util.List<String> existingBusinessSchemas() throws SQLException {
         java.util.List<String> schemas = new java.util.ArrayList<>();
-        try (Connection connection = DriverManager.getConnection(URL, USERNAME, PASSWORD);
+        try (Connection connection = DATABASE.openConnection();
                 Statement statement = connection.createStatement();
                 ResultSet rows = statement.executeQuery(
                         "SELECT schema_name FROM information_schema.schemata "
@@ -164,7 +157,7 @@ class FlywayMigrationReplayTest {
     }
 
     private void insertInvariantFixtures() throws SQLException {
-        try (Connection connection = DriverManager.getConnection(URL, USERNAME, PASSWORD);
+        try (Connection connection = DATABASE.openConnection();
                 Statement statement = connection.createStatement()) {
             statement.execute("""
                     INSERT INTO platform.business_period
@@ -182,7 +175,7 @@ class FlywayMigrationReplayTest {
     }
 
     private void deleteInvariantFixtures() throws SQLException {
-        try (Connection connection = DriverManager.getConnection(URL, USERNAME, PASSWORD);
+        try (Connection connection = DATABASE.openConnection();
                 Statement statement = connection.createStatement()) {
             statement.execute("DELETE FROM platform.page_default_context WHERE business_domain = 'MARKET' AND page_kind = 'QUALITY'");
             statement.execute("DELETE FROM platform.business_batch WHERE code = 'BATCH_A'");
@@ -193,15 +186,11 @@ class FlywayMigrationReplayTest {
 
     private void assertInsertRejected(String sql) {
         assertThatThrownBy(() -> {
-            try (Connection connection = DriverManager.getConnection(URL, USERNAME, PASSWORD);
+            try (Connection connection = DATABASE.openConnection();
                     Statement statement = connection.createStatement()) {
                 statement.execute(sql);
             }
         }).isInstanceOf(SQLException.class);
     }
 
-    private static String environment(String name, String fallback) {
-        String value = System.getenv(name);
-        return value == null || value.isBlank() ? fallback : value;
-    }
 }

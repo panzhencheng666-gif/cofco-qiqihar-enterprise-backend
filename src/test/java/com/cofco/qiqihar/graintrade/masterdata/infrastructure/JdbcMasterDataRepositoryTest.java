@@ -4,31 +4,25 @@ import com.cofco.qiqihar.graintrade.masterdata.domain.FieldDefinition;
 import com.cofco.qiqihar.graintrade.masterdata.domain.BusinessBatch;
 import com.cofco.qiqihar.graintrade.masterdata.domain.ObjectType;
 import com.cofco.qiqihar.graintrade.masterdata.domain.Region;
+import com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabase;
 import java.util.List;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.Statement;
 import javax.sql.DataSource;
-import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
-import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class JdbcMasterDataRepositoryTest {
 
-    private static final String URL = environment(
-            "QIQIHAR_TEST_DB_URL",
-            "jdbc:postgresql://127.0.0.1:5432/qiqihar_enterprise_test");
-    private static final String USERNAME = environment("QIQIHAR_TEST_DB_USERNAME", System.getenv("USER"));
-    private static final String PASSWORD = environment("QIQIHAR_TEST_DB_PASSWORD", "");
+    private static final ProtectedTestDatabase DATABASE = ProtectedTestDatabase.shared();
 
     private final JdbcMasterDataRepository repository = new JdbcMasterDataRepository(dataSource());
 
     @BeforeAll
     static void migrateTestDatabase() {
-        Flyway.configure().dataSource(URL, USERNAME, PASSWORD).load().migrate();
+        DATABASE.flyway().migrate();
     }
 
     @Test
@@ -99,11 +93,11 @@ class JdbcMasterDataRepositoryTest {
     }
 
     private static DataSource dataSource() {
-        return new DriverManagerDataSource(URL, USERNAME, PASSWORD);
+        return DATABASE.dataSource();
     }
 
     private void insertBusinessBatchFixtures() throws Exception {
-        try (Connection connection = DriverManager.getConnection(URL, USERNAME, PASSWORD);
+        try (Connection connection = DATABASE.openConnection();
                 Statement statement = connection.createStatement()) {
             statement.execute("""
                     INSERT INTO platform.business_period
@@ -121,15 +115,11 @@ class JdbcMasterDataRepositoryTest {
     }
 
     private void deleteBusinessBatchFixtures() throws Exception {
-        try (Connection connection = DriverManager.getConnection(URL, USERNAME, PASSWORD);
+        try (Connection connection = DATABASE.openConnection();
                 Statement statement = connection.createStatement()) {
             statement.execute("DELETE FROM platform.business_batch WHERE business_period_code = 'PERIOD_2026'");
             statement.execute("DELETE FROM platform.business_period WHERE code = 'PERIOD_2026'");
         }
     }
 
-    private static String environment(String name, String fallback) {
-        String value = System.getenv(name);
-        return value == null || value.isBlank() ? fallback : value;
-    }
 }

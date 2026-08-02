@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.bootstrap;
 
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
+import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import jakarta.servlet.RequestDispatcher;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
@@ -31,6 +32,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @SpringBootTest(classes = GrainTradeApplication.class)
 @AutoConfigureMockMvc
 @Import(HealthContractTest.ContractTestController.class)
+@UsesProtectedTestDatabase
 @ExtendWith(OutputCaptureExtension.class)
 class HealthContractTest {
 

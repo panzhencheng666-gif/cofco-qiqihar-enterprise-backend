@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.masterdata.interfaceadapter;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
+import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -14,6 +15,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @SpringBootTest(classes = GrainTradeApplication.class)
 @AutoConfigureMockMvc
+@UsesProtectedTestDatabase
 class MasterDataRestIntegrationTest {
 
     @Autowired
