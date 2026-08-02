@@ -111,3 +111,45 @@ Round 1 的 7 项 Important 与 2 项 Minor 已全部修复。对应代码提交
 - V17 SHA-256：`d33fd96f416c3362c562ed716a5296fa2d506c317cc1161cd85a238a869e5ab3`。
 - V18 SHA-256：`06fc9bf97a30d8e9db8a1fb546d54e6daee239478e3437a45d1c086c39efd2ae`。
 - 两仓 `git diff --check` 通过；保留 `codex/formal-rebuild` 分支，未 push、未合并、未清理工作区。
+
+## Review Round 2 修复附录
+
+Round 2 的 5 项 Important 与 3 项 Minor 已全部修复。对应代码提交：
+
+- 后端：`f4af9f5c3a921543653dadf2696163502a2fd25b`
+- 前端：`226e35f8fb23f64e917162be03656d6a2a7c2bc7`
+
+### 写入、刷新与价格语义
+
+- 新建、提交、退回已区分“写入失败”和“写入成功但列表刷新失败”。后者显示明确提示，重试只执行刷新；三类回归测试均验证写入调用次数始终为 1。
+- 前端价格预览逐项采用与后端 `MarketPricing` 一致的 `HALF_UP` 四位小数舍入，再精确求和并检查 18,4 范围；不再读取旧实际成交价作为兜底。
+- 价格用例覆盖 `1.00005 -> 1.0001`、基础价与三个组成项分别舍入后的 `1.0004`、购销方向切换缺失对应基础价、清空、负数和越界。
+
+### 元数据驱动核心值与查询边界
+
+- 核心值的 API、应用层和前端领域模型统一改为 `fieldCode -> value` 映射；前端不再持有固定核心字段枚举或 DTO 属性，后端接口层也不暴露固定字段属性。
+- 前向迁移 V20 为字段定义增加后端绑定、前端能力、必填属性和 `TEXT` 控件，并新增规范化扩展值表；数据库新增的 `MKT_SOURCE_NOTE` 字段无需修改前端即可显示、提交并在详情/列表回读。
+- 服务端按数据库元数据验证未知字段、只读字段、选项、对象适用性、日期、区域、文本和小数，严格拒绝伪字段/伪对象且不产生写入；类型化领域模型继续持有价格与状态不变量。
+- `PageDefinitionRepository.exists(BusinessPageKey)` 使用单条 `SELECT EXISTS`；`PageDefinitionQuery.hasDefinition` 不再传递 primitive clump 或加载整个页面。查询计数测试固定验证存在性 1 次、核心字段定义 2 次、完整页面定义 6 次。
+- 市场 application/domain 保持 React 无关；架构测试仅对声明命名接口所需的 `package-info` 作精确排除，实际领域类仍受框架依赖规则保护。
+
+### 正式契约、CAS 与布局
+
+- 市场 E2E 使用一份正式共享产品/对象/事实适用矩阵，全部字段和对象均为 V17/V18/V20 的真实代码；匹配采用产品与对象的严格交集，不再使用伪代码。
+- 负向契约在运行时构造伪字段与伪对象，均返回 400 且记录数不变；静态扫描确认仓库中无被禁伪代码字面量。
+- 陈旧 CAS 场景在 `PENDING_REVIEW` 且“审核”为合法动作时发送旧版本，断言 409，并逐项确认状态、版本和事实保持不变。
+- 1280 × 720 的三产品布局验证加入真实边界几何：数据区不压住分页、表头不覆盖首行、行操作不重叠；同时验证横向滚动可到达末列以及前后分页可用。
+
+### Round 2 TDD 与最终证据
+
+- 后端初始定向回归按预期暴露存在性查询、完整定义查询和代码键核心值契约问题；修复后定向测试全绿。
+- 前端初始定向回归分别暴露价格舍入/无兜底、动态字段契约以及三类写后刷新语义问题；修复后相关定向用例 35/35 通过。
+- `mvn verify`：180 tests，0 failures，0 errors，JAR 构建成功；架构及空库/分段 Flyway v20 回放通过。
+- `npm run verify`：Prettier、ESLint、dependency-cruiser、架构探针、119 Vitest、TypeScript/Vite 构建及 11 Chromium E2E 全部通过。
+- `playwright test --project=chromium --repeat-each=3`：33/33 通过。
+- `npm audit --audit-level=high`：0 vulnerabilities。
+- V17 SHA-256：`d33fd96f416c3362c562ed716a5296fa2d506c317cc1161cd85a238a869e5ab3`。
+- V18 SHA-256：`06fc9bf97a30d8e9db8a1fb546d54e6daee239478e3437a45d1c086c39efd2ae`。
+- V20 SHA-256：`b300decdfe59730f5f0325034be3637fafc5e9c3b3c25a4e31d9054d7d1347e5`。
+- 禁用伪代码、固定前端核心字段和 application/domain React 引用的静态扫描均为 0 命中；两仓 `git diff --check` 通过。
+- 保留 `codex/formal-rebuild` 分支，未 push、未合并；旧 dashboard 与旧 enterprise-web 均未修改。
