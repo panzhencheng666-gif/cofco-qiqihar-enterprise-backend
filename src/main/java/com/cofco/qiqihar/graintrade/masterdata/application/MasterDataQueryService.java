@@ -28,6 +28,11 @@ public class MasterDataQueryService implements MasterDataQuery {
     }
 
     @Override
+    public List<Region> regionChildren(String parentCode) {
+        return repository.findRegionChildren(parentCode);
+    }
+
+    @Override
     public List<Product> products() {
         return repository.findProducts();
     }

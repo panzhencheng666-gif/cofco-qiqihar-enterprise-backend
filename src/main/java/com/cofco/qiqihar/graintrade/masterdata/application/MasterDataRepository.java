@@ -14,6 +14,8 @@ public interface MasterDataRepository {
 
     List<Region> findRegions();
 
+    List<Region> findRegionChildren(String parentCode);
+
     List<Product> findProducts();
 
     List<Cultivar> findCultivarsByProductCode(String productCode);

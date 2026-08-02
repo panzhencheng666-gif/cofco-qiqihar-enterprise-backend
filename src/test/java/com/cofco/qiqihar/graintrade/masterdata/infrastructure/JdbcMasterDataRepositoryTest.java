@@ -45,6 +45,18 @@ class JdbcMasterDataRepositoryTest {
     }
 
     @Test
+    void loadsOnlyRootsOrTheDirectChildrenOfOneRegion() {
+        assertThat(repository.findRegionChildren(null)).extracting(Region::name)
+                .containsExactly("齐齐哈尔市", "黑河市", "呼伦贝尔市");
+        assertThat(repository.findRegionChildren("230200")).extracting(Region::name)
+                .containsExactly(
+                        "龙沙区", "建华区", "铁锋区", "昂昂溪区", "富拉尔基区", "碾子山区",
+                        "梅里斯达斡尔族区", "龙江县", "依安县", "泰来县", "甘南县", "富裕县",
+                        "克山县", "克东县", "拜泉县", "讷河市");
+        assertThat(repository.findRegionChildren("230202")).isEmpty();
+    }
+
+    @Test
     void filtersMarketAndProductionObjectTypesByExplicitProductApplicability() {
         assertThat(names(repository.findObjectTypes("SOYBEAN", "MARKET")))
                 .containsExactly("贸易商", "深加工", "批发市场", "承储企业")

@@ -76,6 +76,11 @@ class MasterDataControllerTest {
         }
 
         @Override
+        public List<Region> regionChildren(String parentCode) {
+            return List.of();
+        }
+
+        @Override
         public List<Product> products() {
             return List.of();
         }

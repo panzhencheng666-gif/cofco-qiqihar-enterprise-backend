@@ -41,6 +41,37 @@ public class JdbcMasterDataRepository implements MasterDataRepository {
     }
 
     @Override
+    public List<Region> findRegionChildren(String parentCode) {
+        if (parentCode == null) {
+            return jdbc.sql("""
+                            SELECT code, name, parent_code, administrative_level
+                            FROM platform.region
+                            WHERE parent_code IS NULL
+                            ORDER BY sort_order
+                            """)
+                    .query(this::region)
+                    .list();
+        }
+        return jdbc.sql("""
+                        SELECT code, name, parent_code, administrative_level
+                        FROM platform.region
+                        WHERE parent_code = :parentCode
+                        ORDER BY sort_order
+                        """)
+                .param("parentCode", parentCode)
+                .query(this::region)
+                .list();
+    }
+
+    private Region region(java.sql.ResultSet row, int rowNumber) throws java.sql.SQLException {
+        return new Region(
+                row.getString("code"),
+                row.getString("name"),
+                row.getString("parent_code"),
+                row.getString("administrative_level"));
+    }
+
+    @Override
     public List<Product> findProducts() {
         return jdbc.sql("SELECT code, name FROM platform.product ORDER BY sort_order")
                 .query((row, rowNumber) -> new Product(row.getString("code"), row.getString("name")))

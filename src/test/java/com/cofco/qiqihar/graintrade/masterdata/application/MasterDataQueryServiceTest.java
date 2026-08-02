@@ -58,6 +58,11 @@ class MasterDataQueryServiceTest {
         }
 
         @Override
+        public List<Region> findRegionChildren(String parentCode) {
+            return List.of();
+        }
+
+        @Override
         public List<Product> findProducts() {
             return List.of();
         }

@@ -43,7 +43,7 @@ class FlywayMigrationReplayTest {
         Flyway firstStartup = flyway();
         MigrateResult firstResult = firstStartup.migrate();
 
-        assertThat(firstResult.migrationsExecuted).isEqualTo(4);
+        assertThat(firstResult.migrationsExecuted).isEqualTo(5);
         assertThat(existingBusinessSchemas()).containsExactlyInAnyOrder(BUSINESS_SCHEMAS);
         Map<String, Integer> firstChecksums = migrationChecksums();
         Map<String, Long> firstCounts = masterDataCounts();

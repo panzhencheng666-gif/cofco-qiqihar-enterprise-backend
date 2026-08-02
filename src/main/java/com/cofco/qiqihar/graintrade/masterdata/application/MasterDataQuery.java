@@ -13,6 +13,8 @@ public interface MasterDataQuery {
 
     List<Region> regions();
 
+    List<Region> regionChildren(String parentCode);
+
     List<Product> products();
 
     List<Cultivar> cultivars(String productCode);
