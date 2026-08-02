@@ -5,6 +5,8 @@
 - 状态：`DONE`
 - 后端实现提交：`1fe2405`（`feat: add product-independent workflow workbench`）
 - 前端实现提交：`ce4d1da`（`feat: add work management task workbench`）
+- Round 1 后端修复提交：`130ef67`（`fix: harden workflow workbench review findings`）
+- Round 1 前端修复提交：`368f342`（`fix: normalize workflow workbench navigation`）
 - 正式后端基线：`0600745`；正式前端基线：`4524e94`。
 - 两个旧 dashboard 仓库只读；未修改 plan 或 ledger。
 
@@ -35,6 +37,13 @@
 - seed product-independent `WORKFLOW/WORK_ITEMS` canonical 页面定义、中文筛选/列/分页配置和业务域选项；status 来自 workflow status 表，product 来自正式 products API，region 来自正式 hierarchy API。
 - 生产迁移没有 workflow node、responsible party、work item 或 audit seed；latest 后四表记录数分别为 `0/0/0/0`。
 
+### V11：页面身份不可变
+
+- V9/V10 已发布后保持不变；新增 forward-only `V11__make_page_identity_immutable.sql`，无 seed 或数据重写。
+- 通用 `BEFORE UPDATE` guard 覆盖 `page_definition`、`page_presentation` 以及所有仍同时保留 legacy context 与 surrogate FK 的 11 个关联表，共 13 个 trigger。
+- `page_definition_id`、`page_presentation_id`、`product_code`、`business_domain`、`page_kind` 创建后不可变，避免 surrogate 关联与 canonical context 查询分裂；title 等非身份字段仍可更新。
+- replay 明确先升级到 V10，再执行 V11；定义/展示/子表身份更新均被数据库拒绝，非身份更新后 `JdbcPageDefinitionRepository` 仍完整返回唯一 workflow definition。
+
 ## RED → GREEN
 
 ### 后端
@@ -53,12 +62,22 @@
 3. 动态 product RED：产品 select 只有 DB placeholder，没有“玉米”数据库 option；接入无 page applicability 的正式 products API 后 GREEN。
 4. full gate 首次失败：React lint 报 App/WorkItemsPage effect 同步 setState，另有 market callback dependency warning；改为 route-key remount、异步成功更新和稳定 productCode 后 fresh verify GREEN。
 
+### Round 1 复核修复
+
+1. 页面身份 RED：V10→latest 实际执行 0 而非预期 V11 的 1，且 `page_definition.page_kind` 更新未被拒；V11 后 replay 8/8、身份拒绝与 canonical repository 查询 GREEN。
+2. 大页码 RED：`2147483647 * 100` 在 workflow 与既有 market repository 中溢出为负 OFFSET，真实 REST 返回 500；两个 JDBC adapter 均显式转为 long 后返回一致空页与正确 metadata，workflow repository/REST 与 market REST GREEN。
+3. workflow 分页 RED：空库深链只请求 `[1]` 而非 `[1,0]`，结果缩页只请求 `[2]` 而非 `[2,1]`；单次 clamp/refetch 后 GREEN，正常有效页保持一次请求。
+4. 竞态/history：每次响应及 refetch 后检查 request version；stale 越界响应不会触发第三次请求、覆盖当前结果或调用 `onQueryNormalized` 改写当前 history。真实 App 深链把空库 `page=1` replace 为 `page=0`。
+5. pending 状态只保留 backend definition 驱动的 `ListWorkbench` select；筛选变更仅更新草稿并重置到第 0 页，点击“查询”后才请求，不再有重复 tabs/buttons。
+6. Shell 删除虚构“待办 9”；active route 使用不含 query 的 hash pathname，待办/已办和顶部“我的工作”正确激活并提供 `aria-current="page"`。
+
 ## 主要文件
 
 ### 后端
 
 - `src/main/resources/db/migration/V9__generalize_product_optional_page_identity.sql`
 - `src/main/resources/db/migration/V10__create_workflow_work_items.sql`
+- `src/main/resources/db/migration/V11__make_page_identity_immutable.sql`
 - `src/main/java/com/cofco/qiqihar/graintrade/workflow/domain/*`
 - `src/main/java/com/cofco/qiqihar/graintrade/workflow/application/*`
 - `src/main/java/com/cofco/qiqihar/graintrade/workflow/infrastructure/JdbcWorkItemRepository.java`
@@ -76,21 +95,22 @@
 
 ## 最终门禁与扫描
 
-- 后端 fresh `JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home mvn verify`：88 tests，0 failures，0 errors；可执行 jar 构建成功。
-- `ArchitectureTest`：4/4；Spring Modulith 与 domain purity 全部通过。
-- 前端 fresh `npm run verify`：Prettier、ESLint 通过；dependency-cruiser 43 modules / 98 dependencies、0 violations；Vitest 12 files / 35 tests；TypeScript/Vite 107 modules transformed。
-- Flyway latest 为 10；V5→V8 执行 3，V8→V10 执行 2，二次启动执行 0；duplicate NULL page context 被数据库拒绝。
-- `git diff --exit-code 0600745 -- V1...V8` 通过；V1–V8 未改写，V5 固定 checksum 回归继续通过。
+- 后端 fresh `JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home mvn verify`：92 tests，0 failures，0 errors；可执行 jar 构建成功。
+- `ArchitectureTest`：4/4；test-database safety architecture 2/2；Spring Modulith、domain purity 与受保护测试数据库规则全部通过。
+- 前端 fresh `npm run verify`：Prettier、ESLint 通过；dependency-cruiser 43 modules / 98 dependencies、0 violations；Vitest 12 files / 42 tests；TypeScript/Vite 107 modules transformed。
+- Flyway latest 为 11；V5→V8 执行 3，V8→V10 执行 2，V10→V11 执行 1，二次启动执行 0；duplicate NULL page context 被数据库拒绝。
+- `git diff --exit-code 933dbef -- V1...V10` 通过；V1–V10 未改写，V5 固定 checksum 回归继续通过。
 - 正式前端源码扫描无旧 `#/我的工作`、`待我处理`、`退回与异常`；待填报/待审核/退回补充/异常处理只由后端 definition 返回，不在前端生产源码硬编码。
 - 正式前端非测试源码无 `CORN/SOYBEAN/RICE/玉米/大豆/稻谷/固定日期` 业务 hardcode；work-management UI/App 无 `fetch`。
 - V10 无生产 work item/node/responsible/audit INSERT；无 `ALL`/虚拟产品/sentinel；没有假 action 定义或响应。
+- V11 无 INSERT；所有 repository 分页 offset 均先提升为 long，全仓无裸 `int pageNumber * pageSize`。
 - 两仓 `git diff --check` 通过。
 
 ## 自审
 
 - [x] 侧栏“我的工作”只有待办任务、已办事项；completed 不复制状态菜单。
-- [x] pending 的全部/四状态 label 与 code 来自 DB/canonical definition。
+- [x] pending 只有一个状态 select；全部/四状态 label 与 code 来自 DB/canonical definition，筛选后点击查询才请求。
 - [x] 列包含任务、业务域、地区、产品、业务期间、截止时间、流程节点、状态、责任人；无 handler 时不返回操作 action。
-- [x] hash/history/deep-link、真实 HTTP、服务端分页、空库 0、错误重试均有生产组合测试。
-- [x] shared `ListWorkbench` 保持单一横向滚动容器；work status tabs 可横向滚动，1280×720 不引入 fixed/absolute/sticky 表头叠压。
+- [x] hash/history/deep-link、真实 HTTP、服务端分页、越界 clamp/refetch、stale response、空库 0、错误重试均有生产组合测试。
+- [x] shared `ListWorkbench` 保持单一横向滚动容器；1280×720 不引入 fixed/absolute/sticky 表头叠压。
 - [x] 旧仓库只读；未修改 plan/ledger。
