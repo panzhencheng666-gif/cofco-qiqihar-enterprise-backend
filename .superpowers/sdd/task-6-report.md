@@ -204,3 +204,50 @@ Round 3 的 5 项 Important 与 3 项 Minor 已全部落在正式后端与正式
 - 市场、生产监测和生产 API 契约三套 Chromium 测试 `--repeat-each=3`：33/33 通过；市场单套 Task 6 E2E：5/5 通过。
 - `npm audit --audit-level=low`：0 vulnerabilities；两仓 `git diff --check` 通过，禁用伪代码与已纠正中文伪标签静态扫描 0 命中。
 - 两个正式仓库均保留 `codex/formal-rebuild` 分支；未 push、未合并。旧 dashboard 与旧 enterprise-web 仅作只读审计，未由本轮修改。
+
+## Review Round 4 修复附录
+
+Round 4 的 5 项 Important 与 2 项 Minor 已全部完成。实现提交：
+
+- 后端：`a558e01b56b3ca04b04aba0d15f96ec6897de8d`
+- 前端：`88720fb796013c4a880927782dce3c6139e7e9c8`
+
+### 生产写命令同步防重
+
+- 生产监测的新建、保存、提交、审核和退回共用同步 `mutationInFlight` 门闩；同一 JavaScript tick 内的第二次调用在 React 状态提交前即被拒绝。
+- 门闩覆盖业务 mutation 和随后列表刷新全过程。页面把 `commands.loading` 传给 `ListWorkbench.actionsDisabled`，页级按钮、行操作、编辑器提交和退回确认在 mutation/refresh 期间全部禁用。
+- 异常路径在活动上下文内可靠释放门闩；上下文切换或卸载同时使旧请求失效并重置门闩，不会永久粘住。
+- 参数化测试覆盖 CREATE、SAVE、SUBMIT、APPROVE、RETURN：同 tick 双触发、mutation deferred、refresh deferred 期间继续点击，均严格只有一次 mutation；刷新完成后恢复操作。RED 时 32 项中 5 项按预期失败，修复后 32/32 通过。
+
+### V22 数据完整性与扩展定义对称约束
+
+- V17–V21 保持冻结，所有数据库修复仅通过前向迁移 `V22__close_market_context_and_extension_invariants.sql` 完成。
+- `market_record` 的产品/对象父上下文更新现在检查已有规范化事实适用性。CORN/FEED_MILL 的 `TEST_WEIGHT` 直接改为 SOYBEAN/DEEP_PROCESSOR 会在数据库边界失败并保持记录与事实原子不变；仅含共同适用 `MOISTURE` 的合法更新通过。
+- 应用读取事实时同时校验记录当前产品/对象适用性；历史损坏数据的列表和详情均失败关闭为 500 `MARKET_DATA_INTEGRITY`，不再静默呈现不适用事实。
+- 页面挂载与 `market_core_field_applicability` 之间新增双向、可延迟、初始延迟的精确约束，允许 definition + page mount + applicability 在同一事务完整安装，同时拒绝缺失、删除和跨产品不配对。
+- 仓储以 mounted/mapped `FULL OUTER JOIN` 读取核心定义，EXTENSION 必须同时存在挂载和 mapping；missing/extra 故障注入下定义 GET 与写 POST 均返回 500 `MARKET_DEFINITION_INVALID`。
+- V22 direct-SQL 约束测试 4/4 通过；定义故障注入从新增 2 项 RED（错误返回 200）修复为全量 5/5 GREEN；数据故障关闭 2/2 GREEN。
+
+### 见证字段清理、升级保留与真实合同
+
+- V22 移除 Round 3 临时见证字段 `MKT_CORN_SOURCE_NOTE` 的 core definition、field definition、页面挂载、列配置与 applicability。迁移先检查与永久 `MKT_SOURCE_NOTE` 的值冲突，再把真实旧值安全迁入永久字段，避免覆盖或静默丢失。
+- `MKT_SOURCE_NOTE` 的开发态 core/column description 已清空；动态扩展测试改为 `@Transactional`/`@Rollback` 隔离夹具，在同一事务插入 definition、field definition、page mount、column 与 applicability，不向正式主数据泄漏测试字段。
+- 分段回放在 V20 写入真实 `MKT_SOURCE_NOTE` 记录值，随后单独执行 V21 backfill 和 V22 清理；每一阶段均验证值、产品和 EXTENSION 绑定保持可读，第二次迁移执行 0 项。最终共 22 个迁移、页面字段 87 个。
+- 前端把全部核心定义、option、description、binding、capability、定义排序和页面排序移入 `market-contract.ts`，`market-api` 直接由该定义生成响应，不再同时硬编码响应和断言。
+- 前端按后端相同 FACT/OBJECT/CORE 行协议进行规范排序、换行序列化并实际计算 SHA-256。V22 双端真实摘要为 `0efc5505da3daff584e7af903e2dba0ca58e513aa56c9e5ba5ae4c61a77a7ac2`；后端快照测试与前端 canonical hash 测试均通过。
+
+### 扩展值 CAS 与十进制矩阵
+
+- 永久 `MKT_SOURCE_NOTE` 覆盖创建、详情、列表、PUT 修改、PUT 清空与陈旧 CAS。修改从 v0 到 v1，清空从 v1 到 v2 并确认规范化值行删除；随后使用 v1 的陈旧 PUT 返回 409，扩展值和事实均无部分写入。
+- 事务动态产品扩展覆盖 CORN 创建/详情/列表/定义完整回读；SOYBEAN 定义不可见，越权写入 400 且记录数不变。
+- 共享普通十进制解析器通过五类事实参数矩阵验证：QUALITY、PURCHASE、SALES、PROCESSING、INVENTORY 分别对 `+1`、`1e3`、`1E3` 返回 400 且零写入，每类合法普通十进制均成功创建并规范为四位小数。
+- `MarketMonitoringRestIntegrationTest` 参数展开后 36/36 通过；V21/V22 约束组合 6/6 通过。
+
+### Round 4 最终证据
+
+- `mvn -q verify`（JDK 21）：203 tests，0 failures，0 errors，构建成功；真实 PostgreSQL、Flyway 空库/分段回放、Spring Modulith 与 ArchUnit 全部通过。
+- `npm run verify`：Prettier、ESLint、dependency-cruiser、架构探针、134 Vitest、TypeScript/Vite build 和 11 Chromium E2E 全部通过。
+- `playwright test --project=chromium --repeat-each=3`：33/33 通过；没有固定 sleep。
+- `npm audit --audit-level=low`：0 vulnerabilities；两仓 `git diff --check` 通过；前端生产/fixture 静态扫描仅保留一项“不得出现旧见证字段”的负向断言。
+- V17–V21 工作树 diff 为 0；冻结 SHA-256 仍为 V17 `d33fd96f416c3362c562ed716a5296fa2d506c317cc1161cd85a238a869e5ab3`、V18 `06fc9bf97a30d8e9db8a1fb546d54e6daee239478e3437a45d1c086c39efd2ae`、V19 `c7dd9c6d4064ebfc947b359260f4be8a0023b72fdcdb550c41e83cdaa2438a7c`、V20 `b300decdfe59730f5f0325034be3637fafc5e9c3b3c25a4e31d9054d7d1347e5`、V21 `b8446a51c15fac0c4de3f358b78c2595b0494ede809ff279270c9f9d27763cad`。V22 SHA-256 为 `c5bb425053bf90fd1b4e44c0b292197bb724a6c97f843a777b4b7aa7c5ba1f10`。
+- 两个正式仓库均保留 `codex/formal-rebuild` 分支；未 push、未合并。旧 dashboard 与旧 enterprise-web 本轮保持只读。
