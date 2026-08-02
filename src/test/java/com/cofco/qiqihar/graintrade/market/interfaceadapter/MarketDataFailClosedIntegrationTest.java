@@ -72,11 +72,15 @@ class MarketDataFailClosedIntegrationTest {
                 .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
         JdbcClient client = JdbcClient.create(dataSource);
         client.sql("""
-                INSERT INTO market.market_record_fact(record_id, fact_code, value)
-                VALUES (:id, 'TEST_WEIGHT', 720)
+                INSERT INTO market.market_record_fact(
+                    record_id, fact_code, value, product_code, object_type_code)
+                VALUES (:id, 'TEST_WEIGHT', 720, 'CORN', 'FEED_MILL')
                 """).param("id", id).update();
-        client.sql("DROP TRIGGER market_record_fact_context_guard ON market.market_record")
-                .update();
+        client.sql("SET CONSTRAINTS ALL IMMEDIATE").update();
+        client.sql("""
+                ALTER TABLE market.market_record_fact
+                DROP CONSTRAINT market_record_fact_header_context_fk
+                """).update();
         client.sql("""
                 UPDATE market.market_record
                 SET product_code = 'SOYBEAN', object_type_code = 'DEEP_PROCESSOR'
@@ -85,6 +89,43 @@ class MarketDataFailClosedIntegrationTest {
 
         mockMvc.perform(get("/api/v1/market-records")
                         .queryParam("productCode", "SOYBEAN").queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.error.code").value("MARKET_DATA_INTEGRITY"));
+        mockMvc.perform(get("/api/v1/market-records/{id}", id))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.error.code").value("MARKET_DATA_INTEGRITY"));
+    }
+
+    @Test
+    void nonCollidingUnmountedExtensionFailsListAndDetailClosedWithTheSameTypedError()
+            throws Exception {
+        String id = mockMvc.perform(post("/api/v1/market-records")
+                        .principal(() -> "data-fault-test")
+                        .contentType(MediaType.APPLICATION_JSON).content(validDraft()))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString()
+                .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+        JdbcClient client = JdbcClient.create(dataSource);
+        client.sql("""
+                INSERT INTO platform.market_core_field_definition(
+                    code, label, control_type, sort_order, description,
+                    domain_binding, capability, required)
+                VALUES ('MKT_DIRTY_UNMOUNTED', '未挂载脏扩展', 'TEXT', 9401, NULL,
+                        'EXTENSION', 'GENERIC', false)
+                """).update();
+        client.sql("""
+                ALTER TABLE market.market_record_core_value
+                DROP CONSTRAINT market_record_core_value_applicability_fk
+                """).update();
+        client.sql("""
+                INSERT INTO market.market_record_core_value(
+                    record_id, product_code, field_code, domain_binding, value)
+                VALUES (:id, 'CORN', 'MKT_DIRTY_UNMOUNTED', 'EXTENSION', '脏值')
+                """).param("id", id).update();
+
+        mockMvc.perform(get("/api/v1/market-records")
+                        .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
                         .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
                 .andExpect(status().isInternalServerError())
                 .andExpect(jsonPath("$.error.code").value("MARKET_DATA_INTEGRITY"));

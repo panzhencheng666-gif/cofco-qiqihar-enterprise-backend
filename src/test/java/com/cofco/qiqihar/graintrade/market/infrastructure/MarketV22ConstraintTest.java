@@ -27,16 +27,20 @@ class MarketV22ConstraintTest {
             try (Statement statement = connection.createStatement()) {
                 insertRecord(statement, "v22-invalid-context", "CORN", "FEED_MILL");
                 statement.execute("""
-                        INSERT INTO market.market_record_fact(record_id, fact_code, value)
-                        VALUES ('v22-invalid-context', 'TEST_WEIGHT', 720)
+                        INSERT INTO market.market_record_fact(
+                            record_id, fact_code, value, product_code, object_type_code)
+                        VALUES ('v22-invalid-context', 'TEST_WEIGHT', 720, 'CORN', 'FEED_MILL')
                         """);
                 Savepoint beforeContextChange = connection.setSavepoint();
 
-                assertThatThrownBy(() -> statement.execute("""
-                        UPDATE market.market_record
-                        SET product_code = 'SOYBEAN', object_type_code = 'DEEP_PROCESSOR'
-                        WHERE record_id = 'v22-invalid-context'
-                        """)).isInstanceOf(SQLException.class);
+                assertThatThrownBy(() -> {
+                    statement.execute("""
+                            UPDATE market.market_record
+                            SET product_code = 'SOYBEAN', object_type_code = 'DEEP_PROCESSOR'
+                            WHERE record_id = 'v22-invalid-context'
+                            """);
+                    statement.execute("SET CONSTRAINTS ALL IMMEDIATE");
+                }).isInstanceOf(SQLException.class);
                 connection.rollback(beforeContextChange);
 
                 assertThat(single(statement, """
@@ -60,8 +64,9 @@ class MarketV22ConstraintTest {
             try (Statement statement = connection.createStatement()) {
                 insertRecord(statement, "v22-valid-context", "CORN", "FEED_MILL");
                 statement.execute("""
-                        INSERT INTO market.market_record_fact(record_id, fact_code, value)
-                        VALUES ('v22-valid-context', 'MOISTURE', 14.5)
+                        INSERT INTO market.market_record_fact(
+                            record_id, fact_code, value, product_code, object_type_code)
+                        VALUES ('v22-valid-context', 'MOISTURE', 14.5, 'CORN', 'FEED_MILL')
                         """);
 
                 assertThatCode(() -> statement.execute("""
@@ -69,6 +74,7 @@ class MarketV22ConstraintTest {
                         SET product_code = 'SOYBEAN', object_type_code = 'DEEP_PROCESSOR'
                         WHERE record_id = 'v22-valid-context'
                         """)).doesNotThrowAnyException();
+                statement.execute("SET CONSTRAINTS ALL IMMEDIATE");
                 assertThat(single(statement, """
                         SELECT product_code || '|' || object_type_code
                         FROM market.market_record WHERE record_id = 'v22-valid-context'

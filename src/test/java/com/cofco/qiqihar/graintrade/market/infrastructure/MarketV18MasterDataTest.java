@@ -106,45 +106,10 @@ class MarketV18MasterDataTest {
     }
 
     @Test
-    void matchesTheVersionedV22MarketContractSnapshot() throws Exception {
-        List<String> snapshot = rows("""
-                SELECT line FROM (
-                    SELECT concat_ws('|', 'FACT', applicability.product_code,
-                        applicability.object_type_code, applicability.fact_code,
-                        definition.category, definition.label, definition.unit,
-                        definition.decimal_precision, definition.decimal_scale,
-                        applicability.sort_order) AS line
-                    FROM platform.market_fact_applicability applicability
-                    JOIN platform.market_fact_definition definition
-                      ON definition.code = applicability.fact_code
-                    UNION ALL
-                    SELECT concat_ws('|', 'CORE', page_field.product_code,
-                        definition.code, definition.label, definition.control_type,
-                        coalesce(definition.unit, ''),
-                        coalesce(definition.decimal_precision::text, ''),
-                        coalesce(definition.decimal_scale::text, ''), definition.sort_order,
-                        definition.domain_binding, definition.capability, definition.required,
-                        page_field.sort_order)
-                    FROM platform.page_definition_field page_field
-                    JOIN platform.market_core_field_definition definition
-                      ON definition.code = page_field.field_code
-                    WHERE page_field.business_domain = 'MARKET'
-                      AND page_field.page_kind = 'MONITORING'
-                    UNION ALL
-                    SELECT concat_ws('|', 'OBJECT', applicability.product_code,
-                        object_type.code, object_type.name, object_type.sort_order)
-                    FROM platform.product_object_type applicability
-                    JOIN platform.object_type object_type
-                      ON object_type.code = applicability.object_type_code
-                    WHERE object_type.business_domain = 'MARKET'
-                ) contract_snapshot
-                ORDER BY line
-                """);
-        String actual = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
-                .digest((String.join("\n", snapshot) + "\n")
-                        .getBytes(StandardCharsets.UTF_8)));
+    void matchesTheVersionedV23MarketContractSnapshot() throws Exception {
+        String actual = contractHash();
         String expected = Files.readString(Path.of(
-                "src/test/resources/contracts/market-v22-contract.sha256")).trim();
+                "src/test/resources/contracts/market-v23-contract.sha256")).trim();
 
         assertThat(rows("""
                 SELECT code || ':' || label || ':' || decimal_scale
@@ -163,10 +128,116 @@ class MarketV18MasterDataTest {
         assertThat(actual).isEqualTo(expected);
     }
 
+    @Test
+    void canonicalHashDetectsDescriptionOptionAndCategoryMetadataDrift() throws Exception {
+        assertContractMutationChangesHash("""
+                UPDATE platform.market_core_field_definition
+                SET description = '描述漂移'
+                WHERE code = 'MKT_PURCHASE_BASE_PRICE'
+                """);
+        assertContractMutationChangesHash("""
+                UPDATE platform.market_core_field_option
+                SET label = '散装漂移'
+                WHERE field_code = 'MKT_PACKAGING_FORM' AND value = 'BULK'
+                """);
+        assertContractMutationChangesHash("""
+                UPDATE platform.market_core_field_option
+                SET sort_order = 999
+                WHERE field_code = 'MKT_PACKAGING_FORM' AND value = 'BULK'
+                """);
+        assertContractMutationChangesHash("""
+                UPDATE platform.market_fact_category
+                SET label = '质量漂移'
+                WHERE code = 'QUALITY'
+                """);
+        assertContractMutationChangesHash("""
+                UPDATE platform.market_fact_category
+                SET sort_order = 999
+                WHERE code = 'QUALITY'
+                """);
+    }
+
+    private String contractHash() throws Exception {
+        try (Connection connection = DATABASE.openConnection()) {
+            return contractHash(connection);
+        }
+    }
+
+    private String contractHash(Connection connection) throws Exception {
+        List<String> snapshot = rows(connection, """
+                SELECT line FROM (
+                    SELECT concat_ws('|', 'CATEGORY', category.code,
+                        category.label, category.sort_order) AS line
+                    FROM platform.market_fact_category category
+                    UNION ALL
+                    SELECT concat_ws('|', 'FACT', applicability.product_code,
+                        applicability.object_type_code, applicability.fact_code,
+                        definition.category, definition.label, 'DECIMAL',
+                        coalesce(definition.unit, ''), '',
+                        definition.decimal_precision, definition.decimal_scale,
+                        applicability.sort_order) AS line
+                    FROM platform.market_fact_applicability applicability
+                    JOIN platform.market_fact_definition definition
+                      ON definition.code = applicability.fact_code
+                    UNION ALL
+                    SELECT concat_ws('|', 'CORE', page_field.product_code,
+                        definition.code, definition.label, definition.control_type,
+                        coalesce(definition.unit, ''),
+                        coalesce(definition.description, ''),
+                        coalesce(definition.decimal_precision::text, ''),
+                        coalesce(definition.decimal_scale::text, ''), definition.sort_order,
+                        definition.domain_binding, definition.capability, definition.required,
+                        page_field.sort_order)
+                    FROM platform.page_definition_field page_field
+                    JOIN platform.market_core_field_definition definition
+                      ON definition.code = page_field.field_code
+                    WHERE page_field.business_domain = 'MARKET'
+                      AND page_field.page_kind = 'MONITORING'
+                    UNION ALL
+                    SELECT concat_ws('|', 'CORE_OPTION', page_field.product_code,
+                        option.field_code, option.value, option.label, option.sort_order)
+                    FROM platform.page_definition_field page_field
+                    JOIN platform.market_core_field_option option
+                      ON option.field_code = page_field.field_code
+                    WHERE page_field.business_domain = 'MARKET'
+                      AND page_field.page_kind = 'MONITORING'
+                    UNION ALL
+                    SELECT concat_ws('|', 'OBJECT', applicability.product_code,
+                        object_type.code, object_type.name, object_type.sort_order)
+                    FROM platform.product_object_type applicability
+                    JOIN platform.object_type object_type
+                      ON object_type.code = applicability.object_type_code
+                    WHERE object_type.business_domain = 'MARKET'
+                ) contract_snapshot
+                ORDER BY line COLLATE "C"
+                """);
+        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest((String.join("\n", snapshot) + "\n")
+                        .getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private void assertContractMutationChangesHash(String mutation) throws Exception {
+        try (Connection connection = DATABASE.openConnection()) {
+            connection.setAutoCommit(false);
+            try (Statement statement = connection.createStatement()) {
+                String baseline = contractHash(connection);
+                statement.executeUpdate(mutation);
+                assertThat(contractHash(connection)).isNotEqualTo(baseline);
+            } finally {
+                connection.rollback();
+            }
+        }
+    }
+
     private List<String> rows(String sql) throws SQLException {
+        try (Connection connection = DATABASE.openConnection()) {
+            return rows(connection, sql);
+        }
+    }
+
+    private List<String> rows(Connection connection, String sql) throws SQLException {
         List<String> values = new ArrayList<>();
-        try (Connection connection = DATABASE.openConnection(); Statement statement = connection.createStatement();
-                ResultSet rows = statement.executeQuery(sql)) {
+        try (Statement statement = connection.createStatement(); ResultSet rows = statement.executeQuery(sql)) {
             while (rows.next()) values.add(rows.getString(1));
         }
         return values;

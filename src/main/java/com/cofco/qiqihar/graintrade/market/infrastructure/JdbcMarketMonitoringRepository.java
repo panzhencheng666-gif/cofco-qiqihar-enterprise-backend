@@ -361,14 +361,39 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
         Map<String, Map<String, String>> values = new LinkedHashMap<>();
         if (ids.isEmpty()) return values;
         jdbc.sql("""
-                        SELECT record_id, field_code, value
-                        FROM market.market_record_core_value
-                        WHERE record_id IN (:ids) ORDER BY record_id, field_code
+                        SELECT value.record_id, value.field_code, value.value,
+                               value.product_code = record.product_code
+                                 AND value.domain_binding = 'EXTENSION'
+                                 AND definition.code IS NOT NULL
+                                 AND page_field.field_code IS NOT NULL
+                                 AND applicability.field_code IS NOT NULL applicable
+                        FROM market.market_record_core_value value
+                        JOIN market.market_record record
+                          ON record.record_id = value.record_id
+                        LEFT JOIN platform.market_core_field_definition definition
+                          ON definition.code = value.field_code
+                         AND definition.domain_binding = 'EXTENSION'
+                        LEFT JOIN platform.page_definition_field page_field
+                          ON page_field.product_code = record.product_code
+                         AND page_field.business_domain = 'MARKET'
+                         AND page_field.page_kind = 'MONITORING'
+                         AND page_field.field_code = value.field_code
+                        LEFT JOIN platform.market_core_field_applicability applicability
+                          ON applicability.product_code = record.product_code
+                         AND applicability.business_domain = 'MARKET'
+                         AND applicability.page_kind = 'MONITORING'
+                         AND applicability.field_code = value.field_code
+                         AND applicability.domain_binding = 'EXTENSION'
+                        WHERE value.record_id IN (:ids)
+                        ORDER BY value.record_id, value.field_code
                         """).param("ids", ids).query((row, ignored) -> new ExtensionRow(
-                        row.getString("record_id"), row.getString("field_code"), row.getString("value")))
-                .list().forEach(value -> values.computeIfAbsent(
-                        value.recordId(), ignored -> new LinkedHashMap<>())
-                        .put(value.code(), value.value()));
+                        row.getString("record_id"), row.getString("field_code"), row.getString("value"),
+                        row.getBoolean("applicable")))
+                .list().forEach(value -> {
+                    if (!value.applicable()) throw invalidData();
+                    values.computeIfAbsent(value.recordId(), ignored -> new LinkedHashMap<>())
+                            .put(value.code(), value.value());
+                });
         return values;
     }
 
@@ -376,9 +401,12 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
         jdbc.sql("DELETE FROM market.market_record_fact WHERE record_id = :id")
                 .param("id", record.id()).update();
         record.facts().forEach((code, value) -> jdbc.sql("""
-                        INSERT INTO market.market_record_fact(record_id, fact_code, value)
-                        VALUES(:id, :code, :value)
-                        """).param("id", record.id()).param("code", code).param("value", value).update());
+                        INSERT INTO market.market_record_fact(
+                            record_id, fact_code, value, product_code, object_type_code)
+                        VALUES(:id, :code, :value, :productCode, :objectTypeCode)
+                        """).param("id", record.id()).param("code", code).param("value", value)
+                .param("productCode", record.productCode())
+                .param("objectTypeCode", record.objectTypeCode()).update());
     }
 
     private void replaceExtensionCoreValues(
@@ -487,7 +515,7 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                            boolean mounted, boolean mapped) { }
     private record OptionRow(String fieldCode, String value, String label, int sortOrder) { }
     private record FactRow(String recordId, String code, BigDecimal value, boolean applicable) { }
-    private record ExtensionRow(String recordId, String code, String value) { }
+    private record ExtensionRow(String recordId, String code, String value, boolean applicable) { }
     private record Header(String id, String product, String objectType, String region, LocalDate tradeDate,
                           OffsetDateTime reportedAt, MarketTradeDirection direction,
                           BigDecimal purchaseBasePrice, BigDecimal saleBasePrice,

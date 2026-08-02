@@ -1,8 +1,15 @@
 package com.cofco.qiqihar.graintrade.masterdata.infrastructure;
 
+import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
+import com.cofco.qiqihar.graintrade.market.application.MarketMonitoringDraft;
+import com.cofco.qiqihar.graintrade.market.application.MarketMonitoringService;
+import com.cofco.qiqihar.graintrade.market.domain.MarketRecordQuery;
+import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabase;
+import com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabaseConfiguration;
 import com.cofco.qiqihar.graintrade.shared.domain.BusinessPageKey;
 import com.cofco.qiqihar.graintrade.shared.infrastructure.JdbcPageDefinitionRepository;
+import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -20,6 +27,11 @@ import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
+import org.springframework.boot.builder.SpringApplicationBuilder;
+import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.mock.web.MockHttpServletRequest;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -45,7 +57,8 @@ class FlywayMigrationReplayTest {
 
     @Test
     @Order(1)
-    void appliesVersionedMigrationsOnceAndKeepsChecksumsAndDataStableOnSecondStartup() throws SQLException {
+    void appliesVersionedMigrationsOnceAndKeepsChecksumsAndDataStableOnSecondStartup()
+            throws Exception {
         MigrateResult versionFiveResult = flywayToVersionFive().migrate();
 
         assertThat(versionFiveResult.migrationsExecuted).isEqualTo(5);
@@ -79,12 +92,44 @@ class FlywayMigrationReplayTest {
         MigrateResult versionTwentyOneResult = DATABASE.flywayToVersion("21").migrate();
         assertThat(versionTwentyOneResult.migrationsExecuted).isOne();
         assertVersionTwentyCoreValuePreserved();
+        insertVersionTwentyOneWitnessConflictFixture();
 
-        MigrateResult versionTwentyTwoResult = flyway().migrate();
+        assertThatThrownBy(() -> DATABASE.flywayToVersion("22").migrate())
+                .hasMessageContaining("Cannot migrate MKT_CORN_SOURCE_NOTE")
+                .hasMessageContaining("already has MKT_SOURCE_NOTE");
+        assertThat(currentMigrationVersion()).isEqualTo("21");
+        assertVersionTwentyOneWitnessConflictPreserved();
+        removeVersionTwentyOneWitnessConflict();
+
+        MigrateResult versionTwentyTwoResult = DATABASE.flywayToVersion("22").migrate();
         assertThat(versionTwentyTwoResult.migrationsExecuted).isOne();
         assertVersionTwentyCoreValuePreserved();
+        assertVersionTwentyOneWitnessMigrated();
         assertThat(witnessDefinitionCount()).isZero();
         assertThat(marketRecordCount()).isOne();
+
+        insertVersionTwentyTwoUnmountedExtensionCorruption();
+        assertThatThrownBy(() -> DATABASE.flywayToVersion("23").migrate())
+                .hasMessageContaining("V23 preflight extension invariant failed")
+                .hasMessageContaining("V23_REPLAY_UNMOUNTED");
+        assertThat(currentMigrationVersion()).isEqualTo("22");
+        assertVersionTwentyCoreValuePreserved();
+        deleteVersionTwentyTwoUnmountedExtensionCorruption();
+
+        insertVersionTwentyTwoInapplicableFactCorruption();
+        assertThatThrownBy(() -> DATABASE.flywayToVersion("23").migrate())
+                .hasMessageContaining("V23 preflight fact applicability failed")
+                .hasMessageContaining("SALES_VOLUME");
+        assertThat(currentMigrationVersion()).isEqualTo("22");
+        assertVersionTwentyCoreValuePreserved();
+        deleteVersionTwentyTwoInapplicableFactCorruption();
+
+        MigrateResult versionTwentyThreeResult = flyway().migrate();
+        assertThat(versionTwentyThreeResult.migrationsExecuted).isOne();
+        assertVersionTwentyCoreValuePreserved();
+        exerciseVersionTwentyFixtureThroughFormalService();
+
+        deleteVersionTwentyOneWitnessFixture();
         deleteVersionTwentyCoreValueFixture();
         deleteMarketUpgradeFixture();
         assertThat(marketRecordCount()).isZero();
@@ -94,7 +139,7 @@ class FlywayMigrationReplayTest {
         MigrateResult secondResult = flyway().migrate();
 
         assertThat(secondResult.migrationsExecuted).isZero();
-        assertThat(migrationChecksums()).hasSize(22);
+        assertThat(migrationChecksums()).hasSize(23);
         assertThat(masterDataCounts()).isEqualTo(firstCounts);
         assertThat(firstCounts).containsEntry("region", 29L)
                 .containsEntry("product", 3L)
@@ -519,6 +564,220 @@ class FlywayMigrationReplayTest {
             assertThat(row.getString("value")).isEqualTo("V20保留来源");
             assertThat(row.getString("product_code")).isEqualTo("CORN");
             assertThat(row.getString("domain_binding")).isEqualTo("EXTENSION");
+        }
+    }
+
+    private void insertVersionTwentyOneWitnessConflictFixture() throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    INSERT INTO market.market_record(
+                        record_id, product_code, object_type_code, region_code, trade_date,
+                        reported_at, purchase_base_price, sale_base_price, trade_direction,
+                        carriage_board_amount, packaging_amount, freight_amount, packaging_form,
+                        status_code, return_reason, last_modified_by)
+                    VALUES ('v21-witness-upgrade', 'CORN', 'FEED_MILL', '230200', DATE '2026-08-01',
+                        TIMESTAMPTZ '2026-08-01 10:00:00+08', 2300, NULL, 'PURCHASE',
+                        36, 12, 72, 'BULK', 'DRAFT', NULL, 'migration-replay')
+                    """);
+            statement.execute("""
+                    INSERT INTO market.market_record_core_value(
+                        record_id, product_code, field_code, domain_binding, value)
+                    VALUES
+                        ('v21-witness-upgrade', 'CORN', 'MKT_CORN_SOURCE_NOTE',
+                         'EXTENSION', 'V21见证来源'),
+                        ('v21-witness-upgrade', 'CORN', 'MKT_SOURCE_NOTE',
+                         'EXTENSION', 'V21冲突来源')
+                    """);
+        }
+    }
+
+    private void assertVersionTwentyOneWitnessConflictPreserved() throws SQLException {
+        assertThat(coreValueCount(
+                "v21-witness-upgrade", "MKT_CORN_SOURCE_NOTE", "V21见证来源")).isOne();
+        assertThat(coreValueCount(
+                "v21-witness-upgrade", "MKT_SOURCE_NOTE", "V21冲突来源")).isOne();
+        assertThat(witnessDefinitionCount()).isOne();
+    }
+
+    private void removeVersionTwentyOneWitnessConflict() throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    DELETE FROM market.market_record_core_value
+                    WHERE record_id = 'v21-witness-upgrade'
+                      AND field_code = 'MKT_SOURCE_NOTE'
+                    """);
+        }
+    }
+
+    private void assertVersionTwentyOneWitnessMigrated() throws SQLException {
+        assertThat(coreValueCount(
+                "v21-witness-upgrade", "MKT_SOURCE_NOTE", "V21见证来源")).isOne();
+        assertThat(coreValueCount(
+                "v21-witness-upgrade", "MKT_CORN_SOURCE_NOTE", "V21见证来源")).isZero();
+    }
+
+    private long coreValueCount(String recordId, String fieldCode, String value) throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                var statement = connection.prepareStatement("""
+                        SELECT count(*) FROM market.market_record_core_value
+                        WHERE record_id = ? AND field_code = ? AND value = ?
+                        """)) {
+            statement.setString(1, recordId);
+            statement.setString(2, fieldCode);
+            statement.setString(3, value);
+            try (ResultSet row = statement.executeQuery()) {
+                row.next();
+                return row.getLong(1);
+            }
+        }
+    }
+
+    private void insertVersionTwentyTwoUnmountedExtensionCorruption() throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    INSERT INTO platform.market_core_field_definition(
+                        code, label, control_type, sort_order, description,
+                        domain_binding, capability, required)
+                    VALUES ('V23_REPLAY_UNMOUNTED', 'V23升级脏挂载', 'TEXT', 9310, NULL,
+                            'EXTENSION', 'GENERIC', false)
+                    """);
+            statement.execute("""
+                    INSERT INTO platform.field_definition(code, name, value_type)
+                    VALUES ('V23_REPLAY_UNMOUNTED', 'V23升级脏挂载', 'TEXT')
+                    """);
+            statement.execute("""
+                    ALTER TABLE platform.page_definition_field
+                    DISABLE TRIGGER market_extension_page_mount_consistency
+                    """);
+            statement.execute("""
+                    INSERT INTO platform.page_definition_field(
+                        product_code, business_domain, page_kind, field_code, sort_order)
+                    VALUES ('CORN', 'MARKET', 'MONITORING', 'V23_REPLAY_UNMOUNTED', 9310)
+                    """);
+            statement.execute("""
+                    ALTER TABLE platform.page_definition_field
+                    ENABLE TRIGGER market_extension_page_mount_consistency
+                    """);
+        }
+    }
+
+    private void deleteVersionTwentyTwoUnmountedExtensionCorruption() throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    DELETE FROM platform.page_definition_field
+                    WHERE product_code = 'CORN' AND business_domain = 'MARKET'
+                      AND page_kind = 'MONITORING' AND field_code = 'V23_REPLAY_UNMOUNTED'
+                    """);
+            statement.execute("DELETE FROM platform.field_definition WHERE code = 'V23_REPLAY_UNMOUNTED'");
+            statement.execute("""
+                    DELETE FROM platform.market_core_field_definition
+                    WHERE code = 'V23_REPLAY_UNMOUNTED'
+                    """);
+        }
+    }
+
+    private void insertVersionTwentyTwoInapplicableFactCorruption() throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    ALTER TABLE market.market_record_fact
+                    DISABLE TRIGGER market_fact_applicability
+                    """);
+            statement.execute("""
+                    INSERT INTO market.market_record_fact(record_id, fact_code, value)
+                    VALUES ('v20-core-upgrade', 'SALES_VOLUME', 3)
+                    """);
+            statement.execute("""
+                    ALTER TABLE market.market_record_fact
+                    ENABLE TRIGGER market_fact_applicability
+                    """);
+        }
+    }
+
+    private void deleteVersionTwentyTwoInapplicableFactCorruption() throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    DELETE FROM market.market_record_fact
+                    WHERE record_id = 'v20-core-upgrade' AND fact_code = 'SALES_VOLUME'
+                    """);
+        }
+    }
+
+    private String currentMigrationVersion() throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement();
+                ResultSet row = statement.executeQuery("""
+                        SELECT version FROM public.flyway_schema_history
+                        WHERE success ORDER BY installed_rank DESC LIMIT 1
+                        """)) {
+            row.next();
+            return row.getString(1);
+        }
+    }
+
+    private void exerciseVersionTwentyFixtureThroughFormalService() {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        request.setUserPrincipal(() -> "migration-replay-service");
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
+        try (ConfigurableApplicationContext context = new SpringApplicationBuilder(
+                        GrainTradeApplication.class, ProtectedTestDatabaseConfiguration.class)
+                .properties("spring.main.web-application-type=none")
+                .run(DATABASE.springApplicationArguments())) {
+            MarketMonitoringService service = context.getBean(MarketMonitoringService.class);
+            assertThat(service.detail("v20-core-upgrade").coreValues())
+                    .containsEntry("MKT_SOURCE_NOTE", "V20保留来源");
+
+            var modified = service.save(
+                    "v20-core-upgrade", 0, versionTwentyDraft("V23服务修改来源"));
+            assertThat(modified.record().version()).isOne();
+            assertThat(modified.coreValues())
+                    .containsEntry("MKT_SOURCE_NOTE", "V23服务修改来源");
+
+            var cleared = service.save("v20-core-upgrade", 1, versionTwentyDraft(null));
+            assertThat(cleared.record().version()).isEqualTo(2);
+            assertThat(cleared.coreValues()).containsEntry("MKT_SOURCE_NOTE", null);
+            assertThatThrownBy(() -> service.save(
+                    "v20-core-upgrade", 1, versionTwentyDraft("陈旧覆盖")))
+                    .isInstanceOf(ConflictException.class);
+            assertThat(service.detail("v20-core-upgrade").coreValues())
+                    .containsEntry("MKT_SOURCE_NOTE", null);
+
+            var listed = service.list(new MarketRecordQuery(
+                    "CORN", "MONITORING", 0, 20, Map.of())).items().stream()
+                    .filter(item -> item.id().equals("v20-core-upgrade"))
+                    .findFirst().orElseThrow();
+            assertThat(listed.version()).isEqualTo(2);
+            assertThat(listed.values().get("MKT_SOURCE_NOTE")).isNull();
+        } finally {
+            RequestContextHolder.resetRequestAttributes();
+        }
+    }
+
+    private MarketMonitoringDraft versionTwentyDraft(String sourceNote) {
+        Map<String, String> coreValues = new LinkedHashMap<>();
+        coreValues.put("MKT_OBJECT_TYPE", "FEED_MILL");
+        coreValues.put("MKT_REGION", "230200");
+        coreValues.put("MKT_TRADE_DATE", "2026-08-01");
+        coreValues.put("MKT_TRADE_DIRECTION", "PURCHASE");
+        coreValues.put("MKT_PURCHASE_BASE_PRICE", "2300");
+        coreValues.put("MKT_CARRIAGE_BOARD_AMOUNT", "36");
+        coreValues.put("MKT_PACKAGING_FORM", "BULK");
+        coreValues.put("MKT_PACKAGING_AMOUNT", "12");
+        coreValues.put("MKT_FREIGHT_AMOUNT", "72");
+        if (sourceNote != null) coreValues.put("MKT_SOURCE_NOTE", sourceNote);
+        return new MarketMonitoringDraft(
+                "CORN", coreValues, Map.of("PURCHASE_VOLUME", new BigDecimal("12")));
+    }
+
+    private void deleteVersionTwentyOneWitnessFixture() throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute("DELETE FROM market.market_record WHERE record_id = 'v21-witness-upgrade'");
         }
     }
 

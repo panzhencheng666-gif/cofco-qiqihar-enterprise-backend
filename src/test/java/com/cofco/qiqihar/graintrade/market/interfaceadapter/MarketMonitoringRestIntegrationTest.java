@@ -413,6 +413,46 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    void putMayChangeParentContextBeforeReplacingFactsWhenTheFinalStateIsApplicable()
+            throws Exception {
+        String initial = singleFactDraft(
+                "CORN", "FEED_MILL", "PROCESSING_INPUT", "18.5");
+        String id = mockMvc.perform(post("/api/v1/market-records")
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(initial))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.facts.PROCESSING_INPUT").value("18.5000"))
+                .andReturn().getResponse().getContentAsString()
+                .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+
+        String replacement = singleFactDraft(
+                "CORN", "BREEDING_FACTORY", "PURCHASE_VOLUME", "21.5");
+        mockMvc.perform(put("/api/v1/market-records/{id}", id)
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(versioned(replacement, 0)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.version").value(1))
+                .andExpect(jsonPath("$.data.coreValues.MKT_OBJECT_TYPE")
+                        .value("BREEDING_FACTORY"))
+                .andExpect(jsonPath("$.data.facts.PROCESSING_INPUT").doesNotExist())
+                .andExpect(jsonPath("$.data.facts.PURCHASE_VOLUME").value("21.5000"));
+
+        mockMvc.perform(put("/api/v1/market-records/{id}", id)
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(versioned(initial, 0)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("MARKET_RECORD_VERSION_CONFLICT"));
+        mockMvc.perform(get("/api/v1/market-records/{id}", id))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.version").value(1))
+                .andExpect(jsonPath("$.data.coreValues.MKT_OBJECT_TYPE")
+                        .value("BREEDING_FACTORY"))
+                .andExpect(jsonPath("$.data.facts.PURCHASE_VOLUME").value("21.5000"));
+    }
+
+    @Test
     void stateTransitionsKeepReportedAtAndUseTheApplicationClockForUpdatedAt() throws Exception {
         String approvedId = create("CORN", "FEED_MILL", "MOISTURE");
         resetTransitionTimes(approvedId);
