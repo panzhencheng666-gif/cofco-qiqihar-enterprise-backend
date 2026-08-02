@@ -1,5 +1,39 @@
 # Task 5 implementation report — production monitoring
 
+## Round-five disposition
+
+Both Important findings in `task-5-review-round5.md` are fixed. The changes are test/tooling only: backend production code and V1–V16 remain untouched.
+
+- The frontend now has a Playwright 1.62.1 Chromium project in the normal `npm run verify` gate. It starts the strict-port Vite server itself, runs headless with one worker, retains traces and failure screenshots, and does not reuse an unknown existing server.
+- Three real-browser cases load the canonical CORN, SOYBEAN, and RICE hashes through the production `App`. Each proves normalized history state, dynamic three-product navigation, product-specific heading/column/value rendering, and the product-specific field within all four Chinese form groups.
+- The hardest pending-write case holds a real submit request, changes to the FARMER filter, pages forward, uses actual browser back/forward, then settles the write. Three controlled page-1 responses are completed newest-first and stale-last; the assertions prove refresh uses only the restored page/filter and stale browser-event-loop completions cannot replace the latest DOM result or hash.
+- E2E synchronization is request/route/response/DOM driven. The only final browser turn is two `requestAnimationFrame` callbacks after the two stale responses are delivered; no time-based sleeps or `networkidle` waits are used.
+- The backend REST integration matrix now adds six successful approval cases: CORN, SOYBEAN, and RICE across FARMER and VILLAGE_COMMITTEE. Each selects formal V16 definitions, creates all four fact categories, submits version 0, approves version 1, then verifies APPROVED/version 2, actions, and all four categories in the transition response, detail response, and filtered list projection.
+
+## Round-five TDD evidence
+
+- Browser-runner RED: before the runner was added, `npm run e2e` failed because the script did not exist. After the Playwright dependency, typed configuration, API route fixture, page object, and browser specifications were added, the first Chromium run passed 4/4.
+- Browser stability: the complete E2E suite passed three consecutive repetitions in one invocation (12/12), including three repetitions of the real back/forward pending-write race.
+- Backend approval was a missing proof rather than a production defect. The new six-context test passed against the existing application and V16 database with no production or migration change.
+
+## Round-five verification
+
+- Backend: JDK 21.0.11 `mvn verify` — BUILD SUCCESS; 142 tests, 0 failures/errors/skips; the production REST integration class contributed 29 cases, including the 6 new successful approvals. PostgreSQL 17.10 validated and replayed all 16 migrations; the executable JAR was built.
+- Frontend: `npm run verify` — Prettier, ESLint, dependency-cruiser (54 modules / 138 dependencies, zero violations), the read-only architecture test, 15 Vitest files / 88 tests, TypeScript, Vite production build, and 4 Playwright Chromium cases all passed.
+- Stability and supply chain: `npm run e2e -- --repeat-each=3` passed 12/12; `npm audit` reported 0 vulnerabilities. The exercised runtime was Playwright 1.62.1 with Chromium 151.0.7922.34.
+- `git diff --check` passed in both repositories. `git diff --exit-code 4385753 -- src/main/resources/db/migration` proved V1–V16 unchanged. The legacy/dashboard repositories and frontend `.idea/` remained untouched. No push was performed.
+
+## Round-five commits
+
+- Backend approval matrix: `34ecf72 test(production): cover formal approval matrix`
+- Frontend browser gate: `9c7d489 test(production): add Playwright browser gate`
+- This report is committed separately after both repository hashes were known.
+
+## Round-five hand-off
+
+- Both round-five findings now have real-browser or formal-database regression coverage; a sixth independent review is the next gate.
+- Task 9 still owns full authentication/authorization and auditing. Task 5 continues to use the authenticated servlet principal through `CurrentActor`.
+
 ## Round-four disposition
 
 All Important findings in `task-5-review-round4.md` are fixed. No migration or backend production-code change was required, and V1–V16 remain untouched.
