@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade;
 
+import com.cofco.qiqihar.graintrade.archfixture.domain.ExternalDomainDependentFixture;
 import com.cofco.qiqihar.graintrade.archfixture.domain.HttpDependentDomainFixture;
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.tngtech.archunit.core.domain.JavaClasses;
@@ -16,9 +17,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class ArchitectureTest {
 
     private static final ArchRule DOMAIN_DEPENDENCY_RULE = classes()
-            .that().resideInAnyPackage("..domain..")
+            .that().resideInAnyPackage("com.cofco.qiqihar.graintrade..domain..")
             .should().onlyDependOnClassesThat().resideInAnyPackage(
-                    "..domain..",
+                    "com.cofco.qiqihar.graintrade..domain..",
                     "java.lang..",
                     "java.math..",
                     "java.time..",
@@ -50,5 +51,18 @@ class ArchitectureTest {
                 () -> DOMAIN_DEPENDENCY_RULE.check(fixtureClasses));
 
         assertThat(violation).hasMessageContaining("java.net.URI");
+    }
+
+    @Test
+    void domainRuleRejectsExternalDomainPackageFixture() {
+        JavaClasses fixtureClasses = new ClassFileImporter()
+                .importClasses(ExternalDomainDependentFixture.class);
+
+        AssertionError violation = assertThrows(
+                AssertionError.class,
+                () -> DOMAIN_DEPENDENCY_RULE.check(fixtureClasses));
+
+        assertThat(violation)
+                .hasMessageContaining("com.external.framework.domain.ExternalDomainType");
     }
 }

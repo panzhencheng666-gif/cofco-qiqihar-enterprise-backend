@@ -10,16 +10,27 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.HttpMediaTypeNotAcceptableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.ServletWebRequest;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
+import org.springframework.web.util.WebUtils;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    @Override
+    protected ResponseEntity<Object> handleHttpMediaTypeNotAcceptable(
+            HttpMediaTypeNotAcceptableException exception,
+            HttpHeaders headers,
+            HttpStatusCode statusCode,
+            WebRequest request) {
+        return new ResponseEntity<>(null, headers, statusCode);
+    }
 
     @Override
     protected ResponseEntity<Object> handleExceptionInternal(
@@ -28,6 +39,10 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
             HttpHeaders headers,
             HttpStatusCode statusCode,
             WebRequest request) {
+        String traceId = traceId(request);
+        if (statusCode.is5xxServerError()) {
+            LOGGER.error("Framework request failure [traceId={}]", traceId, exception);
+        }
         HttpStatus status = HttpStatus.resolve(statusCode.value());
         String code = status == null ? "HTTP_" + statusCode.value() : status.name();
         String message = status == null ? "Request failed" : status.getReasonPhrase();
@@ -35,8 +50,16 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                 code,
                 message,
                 Map.of(),
-                traceId(request));
-        return super.handleExceptionInternal(exception, response, headers, statusCode, request);
+                traceId);
+        ResponseEntity<Object> responseEntity =
+                super.handleExceptionInternal(exception, response, headers, statusCode, request);
+        if (responseEntity != null && HttpStatus.INTERNAL_SERVER_ERROR.equals(statusCode)) {
+            request.setAttribute(
+                    WebUtils.ERROR_EXCEPTION_ATTRIBUTE,
+                    exception,
+                    WebRequest.SCOPE_REQUEST);
+        }
+        return responseEntity;
     }
 
     @ExceptionHandler(ClientRequestException.class)
