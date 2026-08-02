@@ -51,7 +51,7 @@ public class JdbcMarketRecordRepository implements MarketRecordRepository {
                         LIMIT :pageSize OFFSET :offset
                         """, query, filtersJson)
                 .param("pageSize", query.pageSize())
-                .param("offset", query.pageNumber() * query.pageSize())
+                .param("offset", (long) query.pageNumber() * query.pageSize())
                 .query((row, rowNumber) -> new MarketRecord(
                         row.getString("record_id"),
                         values(row.getString("values"))))

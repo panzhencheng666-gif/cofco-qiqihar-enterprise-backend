@@ -91,4 +91,15 @@ class JdbcWorkItemRepositoryTest {
         assertThat(page.items().getFirst().task()).isEqualTo("已处理任务");
         assertThat(page.items().getFirst().status()).isNull();
     }
+
+    @Test
+    void usesALongOffsetForTheLargestSupportedPageNumber() {
+        var page = repository.findPage(WorkItemQuery.of(
+                WorkItemScope.PENDING, null, null, null, null, Integer.MAX_VALUE, 100));
+
+        assertThat(page.items()).isEmpty();
+        assertThat(page.pageNumber()).isEqualTo(Integer.MAX_VALUE);
+        assertThat(page.pageSize()).isEqualTo(100);
+        assertThat(page.totalElements()).isOne();
+    }
 }

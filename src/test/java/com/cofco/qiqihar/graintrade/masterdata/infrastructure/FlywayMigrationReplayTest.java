@@ -1,6 +1,8 @@
 package com.cofco.qiqihar.graintrade.masterdata.infrastructure;
 
 import com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabase;
+import com.cofco.qiqihar.graintrade.shared.domain.BusinessPageKey;
+import com.cofco.qiqihar.graintrade.shared.infrastructure.JdbcPageDefinitionRepository;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -64,9 +66,13 @@ class FlywayMigrationReplayTest {
         assertThat(versionEightResult.migrationsExecuted).isEqualTo(3);
         insertMarketUpgradeFixture();
 
-        MigrateResult upgradeResult = flyway().migrate();
-        assertThat(upgradeResult.migrationsExecuted).isEqualTo(2);
+        MigrateResult versionTenResult = DATABASE.flywayToVersion("10").migrate();
+        assertThat(versionTenResult.migrationsExecuted).isEqualTo(2);
         assertThat(migrationChecksums()).containsAllEntriesOf(versionFiveChecksums);
+        assertThat(marketRecordCount()).isOne();
+
+        MigrateResult versionElevenResult = flyway().migrate();
+        assertThat(versionElevenResult.migrationsExecuted).isOne();
         assertThat(marketRecordCount()).isOne();
         deleteMarketUpgradeFixture();
         assertThat(marketRecordCount()).isZero();
@@ -76,7 +82,7 @@ class FlywayMigrationReplayTest {
         MigrateResult secondResult = flyway().migrate();
 
         assertThat(secondResult.migrationsExecuted).isZero();
-        assertThat(migrationChecksums()).hasSize(10);
+        assertThat(migrationChecksums()).hasSize(11);
         assertThat(masterDataCounts()).isEqualTo(firstCounts);
         assertThat(firstCounts).containsEntry("region", 29L)
                 .containsEntry("product", 3L)
@@ -166,7 +172,7 @@ class FlywayMigrationReplayTest {
 
     @Test
     @Order(4)
-    void rejectsMovingPaginationWhenTheOldPresentationWouldBecomeIncomplete() throws SQLException {
+    void rejectsMovingPaginationIdentityEvenInsideACoherentTransaction() throws SQLException {
         insertPaginationMoveFixtures();
         try {
             assertThatThrownBy(() -> {
@@ -207,7 +213,7 @@ class FlywayMigrationReplayTest {
                     }
                 }
             }).isInstanceOf(SQLException.class)
-                    .hasMessageContaining("Every page presentation requires pagination configuration");
+                    .hasMessageContaining("Page identity and context are immutable");
 
             assertThat(paginationCount("MOVE_OLD")).isOne();
             assertThat(paginationCount("MOVE_NEW")).isOne();
@@ -330,6 +336,83 @@ class FlywayMigrationReplayTest {
                 statement.execute("DELETE FROM workflow.responsible_party WHERE external_code = 'WORK_SCOPE_USER'");
                 statement.execute("DELETE FROM workflow.workflow_node WHERE code = 'WORK_SCOPE_NODE'");
                 statement.execute("DELETE FROM platform.business_period WHERE code = 'WORK_SCOPE_PERIOD'");
+            }
+        }
+    }
+
+    @Test
+    @Order(8)
+    void makesPageIdentityAndLegacyContextImmutableWhileAllowingPresentationContentUpdates()
+            throws SQLException {
+        assertUpdateRejected("""
+                UPDATE platform.page_definition
+                SET page_kind = 'WORK_ITEMS_MOVED'
+                WHERE product_code IS NULL
+                  AND business_domain = 'WORKFLOW'
+                  AND page_kind = 'WORK_ITEMS'
+                """);
+        assertUpdateRejected("""
+                UPDATE platform.page_definition
+                SET page_definition_id = page_definition_id + 100000
+                WHERE product_code IS NULL
+                  AND business_domain = 'WORKFLOW'
+                  AND page_kind = 'WORK_ITEMS'
+                """);
+        assertUpdateRejected("""
+                UPDATE platform.page_presentation
+                SET business_domain = 'MARKET'
+                WHERE product_code IS NULL
+                  AND business_domain = 'WORKFLOW'
+                  AND page_kind = 'WORK_ITEMS'
+                """);
+        assertUpdateRejected("""
+                UPDATE platform.page_presentation
+                SET page_definition_id = page_definition_id + 100000
+                WHERE product_code IS NULL
+                  AND business_domain = 'WORKFLOW'
+                  AND page_kind = 'WORK_ITEMS'
+                """);
+        assertUpdateRejected("""
+                UPDATE platform.page_filter_definition
+                SET product_code = 'SOYBEAN'
+                WHERE product_code IS NULL
+                  AND business_domain = 'WORKFLOW'
+                  AND page_kind = 'WORK_ITEMS'
+                  AND code = 'status'
+                """);
+        assertUpdateRejected("""
+                UPDATE platform.page_filter_definition
+                SET page_presentation_id = page_presentation_id + 100000
+                WHERE product_code IS NULL
+                  AND business_domain = 'WORKFLOW'
+                  AND page_kind = 'WORK_ITEMS'
+                  AND code = 'status'
+                """);
+
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement()) {
+            assertThat(statement.executeUpdate("""
+                    UPDATE platform.page_presentation
+                    SET title = '任务列表（更新测试）'
+                    WHERE product_code IS NULL
+                      AND business_domain = 'WORKFLOW'
+                      AND page_kind = 'WORK_ITEMS'
+                    """)).isOne();
+            try {
+                var definition = new JdbcPageDefinitionRepository(DATABASE.dataSource())
+                        .find(new BusinessPageKey("WORKFLOW", "WORK_ITEMS", null))
+                        .orElseThrow();
+                assertThat(definition.title()).isEqualTo("任务列表（更新测试）");
+                assertThat(definition.filters()).hasSize(4);
+                assertThat(definition.columnGroups().getFirst().fields()).hasSize(9);
+            } finally {
+                statement.executeUpdate("""
+                        UPDATE platform.page_presentation
+                        SET title = '任务列表'
+                        WHERE product_code IS NULL
+                          AND business_domain = 'WORKFLOW'
+                          AND page_kind = 'WORK_ITEMS'
+                        """);
             }
         }
     }
@@ -523,6 +606,15 @@ class FlywayMigrationReplayTest {
             try (Connection connection = DATABASE.openConnection();
                     Statement statement = connection.createStatement()) {
                 statement.execute(sql);
+            }
+        }).isInstanceOf(SQLException.class);
+    }
+
+    private void assertUpdateRejected(String sql) {
+        assertThatThrownBy(() -> {
+            try (Connection connection = DATABASE.openConnection();
+                    Statement statement = connection.createStatement()) {
+                statement.executeUpdate(sql);
             }
         }).isInstanceOf(SQLException.class);
     }

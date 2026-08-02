@@ -71,7 +71,7 @@ public class JdbcWorkItemRepository implements WorkItemRepository {
                                party.display_name AS responsible_party
                         """ + FROM + where + order + " LIMIT :pageSize OFFSET :offset"), query)
                 .param("pageSize", query.pageSize())
-                .param("offset", query.pageNumber() * query.pageSize())
+                .param("offset", (long) query.pageNumber() * query.pageSize())
                 .query((row, rowNumber) -> new WorkItem(
                         row.getString("id"),
                         row.getString("task_name"),

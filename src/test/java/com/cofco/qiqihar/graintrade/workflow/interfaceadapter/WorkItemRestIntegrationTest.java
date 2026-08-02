@@ -76,6 +76,20 @@ class WorkItemRestIntegrationTest {
                 .queryParam("pageSize", "20"));
     }
 
+    @Test
+    void returnsAConsistentEmptyPageForTheLargestSupportedPageNumber() throws Exception {
+        mockMvc.perform(get("/api/v1/work-items")
+                        .queryParam("scope", "PENDING")
+                        .queryParam("page", String.valueOf(Integer.MAX_VALUE))
+                        .queryParam("pageSize", "100"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(0))
+                .andExpect(jsonPath("$.data.pageNumber").value(Integer.MAX_VALUE))
+                .andExpect(jsonPath("$.data.pageSize").value(100))
+                .andExpect(jsonPath("$.data.totalElements").value(0))
+                .andExpect(jsonPath("$.data.totalPages").value(0));
+    }
+
     private void assertInvalid(org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder request)
             throws Exception {
         mockMvc.perform(request)
