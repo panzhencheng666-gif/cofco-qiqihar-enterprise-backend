@@ -14,8 +14,10 @@ import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import java.math.BigDecimal;
 import java.sql.Types;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -159,16 +161,21 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
 
     @Override
     public List<MarketCoreFieldDefinition> findCoreFields(String productCode) {
-        return jdbc.sql("""
-                        SELECT code, label, control_type, unit, decimal_precision, decimal_scale, sort_order
+        List<CoreRow> fields = jdbc.sql("""
+                        SELECT code, label, control_type, unit, description,
+                               decimal_precision, decimal_scale, sort_order
                         FROM platform.market_core_field_definition ORDER BY sort_order, code
                         """).query((row, ignored) -> new CoreRow(
                         row.getString("code"), row.getString("label"), row.getString("control_type"),
-                        row.getString("unit"), (Integer) row.getObject("decimal_precision"),
-                        (Integer) row.getObject("decimal_scale"), row.getInt("sort_order"))).list().stream()
+                        row.getString("unit"), row.getString("description"),
+                        (Integer) row.getObject("decimal_precision"),
+                        (Integer) row.getObject("decimal_scale"), row.getInt("sort_order"))).list();
+        Map<String, List<MarketFieldOption>> options = coreOptions(productCode);
+        return fields.stream()
                 .map(row -> new MarketCoreFieldDefinition(
-                        row.code(), row.label(), row.controlType(), row.unit(), row.precision(), row.scale(),
-                        row.sortOrder(), coreOptions(productCode, row.code()))).toList();
+                        row.code(), row.label(), row.controlType(), row.unit(), row.description(),
+                        row.precision(), row.scale(), row.sortOrder(),
+                        options.getOrDefault(row.code(), List.of()))).toList();
     }
 
     @Override
@@ -207,35 +214,41 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
 
     @Override
     public MarketMonitoringRecord updateState(
-            MarketMonitoringRecord record, long expectedVersion, String actorId) {
+            MarketMonitoringRecord record, long expectedVersion, String actorId, Instant updatedAt) {
         int updated = jdbc.sql("""
                         UPDATE market.market_record SET status_code = :status, return_reason = :reason,
                             last_modified_by = :actor, updated_at = :updatedAt, version = version + 1
                         WHERE record_id = :id AND version = :expectedVersion
                         """).param("status", record.status().name()).param("reason", record.returnReason())
-                .param("actor", actorId).param("updatedAt", record.reportedAt())
+                .param("actor", actorId)
+                .param("updatedAt", OffsetDateTime.ofInstant(updatedAt, ZoneOffset.UTC))
                 .param("id", record.id()).param("expectedVersion", expectedVersion).update();
         requireUpdated(updated);
         return record.savedAsVersion(expectedVersion + 1);
     }
 
-    private List<MarketFieldOption> coreOptions(String productCode, String fieldCode) {
-        if (fieldCode.equals("MKT_OBJECT_TYPE")) {
-            return jdbc.sql("""
-                            SELECT object_type.code value, object_type.name label, object_type.sort_order
+    private Map<String, List<MarketFieldOption>> coreOptions(String productCode) {
+        Map<String, List<MarketFieldOption>> options = new LinkedHashMap<>();
+        jdbc.sql("""
+                        SELECT field_code, value, label, sort_order FROM (
+                            SELECT option.field_code, option.value, option.label, option.sort_order
+                            FROM platform.market_core_field_option option
+                            UNION ALL
+                            SELECT 'MKT_OBJECT_TYPE', object_type.code, object_type.name, object_type.sort_order
                             FROM platform.product_object_type applicability
-                            JOIN platform.object_type object_type ON object_type.code = applicability.object_type_code
+                            JOIN platform.object_type object_type
+                              ON object_type.code = applicability.object_type_code
                             WHERE applicability.product_code = :productCode
                               AND object_type.business_domain = 'MARKET'
-                            ORDER BY object_type.sort_order, object_type.code
-                            """).param("productCode", productCode).query((row, ignored) -> new MarketFieldOption(
-                            row.getString("value"), row.getString("label"), row.getInt("sort_order"))).list();
-        }
-        return jdbc.sql("""
-                        SELECT value, label, sort_order FROM platform.market_core_field_option
-                        WHERE field_code = :fieldCode ORDER BY sort_order, value
-                        """).param("fieldCode", fieldCode).query((row, ignored) -> new MarketFieldOption(
-                        row.getString("value"), row.getString("label"), row.getInt("sort_order"))).list();
+                        ) available_options
+                        ORDER BY field_code, sort_order, value
+                        """).param("productCode", productCode).query((row, ignored) -> new OptionRow(
+                        row.getString("field_code"), row.getString("value"),
+                        row.getString("label"), row.getInt("sort_order"))).list()
+                .forEach(option -> options.computeIfAbsent(
+                        option.fieldCode(), ignored -> new java.util.ArrayList<>()).add(
+                                new MarketFieldOption(option.value(), option.label(), option.sortOrder())));
+        return options;
     }
 
     private Set<String> configuredActions(String productCode) {
@@ -253,6 +266,7 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
         values.put("MKT_REGION", row.regionName());
         values.put("MKT_OBJECT_TYPE", row.objectTypeName());
         values.put("MKT_TRADE_DATE", row.tradeDate().toString());
+        values.put("MKT_REPORTED_AT", row.reportedAt().toString());
         values.put("MKT_TRADE_DIRECTION", row.directionLabel());
         values.put("MKT_PURCHASE_BASE_PRICE", decimal(row.purchaseBasePrice()));
         values.put("MKT_SALE_BASE_PRICE", decimal(row.saleBasePrice()));
@@ -361,8 +375,9 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
     }
 
     private record SqlFilter(String sql, Map<String, Object> parameters) { }
-    private record CoreRow(String code, String label, String controlType, String unit,
+    private record CoreRow(String code, String label, String controlType, String unit, String description,
                            Integer precision, Integer scale, int sortOrder) { }
+    private record OptionRow(String fieldCode, String value, String label, int sortOrder) { }
     private record FactRow(String recordId, String code, BigDecimal value) { }
     private record Header(String id, String product, String objectType, String region, LocalDate tradeDate,
                           OffsetDateTime reportedAt, MarketTradeDirection direction,

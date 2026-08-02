@@ -9,6 +9,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import javax.sql.DataSource;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
@@ -18,7 +21,11 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.web.servlet.MockMvc;
@@ -26,6 +33,7 @@ import org.springframework.test.web.servlet.MockMvc;
 @SpringBootTest(classes = GrainTradeApplication.class)
 @AutoConfigureMockMvc
 @UsesProtectedTestDatabase
+@Import(MarketMonitoringRestIntegrationTest.FixedClockConfiguration.class)
 class MarketMonitoringRestIntegrationTest {
     @Autowired MockMvc mockMvc;
     @Autowired DataSource dataSource;
@@ -74,6 +82,13 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(jsonPath("$.data.objectTypeCode").value(objectType))
                 .andExpect(jsonPath("$.data.coreFields[0].label").value("对象类型"))
                 .andExpect(jsonPath("$.data.coreFields[0].options[?(@.value == '" + objectType + "')]").exists())
+                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_REPORTED_AT' && @.controlType == 'READONLY_DATETIME')]").exists())
+                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_PURCHASE_BASE_PRICE')].description")
+                        .value("采购基础价未包含车板、包装和运费组成"))
+                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_SALE_BASE_PRICE')].description")
+                        .value("销售基础价未包含车板、包装和运费组成"))
+                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_ACTUAL_TRADE_PRICE')].description")
+                        .value("实际成交价已包含车板、包装和运费组成"))
                 .andExpect(jsonPath("$.data.groups.length()").value(5))
                 .andExpect(jsonPath("$.data.groups[0].label").value("质量指标"))
                 .andExpect(jsonPath("$.data.groups[?(@.category == 'QUALITY')].fields[?(@.code == '" + qualityCode + "')]").exists());
@@ -105,6 +120,7 @@ class MarketMonitoringRestIntegrationTest {
                         .queryParam("filter.objectTypeCode", objectType))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items[0].values.PURCHASE_VOLUME").value("12.0000"))
+                .andExpect(jsonPath("$.data.items[0].values.MKT_REPORTED_AT").isNotEmpty())
                 .andExpect(jsonPath("$.data.items[0].values.MKT_ACTUAL_TRADE_PRICE").value("2420.0000"))
                 .andExpect(jsonPath("$.data.items[0].allowedActions[0]").value("VIEW"));
     }
@@ -159,6 +175,75 @@ class MarketMonitoringRestIntegrationTest {
         org.assertj.core.api.Assertions.assertThat(recordCount()).isEqualTo(before);
     }
 
+    @Test
+    void stateTransitionsKeepReportedAtAndUseTheApplicationClockForUpdatedAt() throws Exception {
+        String approvedId = create("CORN", "FEED_MILL", "MOISTURE");
+        resetTransitionTimes(approvedId);
+
+        mockMvc.perform(post("/api/v1/market-records/{id}/submit", approvedId)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.reportedAt").value("2026-08-02T00:00:00Z"));
+        assertTransitionTimes(approvedId);
+
+        resetTransitionTimes(approvedId);
+        mockMvc.perform(post("/api/v1/market-records/{id}/approve", approvedId)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.reportedAt").value("2026-08-02T00:00:00Z"));
+        assertTransitionTimes(approvedId);
+
+        String returnedId = create("CORN", "FEED_MILL", "MOISTURE");
+        mockMvc.perform(post("/api/v1/market-records/{id}/submit", returnedId)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0}"))
+                .andExpect(status().isOk());
+        resetTransitionTimes(returnedId);
+        mockMvc.perform(post("/api/v1/market-records/{id}/return", returnedId)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1,\"reason\":\"请补充凭证\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.reportedAt").value("2026-08-02T00:00:00Z"));
+        assertTransitionTimes(returnedId);
+    }
+
+    private void resetTransitionTimes(String id) {
+        JdbcClient client = JdbcClient.create(dataSource);
+        client.sql("""
+                        UPDATE market.market_record
+                        SET reported_at = '2026-08-02T08:00:00+08:00',
+                            updated_at = '2026-08-02T08:00:00+08:00'
+                        WHERE record_id = :id
+                        """).param("id", id).update();
+    }
+
+    private void assertTransitionTimes(String id) {
+        JdbcClient client = JdbcClient.create(dataSource);
+        org.assertj.core.api.Assertions.assertThat(client.sql("""
+                        SELECT reported_at = '2026-08-02T00:00:00Z'::timestamptz
+                        FROM market.market_record WHERE record_id = :id
+                        """).param("id", id).query(Boolean.class).single()).isTrue();
+        org.assertj.core.api.Assertions.assertThat(client.sql("""
+                        SELECT updated_at = '2026-08-03T04:05:06Z'::timestamptz
+                        FROM market.market_record WHERE record_id = :id
+                        """).param("id", id).query(Boolean.class).single()).isTrue();
+    }
+
+    @Test
+    void definitionRejectsUnknownCaseVariantBlankAndRepeatedProductContexts() throws Exception {
+        for (String product : List.of("UNKNOWN", "corn", " ")) {
+            mockMvc.perform(get("/api/v1/market-record-definitions").queryParam("productCode", product))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error.code").value("INVALID_MARKET_RECORD"));
+        }
+        mockMvc.perform(get("/api/v1/market-record-definitions")
+                        .queryParam("productCode", "CORN", "RICE"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_MARKET_RECORD"));
+    }
+
     private String create(String product, String objectType, String qualityCode) throws Exception {
         return mockMvc.perform(post("/api/v1/market-records")
                         .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
@@ -182,6 +267,17 @@ class MarketMonitoringRestIntegrationTest {
     private long recordCount() {
         return JdbcClient.create(dataSource).sql("SELECT count(*) FROM market.market_record")
                 .query(Long.class).single();
+    }
+
+    @TestConfiguration(proxyBeanMethods = false)
+    static class FixedClockConfiguration {
+        @Bean
+        @Primary
+        Clock fixedMarketClock() {
+            return Clock.fixed(
+                    Instant.parse("2026-08-03T04:05:06Z"),
+                    ZoneId.of("Asia/Shanghai"));
+        }
     }
 
     private static Stream<Arguments> allApplicableContexts() {

@@ -12,6 +12,7 @@ import com.cofco.qiqihar.graintrade.market.domain.MarketMonitoringRecord;
 import com.cofco.qiqihar.graintrade.market.domain.MarketTradeDirection;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
+import com.cofco.qiqihar.graintrade.shared.interfaceadapter.StrictQueryParameters;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
@@ -19,6 +20,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.http.HttpStatus;
+import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -43,9 +45,13 @@ public class MarketMonitoringCommandController {
 
     @GetMapping("/api/v1/market-record-definitions")
     ApiResponse<DefinitionResponse> definition(
-            @RequestParam String productCode,
-            @RequestParam(required = false) String objectTypeCode) {
-        return new ApiResponse<>(DefinitionResponse.from(service.definition(productCode, objectTypeCode)));
+            @RequestParam MultiValueMap<String, String> parameters) {
+        StrictQueryParameters parsed = StrictQueryParameters.parse(
+                parameters,
+                name -> name.equals("productCode") || name.equals("objectTypeCode"),
+                () -> invalid("Invalid market definition context"));
+        return new ApiResponse<>(DefinitionResponse.from(service.definition(
+                parsed.required("productCode"), parsed.optional("objectTypeCode"))));
     }
 
     @PostMapping("/api/v1/market-records")
@@ -124,11 +130,11 @@ public class MarketMonitoringCommandController {
     }
 
     record CoreFieldResponse(
-            String code, String label, String controlType, String unit,
+            String code, String label, String controlType, String unit, String description,
             Integer precision, Integer scale, int sortOrder, List<OptionResponse> options) {
         static CoreFieldResponse from(MarketCoreFieldDefinition field) {
             return new CoreFieldResponse(
-                    field.code(), field.label(), field.controlType(), field.unit(),
+                    field.code(), field.label(), field.controlType(), field.unit(), field.description(),
                     field.precision(), field.scale(), field.sortOrder(),
                     field.options().stream().map(OptionResponse::from).toList());
         }

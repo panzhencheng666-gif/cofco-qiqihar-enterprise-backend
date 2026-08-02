@@ -31,7 +31,8 @@ class MarketV18MasterDataTest {
                 FROM platform.market_core_field_definition ORDER BY sort_order
                 """)).containsExactly(
                         "MKT_OBJECT_TYPE:对象类型:SELECT:10", "MKT_REGION:地区:REGION_HIERARCHY:20",
-                        "MKT_TRADE_DATE:交易日期:DATE:30", "MKT_TRADE_DIRECTION:买卖方向:SELECT:40",
+                        "MKT_TRADE_DATE:交易日期:DATE:30", "MKT_REPORTED_AT:填报时间:READONLY_DATETIME:35",
+                        "MKT_TRADE_DIRECTION:买卖方向:SELECT:40",
                         "MKT_PURCHASE_BASE_PRICE:采购基础价:DECIMAL:50", "MKT_SALE_BASE_PRICE:销售基础价:DECIMAL:60",
                         "MKT_CARRIAGE_BOARD_AMOUNT:车板组成:DECIMAL:70", "MKT_PACKAGING_FORM:包装形态:SELECT:80",
                         "MKT_PACKAGING_AMOUNT:包装组成:DECIMAL:90", "MKT_FREIGHT_AMOUNT:运费组成:DECIMAL:100",
@@ -60,6 +61,33 @@ class MarketV18MasterDataTest {
                     WHERE a.product_code = '%s' AND a.object_type_code = '%s' AND d.category = 'QUALITY'
                     """.formatted(values[0], values[1]))).isPositive();
         }
+    }
+
+    @Test
+    void exposesReportedAtAndPriceSemanticsFromForwardOnlyMarketMasterData() throws SQLException {
+        assertThat(rows("""
+                SELECT code || ':' || label || ':' || control_type || ':' || sort_order
+                FROM platform.market_core_field_definition
+                WHERE code = 'MKT_REPORTED_AT'
+                """)).containsExactly("MKT_REPORTED_AT:填报时间:READONLY_DATETIME:35");
+        assertThat(rows("""
+                SELECT field_code || ':' || coalesce(description, 'null')
+                FROM platform.page_column_group_field
+                WHERE business_domain = 'MARKET' AND page_kind = 'MONITORING'
+                  AND product_code = 'CORN'
+                  AND field_code IN ('MKT_PURCHASE_BASE_PRICE', 'MKT_SALE_BASE_PRICE',
+                                     'MKT_ACTUAL_TRADE_PRICE', 'MKT_REPORTED_AT')
+                ORDER BY sort_order
+                """)).containsExactly(
+                        "MKT_REPORTED_AT:null",
+                        "MKT_PURCHASE_BASE_PRICE:采购基础价未包含车板、包装和运费组成",
+                        "MKT_SALE_BASE_PRICE:销售基础价未包含车板、包装和运费组成",
+                        "MKT_ACTUAL_TRADE_PRICE:实际成交价已包含车板、包装和运费组成");
+        assertThat(singleLong("""
+                SELECT count(*) FROM platform.page_definition_field
+                WHERE business_domain = 'MARKET' AND page_kind = 'MONITORING'
+                  AND field_code = 'MKT_REPORTED_AT'
+                """)).isEqualTo(3);
     }
 
     private List<String> rows(String sql) throws SQLException {

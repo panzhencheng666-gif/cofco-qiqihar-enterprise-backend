@@ -13,6 +13,15 @@ public interface PageDefinitionQuery {
 
     BusinessPageDefinition find(BusinessPageKey key);
 
+    default boolean hasDefinition(String domain, String pageKind, String productCode) {
+        try {
+            find(new BusinessPageKey(domain, pageKind, productCode));
+            return true;
+        } catch (IllegalArgumentException | ResourceNotFoundException exception) {
+            return false;
+        }
+    }
+
     default boolean allowsListQuery(
             String domain,
             String pageKind,

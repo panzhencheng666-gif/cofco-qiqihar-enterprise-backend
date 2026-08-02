@@ -68,9 +68,11 @@ public class MarketMonitoringService {
 
     @Transactional(readOnly = true)
     public MarketFormDefinition definition(String productCode, String objectTypeCode) {
-        if (productCode == null || productCode.isBlank()
-                || (objectTypeCode != null
-                    && !repository.isApplicableObjectType(productCode, objectTypeCode))) {
+        if (!pageDefinitions.hasDefinition(DOMAIN, PAGE_KIND, productCode)) {
+            throw invalid("Invalid market definition context");
+        }
+        if (objectTypeCode != null
+                && !repository.isApplicableObjectType(productCode, objectTypeCode)) {
             throw invalid("Invalid market definition context");
         }
         List<MarketFactCategory> categories = repository.findFactCategories().stream()
@@ -165,7 +167,8 @@ public class MarketMonitoringService {
         MarketMonitoringRecord existing = required(id);
         if (expectedVersion != existing.version()) throw stale();
         try {
-            return view(repository.updateState(command.apply(existing), expectedVersion, actor.id()));
+            return view(repository.updateState(
+                    command.apply(existing), expectedVersion, actor.id(), clock.instant()));
         } catch (MarketValidationException exception) {
             throw invalid(exception.getMessage());
         } catch (IllegalStateException exception) {

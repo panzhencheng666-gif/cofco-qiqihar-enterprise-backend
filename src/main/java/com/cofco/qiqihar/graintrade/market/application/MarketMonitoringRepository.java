@@ -7,6 +7,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.time.Instant;
 
 public interface MarketMonitoringRepository {
     PagedResult<MarketListRow> findPage(MarketRecordQuery query);
@@ -19,5 +20,6 @@ public interface MarketMonitoringRepository {
     List<MarketCoreFieldDefinition> findCoreFields(String productCode);
     MarketMonitoringRecord insert(MarketMonitoringRecord record, String actorId);
     MarketMonitoringRecord updateFacts(MarketMonitoringRecord record, long expectedVersion, String actorId);
-    MarketMonitoringRecord updateState(MarketMonitoringRecord record, long expectedVersion, String actorId);
+    MarketMonitoringRecord updateState(
+            MarketMonitoringRecord record, long expectedVersion, String actorId, Instant updatedAt);
 }
