@@ -1,5 +1,35 @@
 # Task 5 implementation report — production monitoring
 
+## Round-six disposition
+
+Both Important findings in `task-5-review-round6.md` are fixed. This round changes only the formal frontend E2E fixture, page object, and browser specifications; backend production code and V1–V16 remain untouched.
+
+- The fixture's production object-type contract now uses the formal V3/V16 codes and labels: `FARMER` / 农户, `VILLAGE_COMMITTEE` / 村委会, and `AGRICULTURAL_TECH_STATION` / 农技站. `VILLAGE` appears only as an explicitly rejected negative probe.
+- Production-list routing now validates before any successful fulfillment: the method must be GET, `productCode` must be CORN/SOYBEAN/RICE, `pageKind` must occur once and equal `MONITORING`, page number must be a nonnegative safe integer, page size must be one of the formal 20/50/100 options, and any object-type filter must use a formal production code.
+- Invalid list requests are recorded in `unexpectedRequests`, return a controlled 400 with `INVALID_E2E_PRODUCTION_LIST_QUERY`, and never enter `listQueries`. The existing application cases continue to require `unexpectedRequests` to remain empty, so a future client omission or contract mismatch fails the browser gate.
+- A dedicated real-browser contract case performs fetches through the installed Playwright route fixture. It proves all three formal object types succeed while missing/wrong `pageKind`, legacy `VILLAGE`, invalid product/page/page-size values, and a non-GET method fail closed.
+- All three canonical product cases now assert the exact browser-rendered object-type option labels and values, in addition to the existing canonical UI/form/list coverage.
+
+## Round-six TDD evidence
+
+- RED: the targeted browser run passed only 1/5. CORN, SOYBEAN, and RICE each rendered the legacy `{行政村, VILLAGE}` option instead of the formal codes, and the contract probe exposed the former open/throw behavior for invalid list requests.
+- GREEN: after the minimal fixture validation and formal option correction, the same targeted Chromium run passed 5/5.
+
+## Round-six verification
+
+- `npm run verify` passed: Prettier, ESLint, dependency-cruiser (54 modules / 138 dependencies, zero violations), the read-only architecture test, 15 Vitest files / 88 tests, TypeScript, Vite build, and 5 Playwright Chromium cases.
+- `npm run e2e -- --repeat-each=3` passed 15/15, including three repetitions each of the fail-closed fixture contract and pending-write back/forward race.
+- `npm audit` reported 0 vulnerabilities, and `git diff --check` passed. The formal backend, V1–V16, legacy/dashboard repositories, and frontend production sources remained untouched. No push was performed.
+
+## Round-six commits
+
+- Frontend fixture contract: `de0020c test(production): harden browser API fixture`
+- This report is committed separately after the frontend hash was known.
+
+## Round-six hand-off
+
+- Both round-six findings have targeted real-browser regression coverage; final independent review is the next gate.
+
 ## Round-five disposition
 
 Both Important findings in `task-5-review-round5.md` are fixed. The changes are test/tooling only: backend production code and V1–V16 remain untouched.
