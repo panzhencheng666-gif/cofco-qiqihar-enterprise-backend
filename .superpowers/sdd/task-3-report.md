@@ -242,3 +242,26 @@
 - 前端 fresh `npm run verify`：Prettier、ESLint、dependency-cruiser 全部通过；9 files、27 tests 全部通过；TypeScript/Vite build 105 modules transformed。
 - `git diff --exit-code a97695a -- src/main/resources/db/migration` 通过，本轮未改写 V1–V8。两仓 `git diff --check` 通过；扫描无旧 endpoint、`getFirst()` 歧义读取、客户端二次分页、前端生产业务 hardcode 或新增生产 seed。
 - 旧 dashboard backend/frontend 仓库继续保持只读；未修改计划或 ledger。
+
+## Round 5 复核修复（2026-08-02）
+
+### 提交
+
+- 后端修复提交：`dadedb0`（`fix: parse market pagination from raw query`）。
+- 前端无代码或测试改动；仍执行 fresh 全量门禁。
+
+### 原始参数优先的数值解析
+
+- `MarketRecordController` 不再将 `pageNumber`、`pageSize` 预绑定为 `int`，也不再单独预绑定其他核心参数；唯一 HTTP 输入是原始 `MultiValueMap<String, String>`，因此 Spring 数值转换不会先于控制器协议校验发生。
+- 控制器先完整检查全部参数名、每个参数恰好一个值、值非空白，再读取必需核心参数并手工执行整数解析与范围校验；缺失、空白、非数字、溢出、重复及混合非法值均统一返回受控 `400 INVALID_MARKET_RECORD_QUERY`。未提供 `pageNumber` 时仍使用协议默认值 `0`。
+- 动态 filter 的页面定义白名单仍由 application 的 `DefaultMarketRecordReader` 通过 `PageDefinitionQuery.allowsListQuery` 执行；controller 只承担 HTTP 协议形状和标量解析，没有承载页面事实。
+- 真实 Spring/PostgreSQL REST 覆盖空白+合法重复 `pageSize`、非数字+合法重复 `pageNumber`、单个空白 `pageSize`、单个非数字 `pageNumber` 和合法数值分页；Round 4 的所有名称、多值、filter 和页面定义场景继续保留。
+
+### RED → GREEN 与最终门禁
+
+- REST RED：16 tests 中 4 failures、0 errors。四个新增非法数值场景均由 Spring `MethodArgumentTypeMismatchException` 提前拦截，实际错误码为通用 `BAD_REQUEST`，而不是期望的 `INVALID_MARKET_RECORD_QUERY`；合法数值场景和全部既有场景通过。
+- 改为 raw `MultiValueMap` 优先校验并手工解析后，同一目标测试 16/16 通过，0 failures、0 errors。
+- 后端 fresh `JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home mvn verify`：77 tests，0 failures，0 errors；可执行 jar 构建成功。
+- 前端 fresh `npm run verify`：Prettier、ESLint、dependency-cruiser 全部通过；9 files、27 tests 全部通过；TypeScript/Vite build 105 modules transformed。
+- `git diff --exit-code a97695a -- src/main/resources/db/migration` 通过，本轮未改写 V1–V8。两仓 `git diff --check` 通过；正式源码扫描无旧 endpoint、`getFirst()`、market controller 数值预绑定、客户端二次分页或前端生产业务 hardcode；V8 无生产 seed。
+- 旧 dashboard backend/frontend 仓库继续保持只读；未修改计划或 ledger。
