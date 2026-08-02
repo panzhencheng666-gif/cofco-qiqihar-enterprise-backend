@@ -90,6 +90,41 @@ class ProductionRecordRestIntegrationTest {
                 .andExpect(jsonPath("$.data.costs.LAND_RENT").value("4.0000"));
     }
 
+    @ParameterizedTest(name = "{0} / {2} approval preserves all four formal fact categories")
+    @MethodSource("farmerAndVillageContexts")
+    void farmerAndVillageApprovePreservesAllFormalFacts(
+            String product, String qualityCode, String objectType) throws Exception {
+        expectDefinitionFacts(product, objectType, qualityCode, true);
+        String id = create(fullDraftBody(product, objectType, qualityCode, null));
+
+        mockMvc.perform(post("/api/v1/production-records/{id}/submit", id)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"))
+                .andExpect(jsonPath("$.data.version").value(1))
+                .andExpect(jsonPath("$.data.quality." + qualityCode).value("3.0000"))
+                .andExpect(jsonPath("$.data.costs.LAND_RENT").value("4.0000"))
+                .andExpect(jsonPath("$.data.insurance.INSURANCE_AMOUNT").value("5.0000"))
+                .andExpect(jsonPath("$.data.subsidies.SUBSIDY_AMOUNT").value("6.0000"));
+
+        mockMvc.perform(post("/api/v1/production-records/{id}/approve", id)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("APPROVED"))
+                .andExpect(jsonPath("$.data.version").value(2))
+                .andExpect(jsonPath("$.data.allowedActions.length()").value(1))
+                .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"))
+                .andExpect(jsonPath("$.data.quality." + qualityCode).value("3.0000"))
+                .andExpect(jsonPath("$.data.costs.LAND_RENT").value("4.0000"))
+                .andExpect(jsonPath("$.data.insurance.INSURANCE_AMOUNT").value("5.0000"))
+                .andExpect(jsonPath("$.data.subsidies.SUBSIDY_AMOUNT").value("6.0000"));
+
+        expectApprovedFullFactDetail(id, product, objectType, qualityCode);
+        expectApprovedFullFactList(product, objectType, qualityCode);
+    }
+
     @ParameterizedTest(name = "{0} / AGRICULTURAL_TECH_STATION round-trips quality only")
     @MethodSource("productQualityContexts")
     void agriculturalTechStationRoundTripsOnlyItsConfirmedQualityFact(
@@ -267,6 +302,37 @@ class ProductionRecordRestIntegrationTest {
                         .queryParam("filter.objectTypeCode", objectType))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].values." + qualityCode).value("3.0000"))
+                .andExpect(jsonPath("$.data.items[0].values.LAND_RENT").value("4.0000"))
+                .andExpect(jsonPath("$.data.items[0].values.INSURANCE_AMOUNT").value("5.0000"))
+                .andExpect(jsonPath("$.data.items[0].values.SUBSIDY_AMOUNT").value("6.0000"));
+    }
+
+    private void expectApprovedFullFactDetail(
+            String id, String product, String objectType, String qualityCode) throws Exception {
+        mockMvc.perform(get("/api/v1/production-records/{id}", id))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.productCode").value(product))
+                .andExpect(jsonPath("$.data.objectTypeCode").value(objectType))
+                .andExpect(jsonPath("$.data.status").value("APPROVED"))
+                .andExpect(jsonPath("$.data.version").value(2))
+                .andExpect(jsonPath("$.data.quality." + qualityCode).value("3.0000"))
+                .andExpect(jsonPath("$.data.costs.LAND_RENT").value("4.0000"))
+                .andExpect(jsonPath("$.data.insurance.INSURANCE_AMOUNT").value("5.0000"))
+                .andExpect(jsonPath("$.data.subsidies.SUBSIDY_AMOUNT").value("6.0000"));
+    }
+
+    private void expectApprovedFullFactList(
+            String product, String objectType, String qualityCode) throws Exception {
+        mockMvc.perform(get("/api/v1/production-records")
+                        .queryParam("productCode", product).queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0").queryParam("pageSize", "100")
+                        .queryParam("filter.objectTypeCode", objectType))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_STATUS").value("已审核"))
+                .andExpect(jsonPath("$.data.items[0].allowedActions.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].allowedActions[0]").value("VIEW"))
                 .andExpect(jsonPath("$.data.items[0].values." + qualityCode).value("3.0000"))
                 .andExpect(jsonPath("$.data.items[0].values.LAND_RENT").value("4.0000"))
                 .andExpect(jsonPath("$.data.items[0].values.INSURANCE_AMOUNT").value("5.0000"))
