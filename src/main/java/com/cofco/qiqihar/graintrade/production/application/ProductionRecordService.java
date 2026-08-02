@@ -2,6 +2,7 @@ package com.cofco.qiqihar.graintrade.production.application;
 
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecord;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecordQuery;
+import com.cofco.qiqihar.graintrade.production.domain.ProductionValidationException;
 import com.cofco.qiqihar.graintrade.shared.application.AuthenticationRequiredException;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
@@ -13,10 +14,10 @@ import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.List;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -63,10 +64,15 @@ public class ProductionRecordService {
     public ProductionRecord create(ProductionDraft draft) {
         AuthenticatedActor actor = actor();
         validateDraft(draft);
-        ProductionRecord record = ProductionRecord.draft(UUID.randomUUID().toString(), draft.productCode(),
-                draft.objectTypeCode(), draft.regionCode(), draft.cultivarCode(), draft.surveyDate(), now(),
-                draft.cultivatedAreaMu(), draft.yieldPerMuKilograms(), draft.quality(), draft.costs(),
-                draft.insurance(), draft.subsidies());
+        ProductionRecord record;
+        try {
+            record = ProductionRecord.draft(UUID.randomUUID().toString(), draft.productCode(),
+                    draft.objectTypeCode(), draft.regionCode(), draft.cultivarCode(), draft.surveyDate(), now(),
+                    draft.cultivatedAreaMu(), draft.yieldPerMuKilograms(), draft.quality(), draft.costs(),
+                    draft.insurance(), draft.subsidies());
+        } catch (ProductionValidationException exception) {
+            throw invalidDraft(exception.getMessage());
+        }
         return repository.insert(record, actor.id());
     }
 
@@ -82,6 +88,8 @@ public class ProductionRecordService {
             revised = existing.revise(draft.productCode(), draft.objectTypeCode(), draft.regionCode(),
                     draft.cultivarCode(), draft.surveyDate(), now(), draft.cultivatedAreaMu(),
                     draft.yieldPerMuKilograms(), draft.quality(), draft.costs(), draft.insurance(), draft.subsidies());
+        } catch (ProductionValidationException exception) {
+            throw invalidDraft(exception.getMessage());
         } catch (IllegalStateException exception) {
             throw invalidTransition(exception);
         }
@@ -110,7 +118,7 @@ public class ProductionRecordService {
         if (expectedVersion != existing.version()) throw stale();
         try {
             return repository.updateState(command.apply(existing), expectedVersion, actor.id());
-        } catch (IllegalArgumentException exception) {
+        } catch (ProductionValidationException exception) {
             throw invalidDraft(exception.getMessage());
         } catch (IllegalStateException exception) {
             throw invalidTransition(exception);
@@ -118,32 +126,26 @@ public class ProductionRecordService {
     }
 
     private void validateDraft(ProductionDraft draft) {
-        try {
-            if (draft.surveyDate() == null || draft.surveyDate().isAfter(LocalDate.now(clock.withZone(REPORTING_ZONE)))) {
-                throw invalidDraft("Survey date cannot be in the future");
-            }
-            if (!repository.isKnownRegion(draft.regionCode())) throw invalidDraft("Unknown region");
-            if (!repository.isApplicableObjectType(draft.productCode(), draft.objectTypeCode())) {
-                throw new ClientRequestException("INAPPLICABLE_PRODUCTION_OBJECT_TYPE",
-                        "Object type is not applicable to this product");
-            }
-            if (draft.cultivarCode() != null && !repository.isApplicableCultivar(draft.productCode(), draft.cultivarCode())) {
-                throw new ClientRequestException("INAPPLICABLE_PRODUCTION_CULTIVAR",
-                        "Cultivar is not applicable to this product");
-            }
-            Map<String, Set<String>> facts = new LinkedHashMap<>();
-            facts.put("QUALITY", draft.quality().keySet());
-            facts.put("COST", draft.costs().keySet());
-            facts.put("INSURANCE", draft.insurance().keySet());
-            facts.put("SUBSIDY", draft.subsidies().keySet());
-            if (!repository.areApplicableFacts(draft.productCode(), draft.objectTypeCode(), facts)) {
-                throw new ClientRequestException("INAPPLICABLE_PRODUCTION_FACT",
-                        "One or more facts are not applicable to this production context");
-            }
-        } catch (ClientRequestException exception) {
-            throw exception;
-        } catch (RuntimeException exception) {
-            throw invalidDraft(exception.getMessage());
+        if (draft.surveyDate() == null || draft.surveyDate().isAfter(LocalDate.now(clock.withZone(REPORTING_ZONE)))) {
+            throw invalidDraft("Survey date cannot be in the future");
+        }
+        if (!repository.isKnownRegion(draft.regionCode())) throw invalidDraft("Unknown region");
+        if (!repository.isApplicableObjectType(draft.productCode(), draft.objectTypeCode())) {
+            throw new ClientRequestException("INAPPLICABLE_PRODUCTION_OBJECT_TYPE",
+                    "Object type is not applicable to this product");
+        }
+        if (draft.cultivarCode() != null && !repository.isApplicableCultivar(draft.productCode(), draft.cultivarCode())) {
+            throw new ClientRequestException("INAPPLICABLE_PRODUCTION_CULTIVAR",
+                    "Cultivar is not applicable to this product");
+        }
+        Map<String, Set<String>> facts = new LinkedHashMap<>();
+        facts.put("QUALITY", draft.quality().keySet());
+        facts.put("COST", draft.costs().keySet());
+        facts.put("INSURANCE", draft.insurance().keySet());
+        facts.put("SUBSIDY", draft.subsidies().keySet());
+        if (!repository.areApplicableFacts(draft.productCode(), draft.objectTypeCode(), facts)) {
+            throw new ClientRequestException("INAPPLICABLE_PRODUCTION_FACT",
+                    "One or more facts are not applicable to this production context");
         }
     }
 

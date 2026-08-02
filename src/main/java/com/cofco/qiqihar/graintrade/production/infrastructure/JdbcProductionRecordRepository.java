@@ -3,6 +3,7 @@ package com.cofco.qiqihar.graintrade.production.infrastructure;
 import com.cofco.qiqihar.graintrade.production.application.ProductionListItem;
 import com.cofco.qiqihar.graintrade.production.application.ProductionFactDefinition;
 import com.cofco.qiqihar.graintrade.production.application.ProductionRecordRepository;
+import com.cofco.qiqihar.graintrade.production.domain.ProductionActionPolicy;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecord;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecordQuery;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionStatus;
@@ -223,13 +224,9 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         values.put("PROD_ESTIMATED_OUTPUT", decimal(row.output()));
         values.put("PROD_STATUS", row.statusLabel() == null ? row.status().name() : row.statusLabel());
         facts.forEach((code, value) -> values.put(code, decimal(value)));
-        List<String> allowed = switch (row.status()) {
-            case DRAFT, RETURNED -> List.of("VIEW", "SUBMIT");
-            case PENDING_REVIEW -> List.of("VIEW", "APPROVE", "RETURN");
-            case APPROVED -> List.of("VIEW");
-        };
         return new ProductionListItem(row.id(), values,
-                allowed.stream().filter(configuredActions::contains).toList(), row.version());
+                ProductionActionPolicy.allowedActions(row.status()).stream()
+                        .filter(configuredActions::contains).toList(), row.version());
     }
 
     private Map<String, Map<String, BigDecimal>> categorizedFacts(String id) {

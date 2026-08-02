@@ -4,6 +4,7 @@ import com.cofco.qiqihar.graintrade.production.application.ProductionDraft;
 import com.cofco.qiqihar.graintrade.production.application.ProductionListItem;
 import com.cofco.qiqihar.graintrade.production.application.ProductionFactDefinition;
 import com.cofco.qiqihar.graintrade.production.application.ProductionRecordService;
+import com.cofco.qiqihar.graintrade.production.domain.ProductionActionPolicy;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecord;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecordQuery;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
@@ -13,13 +14,13 @@ import com.cofco.qiqihar.graintrade.shared.interfaceadapter.StrictQueryParameter
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.ArrayList;
 import org.springframework.http.HttpStatus;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -118,7 +119,7 @@ public class ProductionRecordController {
                 return new ProductionDraft(productCode, objectTypeCode, regionCode, cultivarCode, surveyDate,
                         decimal(cultivatedAreaMu), decimal(yieldPerMuKilograms), values(quality), values(costs),
                         values(insurance), values(subsidies));
-            } catch (RuntimeException exception) {
+            } catch (NumberFormatException exception) {
                 throw new ClientRequestException("INVALID_PRODUCTION_RECORD", "Production decimal values are invalid");
             }
         }
@@ -155,14 +156,8 @@ public class ProductionRecordController {
                     record.cultivarCode(), record.surveyDate(), record.reportedAt(), decimal(record.cultivatedAreaMu()),
                     decimal(record.yieldPerMuKilograms()), decimal(record.estimatedOutputKilograms()),
                     record.status().name(), record.returnReason(), values(record.quality()), values(record.costs()),
-                    values(record.insurance()), values(record.subsidies()), allowed(record), record.version());
-        }
-        private static List<String> allowed(ProductionRecord record) {
-            return switch (record.status()) {
-                case DRAFT, RETURNED -> List.of("SAVE", "SUBMIT");
-                case PENDING_REVIEW -> List.of("APPROVE", "RETURN");
-                case APPROVED -> List.of();
-            };
+                    values(record.insurance()), values(record.subsidies()),
+                    ProductionActionPolicy.allowedActions(record.status()), record.version());
         }
         private static String decimal(BigDecimal value) { return value.toPlainString(); }
         private static Map<String, String> values(Map<String, BigDecimal> values) {

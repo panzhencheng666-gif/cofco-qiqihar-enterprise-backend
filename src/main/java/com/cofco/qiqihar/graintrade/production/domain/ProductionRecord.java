@@ -6,7 +6,6 @@ import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.Objects;
 
 /** A production aggregate. Every normalized fact category is rehydrated before any transition. */
 public record ProductionRecord(
@@ -38,28 +37,28 @@ public record ProductionRecord(
         requireText(productCode, "product code");
         requireText(objectTypeCode, "object type");
         requireText(regionCode, "region code");
-        Objects.requireNonNull(surveyDate, "survey date must not be null");
-        Objects.requireNonNull(reportedAt, "reported at must not be null");
-        Objects.requireNonNull(status, "status must not be null");
+        if (surveyDate == null) throw invalid("survey date must not be null");
+        if (reportedAt == null) throw invalid("reported at must not be null");
+        if (status == null) throw invalid("status must not be null");
         if (surveyDate.isAfter(reportedAt.toLocalDate())) {
-            throw new IllegalArgumentException("survey date cannot be after reported at date");
+            throw invalid("survey date cannot be after reported at date");
         }
         cultivatedAreaMu = input(cultivatedAreaMu, "cultivated area");
         yieldPerMuKilograms = input(yieldPerMuKilograms, "yield per mu");
         BigDecimal calculated = cultivatedAreaMu.multiply(yieldPerMuKilograms)
                 .setScale(INPUT_SCALE, RoundingMode.HALF_UP);
         if (calculated.compareTo(MAX_OUTPUT) > 0) {
-            throw new IllegalArgumentException("estimated output exceeds database precision");
+            throw invalid("estimated output exceeds database precision");
         }
         estimatedOutputKilograms = decimal(estimatedOutputKilograms, MAX_OUTPUT, "estimated output");
         if (calculated.compareTo(estimatedOutputKilograms) != 0) {
-            throw new IllegalArgumentException("estimated output must equal normalized area multiplied by normalized yield");
+            throw invalid("estimated output must equal normalized area multiplied by normalized yield");
         }
         quality = facts(quality, "quality");
         costs = facts(costs, "cost");
         insurance = facts(insurance, "insurance");
         subsidies = facts(subsidies, "subsidy");
-        if (version < 0) throw new IllegalArgumentException("version must not be negative");
+        if (version < 0) throw invalid("version must not be negative");
     }
 
     public static ProductionRecord draft(
@@ -136,18 +135,19 @@ public record ProductionRecord(
     }
 
     private static BigDecimal decimal(BigDecimal value, BigDecimal maximum, String description) {
-        Objects.requireNonNull(value, description + " must not be null");
+        if (value == null) throw invalid(description + " must not be null");
         BigDecimal normalized = value.setScale(INPUT_SCALE, RoundingMode.HALF_UP);
-        if (normalized.signum() < 0) throw new IllegalArgumentException(description + " must not be negative");
+        if (normalized.signum() < 0) throw invalid(description + " must not be negative");
         if (normalized.compareTo(maximum) > 0 || normalized.precision() > INPUT_PRECISION + 4) {
-            throw new IllegalArgumentException(description + " exceeds database precision");
+            throw invalid(description + " exceeds database precision");
         }
         return normalized;
     }
 
     private static Map<String, BigDecimal> facts(Map<String, BigDecimal> values, String category) {
         Map<String, BigDecimal> normalized = new LinkedHashMap<>();
-        Objects.requireNonNull(values, category + " facts must not be null").forEach((code, value) -> {
+        if (values == null) throw invalid(category + " facts must not be null");
+        values.forEach((code, value) -> {
             requireText(code, category + " fact code");
             normalized.put(code, input(value, category + " fact value"));
         });
@@ -155,6 +155,10 @@ public record ProductionRecord(
     }
 
     private static void requireText(String value, String description) {
-        if (value == null || value.isBlank()) throw new IllegalArgumentException(description + " must not be blank");
+        if (value == null || value.isBlank()) throw invalid(description + " must not be blank");
+    }
+
+    private static ProductionValidationException invalid(String message) {
+        return new ProductionValidationException(message);
     }
 }
