@@ -183,3 +183,39 @@
 - 前端最终 `npm run verify`：Prettier、ESLint、dependency-cruiser 全部通过；9 files、27 tests 全部通过；TypeScript/Vite build 105 modules transformed。
 - 两仓 `git diff --check` 通过。正式源码扫描未发现 `/api/v1/market-collections`，未发现 `records.slice`、`items.slice` 或 `.slice(start` 的客户端分页；前端非测试源码未发现 `CORN/SOYBEAN/RICE/玉米/大豆/稻谷/2026-07-31/2026-08-02` 业务 hardcode；V7 未发现 `INSERT` 或测试记录。
 - 旧 dashboard backend/frontend 仓库继续保持只读；未修改计划或 ledger。
+
+## Round 3 复核修复（2026-08-02）
+
+### 提交
+
+- 后端修复提交：`a97695a`（`fix: validate market query and scalar values`）。
+- 前端跨仓契约提交：`4524e94`（`test: align market record scalar contract`）。
+
+### 服务端页面定义白名单
+
+- `MarketRecordController` 继续只解析 HTTP 参数和基本协议形状，没有承载页面定义规则。
+- `DefaultMarketRecordReader` 通过 shared application 的 `PageDefinitionQuery.allowsListQuery` 加载真实 `BusinessPageDefinition`；pageSize 必须属于 `pageSizeOptions`，全部 filter code 必须存在于 definition filters，否则抛出受控 `400 INVALID_MARKET_RECORD_QUERY`，非法查询不会到达 PostgreSQL repository。
+- 不再单独用 presentation existence 查询代替页面定义校验；未知页面仍由定义查询返回 `404 PAGE_DEFINITION_NOT_FOUND`。
+- 动态 filter 集成测试先在 test DB 的 `platform.page_filter_definition` 声明 `subjectName`，测试结束即删除；没有绕过页面事实或向生产迁移写入该 filter。
+
+### 动态单元格标量契约
+
+- 统一跨仓行值契约为 `string | number | null`。`MarketRecord` domain 构造时拒绝 boolean、array 和 nested object；JDBC JSON 解码不能把其他类型带入 application/HTTP。
+- 新增 forward-only `V8__enforce_scalar_market_record_values.sql`。immutable SQL predicate 配合 table CHECK 检查 JSON object 的每个顶层 value，只允许 `string`、`number`、`null`；数据库测试分别覆盖 boolean、array、nested object 非法插入。
+- V7 未修改。V8 不包含生产 `INSERT`，已有空生产投影继续为空。
+- 后端 Spring/PostgreSQL REST 与前端真实 adapter fixture 使用同一结构：`record-41` 的 values 为 `{subjectName:"记录41", score:41.5, note:null}`；前端 zod schema 继续严格拒绝其他 JSON 类型。
+
+### RED → GREEN
+
+- 首个 RED 为 test compile 失败：`DefaultMarketRecordReader` 只有 repository 构造参数，缺少加载 `PageDefinitionQuery` 的应用层依赖。
+- 仅接入该依赖后获得行为 RED：目标集合 14 tests 中 7 failures、0 errors。两项 application 测试证明非法 size/filter 到达 repository；domain 测试证明 boolean 未被拒绝；REST `pageSize=7` 期望 400 实际 200；Boot/Flyway 期望 8 个迁移实际 7；数据库 boolean 插入未被拒绝。
+- 实现 application 白名单、domain guard 和 V8 后，同一目标集合 14/14 通过；拆分 size/filter REST 场景后 `MarketRecordRestIntegrationTest` 5/5 通过。前端 adapter 定向 1 file、2 tests 通过。
+- 首次后端全量门禁 65 tests 中 1 error：market application 直接引用 shared domain 未暴露类型，违反 Spring Modulith 边界。将定义加载与规则读取封装在已暴露的 shared application 方法，market application 只消费 boolean 并决定受控错误；架构与 application 定向 6/6 通过。
+
+### 最终门禁与扫描
+
+- 后端 fresh `JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home mvn verify`：66 tests，0 failures，0 errors；可执行 jar 构建成功。
+- 前端 fresh `npm run verify`：Prettier、ESLint、dependency-cruiser 全部通过；9 files、27 tests 全部通过；TypeScript/Vite build 105 modules transformed。
+- `git diff --exit-code 4c57def -- V1...V7` 通过；V1–V7 SHA-256 分别为 `843903c9...`、`6373625c...`、`59054dce...`、`52b5b3e0...`、`b7969f21...`、`ba67fe85...`、`7413c84e...`，均未改写。
+- 两仓 `git diff --check` 通过。正式源码无旧 `/api/v1/market-collections`；前端无 `records.slice`、`items.slice` 或 `.slice(start` 二次分页；前端非测试源码无产品/日期业务 hardcode；V8 无生产 seed。
+- 旧 dashboard backend/frontend 仓库继续保持只读；未修改计划或 ledger。
