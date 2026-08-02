@@ -28,22 +28,6 @@ public class JdbcMarketRecordRepository implements MarketRecordRepository {
     }
 
     @Override
-    public boolean pageContextExists(String productCode, String pageKind) {
-        return jdbc.sql("""
-                        SELECT EXISTS (
-                            SELECT 1
-                            FROM platform.page_presentation
-                            WHERE product_code = :productCode
-                              AND business_domain = 'MARKET'
-                              AND page_kind = :pageKind)
-                        """)
-                .param("productCode", productCode)
-                .param("pageKind", pageKind)
-                .query(Boolean.class)
-                .single();
-    }
-
-    @Override
     public PagedResult<MarketRecord> findPage(MarketRecordQuery query) {
         String filtersJson = json(query.filters());
         long totalElements = statement("""

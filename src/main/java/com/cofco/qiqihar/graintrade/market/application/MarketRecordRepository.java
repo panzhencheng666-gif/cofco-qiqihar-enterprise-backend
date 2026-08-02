@@ -6,7 +6,5 @@ import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 
 public interface MarketRecordRepository {
 
-    boolean pageContextExists(String productCode, String pageKind);
-
     PagedResult<MarketRecord> findPage(MarketRecordQuery query);
 }

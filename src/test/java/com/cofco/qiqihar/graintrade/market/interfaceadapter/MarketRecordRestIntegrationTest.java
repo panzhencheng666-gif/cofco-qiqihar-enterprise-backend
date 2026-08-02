@@ -4,6 +4,7 @@ import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.time.OffsetDateTime;
 import javax.sql.DataSource;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -12,6 +13,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.web.servlet.MockMvc;
 
+import static org.hamcrest.Matchers.nullValue;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -31,6 +33,16 @@ class MarketRecordRestIntegrationTest {
     void replaceTestProjectionFixtures() {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         jdbc.sql("DELETE FROM market.market_record_projection").update();
+        jdbc.sql("""
+                        INSERT INTO platform.page_filter_definition
+                            (product_code, business_domain, page_kind, code, label,
+                             control_type, placeholder, sort_order)
+                        VALUES ('SOYBEAN', 'MARKET', 'QUALITY', 'subjectName', '记录名称',
+                                'TEXT', '', 10)
+                        ON CONFLICT (product_code, business_domain, page_kind, code)
+                            DO NOTHING
+                        """)
+                .update();
         for (int index = 1; index <= 41; index++) {
             jdbc.sql("""
                             INSERT INTO market.market_record_projection
@@ -41,16 +53,29 @@ class MarketRecordRestIntegrationTest {
                             """)
                     .param("recordId", "record-" + index)
                     .param("observedAt", OffsetDateTime.parse("2026-08-02T00:00:00Z").plusMinutes(index))
-                    .param("values", "{\"subjectName\":\"记录" + index + "\"}")
+                    .param("values", "{\"subjectName\":\"记录" + index
+                            + "\",\"score\":" + index + ".5,\"note\":null}")
                     .update();
         }
     }
 
+    @AfterEach
+    void removeDeclaredFilterFixture() {
+        JdbcClient.create(dataSource).sql("""
+                        DELETE FROM platform.page_filter_definition
+                        WHERE product_code = 'SOYBEAN'
+                          AND business_domain = 'MARKET'
+                          AND page_kind = 'QUALITY'
+                          AND code = 'subjectName'
+                        """)
+                .update();
+    }
+
     @Test
     void returnsCanonicalServerPagedProjectionForFirstSecondAndLastPages() throws Exception {
-        assertPage(0, "记录1", 20, 3);
-        assertPage(1, "记录21", 20, 3);
-        assertPage(2, "记录41", 1, 3);
+        assertPage(0, "记录1", 1.5, 20, 3);
+        assertPage(1, "记录21", 21.5, 20, 3);
+        assertPage(2, "记录41", 41.5, 1, 3);
     }
 
     @Test
@@ -79,8 +104,35 @@ class MarketRecordRestIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].id").value("record-21"));
     }
 
-    private void assertPage(int pageNumber, String firstSubject, int itemCount, int totalPages)
-            throws Exception {
+    @Test
+    void rejectsPageSizesOutsideTheLoadedDefinition() throws Exception {
+        mockMvc.perform(get("/api/v1/market-records")
+                        .queryParam("productCode", "SOYBEAN")
+                        .queryParam("pageKind", "QUALITY")
+                        .queryParam("pageNumber", "0")
+                        .queryParam("pageSize", "7"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_MARKET_RECORD_QUERY"));
+    }
+
+    @Test
+    void rejectsFilterCodesOutsideTheLoadedDefinition() throws Exception {
+        mockMvc.perform(get("/api/v1/market-records")
+                        .queryParam("productCode", "SOYBEAN")
+                        .queryParam("pageKind", "QUALITY")
+                        .queryParam("pageNumber", "0")
+                        .queryParam("pageSize", "20")
+                        .queryParam("filter.undeclared", "value"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_MARKET_RECORD_QUERY"));
+    }
+
+    private void assertPage(
+            int pageNumber,
+            String firstSubject,
+            double firstScore,
+            int itemCount,
+            int totalPages) throws Exception {
         mockMvc.perform(get("/api/v1/market-records")
                         .queryParam("productCode", "SOYBEAN")
                         .queryParam("pageKind", "QUALITY")
@@ -92,6 +144,8 @@ class MarketRecordRestIntegrationTest {
                 .andExpect(jsonPath("$.data.totalElements").value(41))
                 .andExpect(jsonPath("$.data.totalPages").value(totalPages))
                 .andExpect(jsonPath("$.data.items.length()").value(itemCount))
-                .andExpect(jsonPath("$.data.items[0].values.subjectName").value(firstSubject));
+                .andExpect(jsonPath("$.data.items[0].values.subjectName").value(firstSubject))
+                .andExpect(jsonPath("$.data.items[0].values.score").value(firstScore))
+                .andExpect(jsonPath("$.data.items[0].values.note").value(nullValue()));
     }
 }

@@ -61,7 +61,7 @@ class FlywayMigrationReplayTest {
                         Map.entry("5", -1133431193));
 
         MigrateResult upgradeResult = flyway().migrate();
-        assertThat(upgradeResult.migrationsExecuted).isEqualTo(2);
+        assertThat(upgradeResult.migrationsExecuted).isEqualTo(3);
         assertThat(migrationChecksums()).containsAllEntriesOf(versionFiveChecksums);
         assertThat(marketRecordCount()).isZero();
 
@@ -70,7 +70,7 @@ class FlywayMigrationReplayTest {
         MigrateResult secondResult = flyway().migrate();
 
         assertThat(secondResult.migrationsExecuted).isZero();
-        assertThat(migrationChecksums()).hasSize(7);
+        assertThat(migrationChecksums()).hasSize(8);
         assertThat(masterDataCounts()).isEqualTo(firstCounts);
         assertThat(firstCounts).containsEntry("region", 29L)
                 .containsEntry("product", 3L)
@@ -208,6 +208,29 @@ class FlywayMigrationReplayTest {
         } finally {
             deletePaginationMoveFixtures();
         }
+    }
+
+    @Test
+    @Order(5)
+    void rejectsNonScalarMarketProjectionValuesAtTheDatabaseBoundary() {
+        assertInsertRejected("""
+                INSERT INTO market.market_record_projection
+                    (record_id, product_code, business_domain, page_kind, observed_at, values)
+                VALUES ('invalid-boolean', 'SOYBEAN', 'MARKET', 'QUALITY', now(),
+                        '{"active":true}'::jsonb)
+                """);
+        assertInsertRejected("""
+                INSERT INTO market.market_record_projection
+                    (record_id, product_code, business_domain, page_kind, observed_at, values)
+                VALUES ('invalid-array', 'SOYBEAN', 'MARKET', 'QUALITY', now(),
+                        '{"tags":["a"]}'::jsonb)
+                """);
+        assertInsertRejected("""
+                INSERT INTO market.market_record_projection
+                    (record_id, product_code, business_domain, page_kind, observed_at, values)
+                VALUES ('invalid-object', 'SOYBEAN', 'MARKET', 'QUALITY', now(),
+                        '{"nested":{"score":1}}'::jsonb)
+                """);
     }
 
     private Flyway flyway() {
