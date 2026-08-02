@@ -109,3 +109,37 @@
 - [x] 地区只加载 roots 或直接 children，未平铺全部层级。
 - [x] 紧凑筛选、面包屑、分组表头、横向滚动、每页条数和前后翻页均封装在 shared UI 深模块。
 - [x] `git diff --check`、架构测试、全量 package、前端 verify 均通过后才提交。
+
+## Round 1 复核修复（2026-08-02）
+
+### 提交
+
+- 后端修复提交：`97123de`（`fix: harden business page definition contracts`）。
+- 前端修复提交：`e7bd8b6`（`fix: connect definition-driven workbench navigation`）。
+
+### Critical 修复结果
+
+- `App` 与 `EnterpriseShell` 统一使用 `#/pages/{domain}/{pageKind}/{productCode}` 路由；产品切换写入 history，`popstate/hashchange` 恢复页面上下文。无 deep link 时只从后端返回的首个适用产品建立初始路由，不猜产品 code。
+- 产品导航来自 `GET /api/v1/master-data/products?domain=MARKET&pageKind=QUALITY`。生产 `src` hardcode scan 未发现 `CORN/SOYBEAN/RICE/玉米/大豆/稻谷/2026-07-31`。
+- 生产组合注入既有 `HttpMarketCollectionRepository`：定义加载后立即查询；筛选提交和翻页均更新 URL 并查询；失败保持工作台、显示中文错误并可重试；请求序号阻止 stale response 覆盖新结果。
+- 未实现的 `VIEW` seed 已删除，前端不会展示无 handler 的动作。
+
+### Important / Minor 修复结果
+
+- canonical 未知定义返回统一 `404 PAGE_DEFINITION_NOT_FOUND`；空白 key 返回受控 `400 INVALID_PAGE_KEY`。
+- 增加 `GET /api/v1/regions/{regionCode}/path`，地区级联成为受控组件，可由 default/query 恢复路径，外部 reset 可同步；清空下级回退到最近祖先。
+- 地区和列表均有 loading、中文错误、重试及 stale-response 防护。
+- 空 column group 的两层表头与表体均保留一个占位单元格；field React key 使用 group + field；DB 同页 field 跨组唯一。
+- 地区筛选使用 `fieldset/legend`；分页按钮有中文 `aria-label`，当前页使用 `aria-current` 且不是无行为按钮。
+- V5 通过 deferred FK/constraint trigger 保证 presentation 必有 pagination、default page size 属于 options，进而至少保留一个 size option。`20/50/100` 明确记录为 Task 3 平台交互配置，不是业务主数据，也不是从黄金截图提取的数据。
+- 针对反馈截图的系统级布局缺陷，shared `ListWorkbench` 改为单一 `.ledger-scroll` 横向滚动容器；table 使用 `width: max-content; min-width: 100%`，表头保持 normal flow，无 fixed/absolute/sticky；筛选标签禁止换行，约 1020px 内容区中的约 2095px 分组表不再互相覆盖或裁切标签。
+
+### Round 1 RED → GREEN 与最终门禁
+
+- 后端 RED：新增接口后目标集合先在 test compile 阶段因 `findRegionPath` 等缺失失败；随后覆盖 404/400、地区 path、适用产品过滤、动作移除和 V5 一致性约束。
+- 前端 RED：4 个新增/扩展测试文件最初为 8 failed / 6 passed，失败覆盖动态产品导航、真实查询/翻页/history、列表 retry、空组对齐、受控地区 path/retry/stale 和宽表 CSS。
+- 后端目标测试：30 tests，0 failures，0 errors。
+- 前端目标测试：6 files、17 tests，全部通过。
+- 后端最终 `mvn package`：54 tests，0 failures，0 errors；可执行 jar 构建成功。
+- 前端最终 `npm run verify`：Prettier 通过；ESLint 0 warnings/errors；dependency-cruiser 35 modules/66 dependencies、0 violations；Vitest 8 files/19 tests 全部通过；TypeScript/Vite build 105 modules transformed。
+- 两仓 `git diff --check` 均通过。旧 dashboard backend/frontend 仓库存在任务开始前的脏状态，本轮仅作只读状态确认，未向旧仓库写入文件。
