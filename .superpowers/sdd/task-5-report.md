@@ -1,5 +1,48 @@
 # Task 5 implementation report — production monitoring
 
+## Round-three disposition
+
+All Critical, Important, and Minor findings in `task-5-review-round3.md` are fixed.
+
+- Forward-only V16 seeds the confirmed production fact master data: 4 ordered Chinese category records, 19 decimal fact definitions, and 102 product/object applicability records. It inserts zero production business records and leaves V1–V15 untouched.
+- Confirmed quality definitions cover CORN (water, test weight, impurity, imperfect grain, mildew), SOYBEAN (protein, oil yield, imperfect grain, water, impurity), and RICE (water, milling yield, brown-rice yield, impurity). Cost, insurance, and subsidy definitions use the confirmed Chinese labels, units, and scales.
+- The legacy qualitative toxin field is deliberately not guessed into the decimal-only V14 model. It remains a future typed-field extension rather than being silently represented with an incorrect value type.
+- Category code, Chinese label, and order are now category master data. The application service generically assembles ordered groups, including empty and future categories, and fails fast if a definition references an unregistered category. The controller only maps the application result.
+- `ProductionActionPolicy` is now consumed only by the application service. JDBC returns raw status/configured actions, and both list and detail/write responses receive allowed actions from the same application boundary.
+- Frontend definitions preserve category metadata and field order, display Chinese group labels, accept future category codes without misrouting them to subsidy values, and render an unsupported-group notice until a typed editor exists.
+- Object-type selection is committed atomically with its matching definition. A failed or mismatched response leaves the prior object type, definition, facts, and save target coherent; retry can complete the requested switch and prune only inapplicable facts.
+- Delayed write completions refresh the controller's latest query, so same-page browser back/forward cannot overwrite restored filter results with a stale closure.
+- Market, production, and workflow now share one application-layer contract for exact definition identity and route-query normalization, including optional product identity, filter whitelisting, and finite/integer pagination validation.
+- The dependency guard covers module and shared application/domain sources, matches resolved React paths, and follows transitive/barrel reachability into React, UI, and infrastructure. The architecture command includes temporary direct-React and domain-through-application-barrel probes and verifies that both are rejected before cleaning them up.
+- Component coverage now renders CORN, SOYBEAN, and RICE and submits one migrated quality fact plus migrated cost, insurance, and subsidy facts for each product in a real FARMER definition context.
+
+## Round-three TDD evidence
+
+- Migration RED: the formal V15 database had no confirmed fact definitions/applicability and the new exact-count test failed. V16 made the 4-category / 19-definition / 102-applicability / zero-business-record contract pass. A second RED showed V14's category check blocked a future category; the V16 forward fix replaced it with a category-master foreign key.
+- Backend boundary RED: tests exposed controller/JDBC ownership of grouping and action policy. Repository raw rows plus application form/view models moved both decisions into the application service; tests cover future-category grouping, empty groups, unknown-category failure, and list/detail actions.
+- Architecture RED: direct React and domain-to-application-barrel-to-shared-UI probes escaped the former rule. The reachable rule and executable guard self-test now reject both resolved paths.
+- Object-switch RED: a failed B request left B selected with A facts, and a response claiming B while containing definition A was accepted. The editor now retains A on failure, validates response identity, and switches/prunes atomically after a successful retry.
+- History/write RED: a real App test performed a deferred submit, changed same-page filters with `history.pushState` plus `popstate`, then observed the old query refresh. `refreshLatest` now reads the controller query ref at completion time.
+- Shared-list RED: divergent page-local key and routing helpers accepted mismatched optional product identity and invalid non-finite/fractional pagination. Shared contract tests and all three page integrations now use the same validation and normalization path.
+- Product/group RED: the nominal three-product test rendered only CORN/SOYBEAN and synthetic facts. It now renders all three headings and exercises migrated CORN, SOYBEAN, and RICE quality facts together with all four Chinese groups.
+
+## Round-three verification
+
+- Backend: `JAVA_HOME=/opt/homebrew/Cellar/openjdk@21/21.0.12/libexec/openjdk.jdk/Contents/Home mvn verify` — BUILD SUCCESS; 119 tests, 0 failures/errors/skips; PostgreSQL validated and replayed all 16 migrations from empty and staged schemas; executable JAR built.
+- Frontend: `npm run verify` — Prettier, ESLint, dependency-cruiser plus direct/transitive guard probes, 15 Vitest files / 84 tests, TypeScript, and Vite production build all passed.
+- `git diff --check` passed in both repositories before the implementation commits. V1–V15 and frontend `.idea/` remained untouched. Probe files were cleaned, and no push was performed.
+
+## Round-three commits
+
+- Backend implementation: `1aeec1c fix(production): address round-three backend review`
+- Frontend implementation: `4186cc0 fix(production): address round-three frontend review`
+- This report is committed separately after both implementation hashes were known.
+
+## Round-three hand-off
+
+- All round-three findings have targeted regression coverage; a fourth independent review is the next gate.
+- Task 9 still owns full authentication/authorization and auditing. Task 5 continues to use the authenticated servlet principal through `CurrentActor`.
+
 ## Round-two disposition
 
 All Critical, Important, and Minor findings in `task-5-review-round2.md` are fixed.
