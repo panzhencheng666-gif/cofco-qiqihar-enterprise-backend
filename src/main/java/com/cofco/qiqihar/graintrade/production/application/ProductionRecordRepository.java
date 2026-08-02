@@ -9,12 +9,13 @@ import java.util.Set;
 import java.util.List;
 
 public interface ProductionRecordRepository {
-    PagedResult<ProductionListItem> findPage(ProductionRecordQuery query);
+    PagedResult<ProductionListRow> findPage(ProductionRecordQuery query);
     Optional<ProductionRecord> findById(String id);
     boolean isApplicableObjectType(String productCode, String objectTypeCode);
     boolean isApplicableCultivar(String productCode, String cultivarCode);
     boolean isKnownRegion(String regionCode);
     boolean areApplicableFacts(String productCode, String objectTypeCode, Map<String, Set<String>> factCodes);
+    List<ProductionFactCategory> findFactCategories();
     List<ProductionFactDefinition> findFactDefinitions(String productCode, String objectTypeCode);
     ProductionRecord insert(ProductionRecord record, String actorId);
     ProductionRecord updateFacts(ProductionRecord record, long expectedVersion, String actorId);

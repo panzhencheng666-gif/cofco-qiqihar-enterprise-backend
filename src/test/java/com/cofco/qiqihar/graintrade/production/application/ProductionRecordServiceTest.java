@@ -1,21 +1,105 @@
 package com.cofco.qiqihar.graintrade.production.application;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.cofco.qiqihar.graintrade.production.domain.ProductionRecord;
+import com.cofco.qiqihar.graintrade.production.domain.ProductionRecordQuery;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.PageDefinitionQuery;
+import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
 import java.time.ZoneId;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class ProductionRecordServiceTest {
+
+    @Test
+    void organizesRepositoryMasterDataIntoSortedLabeledGroupsWithoutDiscardingFutureCategories() {
+        ProductionRecordRepository repository = mock(ProductionRecordRepository.class);
+        when(repository.isApplicableObjectType("RICE", "FARMER")).thenReturn(true);
+        when(repository.findFactCategories()).thenReturn(List.of(
+                new ProductionFactCategory("EVIDENCE", "佐证材料", 50),
+                new ProductionFactCategory("QUALITY", "质量指标", 10),
+                new ProductionFactCategory("COST", "生产成本", 20)));
+        when(repository.findFactDefinitions("RICE", "FARMER")).thenReturn(List.of(
+                definition("PHOTO_COUNT", "EVIDENCE", "照片数量", 501),
+                definition("IMPURITY", "QUALITY", "杂质", 102),
+                definition("MOISTURE", "QUALITY", "水分", 101)));
+        ProductionRecordService service = service(repository, mock(PageDefinitionQuery.class));
+
+        ProductionFormDefinition result = service.factDefinition("RICE", "FARMER");
+
+        assertThat(result.productCode()).isEqualTo("RICE");
+        assertThat(result.objectTypeCode()).isEqualTo("FARMER");
+        assertThat(result.groups()).extracting(ProductionFactGroup::category, ProductionFactGroup::label)
+                .containsExactly(
+                        org.assertj.core.groups.Tuple.tuple("QUALITY", "质量指标"),
+                        org.assertj.core.groups.Tuple.tuple("COST", "生产成本"),
+                        org.assertj.core.groups.Tuple.tuple("EVIDENCE", "佐证材料"));
+        assertThat(result.groups().get(0).fields()).extracting(ProductionFactDefinition::code)
+                .containsExactly("MOISTURE", "IMPURITY");
+        assertThat(result.groups().get(1).fields()).isEmpty();
+        assertThat(result.groups().get(2).fields()).extracting(ProductionFactDefinition::code)
+                .containsExactly("PHOTO_COUNT");
+    }
+
+    @Test
+    void rejectsDefinitionsWhoseCategoryIsAbsentFromTheMasterDataContract() {
+        ProductionRecordRepository repository = mock(ProductionRecordRepository.class);
+        when(repository.isApplicableObjectType("CORN", "FARMER")).thenReturn(true);
+        when(repository.findFactCategories()).thenReturn(List.of(
+                new ProductionFactCategory("QUALITY", "质量指标", 10)));
+        when(repository.findFactDefinitions("CORN", "FARMER")).thenReturn(List.of(
+                definition("FUTURE_FACT", "UNREGISTERED", "未来事实", 1)));
+        ProductionRecordService service = service(repository, mock(PageDefinitionQuery.class));
+
+        assertThatThrownBy(() -> service.factDefinition("CORN", "FARMER"))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("UNREGISTERED");
+    }
+
+    @Test
+    void computesListActionsInTheApplicationFromStatusAndConfiguredPageActions() {
+        ProductionRecordRepository repository = mock(ProductionRecordRepository.class);
+        PageDefinitionQuery pageDefinitions = mock(PageDefinitionQuery.class);
+        ProductionRecordQuery query = new ProductionRecordQuery(
+                "CORN", "MONITORING", 0, 20, Map.of());
+        when(pageDefinitions.allowsListQueryValues("PRODUCTION", "MONITORING", "CORN", 20, Map.of()))
+                .thenReturn(true);
+        when(repository.findPage(query)).thenReturn(new PagedResult<>(List.of(
+                new ProductionListRow("record-1", Map.of("PROD_STATUS", "草稿"),
+                        com.cofco.qiqihar.graintrade.production.domain.ProductionStatus.DRAFT,
+                        Set.of("VIEW", "SUBMIT", "RETURN"), 3)), 0, 20, 1));
+        ProductionRecordService service = service(repository, pageDefinitions);
+
+        PagedResult<ProductionListItem> result = service.read(query);
+
+        assertThat(result.items().get(0).allowedActions()).containsExactly("VIEW", "SUBMIT");
+    }
+
+    @Test
+    void computesDetailActionsInTheApplication() {
+        ProductionRecordRepository repository = mock(ProductionRecordRepository.class);
+        ProductionRecord record = record();
+        when(repository.findById("record-1")).thenReturn(Optional.of(record));
+        ProductionRecordService service = service(repository, mock(PageDefinitionQuery.class));
+
+        ProductionRecordView result = service.detail("record-1");
+
+        assertThat(result.record()).isSameAs(record);
+        assertThat(result.allowedActions()).containsExactly("VIEW", "SAVE", "SUBMIT");
+    }
 
     @Test
     void doesNotMisclassifyAnInfrastructureRuntimeFailureAsClientValidation() {
@@ -23,7 +107,7 @@ class ProductionRecordServiceTest {
         when(repository.isKnownRegion("230202")).thenThrow(new RuntimeException("database unavailable"));
         CurrentActor actor = () -> Optional.of(new AuthenticatedActor("tester"));
         ProductionRecordService service = new ProductionRecordService(repository, mock(PageDefinitionQuery.class),
-                actor, Clock.fixed(Instant.parse("2026-08-02T00:00:00Z"), ZoneId.of("Asia/Shanghai")));
+                actor, fixedClock());
         ProductionDraft draft = new ProductionDraft("SOYBEAN", "FARMER", "230202", null,
                 LocalDate.of(2026, 8, 1), new BigDecimal("1"), new BigDecimal("2"), Map.of(), Map.of(), Map.of(),
                 Map.of());
@@ -43,7 +127,7 @@ class ProductionRecordServiceTest {
                 "INSURANCE", java.util.Set.of(), "SUBSIDY", java.util.Set.of()))).thenReturn(true);
         CurrentActor actor = () -> Optional.of(new AuthenticatedActor("tester"));
         ProductionRecordService service = new ProductionRecordService(repository, mock(PageDefinitionQuery.class),
-                actor, Clock.fixed(Instant.parse("2026-08-02T00:00:00Z"), ZoneId.of("Asia/Shanghai")));
+                actor, fixedClock());
         ProductionDraft draft = new ProductionDraft("SOYBEAN", "FARMER", "230202", null,
                 LocalDate.of(2026, 8, 1), new BigDecimal("-1"), new BigDecimal("2"), Map.of(), Map.of(), Map.of(),
                 Map.of());
@@ -52,5 +136,26 @@ class ProductionRecordServiceTest {
                 .isInstanceOf(ClientRequestException.class)
                 .extracting("code")
                 .isEqualTo("INVALID_PRODUCTION_RECORD");
+    }
+
+    private static ProductionRecordService service(ProductionRecordRepository repository,
+            PageDefinitionQuery pageDefinitions) {
+        CurrentActor actor = () -> Optional.of(new AuthenticatedActor("tester"));
+        return new ProductionRecordService(repository, pageDefinitions, actor, fixedClock());
+    }
+
+    private static Clock fixedClock() {
+        return Clock.fixed(Instant.parse("2026-08-02T00:00:00Z"), ZoneId.of("Asia/Shanghai"));
+    }
+
+    private static ProductionFactDefinition definition(String code, String category, String label, int sortOrder) {
+        return new ProductionFactDefinition(code, category, label, "DECIMAL", "%", "", 18, 1, sortOrder);
+    }
+
+    private static com.cofco.qiqihar.graintrade.production.domain.ProductionRecord record() {
+        return com.cofco.qiqihar.graintrade.production.domain.ProductionRecord.draft(
+                "record-1", "CORN", "FARMER", "230202", null,
+                LocalDate.of(2026, 8, 1), OffsetDateTime.parse("2026-08-02T08:00:00+08:00"),
+                new BigDecimal("10"), new BigDecimal("20"), Map.of(), Map.of(), Map.of(), Map.of());
     }
 }

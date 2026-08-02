@@ -3,8 +3,10 @@ package com.cofco.qiqihar.graintrade.production.interfaceadapter;
 import com.cofco.qiqihar.graintrade.production.application.ProductionDraft;
 import com.cofco.qiqihar.graintrade.production.application.ProductionListItem;
 import com.cofco.qiqihar.graintrade.production.application.ProductionFactDefinition;
+import com.cofco.qiqihar.graintrade.production.application.ProductionFactGroup;
+import com.cofco.qiqihar.graintrade.production.application.ProductionFormDefinition;
+import com.cofco.qiqihar.graintrade.production.application.ProductionRecordView;
 import com.cofco.qiqihar.graintrade.production.application.ProductionRecordService;
-import com.cofco.qiqihar.graintrade.production.domain.ProductionActionPolicy;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecord;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecordQuery;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
@@ -14,7 +16,6 @@ import com.cofco.qiqihar.graintrade.shared.interfaceadapter.StrictQueryParameter
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
-import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -70,13 +71,7 @@ public class ProductionRecordController {
     ApiResponse<DefinitionResponse> definition(
             @RequestParam String productCode,
             @RequestParam(required = false) String objectTypeCode) {
-        List<ProductionFactDefinition> definitions = service.factDefinitions(productCode, objectTypeCode);
-        List<GroupResponse> groups = new ArrayList<>();
-        for (String category : List.of("QUALITY", "COST", "INSURANCE", "SUBSIDY")) {
-            groups.add(new GroupResponse(category, definitions.stream()
-                    .filter(field -> field.category().equals(category)).map(FieldResponse::from).toList()));
-        }
-        return new ApiResponse<>(new DefinitionResponse(productCode, objectTypeCode, groups));
+        return new ApiResponse<>(DefinitionResponse.from(service.factDefinition(productCode, objectTypeCode)));
     }
 
     @PostMapping("/api/v1/production-records")
@@ -151,13 +146,14 @@ public class ProductionRecordController {
                           String returnReason, Map<String, String> quality, Map<String, String> costs,
                           Map<String, String> insurance, Map<String, String> subsidies,
                           List<String> allowedActions, long version) {
-        static RecordResponse from(ProductionRecord record) {
+        static RecordResponse from(ProductionRecordView view) {
+            ProductionRecord record = view.record();
             return new RecordResponse(record.id(), record.productCode(), record.objectTypeCode(), record.regionCode(),
                     record.cultivarCode(), record.surveyDate(), record.reportedAt(), decimal(record.cultivatedAreaMu()),
                     decimal(record.yieldPerMuKilograms()), decimal(record.estimatedOutputKilograms()),
                     record.status().name(), record.returnReason(), values(record.quality()), values(record.costs()),
                     values(record.insurance()), values(record.subsidies()),
-                    ProductionActionPolicy.allowedActions(record.status()), record.version());
+                    view.allowedActions(), record.version());
         }
         private static String decimal(BigDecimal value) { return value.toPlainString(); }
         private static Map<String, String> values(Map<String, BigDecimal> values) {
@@ -177,13 +173,23 @@ public class ProductionRecordController {
                     page.pageSize(), page.totalElements(), page.totalPages());
         }
     }
-    record DefinitionResponse(String productCode, String objectTypeCode, List<GroupResponse> groups) { }
-    record GroupResponse(String category, List<FieldResponse> fields) { }
+    record DefinitionResponse(String productCode, String objectTypeCode, List<GroupResponse> groups) {
+        static DefinitionResponse from(ProductionFormDefinition definition) {
+            return new DefinitionResponse(definition.productCode(), definition.objectTypeCode(),
+                    definition.groups().stream().map(GroupResponse::from).toList());
+        }
+    }
+    record GroupResponse(String category, String label, int sortOrder, List<FieldResponse> fields) {
+        static GroupResponse from(ProductionFactGroup group) {
+            return new GroupResponse(group.category(), group.label(), group.sortOrder(),
+                    group.fields().stream().map(FieldResponse::from).toList());
+        }
+    }
     record FieldResponse(String code, String label, String valueType, String unit, String description,
-                         int precision, int scale) {
+                         int precision, int scale, int sortOrder) {
         static FieldResponse from(ProductionFactDefinition field) {
             return new FieldResponse(field.code(), field.label(), field.valueType(), field.unit(),
-                    field.description(), field.precision(), field.scale());
+                    field.description(), field.precision(), field.scale(), field.sortOrder());
         }
     }
 }

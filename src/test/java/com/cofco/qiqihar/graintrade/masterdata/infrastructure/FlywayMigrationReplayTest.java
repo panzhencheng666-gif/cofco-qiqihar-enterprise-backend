@@ -71,8 +71,8 @@ class FlywayMigrationReplayTest {
         assertThat(migrationChecksums()).containsAllEntriesOf(versionFiveChecksums);
         assertThat(marketRecordCount()).isOne();
 
-        MigrateResult versionFifteenResult = flyway().migrate();
-        assertThat(versionFifteenResult.migrationsExecuted).isEqualTo(5);
+        MigrateResult versionSixteenResult = flyway().migrate();
+        assertThat(versionSixteenResult.migrationsExecuted).isEqualTo(6);
         assertThat(marketRecordCount()).isOne();
         deleteMarketUpgradeFixture();
         assertThat(marketRecordCount()).isZero();
@@ -82,13 +82,16 @@ class FlywayMigrationReplayTest {
         MigrateResult secondResult = flyway().migrate();
 
         assertThat(secondResult.migrationsExecuted).isZero();
-        assertThat(migrationChecksums()).hasSize(15);
+        assertThat(migrationChecksums()).hasSize(16);
         assertThat(masterDataCounts()).isEqualTo(firstCounts);
         assertThat(firstCounts).containsEntry("region", 29L)
                 .containsEntry("product", 3L)
                 .containsEntry("cultivar", 2L)
                 .containsEntry("object_type", 10L)
-                .containsEntry("page_definition_field", 45L);
+                .containsEntry("page_definition_field", 45L)
+                .containsEntry("production_fact_category", 4L)
+                .containsEntry("production_fact_definition", 19L)
+                .containsEntry("production_fact_applicability", 102L);
     }
 
     @Test
@@ -480,7 +483,8 @@ class FlywayMigrationReplayTest {
     private Map<String, Long> masterDataCounts() throws SQLException {
         Map<String, Long> counts = new LinkedHashMap<>();
         for (String table : new String[] {
-                "region", "product", "cultivar", "object_type", "page_definition_field"
+                "region", "product", "cultivar", "object_type", "page_definition_field",
+                "production_fact_category", "production_fact_definition", "production_fact_applicability"
         }) {
             try (Connection connection = DATABASE.openConnection();
                     Statement statement = connection.createStatement();

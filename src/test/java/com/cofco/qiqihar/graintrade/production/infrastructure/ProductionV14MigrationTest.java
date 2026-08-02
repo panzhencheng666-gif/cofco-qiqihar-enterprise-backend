@@ -21,10 +21,15 @@ class ProductionV14MigrationTest {
     }
 
     @Test
-    void definesNormalizedFactCategoriesWithoutSeedingBusinessFacts() throws SQLException {
+    void definesNormalizedFactCategoriesWithoutSeedingBusinessRecords() throws SQLException {
         try (Connection connection = DATABASE.openConnection(); Statement statement = connection.createStatement()) {
             try (ResultSet row = statement.executeQuery(
                     "SELECT count(*) FROM platform.production_fact_definition")) {
+                row.next();
+                assertThat(row.getLong(1)).isEqualTo(19);
+            }
+            try (ResultSet row = statement.executeQuery(
+                    "SELECT count(*) FROM production.production_record")) {
                 row.next();
                 assertThat(row.getLong(1)).isZero();
             }

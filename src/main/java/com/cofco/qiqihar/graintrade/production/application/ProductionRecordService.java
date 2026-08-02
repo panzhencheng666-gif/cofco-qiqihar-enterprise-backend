@@ -2,6 +2,7 @@ package com.cofco.qiqihar.graintrade.production.application;
 
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecord;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecordQuery;
+import com.cofco.qiqihar.graintrade.production.domain.ProductionActionPolicy;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionValidationException;
 import com.cofco.qiqihar.graintrade.shared.application.AuthenticationRequiredException;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
@@ -13,6 +14,7 @@ import java.time.Clock;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -45,23 +47,49 @@ public class ProductionRecordService {
                 query.pageSize(), query.filters())) throw invalidQuery();
         String regionCode = query.filters().get("regionCode");
         if (regionCode != null && !repository.isKnownRegion(regionCode)) throw invalidQuery();
-        return repository.findPage(query);
+        PagedResult<ProductionListRow> page = repository.findPage(query);
+        List<ProductionListItem> items = page.items().stream().map(row -> new ProductionListItem(
+                row.id(), row.values(), ProductionActionPolicy.allowedActions(row.status()).stream()
+                        .filter(row.configuredActions()::contains).toList(), row.version())).toList();
+        return new PagedResult<>(items, page.pageNumber(), page.pageSize(), page.totalElements());
     }
 
     @Transactional(readOnly = true)
-    public ProductionRecord detail(String id) { return requiredRecord(id); }
+    public ProductionRecordView detail(String id) { return view(requiredRecord(id)); }
 
     @Transactional(readOnly = true)
-    public List<ProductionFactDefinition> factDefinitions(String productCode, String objectTypeCode) {
+    public ProductionFormDefinition factDefinition(String productCode, String objectTypeCode) {
         if (productCode == null || productCode.isBlank()
                 || (objectTypeCode != null && !repository.isApplicableObjectType(productCode, objectTypeCode))) {
             throw invalidDraft("Invalid production definition context");
         }
-        return repository.findFactDefinitions(productCode, objectTypeCode);
+        List<ProductionFactCategory> categories = repository.findFactCategories().stream()
+                .sorted(Comparator.comparingInt(ProductionFactCategory::sortOrder)
+                        .thenComparing(ProductionFactCategory::code)).toList();
+        Map<String, List<ProductionFactDefinition>> definitionsByCategory = new LinkedHashMap<>();
+        categories.forEach(category -> {
+            if (definitionsByCategory.put(category.code(), new java.util.ArrayList<>()) != null) {
+                throw new IllegalStateException("Duplicate production fact category: " + category.code());
+            }
+        });
+        repository.findFactDefinitions(productCode, objectTypeCode).forEach(definition -> {
+            List<ProductionFactDefinition> definitions = definitionsByCategory.get(definition.category());
+            if (definitions == null) {
+                throw new IllegalStateException(
+                        "Production fact category is absent from master data: " + definition.category());
+            }
+            definitions.add(definition);
+        });
+        List<ProductionFactGroup> groups = categories.stream().map(category -> new ProductionFactGroup(
+                category.code(), category.label(), category.sortOrder(),
+                definitionsByCategory.get(category.code()).stream()
+                        .sorted(Comparator.comparingInt(ProductionFactDefinition::sortOrder)
+                                .thenComparing(ProductionFactDefinition::code)).toList())).toList();
+        return new ProductionFormDefinition(productCode, objectTypeCode, groups);
     }
 
     @Transactional
-    public ProductionRecord create(ProductionDraft draft) {
+    public ProductionRecordView create(ProductionDraft draft) {
         AuthenticatedActor actor = actor();
         validateDraft(draft);
         ProductionRecord record;
@@ -73,11 +101,11 @@ public class ProductionRecordService {
         } catch (ProductionValidationException exception) {
             throw invalidDraft(exception.getMessage());
         }
-        return repository.insert(record, actor.id());
+        return view(repository.insert(record, actor.id()));
     }
 
     @Transactional
-    public ProductionRecord saveDraft(String id, long expectedVersion, ProductionDraft draft) {
+    public ProductionRecordView saveDraft(String id, long expectedVersion, ProductionDraft draft) {
         AuthenticatedActor actor = actor();
         ProductionRecord existing = requiredRecord(id);
         if (expectedVersion != existing.version()) throw stale();
@@ -93,31 +121,31 @@ public class ProductionRecordService {
         } catch (IllegalStateException exception) {
             throw invalidTransition(exception);
         }
-        return repository.updateFacts(revised, expectedVersion, actor.id());
+        return view(repository.updateFacts(revised, expectedVersion, actor.id()));
     }
 
     @Transactional
-    public ProductionRecord submit(String id, long expectedVersion) {
+    public ProductionRecordView submit(String id, long expectedVersion) {
         return transition(id, expectedVersion, ProductionRecord::submit);
     }
 
     @Transactional
-    public ProductionRecord approve(String id, long expectedVersion) {
+    public ProductionRecordView approve(String id, long expectedVersion) {
         return transition(id, expectedVersion, ProductionRecord::approve);
     }
 
     @Transactional
-    public ProductionRecord returnForCorrection(String id, long expectedVersion, String reason) {
+    public ProductionRecordView returnForCorrection(String id, long expectedVersion, String reason) {
         return transition(id, expectedVersion, record -> record.returnForCorrection(reason));
     }
 
-    private ProductionRecord transition(String id, long expectedVersion,
+    private ProductionRecordView transition(String id, long expectedVersion,
             java.util.function.UnaryOperator<ProductionRecord> command) {
         AuthenticatedActor actor = actor();
         ProductionRecord existing = requiredRecord(id);
         if (expectedVersion != existing.version()) throw stale();
         try {
-            return repository.updateState(command.apply(existing), expectedVersion, actor.id());
+            return view(repository.updateState(command.apply(existing), expectedVersion, actor.id()));
         } catch (ProductionValidationException exception) {
             throw invalidDraft(exception.getMessage());
         } catch (IllegalStateException exception) {
@@ -152,6 +180,10 @@ public class ProductionRecordService {
     private ProductionRecord requiredRecord(String id) {
         return repository.findById(id).orElseThrow(() -> new ResourceNotFoundException(
                 "PRODUCTION_RECORD_NOT_FOUND", "Production record does not exist"));
+    }
+
+    private static ProductionRecordView view(ProductionRecord record) {
+        return new ProductionRecordView(record, ProductionActionPolicy.allowedActions(record.status()));
     }
 
     private AuthenticatedActor actor() {

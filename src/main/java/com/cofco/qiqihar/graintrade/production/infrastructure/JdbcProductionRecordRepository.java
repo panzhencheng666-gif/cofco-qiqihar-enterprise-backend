@@ -1,9 +1,9 @@
 package com.cofco.qiqihar.graintrade.production.infrastructure;
 
-import com.cofco.qiqihar.graintrade.production.application.ProductionListItem;
+import com.cofco.qiqihar.graintrade.production.application.ProductionFactCategory;
 import com.cofco.qiqihar.graintrade.production.application.ProductionFactDefinition;
+import com.cofco.qiqihar.graintrade.production.application.ProductionListRow;
 import com.cofco.qiqihar.graintrade.production.application.ProductionRecordRepository;
-import com.cofco.qiqihar.graintrade.production.domain.ProductionActionPolicy;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecord;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecordQuery;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionStatus;
@@ -31,7 +31,7 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
     public JdbcProductionRecordRepository(DataSource dataSource) { this.jdbc = JdbcClient.create(dataSource); }
 
     @Override
-    public PagedResult<ProductionListItem> findPage(ProductionRecordQuery query) {
+    public PagedResult<ProductionListRow> findPage(ProductionRecordQuery query) {
         SqlFilter filter = filter(query.productCode(), query.filters());
         long total = jdbc.sql("SELECT count(*) FROM production.production_record r " + filter.sql())
                 .params(filter.parameters()).query(Long.class).single();
@@ -71,9 +71,18 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
                         ORDER BY sort_order
                         """).param("productCode", query.productCode()).param("pageKind", query.pageKind())
                 .query(String.class).list());
-        List<ProductionListItem> items = rows.stream()
+        List<ProductionListRow> items = rows.stream()
                 .map(row -> item(row, facts.getOrDefault(row.id(), Map.of()), configuredActions)).toList();
         return new PagedResult<>(items, query.pageNumber(), query.pageSize(), total);
+    }
+
+    @Override
+    public List<ProductionFactCategory> findFactCategories() {
+        return jdbc.sql("""
+                        SELECT code, label, sort_order
+                        FROM platform.production_fact_category
+                        """).query((row, ignored) -> new ProductionFactCategory(
+                        row.getString("code"), row.getString("label"), row.getInt("sort_order"))).list();
     }
 
     @Override
@@ -161,14 +170,12 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
                         GROUP BY definition.code, definition.category, definition.label, definition.value_type,
                                  definition.unit, definition.description, definition.decimal_precision,
                                  definition.decimal_scale
-                        ORDER BY CASE definition.category WHEN 'QUALITY' THEN 10 WHEN 'COST' THEN 20
-                                 WHEN 'INSURANCE' THEN 30 ELSE 40 END, sort_order
                         """).param("productCode", productCode)
                 .param("objectTypeCode", objectTypeCode, java.sql.Types.VARCHAR)
                 .query((row, ignored) -> new ProductionFactDefinition(row.getString("code"),
                         row.getString("category"), row.getString("label"), row.getString("value_type"),
                         row.getString("unit"), row.getString("description"), row.getInt("decimal_precision"),
-                        row.getInt("decimal_scale"))).list();
+                        row.getInt("decimal_scale"), row.getInt("sort_order"))).list();
     }
 
     @Override
@@ -212,7 +219,7 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         return record.savedAsVersion(expectedVersion + 1);
     }
 
-    private ProductionListItem item(ListRow row, Map<String, BigDecimal> facts, Set<String> configuredActions) {
+    private ProductionListRow item(ListRow row, Map<String, BigDecimal> facts, Set<String> configuredActions) {
         Map<String, String> values = new LinkedHashMap<>();
         values.put("PROD_REGION", row.regionName());
         values.put("PROD_OBJECT_TYPE", row.objectTypeName());
@@ -224,9 +231,7 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         values.put("PROD_ESTIMATED_OUTPUT", decimal(row.output()));
         values.put("PROD_STATUS", row.statusLabel() == null ? row.status().name() : row.statusLabel());
         facts.forEach((code, value) -> values.put(code, decimal(value)));
-        return new ProductionListItem(row.id(), values,
-                ProductionActionPolicy.allowedActions(row.status()).stream()
-                        .filter(configuredActions::contains).toList(), row.version());
+        return new ProductionListRow(row.id(), values, row.status(), configuredActions, row.version());
     }
 
     private Map<String, Map<String, BigDecimal>> categorizedFacts(String id) {
