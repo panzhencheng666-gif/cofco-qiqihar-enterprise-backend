@@ -41,11 +41,11 @@ class BootFlywayStartupTest {
                 "jdbc:postgresql://127.0.0.1:5432/qiqihar_enterprise_forbidden");
         try {
             startAndCloseApplication();
-            assertThat(installedMigrationCount()).isEqualTo(21);
+            assertThat(installedMigrationCount()).isEqualTo(22);
             assertThat(productCount()).isEqualTo(3);
 
             startAndCloseApplication();
-            assertThat(installedMigrationCount()).isEqualTo(21);
+            assertThat(installedMigrationCount()).isEqualTo(22);
             assertThat(productCount()).isEqualTo(3);
         } finally {
             if (previousUrl == null) {

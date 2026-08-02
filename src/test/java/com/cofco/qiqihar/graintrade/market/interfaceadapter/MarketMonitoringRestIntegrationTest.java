@@ -28,7 +28,9 @@ import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.test.annotation.Rollback;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.annotation.Transactional;
 
 @SpringBootTest(classes = GrainTradeApplication.class)
 @AutoConfigureMockMvc
@@ -93,6 +95,47 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.coreValues.MKT_OBJECT_TYPE").value("FEED_MILL"))
                 .andExpect(jsonPath("$.data.coreValues.MKT_SOURCE_NOTE").value("产地直采"));
+        mockMvc.perform(get("/api/v1/market-records")
+                        .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].values.MKT_SOURCE_NOTE").value("产地直采"));
+
+        String modified = body.replace("产地直采", "铁路到库");
+        mockMvc.perform(put("/api/v1/market-records/{id}", id)
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(versioned(modified, 0)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.version").value(1))
+                .andExpect(jsonPath("$.data.coreValues.MKT_SOURCE_NOTE").value("铁路到库"));
+
+        String cleared = body.replaceAll(
+                ",\\s*\"MKT_SOURCE_NOTE\":\"产地直采\"", "");
+        mockMvc.perform(put("/api/v1/market-records/{id}", id)
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(versioned(cleared, 1)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.version").value(2))
+                .andExpect(jsonPath("$.data.coreValues.MKT_SOURCE_NOTE")
+                        .value(org.hamcrest.Matchers.nullValue()));
+        org.assertj.core.api.Assertions.assertThat(extensionValueCount(id)).isZero();
+
+        mockMvc.perform(put("/api/v1/market-records/{id}", id)
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(versioned(modified.replace("14.6", "15.2"), 1)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("MARKET_RECORD_VERSION_CONFLICT"));
+        mockMvc.perform(get("/api/v1/market-records/{id}", id))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.version").value(2))
+                .andExpect(jsonPath("$.data.coreValues.MKT_SOURCE_NOTE")
+                        .value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.data.facts.MOISTURE").value("14.6000"));
+        org.assertj.core.api.Assertions.assertThat(extensionValueCount(id)).isZero();
+
         mockMvc.perform(get("/api/v1/market-record-definitions")
                         .queryParam("productCode", "CORN").queryParam("objectTypeCode", "FEED_MILL"))
                 .andExpect(status().isOk())
@@ -103,43 +146,87 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
-    void exposesAndRoundTripsACornOnlyExtensionButRejectsItForSoybeanWithoutWriting() throws Exception {
+    @Transactional
+    @Rollback
+    void transactionFixtureExposesAndRoundTripsAProductExtensionWithoutLeakingIt() throws Exception {
+        installDynamicExtensionFixture();
         String cornBody = draftBody("CORN", "FEED_MILL", "MOISTURE", null)
                 .replace("\"MKT_PACKAGING_FORM\":\"BULK\"",
-                        "\"MKT_PACKAGING_FORM\":\"BULK\",\"MKT_CORN_SOURCE_NOTE\":\"玉米产地直采\"");
+                        "\"MKT_PACKAGING_FORM\":\"BULK\",\"MKT_TEST_SOURCE_NOTE\":\"玉米产地直采\"");
         String id = mockMvc.perform(post("/api/v1/market-records")
                         .principal(() -> "market-tester")
                         .contentType(MediaType.APPLICATION_JSON).content(cornBody))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.coreValues.MKT_CORN_SOURCE_NOTE").value("玉米产地直采"))
+                .andExpect(jsonPath("$.data.coreValues.MKT_TEST_SOURCE_NOTE").value("玉米产地直采"))
                 .andReturn().getResponse().getContentAsString()
                 .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
         mockMvc.perform(get("/api/v1/market-records/{id}", id))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.coreValues.MKT_CORN_SOURCE_NOTE").value("玉米产地直采"));
+                .andExpect(jsonPath("$.data.coreValues.MKT_TEST_SOURCE_NOTE").value("玉米产地直采"));
         mockMvc.perform(get("/api/v1/market-records")
                         .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
                         .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[0].values.MKT_CORN_SOURCE_NOTE")
+                .andExpect(jsonPath("$.data.items[0].values.MKT_TEST_SOURCE_NOTE")
                         .value("玉米产地直采"));
+        mockMvc.perform(get("/api/v1/market-record-definitions")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("objectTypeCode", "FEED_MILL"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_TEST_SOURCE_NOTE')].description")
+                        .value(org.hamcrest.Matchers.contains(
+                                org.hamcrest.Matchers.nullValue())));
 
         mockMvc.perform(get("/api/v1/market-record-definitions")
                         .queryParam("productCode", "SOYBEAN")
                         .queryParam("objectTypeCode", "DEEP_PROCESSOR"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_CORN_SOURCE_NOTE')]")
+                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_TEST_SOURCE_NOTE')]")
                         .doesNotExist());
         long before = recordCount();
         String soybeanBody = draftBody("SOYBEAN", "DEEP_PROCESSOR", "PROTEIN", null)
                 .replace("\"MKT_PACKAGING_FORM\":\"BULK\"",
-                        "\"MKT_PACKAGING_FORM\":\"BULK\",\"MKT_CORN_SOURCE_NOTE\":\"越权值\"");
+                        "\"MKT_PACKAGING_FORM\":\"BULK\",\"MKT_TEST_SOURCE_NOTE\":\"越权值\"");
         mockMvc.perform(post("/api/v1/market-records")
                         .principal(() -> "market-tester")
                         .contentType(MediaType.APPLICATION_JSON).content(soybeanBody))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("INVALID_MARKET_RECORD"));
         org.assertj.core.api.Assertions.assertThat(recordCount()).isEqualTo(before);
+    }
+
+    private void installDynamicExtensionFixture() {
+        JdbcClient client = JdbcClient.create(dataSource);
+        client.sql("""
+                INSERT INTO platform.market_core_field_definition(
+                    code, label, control_type, sort_order, description,
+                    domain_binding, capability, required)
+                VALUES ('MKT_TEST_SOURCE_NOTE', '测试来源说明', 'TEXT', 906, NULL,
+                        'EXTENSION', 'GENERIC', false)
+                """).update();
+        client.sql("""
+                INSERT INTO platform.field_definition(code, name, value_type)
+                VALUES ('MKT_TEST_SOURCE_NOTE', '测试来源说明', 'TEXT')
+                """).update();
+        client.sql("""
+                INSERT INTO platform.page_definition_field(
+                    product_code, business_domain, page_kind, field_code, sort_order)
+                VALUES ('CORN', 'MARKET', 'MONITORING', 'MKT_TEST_SOURCE_NOTE', 61)
+                """).update();
+        client.sql("""
+                INSERT INTO platform.page_column_group_field(
+                    product_code, business_domain, page_kind, group_code,
+                    field_code, sort_order, unit, description)
+                VALUES ('CORN', 'MARKET', 'MONITORING', 'MARKET',
+                        'MKT_TEST_SOURCE_NOTE', 61, NULL, NULL)
+                """).update();
+        client.sql("""
+                INSERT INTO platform.market_core_field_applicability(
+                    product_code, business_domain, page_kind, field_code, domain_binding)
+                VALUES ('CORN', 'MARKET', 'MONITORING', 'MKT_TEST_SOURCE_NOTE', 'EXTENSION')
+                """).update();
+        client.sql("SET CONSTRAINTS ALL IMMEDIATE").update();
+        client.sql("SET CONSTRAINTS ALL DEFERRED").update();
     }
 
     @Test
@@ -162,6 +249,29 @@ class MarketMonitoringRestIntegrationTest {
                     .andExpect(jsonPath("$.error.code").value("INVALID_MARKET_RECORD"));
         }
         org.assertj.core.api.Assertions.assertThat(recordCount()).isZero();
+    }
+
+    @ParameterizedTest(name = "{0} fact uses the shared plain-decimal parser")
+    @MethodSource("decimalFactCategories")
+    void rejectsNonPlainDecimalSyntaxAcrossEveryFactCategoryWithoutWriting(
+            String category, String product, String objectType, String factCode) throws Exception {
+        for (String invalid : List.of("+1", "1e3", "1E3")) {
+            mockMvc.perform(post("/api/v1/market-records")
+                            .principal(() -> "market-tester")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(singleFactDraft(product, objectType, factCode, invalid)))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error.code").value("INVALID_MARKET_RECORD"));
+            org.assertj.core.api.Assertions.assertThat(recordCount()).isZero();
+        }
+
+        mockMvc.perform(post("/api/v1/market-records")
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(singleFactDraft(product, objectType, factCode, "14.5")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.facts." + factCode).value("14.5000"));
+        org.assertj.core.api.Assertions.assertThat(recordCount()).isOne();
     }
 
     @Test
@@ -393,9 +503,33 @@ class MarketMonitoringRestIntegrationTest {
                 """.formatted(product, objectType, qualityCode, versionValue);
     }
 
+    private String singleFactDraft(
+            String product, String objectType, String factCode, String value) {
+        return """
+                {"productCode":"%s","coreValues":{
+                 "MKT_OBJECT_TYPE":"%s","MKT_REGION":"230200",
+                 "MKT_TRADE_DATE":"2026-08-01","MKT_TRADE_DIRECTION":"PURCHASE",
+                 "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":null,
+                 "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
+                 "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK"},
+                 "facts":{"%s":"%s"}}
+                """.formatted(product, objectType, factCode, value);
+    }
+
     private long recordCount() {
         return JdbcClient.create(dataSource).sql("SELECT count(*) FROM market.market_record")
                 .query(Long.class).single();
+    }
+
+    private long extensionValueCount(String id) {
+        return JdbcClient.create(dataSource).sql("""
+                        SELECT count(*) FROM market.market_record_core_value
+                        WHERE record_id = :id
+                        """).param("id", id).query(Long.class).single();
+    }
+
+    private String versioned(String draft, long version) {
+        return draft.strip().replaceFirst("}$", ",\"version\":" + version + "}");
     }
 
     @TestConfiguration(proxyBeanMethods = false)
@@ -426,6 +560,15 @@ class MarketMonitoringRestIntegrationTest {
                 context("RICE", "WHOLESALE_MARKET", "MILLING_YIELD"),
                 context("RICE", "RESERVE_ENTERPRISE", "MILLING_YIELD"),
                 context("RICE", "RICE_MILL", "MILLING_YIELD"));
+    }
+
+    private static Stream<Arguments> decimalFactCategories() {
+        return Stream.of(
+                Arguments.of("QUALITY", "CORN", "FEED_MILL", "MOISTURE"),
+                Arguments.of("PURCHASE", "CORN", "FEED_MILL", "PURCHASE_VOLUME"),
+                Arguments.of("SALES", "CORN", "TRADER", "SALES_VOLUME"),
+                Arguments.of("PROCESSING", "CORN", "FEED_MILL", "PROCESSING_INPUT"),
+                Arguments.of("INVENTORY", "CORN", "FEED_MILL", "ENDING_INVENTORY"));
     }
 
     private static Stream<Arguments> quantityQualityContexts() {

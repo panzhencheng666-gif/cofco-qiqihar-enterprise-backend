@@ -42,7 +42,6 @@ class MarketV18MasterDataTest {
                         "MKT_CARRIAGE_BOARD_AMOUNT:车板组成:DECIMAL:70", "MKT_PACKAGING_FORM:包装形态:SELECT:80",
                         "MKT_PACKAGING_AMOUNT:包装组成:DECIMAL:90", "MKT_FREIGHT_AMOUNT:运费组成:DECIMAL:100",
                         "MKT_SOURCE_NOTE:来源说明:TEXT:105",
-                        "MKT_CORN_SOURCE_NOTE:玉米来源说明:TEXT:106",
                         "MKT_ACTUAL_TRADE_PRICE:实际成交价:READONLY_DECIMAL:110");
         assertThat(rows("""
                 SELECT field_code || ':' || value || ':' || label
@@ -107,7 +106,7 @@ class MarketV18MasterDataTest {
     }
 
     @Test
-    void matchesTheVersionedV21MarketContractSnapshot() throws Exception {
+    void matchesTheVersionedV22MarketContractSnapshot() throws Exception {
         List<String> snapshot = rows("""
                 SELECT line FROM (
                     SELECT concat_ws('|', 'FACT', applicability.product_code,
@@ -145,13 +144,22 @@ class MarketV18MasterDataTest {
                 .digest((String.join("\n", snapshot) + "\n")
                         .getBytes(StandardCharsets.UTF_8)));
         String expected = Files.readString(Path.of(
-                "src/test/resources/contracts/market-v21-contract.sha256")).trim();
+                "src/test/resources/contracts/market-v22-contract.sha256")).trim();
 
         assertThat(rows("""
                 SELECT code || ':' || label || ':' || decimal_scale
                 FROM platform.market_fact_definition
                 WHERE code IN ('PROTEIN', 'TEST_WEIGHT') ORDER BY code
                 """)).containsExactly("PROTEIN:蛋白:1", "TEST_WEIGHT:容重:0");
+        assertThat(singleLong("""
+                SELECT count(*) FROM platform.market_core_field_definition
+                WHERE code = 'MKT_CORN_SOURCE_NOTE'
+                """)).isZero();
+        assertThat(rows("""
+                SELECT code || ':' || coalesce(description, 'null')
+                FROM platform.market_core_field_definition
+                WHERE code = 'MKT_SOURCE_NOTE'
+                """)).containsExactly("MKT_SOURCE_NOTE:null");
         assertThat(actual).isEqualTo(expected);
     }
 

@@ -168,21 +168,34 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
     @Override
     public List<MarketCoreFieldDefinition> findCoreFields(String productCode) {
         List<CoreRow> fields = jdbc.sql("""
+                        WITH mounted AS (
+                            SELECT page_field.field_code
+                            FROM platform.page_definition page
+                            JOIN platform.page_definition_field page_field
+                              ON page_field.product_code = page.product_code
+                             AND page_field.business_domain = page.business_domain
+                             AND page_field.page_kind = page.page_kind
+                            WHERE page.product_code = :productCode
+                              AND page.business_domain = 'MARKET'
+                              AND page.page_kind = 'MONITORING'
+                        ), mapped AS (
+                            SELECT applicability.field_code
+                            FROM platform.market_core_field_applicability applicability
+                            WHERE applicability.product_code = :productCode
+                              AND applicability.business_domain = 'MARKET'
+                              AND applicability.page_kind = 'MONITORING'
+                        )
                         SELECT definition.code, definition.label, definition.control_type,
                                definition.unit, definition.description,
                                definition.domain_binding, definition.capability, definition.required,
                                definition.decimal_precision, definition.decimal_scale,
-                               definition.sort_order
-                        FROM platform.page_definition page
-                        JOIN platform.page_definition_field page_field
-                          ON page_field.product_code = page.product_code
-                         AND page_field.business_domain = page.business_domain
-                         AND page_field.page_kind = page.page_kind
+                               definition.sort_order,
+                               mounted.field_code IS NOT NULL mounted,
+                               mapped.field_code IS NOT NULL mapped
+                        FROM mounted
+                        FULL OUTER JOIN mapped ON mapped.field_code = mounted.field_code
                         JOIN platform.market_core_field_definition definition
-                          ON definition.code = page_field.field_code
-                        WHERE page.product_code = :productCode
-                          AND page.business_domain = 'MARKET'
-                          AND page.page_kind = 'MONITORING'
+                          ON definition.code = coalesce(mounted.field_code, mapped.field_code)
                         ORDER BY definition.sort_order, definition.code
                         """).param("productCode", productCode).query((row, ignored) -> new CoreRow(
                         row.getString("code"), row.getString("label"), row.getString("control_type"),
@@ -190,7 +203,12 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                         row.getString("domain_binding"), row.getString("capability"),
                         row.getBoolean("required"),
                         (Integer) row.getObject("decimal_precision"),
-                        (Integer) row.getObject("decimal_scale"), row.getInt("sort_order"))).list();
+                        (Integer) row.getObject("decimal_scale"), row.getInt("sort_order"),
+                        row.getBoolean("mounted"), row.getBoolean("mapped"))).list();
+        fields.forEach(field -> {
+            boolean extension = "EXTENSION".equals(field.domainBinding());
+            if (!field.mounted() || extension != field.mapped()) throw invalidDefinition();
+        });
         Map<String, List<MarketFieldOption>> options = coreOptions(productCode);
         return fields.stream()
                 .map(row -> new MarketCoreFieldDefinition(
@@ -318,12 +336,24 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
         Map<String, Map<String, BigDecimal>> values = new LinkedHashMap<>();
         if (ids.isEmpty()) return values;
         jdbc.sql("""
-                        SELECT record_id, fact_code, value FROM market.market_record_fact
-                        WHERE record_id IN (:ids) ORDER BY record_id, fact_code
+                        SELECT fact.record_id, fact.fact_code, fact.value,
+                               applicability.fact_code IS NOT NULL applicable
+                        FROM market.market_record_fact fact
+                        JOIN market.market_record record ON record.record_id = fact.record_id
+                        LEFT JOIN platform.market_fact_applicability applicability
+                          ON applicability.product_code = record.product_code
+                         AND applicability.object_type_code = record.object_type_code
+                         AND applicability.fact_code = fact.fact_code
+                        WHERE fact.record_id IN (:ids)
+                        ORDER BY fact.record_id, fact.fact_code
                         """).param("ids", ids).query((row, ignored) -> new FactRow(
-                        row.getString("record_id"), row.getString("fact_code"), row.getBigDecimal("value")))
-                .list().forEach(fact -> values.computeIfAbsent(
-                        fact.recordId(), ignored -> new LinkedHashMap<>()).put(fact.code(), fact.value()));
+                        row.getString("record_id"), row.getString("fact_code"), row.getBigDecimal("value"),
+                        row.getBoolean("applicable")))
+                .list().forEach(fact -> {
+                    if (!fact.applicable()) throw invalidData();
+                    values.computeIfAbsent(fact.recordId(), ignored -> new LinkedHashMap<>())
+                            .put(fact.code(), fact.value());
+                });
         return values;
     }
 
@@ -371,6 +401,11 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
     private static ServerContractException invalidData() {
         return new ServerContractException(
                 "MARKET_DATA_INTEGRITY", "Market record data is inconsistent");
+    }
+
+    private static ServerContractException invalidDefinition() {
+        return new ServerContractException(
+                "MARKET_DEFINITION_INVALID", "Market definition is invalid");
     }
 
     private static MarketMonitoringRecord record(Header row, Map<String, BigDecimal> facts) {
@@ -448,9 +483,10 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
     private record SqlFilter(String sql, Map<String, Object> parameters) { }
     private record CoreRow(String code, String label, String controlType, String unit, String description,
                            String domainBinding, String capability, boolean required,
-                           Integer precision, Integer scale, int sortOrder) { }
+                           Integer precision, Integer scale, int sortOrder,
+                           boolean mounted, boolean mapped) { }
     private record OptionRow(String fieldCode, String value, String label, int sortOrder) { }
-    private record FactRow(String recordId, String code, BigDecimal value) { }
+    private record FactRow(String recordId, String code, BigDecimal value, boolean applicable) { }
     private record ExtensionRow(String recordId, String code, String value) { }
     private record Header(String id, String product, String objectType, String region, LocalDate tradeDate,
                           OffsetDateTime reportedAt, MarketTradeDirection direction,

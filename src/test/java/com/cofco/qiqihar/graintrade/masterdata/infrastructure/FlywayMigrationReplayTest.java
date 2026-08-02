@@ -72,9 +72,20 @@ class FlywayMigrationReplayTest {
         assertThat(marketRecordCount()).isOne();
 
         assertFrozenMarketMigrationChecksums();
-        MigrateResult versionTwentyOneResult = flyway().migrate();
-        assertThat(versionTwentyOneResult.migrationsExecuted).isEqualTo(11);
+        MigrateResult versionTwentyResult = DATABASE.flywayToVersion("20").migrate();
+        assertThat(versionTwentyResult.migrationsExecuted).isEqualTo(10);
+        insertVersionTwentyCoreValueFixture();
+
+        MigrateResult versionTwentyOneResult = DATABASE.flywayToVersion("21").migrate();
+        assertThat(versionTwentyOneResult.migrationsExecuted).isOne();
+        assertVersionTwentyCoreValuePreserved();
+
+        MigrateResult versionTwentyTwoResult = flyway().migrate();
+        assertThat(versionTwentyTwoResult.migrationsExecuted).isOne();
+        assertVersionTwentyCoreValuePreserved();
+        assertThat(witnessDefinitionCount()).isZero();
         assertThat(marketRecordCount()).isOne();
+        deleteVersionTwentyCoreValueFixture();
         deleteMarketUpgradeFixture();
         assertThat(marketRecordCount()).isZero();
 
@@ -83,13 +94,13 @@ class FlywayMigrationReplayTest {
         MigrateResult secondResult = flyway().migrate();
 
         assertThat(secondResult.migrationsExecuted).isZero();
-        assertThat(migrationChecksums()).hasSize(21);
+        assertThat(migrationChecksums()).hasSize(22);
         assertThat(masterDataCounts()).isEqualTo(firstCounts);
         assertThat(firstCounts).containsEntry("region", 29L)
                 .containsEntry("product", 3L)
                 .containsEntry("cultivar", 2L)
                 .containsEntry("object_type", 10L)
-                .containsEntry("page_definition_field", 88L)
+                .containsEntry("page_definition_field", 87L)
                 .containsEntry("production_fact_category", 4L)
                 .containsEntry("production_fact_definition", 19L)
                 .containsEntry("production_fact_applicability", 102L);
@@ -473,6 +484,60 @@ class FlywayMigrationReplayTest {
         try (Connection connection = DATABASE.openConnection();
                 Statement statement = connection.createStatement()) {
             statement.execute("DELETE FROM market.market_record_projection WHERE record_id = 'upgrade-preserved'");
+        }
+    }
+
+    private void insertVersionTwentyCoreValueFixture() throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    INSERT INTO market.market_record(
+                        record_id, product_code, object_type_code, region_code, trade_date,
+                        reported_at, purchase_base_price, sale_base_price, trade_direction,
+                        carriage_board_amount, packaging_amount, freight_amount, packaging_form,
+                        status_code, return_reason, last_modified_by)
+                    VALUES ('v20-core-upgrade', 'CORN', 'FEED_MILL', '230200', DATE '2026-08-01',
+                        TIMESTAMPTZ '2026-08-01 09:00:00+08', 2300, NULL, 'PURCHASE',
+                        36, 12, 72, 'BULK', 'DRAFT', NULL, 'migration-replay')
+                    """);
+            statement.execute("""
+                    INSERT INTO market.market_record_core_value(record_id, field_code, value)
+                    VALUES ('v20-core-upgrade', 'MKT_SOURCE_NOTE', 'V20保留来源')
+                    """);
+        }
+    }
+
+    private void assertVersionTwentyCoreValuePreserved() throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement();
+                ResultSet row = statement.executeQuery("""
+                        SELECT value, product_code, domain_binding
+                        FROM market.market_record_core_value
+                        WHERE record_id = 'v20-core-upgrade' AND field_code = 'MKT_SOURCE_NOTE'
+                        """)) {
+            assertThat(row.next()).isTrue();
+            assertThat(row.getString("value")).isEqualTo("V20保留来源");
+            assertThat(row.getString("product_code")).isEqualTo("CORN");
+            assertThat(row.getString("domain_binding")).isEqualTo("EXTENSION");
+        }
+    }
+
+    private long witnessDefinitionCount() throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement();
+                ResultSet row = statement.executeQuery("""
+                        SELECT count(*) FROM platform.market_core_field_definition
+                        WHERE code = 'MKT_CORN_SOURCE_NOTE'
+                        """)) {
+            row.next();
+            return row.getLong(1);
+        }
+    }
+
+    private void deleteVersionTwentyCoreValueFixture() throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute("DELETE FROM market.market_record WHERE record_id = 'v20-core-upgrade'");
         }
     }
 

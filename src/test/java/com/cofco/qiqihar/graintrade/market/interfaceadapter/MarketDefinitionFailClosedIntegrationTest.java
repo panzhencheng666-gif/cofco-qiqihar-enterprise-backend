@@ -78,6 +78,23 @@ class MarketDefinitionFailClosedIntegrationTest {
                     SET capability = 'PRICE_COMPONENT'
                     WHERE code = 'MKT_REGION'
                     """).update();
+            case MISSING_EXTENSION_MAPPING -> client.sql("""
+                    DELETE FROM platform.market_core_field_applicability
+                    WHERE product_code = 'CORN' AND field_code = 'MKT_SOURCE_NOTE'
+                    """).update();
+            case EXTRA_EXTENSION_MAPPING -> {
+                client.sql("""
+                        ALTER TABLE platform.market_core_field_applicability
+                        DROP CONSTRAINT market_core_field_applicabili_product_code_business_domain_fkey
+                        """).update();
+                client.sql("""
+                        DELETE FROM platform.page_definition_field
+                        WHERE product_code = 'CORN'
+                          AND business_domain = 'MARKET'
+                          AND page_kind = 'MONITORING'
+                          AND field_code = 'MKT_SOURCE_NOTE'
+                        """).update();
+            }
         }
     }
 
@@ -96,6 +113,8 @@ class MarketDefinitionFailClosedIntegrationTest {
     enum MetadataFault {
         ILLEGAL_EXTENSION_CONTROL,
         DUPLICATE_BINDING,
-        BAD_CAPABILITY
+        BAD_CAPABILITY,
+        MISSING_EXTENSION_MAPPING,
+        EXTRA_EXTENSION_MAPPING
     }
 }

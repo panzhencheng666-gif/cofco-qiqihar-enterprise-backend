@@ -27,30 +27,28 @@ class MarketV21ConstraintTest {
     }
 
     @Test
-    void mountsTheCornExtensionOnlyOnCornAndEnforcesRecordProductAndExtensionBinding() throws SQLException {
+    void removesTheTemporaryWitnessAndKeepsRecordProductAndExtensionBinding() throws SQLException {
         assertThat(rows("""
-                SELECT product_code FROM platform.page_definition_field
-                WHERE business_domain = 'MARKET' AND page_kind = 'MONITORING'
-                  AND field_code = 'MKT_CORN_SOURCE_NOTE'
-                ORDER BY product_code
-                """)).containsExactly("CORN");
+                SELECT code FROM platform.market_core_field_definition
+                WHERE code = 'MKT_CORN_SOURCE_NOTE'
+                """)).isEmpty();
         insertRecord("v21-corn", "CORN", "FEED_MILL");
         insertRecord("v21-soy", "SOYBEAN", "DEEP_PROCESSOR");
 
         execute("""
                 INSERT INTO market.market_record_core_value
                     (record_id, product_code, field_code, domain_binding, value)
-                VALUES ('v21-corn', 'CORN', 'MKT_CORN_SOURCE_NOTE', 'EXTENSION', '合法扩展')
+                VALUES ('v21-corn', 'CORN', 'MKT_SOURCE_NOTE', 'EXTENSION', '合法扩展')
                 """);
         assertThat(rows("""
                 SELECT value FROM market.market_record_core_value
-                WHERE record_id = 'v21-corn' AND field_code = 'MKT_CORN_SOURCE_NOTE'
+                WHERE record_id = 'v21-corn' AND field_code = 'MKT_SOURCE_NOTE'
                 """)).containsExactly("合法扩展");
 
-        assertInsertRejected("""
+        execute("""
                 INSERT INTO market.market_record_core_value
                     (record_id, product_code, field_code, domain_binding, value)
-                VALUES ('v21-soy', 'SOYBEAN', 'MKT_CORN_SOURCE_NOTE', 'EXTENSION', '越权扩展')
+                VALUES ('v21-soy', 'SOYBEAN', 'MKT_SOURCE_NOTE', 'EXTENSION', '合法大豆扩展')
                 """);
         assertInsertRejected("""
                 INSERT INTO market.market_record_core_value
