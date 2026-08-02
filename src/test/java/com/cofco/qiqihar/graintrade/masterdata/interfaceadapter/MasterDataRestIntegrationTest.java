@@ -62,6 +62,15 @@ class MasterDataRestIntegrationTest {
     }
 
     @Test
+    void exposesDynamicNavigationProductsOnlyWhenTheRequestedPageExists() throws Exception {
+        mockMvc.perform(get("/api/v1/master-data/products")
+                        .queryParam("domain", "MARKET")
+                        .queryParam("pageKind", "QUALITY"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[*].name").value(contains("大豆", "稻谷")));
+    }
+
+    @Test
     void missingPageDefinitionUsesTheEstablishedErrorEnvelope() throws Exception {
         mockMvc.perform(get("/api/v1/master-data/page-definitions")
                         .queryParam("productCode", "CORN")

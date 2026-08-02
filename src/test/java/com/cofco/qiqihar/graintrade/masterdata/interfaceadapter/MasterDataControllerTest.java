@@ -81,7 +81,17 @@ class MasterDataControllerTest {
         }
 
         @Override
+        public List<Region> regionPath(String regionCode) {
+            return List.of();
+        }
+
+        @Override
         public List<Product> products() {
+            return List.of();
+        }
+
+        @Override
+        public List<Product> productsWithPageDefinition(String domain, String pageKind) {
             return List.of();
         }
 

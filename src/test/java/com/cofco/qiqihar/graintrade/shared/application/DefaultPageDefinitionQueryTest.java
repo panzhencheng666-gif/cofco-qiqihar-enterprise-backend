@@ -16,8 +16,8 @@ class DefaultPageDefinitionQueryTest {
         DefaultPageDefinitionQuery query = new DefaultPageDefinitionQuery(key -> Optional.empty());
 
         assertThatThrownBy(() -> query.find(new BusinessPageKey("MARKET", "QUALITY", "CORN")))
-                .isInstanceOf(ClientRequestException.class)
-                .satisfies(error -> assertThat(((ClientRequestException) error).code())
+                .isInstanceOf(ResourceNotFoundException.class)
+                .satisfies(error -> assertThat(((ResourceNotFoundException) error).code())
                         .isEqualTo("PAGE_DEFINITION_NOT_FOUND"));
     }
 

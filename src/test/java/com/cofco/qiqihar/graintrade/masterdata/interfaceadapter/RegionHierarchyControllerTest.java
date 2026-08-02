@@ -34,6 +34,17 @@ class RegionHierarchyControllerTest {
                 .andExpect(jsonPath("$.data[*].label").value(contains("龙沙区", "建华区")));
     }
 
+    @Test
+    void exposesTheSelectedRegionAncestorPath() throws Exception {
+        MockMvc mockMvc = MockMvcBuilders
+                .standaloneSetup(new RegionHierarchyController(new RegionQuery()))
+                .build();
+
+        mockMvc.perform(get("/api/v1/regions/230202/path"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[*].label").value(contains("齐齐哈尔市", "龙沙区")));
+    }
+
     private static final class RegionQuery implements MasterDataQuery {
         @Override
         public List<Region> regions() {
@@ -50,7 +61,19 @@ class RegionHierarchyControllerTest {
         }
 
         @Override
+        public List<Region> regionPath(String regionCode) {
+            return List.of(
+                    new Region("230200", "齐齐哈尔市", null, "PREFECTURE"),
+                    new Region(regionCode, "龙沙区", "230200", "COUNTY"));
+        }
+
+        @Override
         public List<Product> products() {
+            return List.of();
+        }
+
+        @Override
+        public List<Product> productsWithPageDefinition(String domain, String pageKind) {
             return List.of();
         }
 

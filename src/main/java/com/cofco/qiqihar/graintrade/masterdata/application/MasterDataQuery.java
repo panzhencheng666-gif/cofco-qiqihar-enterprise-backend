@@ -15,7 +15,11 @@ public interface MasterDataQuery {
 
     List<Region> regionChildren(String parentCode);
 
+    List<Region> regionPath(String regionCode);
+
     List<Product> products();
+
+    List<Product> productsWithPageDefinition(String domain, String pageKind);
 
     List<Cultivar> cultivars(String productCode);
 

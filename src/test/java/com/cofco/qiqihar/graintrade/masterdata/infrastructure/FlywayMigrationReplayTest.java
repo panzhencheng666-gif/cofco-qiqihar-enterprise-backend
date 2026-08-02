@@ -108,6 +108,40 @@ class FlywayMigrationReplayTest {
         }
     }
 
+    @Test
+    @Order(3)
+    void enforcesPagePresentationPaginationAndUniqueFieldPlacement() throws SQLException {
+        assertTransactionRejected("""
+                DELETE FROM platform.page_pagination
+                WHERE product_code = 'RICE'
+                  AND business_domain = 'MARKET'
+                  AND page_kind = 'QUALITY'
+                """);
+        assertTransactionRejected("""
+                DELETE FROM platform.page_size_option
+                WHERE product_code = 'RICE'
+                  AND business_domain = 'MARKET'
+                  AND page_kind = 'QUALITY'
+                  AND page_size = 20
+                """);
+        assertTransactionRejected(
+                """
+                INSERT INTO platform.page_column_group
+                    (product_code, business_domain, page_kind, code, label, sort_order)
+                VALUES ('RICE', 'MARKET', 'QUALITY', 'SECOND', '第二组', 20)
+                """,
+                """
+                INSERT INTO platform.page_column_group_field
+                    (product_code, business_domain, page_kind, group_code, field_code, sort_order)
+                VALUES ('RICE', 'MARKET', 'QUALITY', 'SECOND', 'MOISTURE', 10)
+                """);
+
+        assertThat(tableComment("platform.page_pagination"))
+                .contains("Task 3 platform interaction configuration")
+                .contains("not business master data")
+                .contains("not sourced from the golden screenshot");
+    }
+
     private Flyway flyway() {
         return DATABASE.flyway();
     }
@@ -191,6 +225,33 @@ class FlywayMigrationReplayTest {
                 statement.execute(sql);
             }
         }).isInstanceOf(SQLException.class);
+    }
+
+    private void assertTransactionRejected(String... sqlStatements) {
+        assertThatThrownBy(() -> {
+            try (Connection connection = DATABASE.openConnection();
+                    Statement statement = connection.createStatement()) {
+                connection.setAutoCommit(false);
+                try {
+                    for (String sql : sqlStatements) {
+                        statement.execute(sql);
+                    }
+                    connection.commit();
+                } finally {
+                    connection.rollback();
+                }
+            }
+        }).isInstanceOf(SQLException.class);
+    }
+
+    private String tableComment(String qualifiedTableName) throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement();
+                ResultSet row = statement.executeQuery(
+                        "SELECT obj_description('" + qualifiedTableName + "'::regclass)")) {
+            row.next();
+            return row.getString(1);
+        }
     }
 
 }

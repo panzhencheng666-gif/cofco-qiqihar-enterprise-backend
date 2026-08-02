@@ -35,8 +35,13 @@ public class MasterDataController {
     }
 
     @GetMapping("/products")
-    ApiResponse<List<NamedResponse>> products() {
-        return new ApiResponse<>(query.products().stream().map(NamedResponse::from).toList());
+    ApiResponse<List<NamedResponse>> products(
+            @RequestParam(required = false) String domain,
+            @RequestParam(required = false) String pageKind) {
+        List<Product> products = domain == null || pageKind == null
+                ? query.products()
+                : query.productsWithPageDefinition(domain, pageKind);
+        return new ApiResponse<>(products.stream().map(NamedResponse::from).toList());
     }
 
     @GetMapping("/products/{productCode}/cultivars")

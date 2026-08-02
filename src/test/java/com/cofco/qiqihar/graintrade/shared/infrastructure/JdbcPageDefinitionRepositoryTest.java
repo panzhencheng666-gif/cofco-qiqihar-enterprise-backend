@@ -35,8 +35,7 @@ class JdbcPageDefinitionRepositoryTest {
             assertThat(group.fields()).extracting(BusinessPageDefinition.Field::label)
                     .containsExactly("水分", "出米率", "出糙率", "杂质");
         });
-        assertThat(definition.actions()).extracting(BusinessPageDefinition.Action::label)
-                .containsExactly("查看");
+        assertThat(definition.actions()).isEmpty();
         assertThat(definition.pagination().defaultPageSize()).isEqualTo(20);
         assertThat(definition.pagination().pageSizeOptions()).containsExactly(20, 50, 100);
     }

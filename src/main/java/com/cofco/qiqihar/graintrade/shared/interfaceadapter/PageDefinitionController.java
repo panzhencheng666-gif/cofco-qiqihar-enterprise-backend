@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.shared.interfaceadapter;
 
 import com.cofco.qiqihar.graintrade.shared.application.PageDefinitionQuery;
+import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.domain.BusinessPageDefinition;
 import com.cofco.qiqihar.graintrade.shared.domain.BusinessPageKey;
 import java.util.List;
@@ -24,7 +25,10 @@ public class PageDefinitionController {
             @PathVariable String domain,
             @PathVariable String pageKind,
             @RequestParam String productCode) {
-        BusinessPageDefinition definition = query.find(new BusinessPageKey(domain, pageKind, productCode));
+        BusinessPageDefinition definition = query.find(new BusinessPageKey(
+                requireKeyPart(domain),
+                requireKeyPart(pageKind),
+                requireKeyPart(productCode)));
         return new ApiResponse<>(PageDefinitionResponse.from(definition));
     }
 
@@ -111,5 +115,12 @@ public class PageDefinitionController {
 
     private static String toKebabCase(String value) {
         return value.toLowerCase().replace('_', '-');
+    }
+
+    private static String requireKeyPart(String value) {
+        if (value == null || value.isBlank()) {
+            throw new ClientRequestException("INVALID_PAGE_KEY", "Page key parts must not be blank");
+        }
+        return value;
     }
 }

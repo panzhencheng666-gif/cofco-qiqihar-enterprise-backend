@@ -39,4 +39,24 @@ class PageDefinitionRestIntegrationTest {
                         .queryParam("pageKind", "QUALITY"))
                 .andExpect(status().isOk());
     }
+
+    @Test
+    void unknownDefinitionUsesTheControlledNotFoundEnvelope() throws Exception {
+        mockMvc.perform(get("/api/v1/page-definitions/MARKET/QUALITY")
+                        .queryParam("productCode", "CORN")
+                        .header("X-Trace-Id", "page-definition-not-found"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("PAGE_DEFINITION_NOT_FOUND"))
+                .andExpect(jsonPath("$.traceId").value("page-definition-not-found"));
+    }
+
+    @Test
+    void blankProductCodeUsesAControlledBadRequestEnvelope() throws Exception {
+        mockMvc.perform(get("/api/v1/page-definitions/MARKET/QUALITY")
+                        .queryParam("productCode", " ")
+                        .header("X-Trace-Id", "blank-product-code"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_PAGE_KEY"))
+                .andExpect(jsonPath("$.traceId").value("blank-product-code"));
+    }
 }

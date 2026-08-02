@@ -63,7 +63,17 @@ class MasterDataQueryServiceTest {
         }
 
         @Override
+        public List<Region> findRegionPath(String regionCode) {
+            return List.of();
+        }
+
+        @Override
         public List<Product> findProducts() {
+            return List.of();
+        }
+
+        @Override
+        public List<Product> findProductsWithPageDefinition(String domain, String pageKind) {
             return List.of();
         }
 

@@ -17,7 +17,7 @@ public class DefaultPageDefinitionQuery implements PageDefinitionQuery {
 
     @Override
     public BusinessPageDefinition find(BusinessPageKey key) {
-        return repository.find(key).orElseThrow(() -> new ClientRequestException(
+        return repository.find(key).orElseThrow(() -> new ResourceNotFoundException(
                 "PAGE_DEFINITION_NOT_FOUND",
                 "Requested page definition does not exist"));
     }

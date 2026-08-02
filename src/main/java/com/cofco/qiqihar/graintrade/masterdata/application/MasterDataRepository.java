@@ -16,7 +16,11 @@ public interface MasterDataRepository {
 
     List<Region> findRegionChildren(String parentCode);
 
+    List<Region> findRegionPath(String regionCode);
+
     List<Product> findProducts();
+
+    List<Product> findProductsWithPageDefinition(String domain, String pageKind);
 
     List<Cultivar> findCultivarsByProductCode(String productCode);
 

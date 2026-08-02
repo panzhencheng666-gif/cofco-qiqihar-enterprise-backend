@@ -45,6 +45,13 @@ class JdbcMasterDataRepositoryTest {
     }
 
     @Test
+    void loadsOnlyProductsWithARealDefinitionForTheRequestedPage() {
+        assertThat(repository.findProductsWithPageDefinition("MARKET", "QUALITY"))
+                .extracting(product -> product.name())
+                .containsExactly("大豆", "稻谷");
+    }
+
+    @Test
     void loadsOnlyRootsOrTheDirectChildrenOfOneRegion() {
         assertThat(repository.findRegionChildren(null)).extracting(Region::name)
                 .containsExactly("齐齐哈尔市", "黑河市", "呼伦贝尔市");
@@ -54,6 +61,14 @@ class JdbcMasterDataRepositoryTest {
                         "梅里斯达斡尔族区", "龙江县", "依安县", "泰来县", "甘南县", "富裕县",
                         "克山县", "克东县", "拜泉县", "讷河市");
         assertThat(repository.findRegionChildren("230202")).isEmpty();
+    }
+
+    @Test
+    void loadsTheSelectedRegionAncestorPathInRootToLeafOrder() {
+        assertThat(repository.findRegionPath("230202"))
+                .extracting(Region::name)
+                .containsExactly("齐齐哈尔市", "龙沙区");
+        assertThat(repository.findRegionPath("missing")).isEmpty();
     }
 
     @Test

@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.shared.interfaceadapter;
 
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
+import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.Map;
 import java.util.UUID;
@@ -68,6 +69,17 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
             HttpServletRequest request) {
         return error(
                 HttpStatus.BAD_REQUEST,
+                exception.code(),
+                exception.clientMessage(),
+                request);
+    }
+
+    @ExceptionHandler(ResourceNotFoundException.class)
+    ResponseEntity<ApiErrorResponse> handleNotFound(
+            ResourceNotFoundException exception,
+            HttpServletRequest request) {
+        return error(
+                HttpStatus.NOT_FOUND,
                 exception.code(),
                 exception.clientMessage(),
                 request);

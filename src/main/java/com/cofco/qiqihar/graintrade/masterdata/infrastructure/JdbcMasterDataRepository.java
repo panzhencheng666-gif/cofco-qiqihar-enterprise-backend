@@ -72,8 +72,50 @@ public class JdbcMasterDataRepository implements MasterDataRepository {
     }
 
     @Override
+    public List<Region> findRegionPath(String regionCode) {
+        return jdbc.sql("""
+                        WITH RECURSIVE region_path AS (
+                            SELECT code, name, parent_code, administrative_level, 0 AS depth
+                            FROM platform.region
+                            WHERE code = :regionCode
+                            UNION ALL
+                            SELECT parent.code,
+                                   parent.name,
+                                   parent.parent_code,
+                                   parent.administrative_level,
+                                   child.depth + 1
+                            FROM platform.region parent
+                            JOIN region_path child ON child.parent_code = parent.code
+                        )
+                        SELECT code, name, parent_code, administrative_level
+                        FROM region_path
+                        ORDER BY depth DESC
+                        """)
+                .param("regionCode", regionCode)
+                .query(this::region)
+                .list();
+    }
+
+    @Override
     public List<Product> findProducts() {
         return jdbc.sql("SELECT code, name FROM platform.product ORDER BY sort_order")
+                .query((row, rowNumber) -> new Product(row.getString("code"), row.getString("name")))
+                .list();
+    }
+
+    @Override
+    public List<Product> findProductsWithPageDefinition(String domain, String pageKind) {
+        return jdbc.sql("""
+                        SELECT product.code, product.name
+                        FROM platform.product product
+                        JOIN platform.page_presentation presentation
+                          ON presentation.product_code = product.code
+                        WHERE presentation.business_domain = :domain
+                          AND presentation.page_kind = :pageKind
+                        ORDER BY product.sort_order
+                        """)
+                .param("domain", domain)
+                .param("pageKind", pageKind)
                 .query((row, rowNumber) -> new Product(row.getString("code"), row.getString("name")))
                 .list();
     }

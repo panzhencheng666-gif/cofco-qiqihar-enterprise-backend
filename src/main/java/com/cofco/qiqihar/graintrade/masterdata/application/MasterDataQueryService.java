@@ -33,8 +33,18 @@ public class MasterDataQueryService implements MasterDataQuery {
     }
 
     @Override
+    public List<Region> regionPath(String regionCode) {
+        return repository.findRegionPath(regionCode);
+    }
+
+    @Override
     public List<Product> products() {
         return repository.findProducts();
+    }
+
+    @Override
+    public List<Product> productsWithPageDefinition(String domain, String pageKind) {
+        return repository.findProductsWithPageDefinition(domain, pageKind);
     }
 
     @Override
