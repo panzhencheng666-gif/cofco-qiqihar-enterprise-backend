@@ -71,3 +71,43 @@ Task 6 已在正式后端与正式前端仓库完成。市场采集现以 `MARKE
 - `/Users/federal/Desktop/cofco-qiqihar-enterprise-infrastructure/docs/architecture/adr/0001-greenfield-system-boundaries.md`
 
 未修改旧 dashboard 或旧 enterprise-web。浏览器测试使用严格、未知请求即失败的正式 API 契约夹具；后端真实 PostgreSQL/Flyway/JDBC/MockMvc 路径由 `mvn verify` 覆盖。未执行 push、合并或工作区清理。
+
+## Review Round 1 修复附录
+
+Round 1 的 7 项 Important 与 2 项 Minor 已全部修复。对应代码提交：
+
+- 后端：`ba9977cf62a4d834528921cdc3256d61c8bd6b5a`
+- 前端：`40a3ba06cd8fcdadba5e744f8f32408715144714`
+
+### 后端修复
+
+- 状态迁移不再以 `reportedAt` 写入 `updated_at`。服务通过注入的 Asia/Shanghai `Clock` 取得可信 `Instant` 并显式传给仓储；提交、审核、退回测试均以固定时钟验证 `updated_at` 精确值，同时证明 `reported_at` 保持不变。
+- 核心字段定义改为一次字段查询加一次选项批量查询；普通选项与产品适用对象选项在同一 `UNION ALL` 查询中按 `fieldCode` 分组。代理数据源查询计数测试固定验证总计 2 次查询，消除 1+N。
+- 市场表单定义先验证正式 `MARKET/MONITORING/productCode` 页面上下文，再检查对象适用性；未知、大小写变体、空白及重复查询参数均稳定返回 400 `INVALID_MARKET_RECORD`。共享页面定义查询新增公开的 `hasDefinition` 应用层边界，Spring Modulith 校验无越界依赖。
+- 新增前向迁移 V19，未修改 V17/V18。V19 增加只读 `MKT_REPORTED_AT` 定义并投影到三产品列表，在核心字段和页面列元数据中补充采购/销售基础价“不含组成费用”与实际成交价“已含组成费用”的中文说明。
+- 列表、详情和表单定义分别验证填报时间：列表返回 `MKT_REPORTED_AT`，详情返回独立 `reportedAt`，表单返回 `READONLY_DATETIME`；交易日期仍保持独立字段。
+
+### 前端修复
+
+- 市场定义 Zod 契约对未知核心字段失败关闭，并映射为独立 `DEFINITION` 错误；编辑器的稳定字段映射不再对未知字段返回空节点，页面显示明确管理员提示。
+- 行动作增加同步 `inFlight` 门闩，且 `ListWorkbench` 在请求与最新列表刷新完成前禁用页级/行级动作。成功与冲突双击测试均证明同一版本只发送一次请求，后到事件不能覆盖结果。
+- 新增纯领域实际成交价预览：按购销方向选择对应基础价，再精确累加车板、包装、运费；以四位小数文本输出，不使用浮点数，并按服务端 18,4 范围对不完整、负数、超精度、超范围和求和溢出返回空预览。
+- 编辑器和列表动态呈现填报时间与采购、销售、实际成交价说明；详情只读填报时间与交易日期分离。
+
+### 浏览器契约与工作流
+
+- Chromium 市场夹具改为严格有状态记录模型，真实处理 POST 新建、PUT 保存、提交、退回、再次保存/提交和审核；每次写入在修改前校验完整请求体、状态与 CAS 版本，400/409 请求不产生部分写入。
+- DOM 场景真实填写价格组成并验证 `2424.0000`/`2422.0000`/`2090.0000` 预览与列表回读，输入用户退回原因，再执行最终审核；同时直接验证陈旧版本 409、未知请求体 400 与记录数不变。
+- 三产品 1280×720 场景验证填报时间、三类价格语义说明、230px 侧栏、顶栏/主区不重叠、紧凑筛选区、分页可见和宽表横向滚动。
+
+### Round 1 TDD 与最终证据
+
+- 后端初始定向回归：30 项中 4 项按预期失败；修复后 30/30 通过。
+- 前端初始定向回归：24 项中 11 项按预期失败；补充范围与冲突用例后最终定向 27/27 通过。
+- `mvn verify`：176 tests，0 failures，0 errors，JAR 构建成功；架构与空库/分段 Flyway v19 回放通过。
+- `npm run verify`：Prettier、ESLint、dependency-cruiser、架构探针、111 Vitest、TypeScript/Vite 构建及 11 Chromium E2E 全部通过。
+- `playwright test --project=chromium --repeat-each=3`：33/33 通过。
+- `npm audit --audit-level=high`：0 vulnerabilities。
+- V17 SHA-256：`d33fd96f416c3362c562ed716a5296fa2d506c317cc1161cd85a238a869e5ab3`。
+- V18 SHA-256：`06fc9bf97a30d8e9db8a1fb546d54e6daee239478e3437a45d1c086c39efd2ae`。
+- 两仓 `git diff --check` 通过；保留 `codex/formal-rebuild` 分支，未 push、未合并、未清理工作区。
