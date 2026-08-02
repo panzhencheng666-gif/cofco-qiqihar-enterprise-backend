@@ -1,5 +1,35 @@
 # Task 5 implementation report — production monitoring
 
+## Round-seven disposition
+
+Both Important findings in `task-5-review-round7.md` are fixed. This round changes only the formal frontend Playwright fixture and its browser contract specification; backend production code and V1–V16 remain untouched.
+
+- Before parsing any value, the production-list fixture now permits exactly `productCode`, `pageKind`, `pageNumber`, `pageSize`, and optional `filter.objectTypeCode`. Unknown keys, undefined filter keys, and case/spelling variants are recorded as unexpected and receive the controlled 400 response.
+- Every required core key must occur exactly once; the optional object-type filter may occur zero or one time. Duplicate core/filter keys and empty or whitespace-only values fail closed before a successful fixture response.
+- Integer parsing no longer uses JavaScript `Number` on unvalidated input. An ASCII signed-decimal lexical check plus `BigInt` range check mirrors Java `Integer.parseInt`'s accepted sign form and 32-bit range before conversion to number; semantic checks then require a nonnegative page number and a positive, formally configured page size.
+- The real-browser contract accepts ordinary integers, URL-encoded leading plus signs, Java's maximum int page number, and all formal object filters. It rejects exponent/decimal notation, whitespace, NaN/Infinity, values above/below int32 range, unknown keys, duplicates, blank values, and misspelled keys. Rejected requests never enter `listQueries`.
+- Both contract cases use browser-originated fetches through the same installed Playwright route used by the canonical product and race cases; all application cases continue to assert `unexpectedRequests` is empty.
+
+## Round-seven TDD evidence
+
+- RED: both new browser contract cases failed. The fixture returned 200 for `bogus`, `filter.notDefined`, and a case-variant key, and also accepted `1e3`, `2e1`, `2147483648`, and a whitespace-wrapped integer.
+- GREEN: after whitelist/multiplicity validation and lexical int32 parsing were added, both targeted contract cases passed and the complete Chromium suite passed 6/6.
+
+## Round-seven verification
+
+- `npm run verify` passed: Prettier, ESLint, dependency-cruiser (54 modules / 138 dependencies, zero violations), the read-only architecture test, 15 Vitest files / 88 tests, TypeScript, Vite build, and 6 Playwright Chromium cases.
+- `npm run e2e -- --repeat-each=3` passed 18/18, including three repetitions of both strict fixture contracts and the pending-write back/forward race.
+- `npm audit` reported 0 vulnerabilities, and `git diff --check` passed. Frontend production sources, the formal backend, V1–V16, and legacy/dashboard repositories remained untouched. No push was performed.
+
+## Round-seven commits
+
+- Frontend strict fixture parsing: `431543e test(production): mirror strict list query parsing`
+- This report is committed separately after the frontend hash was known.
+
+## Round-seven hand-off
+
+- Both round-seven findings have targeted real-browser regression coverage; exact independent re-review is the next gate.
+
 ## Round-six disposition
 
 Both Important findings in `task-5-review-round6.md` are fixed. This round changes only the formal frontend E2E fixture, page object, and browser specifications; backend production code and V1–V16 remain untouched.
