@@ -153,3 +153,54 @@ Round 2 的 5 项 Important 与 3 项 Minor 已全部修复。对应代码提交
 - V20 SHA-256：`b300decdfe59730f5f0325034be3637fafc5e9c3b3c25a4e31d9054d7d1347e5`。
 - 禁用伪代码、固定前端核心字段和 application/domain React 引用的静态扫描均为 0 命中；两仓 `git diff --check` 通过。
 - 保留 `codex/formal-rebuild` 分支，未 push、未合并；旧 dashboard 与旧 enterprise-web 均未修改。
+
+## Review Round 3 修复附录
+
+Round 3 的 5 项 Important 与 3 项 Minor 已全部落在正式后端与正式前端仓库。代码提交：
+
+- 后端：`876ca28324e0eb8766ff9e2062d3269ea54c347d`
+- 前端：`b70a6318f1735f7ea282ca711ef951031e9766a5`
+
+### 写入成功与刷新失败边界
+
+- 生产监测的新建、保存、提交、审核与退回均把业务写入和后续列表刷新拆成两个阶段；刷新失败显示“写入已成功”的明确提示，重试只刷新当前列表，不重放 mutation。
+- 新建、提交、退回使用独立回归用例；保存、审核使用参数化回归。每个用例均断言 mutation 调用次数严格为 1，失败后的重试只增加查询次数。
+- 生产页面定向 TDD 首次运行 27 项中 5 项按预期失败，修复后 27/27 通过。
+
+### 产品适用核心扩展与数据库约束
+
+- `findCoreFields(productCode)` 现通过正式 `MARKET/MONITORING` 页面定义与页面字段挂载查询核心定义；核心扩展不再无条件对所有产品暴露。
+- 前向迁移 V21 新增 `market_core_field_applicability`，以产品、页面字段、字段定义和 `EXTENSION` 绑定的复合外键约束扩展适用性；扩展值同时保存记录产品与绑定，并受记录产品及字段适用性的双重外键保护。
+- 新增只挂载于玉米的 `MKT_CORN_SOURCE_NOTE`。玉米创建、列表和详情可完整回读；大豆定义中不出现该字段，越权写入稳定返回 400 且记录数不变。
+- 类型化绑定在数据库中唯一；字段元数据的 binding/control/capability/required 组合由 V21 精确 `CHECK` 约束。普通扩展只允许 `TEXT`/`DECIMAL`，不支持的扩展 `REGION_HIERARCHY` 被数据库拒绝。
+- V21 数据库约束测试覆盖合法玉米扩展、跨产品扩展、类型化字段写入扩展表、重复类型绑定、非法元数据组合和错误 capability。
+
+### 失败关闭与数据完整性
+
+- 服务层在定义读取和写入前验证全部 12 个类型化绑定恰好各一个、字段代码无重复、控制类型/capability/required/小数元数据组合完全匹配；损坏定义稳定返回 500 `MARKET_DEFINITION_INVALID`。
+- 事务化故障注入分别覆盖非法组合、重复绑定和错误 capability；三种情况下定义 GET 与写 POST 都失败关闭，事务回滚不污染正式测试数据。
+- 列表组装对类型化核心值、扩展值和事实字段执行不可覆盖合并；列表或详情发现冲突、或详情发现不属于记录产品的扩展时，稳定返回 500 `MARKET_DATA_INTEGRITY`。
+- 核心字段请求保留显式 `null` 键到校验阶段，因此未知字段 `null` 和只读字段 `null` 均被拒绝，不再因规范化丢键而绕过校验。
+
+### 十进制、正式契约与架构门禁
+
+- 核心字段与事实字段只接受普通十进制文本：可带可选负号，不允许正号或指数形式。后端在任何 `BigDecimal` 转换前先匹配词法；随后领域规则继续拒绝负价格/数量与越界值。
+- 前端精确价格预览使用同一普通十进制词法和符号解析；正式浏览器夹具的提交验证与后端一致。`+1`、`1e3`、`1E3` 在核心值和事实值路径均返回 400 且无写入。
+- 后端新增 V21 市场契约摘要门禁，覆盖所有产品/对象/事实定义、精度/小数位、适用排序、核心定义及页面排序、对象中文名和排序。固定摘要为 `041cb147446cbd70cffb648b856b9ed71a3b6ec1ee34e8e4141107bcf338d4e0`。
+- 正式前端夹具单独锁定契约版本、上述后端摘要、`PROTEIN=蛋白/scale=1`、`TEST_WEIGHT=容重/scale=0`、全部 15 个产品对象中文名与排序，以及关键对象的事实适用排序；响应由该契约生成，测试不再以同一错误响应作为唯一预期。
+- package-info 架构豁免缩窄为精确 `org.springframework.modulith.NamedInterface`；外部伪框架 package annotation 的 RED 探针证明不会被忽略，普通领域类的严格规则保持不变。
+
+### V21 回放、TDD 与最终证据
+
+- V17–V20 保持冻结，SHA-256 分别为：
+  - V17 `d33fd96f416c3362c562ed716a5296fa2d506c317cc1161cd85a238a869e5ab3`
+  - V18 `06fc9bf97a30d8e9db8a1fb546d54e6daee239478e3437a45d1c086c39efd2ae`
+  - V19 `c7dd9c6d4064ebfc947b359260f4be8a0023b72fdcdb550c41e83cdaa2438a7c`
+  - V20 `b300decdfe59730f5f0325034be3637fafc5e9c3b3c25a4e31d9054d7d1347e5`
+- V21 SHA-256：`b8446a51c15fac0c4de3f358b78c2595b0494ede809ff279270c9f9d27763cad`。空库一次应用 21 个迁移，V10 后分段一次应用 11 个迁移到 v21，第二次运行执行 0 个迁移；页面字段计数更新为 88。
+- 定义故障注入 3/3 RED 后 3/3 GREEN；列表/详情碰撞 1/1 RED 后 1/1 GREEN；架构外部 package annotation 探针 1 项 RED 后架构测试 5/5 GREEN；事实十进制正号/指数用例 RED 后 GREEN。
+- `mvn -q verify`（JDK 21）：191 tests，0 failures，0 errors，0 skipped；Spring Modulith、ArchUnit、真实 PostgreSQL、Flyway 空库/分段回放和 JAR 构建全部通过。
+- `npm run verify`：Prettier、ESLint、dependency-cruiser、架构探针、129 Vitest、TypeScript/Vite 构建及 11 Chromium E2E 全部通过。
+- 市场、生产监测和生产 API 契约三套 Chromium 测试 `--repeat-each=3`：33/33 通过；市场单套 Task 6 E2E：5/5 通过。
+- `npm audit --audit-level=low`：0 vulnerabilities；两仓 `git diff --check` 通过，禁用伪代码与已纠正中文伪标签静态扫描 0 命中。
+- 两个正式仓库均保留 `codex/formal-rebuild` 分支；未 push、未合并。旧 dashboard 与旧 enterprise-web 仅作只读审计，未由本轮修改。
