@@ -36,6 +36,7 @@ class MarketV18MasterDataTest {
                         "MKT_PURCHASE_BASE_PRICE:采购基础价:DECIMAL:50", "MKT_SALE_BASE_PRICE:销售基础价:DECIMAL:60",
                         "MKT_CARRIAGE_BOARD_AMOUNT:车板组成:DECIMAL:70", "MKT_PACKAGING_FORM:包装形态:SELECT:80",
                         "MKT_PACKAGING_AMOUNT:包装组成:DECIMAL:90", "MKT_FREIGHT_AMOUNT:运费组成:DECIMAL:100",
+                        "MKT_SOURCE_NOTE:来源说明:TEXT:105",
                         "MKT_ACTUAL_TRADE_PRICE:实际成交价:READONLY_DECIMAL:110");
         assertThat(rows("""
                 SELECT field_code || ':' || value || ':' || label
@@ -88,6 +89,15 @@ class MarketV18MasterDataTest {
                 WHERE business_domain = 'MARKET' AND page_kind = 'MONITORING'
                   AND field_code = 'MKT_REPORTED_AT'
                 """)).isEqualTo(3);
+        assertThat(rows("""
+                SELECT code || ':' || domain_binding || ':' || capability || ':' || required
+                FROM platform.market_core_field_definition
+                WHERE code IN ('MKT_OBJECT_TYPE', 'MKT_SOURCE_NOTE', 'MKT_ACTUAL_TRADE_PRICE')
+                ORDER BY sort_order
+                """)).containsExactly(
+                        "MKT_OBJECT_TYPE:OBJECT_TYPE:OBJECT_TYPE_CONTEXT:true",
+                        "MKT_SOURCE_NOTE:EXTENSION:GENERIC:false",
+                        "MKT_ACTUAL_TRADE_PRICE:ACTUAL_TRADE_PRICE:ACTUAL_TRADE_PRICE:false");
     }
 
     private List<String> rows(String sql) throws SQLException {

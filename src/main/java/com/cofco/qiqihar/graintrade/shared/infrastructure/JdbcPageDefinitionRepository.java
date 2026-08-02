@@ -47,6 +47,19 @@ public class JdbcPageDefinitionRepository implements PageDefinitionRepository {
                 pagination(key)));
     }
 
+    @Override
+    public boolean exists(BusinessPageKey key) {
+        return Boolean.TRUE.equals(sql("""
+                        SELECT EXISTS(
+                            SELECT 1 FROM platform.page_presentation
+                            WHERE product_code IS NOT DISTINCT FROM :productCode
+                              AND business_domain = :domain
+                              AND page_kind = :pageKind)
+                        """, key)
+                .query(Boolean.class)
+                .single());
+    }
+
     private List<BusinessPageDefinition.Breadcrumb> breadcrumbs(BusinessPageKey key) {
         return sql("""
                         SELECT code, label

@@ -13,9 +13,9 @@ public interface PageDefinitionQuery {
 
     BusinessPageDefinition find(BusinessPageKey key);
 
-    default boolean hasDefinition(String domain, String pageKind, String productCode) {
+    default boolean hasDefinition(BusinessPageKey key) {
         try {
-            find(new BusinessPageKey(domain, pageKind, productCode));
+            find(key);
             return true;
         } catch (IllegalArgumentException | ResourceNotFoundException exception) {
             return false;

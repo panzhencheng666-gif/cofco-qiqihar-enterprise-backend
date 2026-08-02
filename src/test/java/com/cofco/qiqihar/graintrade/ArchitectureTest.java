@@ -18,6 +18,7 @@ class ArchitectureTest {
 
     private static final ArchRule DOMAIN_DEPENDENCY_RULE = classes()
             .that().resideInAnyPackage("com.cofco.qiqihar.graintrade..domain..")
+            .and().doNotHaveSimpleName("package-info")
             .should().onlyDependOnClassesThat().resideInAnyPackage(
                     "com.cofco.qiqihar.graintrade..domain..",
                     "java.lang..",

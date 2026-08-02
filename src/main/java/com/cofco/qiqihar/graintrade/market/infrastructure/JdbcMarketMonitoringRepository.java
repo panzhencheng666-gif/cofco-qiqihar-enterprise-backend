@@ -72,9 +72,14 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                         row.getString("status_label"), row.getLong("version"))).list();
         List<String> ids = headers.stream().map(ListHeader::id).toList();
         Map<String, Map<String, BigDecimal>> facts = facts(ids);
+        Map<String, Map<String, String>> extensions = extensionCoreValues(ids);
         Set<String> configuredActions = configuredActions(query.productCode());
         List<MarketListRow> rows = headers.stream()
-                .map(header -> item(header, facts.getOrDefault(header.id(), Map.of()), configuredActions)).toList();
+                .map(header -> item(
+                        header,
+                        facts.getOrDefault(header.id(), Map.of()),
+                        extensions.getOrDefault(header.id(), Map.of()),
+                        configuredActions)).toList();
         return new PagedResult<>(rows, query.pageNumber(), query.pageSize(), total);
     }
 
@@ -163,23 +168,34 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
     public List<MarketCoreFieldDefinition> findCoreFields(String productCode) {
         List<CoreRow> fields = jdbc.sql("""
                         SELECT code, label, control_type, unit, description,
+                               domain_binding, capability, required,
                                decimal_precision, decimal_scale, sort_order
                         FROM platform.market_core_field_definition ORDER BY sort_order, code
                         """).query((row, ignored) -> new CoreRow(
                         row.getString("code"), row.getString("label"), row.getString("control_type"),
                         row.getString("unit"), row.getString("description"),
+                        row.getString("domain_binding"), row.getString("capability"),
+                        row.getBoolean("required"),
                         (Integer) row.getObject("decimal_precision"),
                         (Integer) row.getObject("decimal_scale"), row.getInt("sort_order"))).list();
         Map<String, List<MarketFieldOption>> options = coreOptions(productCode);
         return fields.stream()
                 .map(row -> new MarketCoreFieldDefinition(
                         row.code(), row.label(), row.controlType(), row.unit(), row.description(),
+                        row.domainBinding(), row.capability(), row.required(),
                         row.precision(), row.scale(), row.sortOrder(),
                         options.getOrDefault(row.code(), List.of()))).toList();
     }
 
     @Override
-    public MarketMonitoringRecord insert(MarketMonitoringRecord record, String actorId) {
+    public Map<String, String> findExtensionCoreValues(String id) {
+        return extensionCoreValues(List.of(id)).getOrDefault(id, Map.of());
+    }
+
+    @Override
+    public MarketMonitoringRecord insert(
+            MarketMonitoringRecord record, String actorId,
+            Map<String, String> extensionCoreValues) {
         jdbc.sql("""
                         INSERT INTO market.market_record(
                             record_id, product_code, object_type_code, region_code, trade_date, reported_at,
@@ -190,12 +206,14 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                             :sale, :carriage, :packagingAmount, :freight, :packaging, :status, :reason, :actor, 0)
                         """).params(header(record, actorId)).update();
         replaceFacts(record);
+        replaceExtensionCoreValues(record.id(), extensionCoreValues);
         return record;
     }
 
     @Override
     public MarketMonitoringRecord updateFacts(
-            MarketMonitoringRecord record, long expectedVersion, String actorId) {
+            MarketMonitoringRecord record, long expectedVersion, String actorId,
+            Map<String, String> extensionCoreValues) {
         int updated = jdbc.sql("""
                         UPDATE market.market_record SET
                             object_type_code = :object, region_code = :region, trade_date = :date,
@@ -209,6 +227,7 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                         """).params(header(record, actorId)).param("expectedVersion", expectedVersion).update();
         requireUpdated(updated);
         replaceFacts(record);
+        replaceExtensionCoreValues(record.id(), extensionCoreValues);
         return record.savedAsVersion(expectedVersion + 1);
     }
 
@@ -261,7 +280,8 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
     }
 
     private MarketListRow item(
-            ListHeader row, Map<String, BigDecimal> facts, Set<String> configuredActions) {
+            ListHeader row, Map<String, BigDecimal> facts, Map<String, String> extensions,
+            Set<String> configuredActions) {
         Map<String, String> values = new LinkedHashMap<>();
         values.put("MKT_REGION", row.regionName());
         values.put("MKT_OBJECT_TYPE", row.objectTypeName());
@@ -276,6 +296,7 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
         values.put("MKT_FREIGHT_AMOUNT", decimal(row.freightAmount()));
         values.put("MKT_ACTUAL_TRADE_PRICE", decimal(row.actualTradePrice()));
         values.put("MKT_STATUS", row.statusLabel() == null ? row.status().name() : row.statusLabel());
+        values.putAll(extensions);
         facts.forEach((code, value) -> values.put(code, decimal(value)));
         return new MarketListRow(row.id(), values, row.status(), configuredActions, row.version());
     }
@@ -293,6 +314,21 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
         return values;
     }
 
+    private Map<String, Map<String, String>> extensionCoreValues(List<String> ids) {
+        Map<String, Map<String, String>> values = new LinkedHashMap<>();
+        if (ids.isEmpty()) return values;
+        jdbc.sql("""
+                        SELECT record_id, field_code, value
+                        FROM market.market_record_core_value
+                        WHERE record_id IN (:ids) ORDER BY record_id, field_code
+                        """).param("ids", ids).query((row, ignored) -> new ExtensionRow(
+                        row.getString("record_id"), row.getString("field_code"), row.getString("value")))
+                .list().forEach(value -> values.computeIfAbsent(
+                        value.recordId(), ignored -> new LinkedHashMap<>())
+                        .put(value.code(), value.value()));
+        return values;
+    }
+
     private void replaceFacts(MarketMonitoringRecord record) {
         jdbc.sql("DELETE FROM market.market_record_fact WHERE record_id = :id")
                 .param("id", record.id()).update();
@@ -300,6 +336,15 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                         INSERT INTO market.market_record_fact(record_id, fact_code, value)
                         VALUES(:id, :code, :value)
                         """).param("id", record.id()).param("code", code).param("value", value).update());
+    }
+
+    private void replaceExtensionCoreValues(String id, Map<String, String> values) {
+        jdbc.sql("DELETE FROM market.market_record_core_value WHERE record_id = :id")
+                .param("id", id).update();
+        values.forEach((code, value) -> jdbc.sql("""
+                        INSERT INTO market.market_record_core_value(record_id, field_code, value)
+                        VALUES(:id, :code, :value)
+                        """).param("id", id).param("code", code).param("value", value).update());
     }
 
     private static MarketMonitoringRecord record(Header row, Map<String, BigDecimal> facts) {
@@ -376,9 +421,11 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
 
     private record SqlFilter(String sql, Map<String, Object> parameters) { }
     private record CoreRow(String code, String label, String controlType, String unit, String description,
+                           String domainBinding, String capability, boolean required,
                            Integer precision, Integer scale, int sortOrder) { }
     private record OptionRow(String fieldCode, String value, String label, int sortOrder) { }
     private record FactRow(String recordId, String code, BigDecimal value) { }
+    private record ExtensionRow(String recordId, String code, String value) { }
     private record Header(String id, String product, String objectType, String region, LocalDate tradeDate,
                           OffsetDateTime reportedAt, MarketTradeDirection direction,
                           BigDecimal purchaseBasePrice, BigDecimal saleBasePrice,

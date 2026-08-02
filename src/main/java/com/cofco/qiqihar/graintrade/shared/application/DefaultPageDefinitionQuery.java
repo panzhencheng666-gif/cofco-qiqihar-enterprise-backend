@@ -21,4 +21,9 @@ public class DefaultPageDefinitionQuery implements PageDefinitionQuery {
                 "PAGE_DEFINITION_NOT_FOUND",
                 "Requested page definition does not exist"));
     }
+
+    @Override
+    public boolean hasDefinition(BusinessPageKey key) {
+        return repository.exists(key);
+    }
 }

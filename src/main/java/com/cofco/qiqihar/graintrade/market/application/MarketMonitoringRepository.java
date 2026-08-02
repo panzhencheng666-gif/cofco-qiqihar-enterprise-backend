@@ -18,8 +18,12 @@ public interface MarketMonitoringRepository {
     List<MarketFactCategory> findFactCategories();
     List<MarketFactDefinition> findFactDefinitions(String productCode, String objectTypeCode);
     List<MarketCoreFieldDefinition> findCoreFields(String productCode);
-    MarketMonitoringRecord insert(MarketMonitoringRecord record, String actorId);
-    MarketMonitoringRecord updateFacts(MarketMonitoringRecord record, long expectedVersion, String actorId);
+    Map<String, String> findExtensionCoreValues(String id);
+    MarketMonitoringRecord insert(
+            MarketMonitoringRecord record, String actorId, Map<String, String> extensionCoreValues);
+    MarketMonitoringRecord updateFacts(
+            MarketMonitoringRecord record, long expectedVersion, String actorId,
+            Map<String, String> extensionCoreValues);
     MarketMonitoringRecord updateState(
             MarketMonitoringRecord record, long expectedVersion, String actorId, Instant updatedAt);
 }

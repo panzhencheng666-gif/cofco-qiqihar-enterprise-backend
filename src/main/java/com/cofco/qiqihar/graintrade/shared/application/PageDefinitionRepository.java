@@ -8,4 +8,8 @@ import java.util.Optional;
 public interface PageDefinitionRepository {
 
     Optional<BusinessPageDefinition> find(BusinessPageKey key);
+
+    default boolean exists(BusinessPageKey key) {
+        return find(key).isPresent();
+    }
 }

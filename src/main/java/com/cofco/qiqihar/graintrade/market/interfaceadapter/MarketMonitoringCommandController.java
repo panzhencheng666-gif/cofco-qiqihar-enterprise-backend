@@ -8,14 +8,10 @@ import com.cofco.qiqihar.graintrade.market.application.MarketFormDefinition;
 import com.cofco.qiqihar.graintrade.market.application.MarketMonitoringDraft;
 import com.cofco.qiqihar.graintrade.market.application.MarketMonitoringService;
 import com.cofco.qiqihar.graintrade.market.application.MarketRecordView;
-import com.cofco.qiqihar.graintrade.market.domain.MarketMonitoringRecord;
-import com.cofco.qiqihar.graintrade.market.domain.MarketTradeDirection;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.StrictQueryParameters;
 import java.math.BigDecimal;
-import java.time.LocalDate;
-import java.time.OffsetDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -83,19 +79,16 @@ public class MarketMonitoringCommandController {
     }
 
     record DraftRequest(
-            String productCode, String objectTypeCode, String regionCode, LocalDate tradeDate,
-            String direction, String purchaseBasePrice, String saleBasePrice,
-            String carriageBoardAmount, String packagingAmount, String freightAmount,
-            String packagingForm, Map<String, String> facts, Long version) {
+            String productCode, Map<String, String> coreValues,
+            Map<String, String> facts, Long version) {
         MarketMonitoringDraft toDraft() {
             try {
-                return new MarketMonitoringDraft(
-                        productCode, objectTypeCode, regionCode, tradeDate,
-                        MarketTradeDirection.valueOf(direction), decimal(purchaseBasePrice),
-                        decimal(saleBasePrice), decimal(carriageBoardAmount), decimal(freightAmount),
-                        decimal(packagingAmount), packagingForm, parseDecimals(facts));
+                return new MarketMonitoringDraft(productCode, coreValues, parseDecimals(facts));
             } catch (RuntimeException exception) {
-                throw invalid("Market decimal values or direction are invalid");
+                if (exception instanceof ClientRequestException clientRequestException) {
+                    throw clientRequestException;
+                }
+                throw invalid("Market fact values are invalid");
             }
         }
 
@@ -131,10 +124,12 @@ public class MarketMonitoringCommandController {
 
     record CoreFieldResponse(
             String code, String label, String controlType, String unit, String description,
+            String capability, boolean required,
             Integer precision, Integer scale, int sortOrder, List<OptionResponse> options) {
         static CoreFieldResponse from(MarketCoreFieldDefinition field) {
             return new CoreFieldResponse(
                     field.code(), field.label(), field.controlType(), field.unit(), field.description(),
+                    field.capability(), field.required(),
                     field.precision(), field.scale(), field.sortOrder(),
                     field.options().stream().map(OptionResponse::from).toList());
         }
@@ -165,31 +160,19 @@ public class MarketMonitoringCommandController {
     }
 
     record RecordResponse(
-            String id, String productCode, String objectTypeCode, String regionCode,
-            LocalDate tradeDate, OffsetDateTime reportedAt, String direction,
-            String purchaseBasePrice, String saleBasePrice, String carriageBoardAmount,
-            String packagingAmount, String freightAmount, String packagingForm,
-            String actualTradePrice, String status, String returnReason,
+            String id, String productCode, Map<String, String> coreValues,
+            String status, String returnReason,
             Map<String, String> facts, List<String> allowedActions, long version) {
         static RecordResponse from(MarketRecordView view) {
-            MarketMonitoringRecord record = view.record();
             return new RecordResponse(
-                    record.id(), record.productCode(), record.objectTypeCode(), record.regionCode(),
-                    record.tradeDate(), record.reportedAt(), record.direction().name(),
-                    decimal(record.purchaseBasePrice()), decimal(record.saleBasePrice()),
-                    decimal(record.carriageBoardAmount()), decimal(record.packagingAmount()),
-                    decimal(record.freightAmount()), record.packagingForm(),
-                    decimal(record.actualTradePrice()), record.status().name(), record.returnReason(),
-                    formatDecimals(record.facts()), view.allowedActions(), record.version());
+                    view.record().id(), view.record().productCode(), view.coreValues(),
+                    view.record().status().name(), view.record().returnReason(),
+                    formatDecimals(view.record().facts()), view.allowedActions(), view.record().version());
         }
     }
 
     private static BigDecimal decimal(String value) {
         return value == null ? null : new BigDecimal(value);
-    }
-
-    private static String decimal(BigDecimal value) {
-        return value == null ? null : value.toPlainString();
     }
 
     private static Map<String, BigDecimal> parseDecimals(Map<String, String> values) {
@@ -200,7 +183,7 @@ public class MarketMonitoringCommandController {
 
     private static Map<String, String> formatDecimals(Map<String, BigDecimal> values) {
         Map<String, String> response = new LinkedHashMap<>();
-        values.forEach((code, value) -> response.put(code, decimal(value)));
+        values.forEach((code, value) -> response.put(code, value == null ? null : value.toPlainString()));
         return response;
     }
 
