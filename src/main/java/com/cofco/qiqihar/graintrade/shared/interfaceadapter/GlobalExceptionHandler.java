@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.shared.interfaceadapter;
 
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
+import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
 import com.cofco.qiqihar.graintrade.shared.application.AuthenticationRequiredException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -90,6 +91,16 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     ResponseEntity<ApiErrorResponse> handleAuthenticationRequired(
             AuthenticationRequiredException exception, HttpServletRequest request) {
         return error(HttpStatus.UNAUTHORIZED, "AUTHENTICATION_REQUIRED", "Authentication is required", request);
+    }
+
+    @ExceptionHandler(ConflictException.class)
+    ResponseEntity<ApiErrorResponse> handleConflict(ConflictException exception, HttpServletRequest request) {
+        return error(HttpStatus.CONFLICT, exception.code(), exception.clientMessage(), request);
+    }
+
+    @ExceptionHandler(org.springframework.dao.DataIntegrityViolationException.class)
+    ResponseEntity<ApiErrorResponse> handleInvalidInput(Exception exception, HttpServletRequest request) {
+        return error(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Request data is invalid", request);
     }
 
     @ExceptionHandler(Exception.class)

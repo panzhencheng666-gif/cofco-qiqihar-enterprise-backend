@@ -71,8 +71,8 @@ class FlywayMigrationReplayTest {
         assertThat(migrationChecksums()).containsAllEntriesOf(versionFiveChecksums);
         assertThat(marketRecordCount()).isOne();
 
-        MigrateResult versionThirteenResult = flyway().migrate();
-        assertThat(versionThirteenResult.migrationsExecuted).isEqualTo(3);
+        MigrateResult versionFifteenResult = flyway().migrate();
+        assertThat(versionFifteenResult.migrationsExecuted).isEqualTo(5);
         assertThat(marketRecordCount()).isOne();
         deleteMarketUpgradeFixture();
         assertThat(marketRecordCount()).isZero();
@@ -82,7 +82,7 @@ class FlywayMigrationReplayTest {
         MigrateResult secondResult = flyway().migrate();
 
         assertThat(secondResult.migrationsExecuted).isZero();
-        assertThat(migrationChecksums()).hasSize(13);
+        assertThat(migrationChecksums()).hasSize(15);
         assertThat(masterDataCounts()).isEqualTo(firstCounts);
         assertThat(firstCounts).containsEntry("region", 29L)
                 .containsEntry("product", 3L)

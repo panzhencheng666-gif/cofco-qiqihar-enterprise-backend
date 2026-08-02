@@ -3,14 +3,20 @@ package com.cofco.qiqihar.graintrade.production.application;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecord;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecordQuery;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
-import java.math.BigDecimal;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.List;
 
 public interface ProductionRecordRepository {
-    PagedResult<ProductionRecord> findPage(ProductionRecordQuery query);
+    PagedResult<ProductionListItem> findPage(ProductionRecordQuery query);
     Optional<ProductionRecord> findById(String id);
     boolean isApplicableObjectType(String productCode, String objectTypeCode);
-    void save(ProductionRecord record, Map<String, BigDecimal> costs,
-              Map<String, BigDecimal> insurance, Map<String, BigDecimal> subsidies, String actorId);
+    boolean isApplicableCultivar(String productCode, String cultivarCode);
+    boolean isKnownRegion(String regionCode);
+    boolean areApplicableFacts(String productCode, String objectTypeCode, Map<String, Set<String>> factCodes);
+    List<ProductionFactDefinition> findFactDefinitions(String productCode, String objectTypeCode);
+    ProductionRecord insert(ProductionRecord record, String actorId);
+    ProductionRecord updateFacts(ProductionRecord record, long expectedVersion, String actorId);
+    ProductionRecord updateState(ProductionRecord record, long expectedVersion, String actorId);
 }
