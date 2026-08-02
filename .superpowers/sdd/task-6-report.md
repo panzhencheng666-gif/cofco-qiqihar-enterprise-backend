@@ -251,3 +251,40 @@ Round 4 的 5 项 Important 与 2 项 Minor 已全部完成。实现提交：
 - `npm audit --audit-level=low`：0 vulnerabilities；两仓 `git diff --check` 通过；前端生产/fixture 静态扫描仅保留一项“不得出现旧见证字段”的负向断言。
 - V17–V21 工作树 diff 为 0；冻结 SHA-256 仍为 V17 `d33fd96f416c3362c562ed716a5296fa2d506c317cc1161cd85a238a869e5ab3`、V18 `06fc9bf97a30d8e9db8a1fb546d54e6daee239478e3437a45d1c086c39efd2ae`、V19 `c7dd9c6d4064ebfc947b359260f4be8a0023b72fdcdb550c41e83cdaa2438a7c`、V20 `b300decdfe59730f5f0325034be3637fafc5e9c3b3c25a4e31d9054d7d1347e5`、V21 `b8446a51c15fac0c4de3f358b78c2595b0494ede809ff279270c9f9d27763cad`。V22 SHA-256 为 `c5bb425053bf90fd1b4e44c0b292197bb724a6c97f843a777b4b7aa7c5ba1f10`。
 - 两个正式仓库均保留 `codex/formal-rebuild` 分支；未 push、未合并。旧 dashboard 与旧 enterprise-web 本轮保持只读。
+
+## Review Round 5 修复附录
+
+Round 5 的 5 项 Important 与 3 项 Minor 已全部完成。实现提交：
+
+- 后端：`7339a8e`（`fix: close market integrity symmetry gaps`）
+- 前端：`0845de1`（`fix: make production commands and market contract race-safe`）
+
+### V23 对称约束与任意事务顺序
+
+- V17–V22 保持冻结，数据库修复全部进入前向迁移 `V23__make_market_integrity_declarative_and_symmetric.sql`。迁移先诊断 extension mount/mapping 和 fact applicability 历史脏数据；诊断包含具体 product/field 或 record/context/fact，失败时 Flyway 整体回滚并保持原版本与数据。
+- `market_core_field_applicability -> page_definition_field` 与 `-> market_core_field_definition(code, domain_binding)` 外键改为 `DEFERRABLE INITIALLY DEFERRED`。页面挂载、mapping 与核心定义三侧的 constraint trigger 在事务最终态统一校验，并以事务级 advisory lock 串行化同一 product/page/field，允许 mount→mapping、mapping→mount 以及跨产品 child-first/parent-first remount，同时拒绝最终 missing、extra、typed→extension、definition insert/update/delete 绕过。
+- 事实表新增并回填 `product_code`、`object_type_code`，随后设为 `NOT NULL`。事实通过 deferred composite FK 指向 `(record_id, product_code, object_type_code)` header，并以 `ON UPDATE CASCADE` 跟随父上下文；另一条 deferred composite FK 指向 `(product_code, object_type_code, fact_code)` applicability。父 header 和 applicability 提供 PostgreSQL 被引用端所需的非延迟唯一键，写入端外键在事务最终态校验。
+- V22 的 immediate parent guard 与 fact trigger 被 V23 declarative FK 取代。直接 SQL 证明父上下文先改、事实随后原子替换合法；最终不适用则整笔失败。双连接并发用例证明已验证但未提交的 fact 持有父键锁，applicability delete 等待，fact 提交后 delete 由 FK 失败关闭，不发生 write skew。
+- 正式 REST PUT 验证 CORN/FEED_MILL + `PROCESSING_INPUT` 可在同一请求改为 CORN/BREEDING_FACTORY + `PURCHASE_VOLUME`，返回 v1；随后旧 v0 PUT 返回 409，详情仍为 v1 新上下文与新事实。
+
+### 读取失败关闭与升级生命周期
+
+- 扩展值批量读取现在只接受记录当前 product 下同时存在的 `MARKET/MONITORING` page mount、EXTENSION core definition 与 applicability。非碰撞但未挂载的历史扩展值不再进入列表；列表和详情均稳定返回 500 `MARKET_DATA_INTEGRITY`。历史 header/fact context 损坏的故障注入也按 V23 composite FK 形态更新。
+- 分段回放在 V20 创建真实 `MKT_SOURCE_NOTE` 值。V21 再创建 witness/common 冲突，V22 首次迁移给出冲突诊断、保持 version=21 且两值不变；只移除冲突 common 后，V22 把 witness 安全迁为永久字段。V23 对 extension mismatch 与 inapplicable fact 分别进行失败/原子性证明，清理脏数据后成功升级。
+- V20 记录直到 V23 后仍未删除：正式 Spring `MarketMonitoringService` 先 detail 读出旧 extension，再以 CAS save 修改到 v1、clear 到 v2；旧 v1 save 被 `ConflictException` 拒绝，最终 list/detail 均保持 v2 清空状态，完成后才清理回放夹具。
+
+### 生产命令 ownership 与共享 V23 contract
+
+- 生产监测 mutation 使用独立 owner token，不再依赖普通 request version。mutation pending 期间 VIEW/NEW 可推进展示版本，但不能释放 mutation ownership；无论 mutation resolve/reject，原 owner 都会释放，`loading` 由 pending operation set 精确计算。NEW 完成后迟到 VIEW 不覆盖编辑器，mutation 完成后下一次 SUBMIT 可正常进入。
+- 市场 contract 升级为 V23：canonical 行覆盖 CATEGORY、OBJECT、FACT 的全部 response fields、CORE description/全部元数据与 CORE_OPTION。后端使用 `COLLATE "C"` 后按 UTF-8 求 SHA-256；前端使用显式 Unicode code-point comparator 与 UTF-8 hashing，双方摘要一致为 `16bbb60018df7c34f7a0cc2ccef4e577fcc75813139506d1108b6368ba5ae4c61a77a7ac2`。
+- 后端数据库 mutation 证明 core description、option label/order、category label/order 任一漂移都会改变摘要；前端另证明 core/fact description、option label/order、category label/order 均进入 serializer。市场 API fixture 的 editable core codes、price-component/base-price codes 与 fact groups 改由共享定义和类别派生，不再维护平行硬编码清单。
+
+### Round 5 TDD 与最终证据
+
+- V23 约束定向测试先在 V22 上 4/4 按预期失败，实施后扩展为 5/5 GREEN；V22 既有约束门禁适配 deferred 最终态后 4/4 GREEN。脏扩展 list/detail 用例先暴露 list 200，修复后数据失败关闭 3/3 GREEN。
+- 正式市场 REST 集成 37/37 GREEN；生产 mixed-command ownership 初次 2 项按预期失败，修复后整套 34/34 GREEN；V23 双端 canonical 测试后端 5/5、前端 3/3 GREEN；Flyway 分段与正式服务生命周期 8/8 GREEN。
+- `mvn -q verify`（JDK 21）：211 tests，0 failures，0 errors，0 skipped；JAR、真实 PostgreSQL、Flyway 空库/分段回放、Spring Modulith 与 ArchUnit 全部通过。
+- 前端最终各门禁均通过：Prettier、ESLint、dependency-cruiser、并发架构探针、137 Vitest、TypeScript/Vite production build、11/11 Chromium E2E。未执行无新增证据的 `repeat-each=3`。
+- 最终验证前曾误用 pnpm 改写本地 `node_modules` 布局；未跟踪 `pnpm-lock.yaml` 已精确删除，并以 `npm ci` 恢复 `package-lock.json` 环境。源码和 lockfile 均未切换包管理器；恢复后架构探针立即通过。
+- 冻结迁移 SHA-256 保持：V17 `d33fd96f416c3362c562ed716a5296fa2d506c317cc1161cd85a238a869e5ab3`、V18 `06fc9bf97a30d8e9db8a1fb546d54e6daee239478e3437a45d1c086c39efd2ae`、V19 `c7dd9c6d4064ebfc947b359260f4be8a0023b72fdcdb550c41e83cdaa2438a7c`、V20 `b300decdfe59730f5f0325034be3637fafc5e9c3b3c25a4e31d9054d7d1347e5`、V21 `b8446a51c15fac0c4de3f358b78c2595b0494ede809ff279270c9f9d27763cad`、V22 `c5bb425053bf90fd1b4e44c0b292197bb724a6c97f843a777b4b7aa7c5ba1f10`。V23 SHA-256 为 `c726ab4eeb3c386b55a117c4866d700c7ce2d12eaaa3687cb44f0f5446d2661b`。
+- 两个正式仓库均保留 `codex/formal-rebuild` 分支；未 push、未合并。旧 dashboard 与旧 enterprise-web 全程只读。
