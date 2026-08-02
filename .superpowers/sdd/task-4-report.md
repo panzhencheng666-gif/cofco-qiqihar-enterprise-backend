@@ -7,6 +7,7 @@
 - 前端实现提交：`ce4d1da`（`feat: add work management task workbench`）
 - Round 1 后端修复提交：`130ef67`（`fix: harden workflow workbench review findings`）
 - Round 1 前端修复提交：`368f342`（`fix: normalize workflow workbench navigation`）
+- Round 2 前端修复提交：`c3c9c1c`（`fix: cancel obsolete work item requests`）
 - 正式后端基线：`0600745`；正式前端基线：`4524e94`。
 - 两个旧 dashboard 仓库只读；未修改 plan 或 ledger。
 
@@ -71,6 +72,12 @@
 5. pending 状态只保留 backend definition 驱动的 `ListWorkbench` select；筛选变更仅更新草稿并重置到第 0 页，点击“查询”后才请求，不再有重复 tabs/buttons。
 6. Shell 删除虚构“待办 9”；active route 使用不含 query 的 hash pathname，待办/已办和顶部“我的工作”正确激活并提供 `aria-current="page"`。
 
+### Round 2 生命周期修复
+
+1. RED：真实 App 从 deferred `pending?page=2` 切换并完成 completed page0 后，再 resolve 旧 pending 越界响应，旧实例额外请求 `PENDING page0`，并可能用旧 callback 将 completed hash normalize 回 pending。
+2. GREEN：`WorkItemsPage` effect cleanup 在作废 definition lifecycle 的同时立即推进 list request generation；初次列表、clamp refetch、catch/finally 的既有 version guard 因此会拒绝所有旧生命周期 continuation。
+3. deferred 回归确认 pending 只请求 page2；completed 结果和 hash 保持不变，旧响应不再 refetch、set state、显示错误/加载态或调用旧 `onQueryNormalized`。既有空库 clamp、缩页 clamp、普通 stale 与有效页单请求测试继续通过。
+
 ## 主要文件
 
 ### 后端
@@ -97,7 +104,7 @@
 
 - 后端 fresh `JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home mvn verify`：92 tests，0 failures，0 errors；可执行 jar 构建成功。
 - `ArchitectureTest`：4/4；test-database safety architecture 2/2；Spring Modulith、domain purity 与受保护测试数据库规则全部通过。
-- 前端 fresh `npm run verify`：Prettier、ESLint 通过；dependency-cruiser 43 modules / 98 dependencies、0 violations；Vitest 12 files / 42 tests；TypeScript/Vite 107 modules transformed。
+- 前端 fresh `npm run verify`：Prettier、ESLint 通过；dependency-cruiser 43 modules / 98 dependencies、0 violations；Vitest 12 files / 43 tests；TypeScript/Vite 107 modules transformed。
 - Flyway latest 为 11；V5→V8 执行 3，V8→V10 执行 2，V10→V11 执行 1，二次启动执行 0；duplicate NULL page context 被数据库拒绝。
 - `git diff --exit-code 933dbef -- V1...V10` 通过；V1–V10 未改写，V5 固定 checksum 回归继续通过。
 - 正式前端源码扫描无旧 `#/我的工作`、`待我处理`、`退回与异常`；待填报/待审核/退回补充/异常处理只由后端 definition 返回，不在前端生产源码硬编码。
@@ -112,5 +119,6 @@
 - [x] pending 只有一个状态 select；全部/四状态 label 与 code 来自 DB/canonical definition，筛选后点击查询才请求。
 - [x] 列包含任务、业务域、地区、产品、业务期间、截止时间、流程节点、状态、责任人；无 handler 时不返回操作 action。
 - [x] hash/history/deep-link、真实 HTTP、服务端分页、越界 clamp/refetch、stale response、空库 0、错误重试均有生产组合测试。
+- [x] scope replacement/unmount 会立即取消旧 definition/list/refetch lifecycle；旧 pending 响应不能污染 completed state 或 hash。
 - [x] shared `ListWorkbench` 保持单一横向滚动容器；1280×720 不引入 fixed/absolute/sticky 表头叠压。
 - [x] 旧仓库只读；未修改 plan/ledger。
