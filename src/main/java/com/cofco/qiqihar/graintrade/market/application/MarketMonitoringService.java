@@ -11,6 +11,7 @@ import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.PageDefinitionQuery;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
+import com.cofco.qiqihar.graintrade.shared.application.ServerContractException;
 import com.cofco.qiqihar.graintrade.shared.domain.BusinessPageKey;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -28,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.regex.Pattern;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -36,6 +38,12 @@ public class MarketMonitoringService {
     private static final String DOMAIN = "MARKET";
     private static final String PAGE_KIND = "MONITORING";
     private static final ZoneId REPORTING_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final Pattern PLAIN_DECIMAL = Pattern.compile(
+            "^-?(?:\\d+(?:\\.\\d*)?|\\.\\d+)$");
+    private static final Set<String> REQUIRED_TYPED_BINDINGS = Set.of(
+            "OBJECT_TYPE", "REGION", "TRADE_DATE", "REPORTED_AT", "TRADE_DIRECTION",
+            "PURCHASE_BASE_PRICE", "SALE_BASE_PRICE", "CARRIAGE_BOARD_AMOUNT",
+            "PACKAGING_FORM", "PACKAGING_AMOUNT", "FREIGHT_AMOUNT", "ACTUAL_TRADE_PRICE");
     private final MarketMonitoringRepository repository;
     private final PageDefinitionQuery pageDefinitions;
     private final CurrentActor currentActor;
@@ -72,7 +80,7 @@ public class MarketMonitoringService {
     @Transactional(readOnly = true)
     public MarketRecordView detail(String id) {
         MarketMonitoringRecord record = required(id);
-        return view(record, repository.findCoreFields(record.productCode()),
+        return view(record, coreFields(record.productCode()),
                 repository.findExtensionCoreValues(id));
     }
 
@@ -107,10 +115,8 @@ public class MarketMonitoringService {
                 fields.get(category.code()).stream()
                         .sorted(Comparator.comparingInt(MarketFactDefinition::sortOrder)
                                 .thenComparing(MarketFactDefinition::code)).toList())).toList();
-        return new MarketFormDefinition(productCode, objectTypeCode,
-                repository.findCoreFields(productCode).stream()
-                        .sorted(Comparator.comparingInt(MarketCoreFieldDefinition::sortOrder)
-                                .thenComparing(MarketCoreFieldDefinition::code)).toList(), groups);
+        return new MarketFormDefinition(
+                productCode, objectTypeCode, coreFields(productCode), groups);
     }
 
     /** Used by the write interceptor before request-body conversion. */
@@ -186,7 +192,7 @@ public class MarketMonitoringService {
         try {
             MarketMonitoringRecord updated = repository.updateState(
                     command.apply(existing), expectedVersion, actor.id(), clock.instant());
-            return view(updated, repository.findCoreFields(updated.productCode()),
+            return view(updated, coreFields(updated.productCode()),
                     repository.findExtensionCoreValues(updated.id()));
         } catch (MarketValidationException exception) {
             throw invalid(exception.getMessage());
@@ -215,12 +221,76 @@ public class MarketMonitoringService {
         if (draft == null || draft.productCode() == null || draft.productCode().isBlank()) {
             throw invalid("Product code is required");
         }
-        List<MarketCoreFieldDefinition> definitions = repository.findCoreFields(draft.productCode()).stream()
+        List<MarketCoreFieldDefinition> definitions = coreFields(draft.productCode());
+        if (definitions.isEmpty()) throw invalid("Market core field definition is missing");
+        return definitions;
+    }
+
+    private List<MarketCoreFieldDefinition> coreFields(String productCode) {
+        List<MarketCoreFieldDefinition> definitions = repository.findCoreFields(productCode).stream()
                 .sorted(Comparator.comparingInt(MarketCoreFieldDefinition::sortOrder)
                         .thenComparing(MarketCoreFieldDefinition::code))
                 .toList();
-        if (definitions.isEmpty()) throw invalid("Market core field definition is missing");
+        validateCoreDefinitionContract(definitions);
         return definitions;
+    }
+
+    private static void validateCoreDefinitionContract(
+            List<MarketCoreFieldDefinition> definitions) {
+        Set<String> codes = new LinkedHashSet<>();
+        Set<String> typedBindings = new LinkedHashSet<>();
+        for (MarketCoreFieldDefinition definition : definitions) {
+            if (!codes.add(definition.code())) throw invalidDefinition();
+            String binding = definition.domainBinding();
+            if (!"EXTENSION".equals(binding) && !typedBindings.add(binding)) {
+                throw invalidDefinition();
+            }
+            boolean supported = switch (binding) {
+                case "OBJECT_TYPE" -> matches(
+                        definition, "SELECT", "OBJECT_TYPE_CONTEXT", true);
+                case "REGION" -> matches(
+                        definition, "REGION_HIERARCHY", "GENERIC", true);
+                case "TRADE_DATE" -> matches(definition, "DATE", "GENERIC", true);
+                case "REPORTED_AT" -> matches(
+                        definition, "READONLY_DATETIME", "GENERIC", false);
+                case "TRADE_DIRECTION" -> matches(
+                        definition, "SELECT", "PRICE_DIRECTION", true);
+                case "PURCHASE_BASE_PRICE" -> matches(
+                        definition, "DECIMAL", "PURCHASE_BASE_PRICE", false);
+                case "SALE_BASE_PRICE" -> matches(
+                        definition, "DECIMAL", "SALE_BASE_PRICE", false);
+                case "CARRIAGE_BOARD_AMOUNT", "PACKAGING_AMOUNT", "FREIGHT_AMOUNT" ->
+                        matches(definition, "DECIMAL", "PRICE_COMPONENT", true);
+                case "PACKAGING_FORM" -> matches(
+                        definition, "SELECT", "GENERIC", true);
+                case "ACTUAL_TRADE_PRICE" -> matches(
+                        definition, "READONLY_DECIMAL", "ACTUAL_TRADE_PRICE", false);
+                case "EXTENSION" -> "GENERIC".equals(definition.capability())
+                        && ("TEXT".equals(definition.controlType())
+                            || "DECIMAL".equals(definition.controlType()));
+                default -> false;
+            };
+            boolean decimalMetadata = "DECIMAL".equals(definition.controlType())
+                    || "READONLY_DECIMAL".equals(definition.controlType());
+            if (!supported
+                    || decimalMetadata != (definition.precision() != null && definition.scale() != null)) {
+                throw invalidDefinition();
+            }
+        }
+        if (!typedBindings.equals(REQUIRED_TYPED_BINDINGS)) throw invalidDefinition();
+    }
+
+    private static boolean matches(
+            MarketCoreFieldDefinition definition, String controlType,
+            String capability, boolean required) {
+        return controlType.equals(definition.controlType())
+                && capability.equals(definition.capability())
+                && definition.required() == required;
+    }
+
+    private static ServerContractException invalidDefinition() {
+        return new ServerContractException(
+                "MARKET_DEFINITION_INVALID", "Market definition is invalid");
     }
 
     private ParsedDraft parseDraft(
@@ -239,7 +309,9 @@ public class MarketMonitoringService {
         definitions.forEach(definition -> {
             String value = draft.coreValues().get(definition.code());
             if (isReadOnly(definition.controlType())) {
-                if (value != null) throw invalid("Read-only market core field cannot be submitted: " + definition.code());
+                if (draft.coreValues().containsKey(definition.code())) {
+                    throw invalid("Read-only market core field cannot be submitted: " + definition.code());
+                }
                 return;
             }
             if (value == null || value.isBlank()) {
@@ -301,6 +373,9 @@ public class MarketMonitoringService {
             }
             case "DECIMAL" -> {
                 try {
+                    if (!PLAIN_DECIMAL.matcher(value).matches()) {
+                        throw invalid("Invalid decimal for market core field: " + definition.code());
+                    }
                     if (definition.precision() == null || definition.scale() == null) {
                         throw new IllegalStateException(
                                 "Decimal market core metadata is incomplete: " + definition.code());
@@ -344,6 +419,14 @@ public class MarketMonitoringService {
     private static MarketRecordView view(
             MarketMonitoringRecord record, List<MarketCoreFieldDefinition> definitions,
             Map<String, String> extensions) {
+        Set<String> extensionCodes = definitions.stream()
+                .filter(definition -> "EXTENSION".equals(definition.domainBinding()))
+                .map(MarketCoreFieldDefinition::code)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        if (!extensionCodes.containsAll(extensions.keySet())) {
+            throw new ServerContractException(
+                    "MARKET_DATA_INTEGRITY", "Market record data is inconsistent");
+        }
         Map<String, String> values = new LinkedHashMap<>();
         definitions.stream().sorted(Comparator.comparingInt(MarketCoreFieldDefinition::sortOrder)
                         .thenComparing(MarketCoreFieldDefinition::code))

@@ -3,6 +3,7 @@ package com.cofco.qiqihar.graintrade.shared.interfaceadapter;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
+import com.cofco.qiqihar.graintrade.shared.application.ServerContractException;
 import com.cofco.qiqihar.graintrade.shared.application.AuthenticationRequiredException;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.Map;
@@ -101,6 +102,16 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(org.springframework.dao.DataIntegrityViolationException.class)
     ResponseEntity<ApiErrorResponse> handleInvalidInput(Exception exception, HttpServletRequest request) {
         return error(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "Request data is invalid", request);
+    }
+
+    @ExceptionHandler(ServerContractException.class)
+    ResponseEntity<ApiErrorResponse> handleServerContract(
+            ServerContractException exception, HttpServletRequest request) {
+        String traceId = traceId(request);
+        LOGGER.error("Server contract failure [traceId={}, code={}]", traceId, exception.code(), exception);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(ApiErrorResponse.of(
+                        exception.code(), exception.clientMessage(), Map.of(), traceId));
     }
 
     @ExceptionHandler(Exception.class)

@@ -103,6 +103,83 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    void exposesAndRoundTripsACornOnlyExtensionButRejectsItForSoybeanWithoutWriting() throws Exception {
+        String cornBody = draftBody("CORN", "FEED_MILL", "MOISTURE", null)
+                .replace("\"MKT_PACKAGING_FORM\":\"BULK\"",
+                        "\"MKT_PACKAGING_FORM\":\"BULK\",\"MKT_CORN_SOURCE_NOTE\":\"玉米产地直采\"");
+        String id = mockMvc.perform(post("/api/v1/market-records")
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(cornBody))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.coreValues.MKT_CORN_SOURCE_NOTE").value("玉米产地直采"))
+                .andReturn().getResponse().getContentAsString()
+                .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+        mockMvc.perform(get("/api/v1/market-records/{id}", id))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.coreValues.MKT_CORN_SOURCE_NOTE").value("玉米产地直采"));
+        mockMvc.perform(get("/api/v1/market-records")
+                        .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].values.MKT_CORN_SOURCE_NOTE")
+                        .value("玉米产地直采"));
+
+        mockMvc.perform(get("/api/v1/market-record-definitions")
+                        .queryParam("productCode", "SOYBEAN")
+                        .queryParam("objectTypeCode", "DEEP_PROCESSOR"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_CORN_SOURCE_NOTE')]")
+                        .doesNotExist());
+        long before = recordCount();
+        String soybeanBody = draftBody("SOYBEAN", "DEEP_PROCESSOR", "PROTEIN", null)
+                .replace("\"MKT_PACKAGING_FORM\":\"BULK\"",
+                        "\"MKT_PACKAGING_FORM\":\"BULK\",\"MKT_CORN_SOURCE_NOTE\":\"越权值\"");
+        mockMvc.perform(post("/api/v1/market-records")
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(soybeanBody))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_MARKET_RECORD"));
+        org.assertj.core.api.Assertions.assertThat(recordCount()).isEqualTo(before);
+    }
+
+    @Test
+    void rejectsNonPlainDecimalSyntaxWithoutWriting() throws Exception {
+        String valid = draftBody("CORN", "FEED_MILL", "MOISTURE", null);
+        for (String invalid : List.of("+1", "1e3", "1E3")) {
+            mockMvc.perform(post("/api/v1/market-records")
+                            .principal(() -> "market-tester")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(valid.replace("\"MKT_PURCHASE_BASE_PRICE\":\"2300\"",
+                                    "\"MKT_PURCHASE_BASE_PRICE\":\"" + invalid + "\"")))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error.code").value("INVALID_MARKET_RECORD"));
+            mockMvc.perform(post("/api/v1/market-records")
+                            .principal(() -> "market-tester")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(valid.replace("\"MOISTURE\":\"14.6\"",
+                                    "\"MOISTURE\":\"" + invalid + "\"")))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error.code").value("INVALID_MARKET_RECORD"));
+        }
+        org.assertj.core.api.Assertions.assertThat(recordCount()).isZero();
+    }
+
+    @Test
+    void rejectsUnknownAndReadonlyKeysEvenWhenTheirValuesAreNull() throws Exception {
+        String valid = draftBody("CORN", "FEED_MILL", "MOISTURE", null);
+        for (String code : List.of("MKT_UNKNOWN", "MKT_ACTUAL_TRADE_PRICE")) {
+            mockMvc.perform(post("/api/v1/market-records")
+                            .principal(() -> "market-tester")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(valid.replace("\"MKT_PACKAGING_FORM\":\"BULK\"",
+                                    "\"MKT_PACKAGING_FORM\":\"BULK\",\"" + code + "\":null")))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error.code").value("INVALID_MARKET_RECORD"));
+        }
+        org.assertj.core.api.Assertions.assertThat(recordCount()).isZero();
+    }
+
+    @Test
     void rejectsUnknownReadonlyPseudocodeAndInvalidDirectionCoreValues() throws Exception {
         String valid = draftBody("CORN", "FEED_MILL", "MOISTURE", null);
         for (String body : List.of(

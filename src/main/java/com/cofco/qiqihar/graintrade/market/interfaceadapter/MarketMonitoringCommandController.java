@@ -15,6 +15,7 @@ import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 import org.springframework.http.HttpStatus;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -28,6 +29,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 public class MarketMonitoringCommandController {
+    private static final Pattern PLAIN_DECIMAL = Pattern.compile(
+            "^-?(?:\\d+(?:\\.\\d*)?|\\.\\d+)$");
     private final MarketMonitoringService service;
 
     public MarketMonitoringCommandController(MarketMonitoringService service) {
@@ -172,7 +175,11 @@ public class MarketMonitoringCommandController {
     }
 
     private static BigDecimal decimal(String value) {
-        return value == null ? null : new BigDecimal(value);
+        if (value == null) return null;
+        if (!PLAIN_DECIMAL.matcher(value).matches()) {
+            throw invalid("Market fact value is not a plain decimal");
+        }
+        return new BigDecimal(value);
     }
 
     private static Map<String, BigDecimal> parseDecimals(Map<String, String> values) {

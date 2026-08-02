@@ -12,6 +12,7 @@ import com.cofco.qiqihar.graintrade.market.domain.MarketStatus;
 import com.cofco.qiqihar.graintrade.market.domain.MarketTradeDirection;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
+import com.cofco.qiqihar.graintrade.shared.application.ServerContractException;
 import java.math.BigDecimal;
 import java.sql.Types;
 import java.time.Instant;
@@ -167,11 +168,23 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
     @Override
     public List<MarketCoreFieldDefinition> findCoreFields(String productCode) {
         List<CoreRow> fields = jdbc.sql("""
-                        SELECT code, label, control_type, unit, description,
-                               domain_binding, capability, required,
-                               decimal_precision, decimal_scale, sort_order
-                        FROM platform.market_core_field_definition ORDER BY sort_order, code
-                        """).query((row, ignored) -> new CoreRow(
+                        SELECT definition.code, definition.label, definition.control_type,
+                               definition.unit, definition.description,
+                               definition.domain_binding, definition.capability, definition.required,
+                               definition.decimal_precision, definition.decimal_scale,
+                               definition.sort_order
+                        FROM platform.page_definition page
+                        JOIN platform.page_definition_field page_field
+                          ON page_field.product_code = page.product_code
+                         AND page_field.business_domain = page.business_domain
+                         AND page_field.page_kind = page.page_kind
+                        JOIN platform.market_core_field_definition definition
+                          ON definition.code = page_field.field_code
+                        WHERE page.product_code = :productCode
+                          AND page.business_domain = 'MARKET'
+                          AND page.page_kind = 'MONITORING'
+                        ORDER BY definition.sort_order, definition.code
+                        """).param("productCode", productCode).query((row, ignored) -> new CoreRow(
                         row.getString("code"), row.getString("label"), row.getString("control_type"),
                         row.getString("unit"), row.getString("description"),
                         row.getString("domain_binding"), row.getString("capability"),
@@ -206,7 +219,7 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                             :sale, :carriage, :packagingAmount, :freight, :packaging, :status, :reason, :actor, 0)
                         """).params(header(record, actorId)).update();
         replaceFacts(record);
-        replaceExtensionCoreValues(record.id(), extensionCoreValues);
+        replaceExtensionCoreValues(record, extensionCoreValues);
         return record;
     }
 
@@ -227,7 +240,7 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                         """).params(header(record, actorId)).param("expectedVersion", expectedVersion).update();
         requireUpdated(updated);
         replaceFacts(record);
-        replaceExtensionCoreValues(record.id(), extensionCoreValues);
+        replaceExtensionCoreValues(record, extensionCoreValues);
         return record.savedAsVersion(expectedVersion + 1);
     }
 
@@ -296,8 +309,8 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
         values.put("MKT_FREIGHT_AMOUNT", decimal(row.freightAmount()));
         values.put("MKT_ACTUAL_TRADE_PRICE", decimal(row.actualTradePrice()));
         values.put("MKT_STATUS", row.statusLabel() == null ? row.status().name() : row.statusLabel());
-        values.putAll(extensions);
-        facts.forEach((code, value) -> values.put(code, decimal(value)));
+        extensions.forEach((code, value) -> putDistinct(values, code, value));
+        facts.forEach((code, value) -> putDistinct(values, code, decimal(value)));
         return new MarketListRow(row.id(), values, row.status(), configuredActions, row.version());
     }
 
@@ -338,13 +351,26 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                         """).param("id", record.id()).param("code", code).param("value", value).update());
     }
 
-    private void replaceExtensionCoreValues(String id, Map<String, String> values) {
+    private void replaceExtensionCoreValues(
+            MarketMonitoringRecord record, Map<String, String> values) {
         jdbc.sql("DELETE FROM market.market_record_core_value WHERE record_id = :id")
-                .param("id", id).update();
+                .param("id", record.id()).update();
         values.forEach((code, value) -> jdbc.sql("""
-                        INSERT INTO market.market_record_core_value(record_id, field_code, value)
-                        VALUES(:id, :code, :value)
-                        """).param("id", id).param("code", code).param("value", value).update());
+                        INSERT INTO market.market_record_core_value(
+                            record_id, product_code, field_code, domain_binding, value)
+                        VALUES(:id, :productCode, :code, 'EXTENSION', :value)
+                        """).param("id", record.id()).param("productCode", record.productCode())
+                .param("code", code).param("value", value).update());
+    }
+
+    private static void putDistinct(Map<String, String> values, String code, String value) {
+        if (values.containsKey(code)) throw invalidData();
+        values.put(code, value);
+    }
+
+    private static ServerContractException invalidData() {
+        return new ServerContractException(
+                "MARKET_DATA_INTEGRITY", "Market record data is inconsistent");
     }
 
     private static MarketMonitoringRecord record(Header row, Map<String, BigDecimal> facts) {

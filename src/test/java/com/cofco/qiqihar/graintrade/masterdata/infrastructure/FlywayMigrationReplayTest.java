@@ -71,8 +71,9 @@ class FlywayMigrationReplayTest {
         assertThat(migrationChecksums()).containsAllEntriesOf(versionFiveChecksums);
         assertThat(marketRecordCount()).isOne();
 
-        MigrateResult versionTwentyResult = flyway().migrate();
-        assertThat(versionTwentyResult.migrationsExecuted).isEqualTo(10);
+        assertFrozenMarketMigrationChecksums();
+        MigrateResult versionTwentyOneResult = flyway().migrate();
+        assertThat(versionTwentyOneResult.migrationsExecuted).isEqualTo(11);
         assertThat(marketRecordCount()).isOne();
         deleteMarketUpgradeFixture();
         assertThat(marketRecordCount()).isZero();
@@ -82,16 +83,34 @@ class FlywayMigrationReplayTest {
         MigrateResult secondResult = flyway().migrate();
 
         assertThat(secondResult.migrationsExecuted).isZero();
-        assertThat(migrationChecksums()).hasSize(20);
+        assertThat(migrationChecksums()).hasSize(21);
         assertThat(masterDataCounts()).isEqualTo(firstCounts);
         assertThat(firstCounts).containsEntry("region", 29L)
                 .containsEntry("product", 3L)
                 .containsEntry("cultivar", 2L)
                 .containsEntry("object_type", 10L)
-                .containsEntry("page_definition_field", 87L)
+                .containsEntry("page_definition_field", 88L)
                 .containsEntry("production_fact_category", 4L)
                 .containsEntry("production_fact_definition", 19L)
                 .containsEntry("production_fact_applicability", 102L);
+    }
+
+    private void assertFrozenMarketMigrationChecksums() {
+        assertThat(sha256(Path.of(
+                        "src/main/resources/db/migration/V17__create_normalized_market_monitoring.sql")))
+                .isEqualTo("d33fd96f416c3362c562ed716a5296fa2d506c317cc1161cd85a238a869e5ab3");
+        assertThat(sha256(Path.of(
+                        "src/main/resources/db/migration/V18__complete_market_form_and_price_composition.sql")))
+                .isEqualTo("06fc9bf97a30d8e9db8a1fb546d54e6daee239478e3437a45d1c086c39efd2ae");
+        assertThat(sha256(Path.of(
+                        "src/main/resources/db/migration/V19__expose_market_reporting_time_and_price_semantics.sql")))
+                .isEqualTo("c7dd9c6d4064ebfc947b359260f4be8a0023b72fdcdb550c41e83cdaa2438a7c");
+        assertThat(sha256(Path.of(
+                        "src/main/resources/db/migration/V20__make_market_core_values_metadata_driven.sql")))
+                .isEqualTo("b300decdfe59730f5f0325034be3637fafc5e9c3b3c25a4e31d9054d7d1347e5");
+        assertThat(sha256(Path.of(
+                        "src/main/resources/db/migration/V21__enforce_market_core_field_contracts.sql")))
+                .isEqualTo("b8446a51c15fac0c4de3f358b78c2595b0494ede809ff279270c9f9d27763cad");
     }
 
     @Test

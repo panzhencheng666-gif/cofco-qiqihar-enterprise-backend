@@ -7,7 +7,12 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -37,6 +42,7 @@ class MarketV18MasterDataTest {
                         "MKT_CARRIAGE_BOARD_AMOUNT:车板组成:DECIMAL:70", "MKT_PACKAGING_FORM:包装形态:SELECT:80",
                         "MKT_PACKAGING_AMOUNT:包装组成:DECIMAL:90", "MKT_FREIGHT_AMOUNT:运费组成:DECIMAL:100",
                         "MKT_SOURCE_NOTE:来源说明:TEXT:105",
+                        "MKT_CORN_SOURCE_NOTE:玉米来源说明:TEXT:106",
                         "MKT_ACTUAL_TRADE_PRICE:实际成交价:READONLY_DECIMAL:110");
         assertThat(rows("""
                 SELECT field_code || ':' || value || ':' || label
@@ -98,6 +104,55 @@ class MarketV18MasterDataTest {
                         "MKT_OBJECT_TYPE:OBJECT_TYPE:OBJECT_TYPE_CONTEXT:true",
                         "MKT_SOURCE_NOTE:EXTENSION:GENERIC:false",
                         "MKT_ACTUAL_TRADE_PRICE:ACTUAL_TRADE_PRICE:ACTUAL_TRADE_PRICE:false");
+    }
+
+    @Test
+    void matchesTheVersionedV21MarketContractSnapshot() throws Exception {
+        List<String> snapshot = rows("""
+                SELECT line FROM (
+                    SELECT concat_ws('|', 'FACT', applicability.product_code,
+                        applicability.object_type_code, applicability.fact_code,
+                        definition.category, definition.label, definition.unit,
+                        definition.decimal_precision, definition.decimal_scale,
+                        applicability.sort_order) AS line
+                    FROM platform.market_fact_applicability applicability
+                    JOIN platform.market_fact_definition definition
+                      ON definition.code = applicability.fact_code
+                    UNION ALL
+                    SELECT concat_ws('|', 'CORE', page_field.product_code,
+                        definition.code, definition.label, definition.control_type,
+                        coalesce(definition.unit, ''),
+                        coalesce(definition.decimal_precision::text, ''),
+                        coalesce(definition.decimal_scale::text, ''), definition.sort_order,
+                        definition.domain_binding, definition.capability, definition.required,
+                        page_field.sort_order)
+                    FROM platform.page_definition_field page_field
+                    JOIN platform.market_core_field_definition definition
+                      ON definition.code = page_field.field_code
+                    WHERE page_field.business_domain = 'MARKET'
+                      AND page_field.page_kind = 'MONITORING'
+                    UNION ALL
+                    SELECT concat_ws('|', 'OBJECT', applicability.product_code,
+                        object_type.code, object_type.name, object_type.sort_order)
+                    FROM platform.product_object_type applicability
+                    JOIN platform.object_type object_type
+                      ON object_type.code = applicability.object_type_code
+                    WHERE object_type.business_domain = 'MARKET'
+                ) contract_snapshot
+                ORDER BY line
+                """);
+        String actual = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                .digest((String.join("\n", snapshot) + "\n")
+                        .getBytes(StandardCharsets.UTF_8)));
+        String expected = Files.readString(Path.of(
+                "src/test/resources/contracts/market-v21-contract.sha256")).trim();
+
+        assertThat(rows("""
+                SELECT code || ':' || label || ':' || decimal_scale
+                FROM platform.market_fact_definition
+                WHERE code IN ('PROTEIN', 'TEST_WEIGHT') ORDER BY code
+                """)).containsExactly("PROTEIN:蛋白:1", "TEST_WEIGHT:容重:0");
+        assertThat(actual).isEqualTo(expected);
     }
 
     private List<String> rows(String sql) throws SQLException {
