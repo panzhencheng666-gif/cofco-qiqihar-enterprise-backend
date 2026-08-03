@@ -4,8 +4,7 @@ import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
 import com.cofco.qiqihar.graintrade.reporting.domain.ReportExportContent;
-import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditWriter;
-import com.cofco.qiqihar.graintrade.shared.audit.domain.BusinessAuditEvent;
+import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder;
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
 import java.nio.charset.StandardCharsets;
@@ -27,11 +26,11 @@ import tools.jackson.databind.node.ObjectNode;
 public class ReportingService {
     private final ReportingRepository repository;
     private final AccessControl accessControl;
-    private final BusinessAuditWriter audit;
+    private final BusinessAuditRecorder audit;
     private final Clock clock;
     private final ObjectMapper json;
 
-    public ReportingService(ReportingRepository repository, AccessControl accessControl, BusinessAuditWriter audit, Clock clock, ObjectMapper json) {
+    public ReportingService(ReportingRepository repository, AccessControl accessControl, BusinessAuditRecorder audit, Clock clock, ObjectMapper json) {
         this.repository = repository;
         this.accessControl = accessControl;
         this.audit = audit;
@@ -59,7 +58,7 @@ public class ReportingService {
         ReportPreviewView preview = repository.persistPreview(new ReportingRepository.ReportPreviewPersistence(
                 command, material, principal.subjectId(), now, now.plus(30, ChronoUnit.MINUTES), datasetId, datasetDigest,
                 contentJson, digest(contentJson)));
-        audit(principal, "REPORT_PREVIEW", preview.id(), "REPORT_PREVIEW_CREATED", now,
+        audit.record(principal, "REPORT_PREVIEW", preview.id(), "REPORT_PREVIEW_CREATED", now,
                 "{\"regionCode\":\"" + command.regionCode() + "\"}");
         return preview;
     }
@@ -82,7 +81,7 @@ public class ReportingService {
         ReportExportView export = repository.persistExport(new ReportingRepository.ReportExportPersistence(
                 previewId, format, principal.subjectId(), now, safeFilename(preview) + ".csv", "text/csv;charset=utf-8",
                 digest(content), content));
-        audit(principal, "REPORT_EXPORT", export.id(), "REPORT_EXPORT_CREATED", now,
+        audit.record(principal, "REPORT_EXPORT", export.id(), "REPORT_EXPORT_CREATED", now,
                 "{\"previewId\":\"" + previewId + "\"}");
         return export;
     }
@@ -95,7 +94,7 @@ public class ReportingService {
         if (export == null) {
             throw new ResourceNotFoundException("REPORT_EXPORT_NOT_FOUND", "Report export was not found");
         }
-        audit(principal, "REPORT_EXPORT", export.id(), "REPORT_EXPORT_DOWNLOADED", clock.instant(), "{}");
+        audit.record(principal, "REPORT_EXPORT", export.id(), "REPORT_EXPORT_DOWNLOADED", clock.instant(), "{}");
         return export;
     }
 
@@ -107,7 +106,7 @@ public class ReportingService {
             SecurityPrincipal principal = authorize("REPORT_PUBLISH", repository.findPreviewRegion(previewId));
             ReportPublicationView publication = repository.persistPublication(new ReportingRepository.ReportPublicationPersistence(
                     previewId, exportTaskId, principal.subjectId(), now, expectedVersion));
-            audit(principal, "REPORT_PUBLICATION", publication.id(), "REPORT_PUBLICATION_CREATED", now,
+            audit.record(principal, "REPORT_PUBLICATION", publication.id(), "REPORT_PUBLICATION_CREATED", now,
                     "{\"previewId\":\"" + previewId + "\",\"exportTaskId\":\"" + exportTaskId + "\"}");
             return publication;
         } catch (IllegalStateException exception) {
@@ -157,10 +156,6 @@ public class ReportingService {
         catch (NoSuchAlgorithmException exception) { throw new IllegalStateException(exception); }
     }
     private SecurityPrincipal authorize(String permission, String regionCode) { return accessControl.require(permission, regionCode); }
-    private void audit(SecurityPrincipal principal, String aggregateType, String aggregateId, String action, Instant occurredAt, String detailJson) {
-        audit.append(new BusinessAuditEvent(UUID.randomUUID(), aggregateType, aggregateId, action,
-                principal.subjectId(), principal.workUnitCode(), occurredAt, detailJson));
-    }
     private static boolean blank(String value) { return value == null || value.isBlank(); }
     private static void validate(ReportPreviewCommand command) {
         if (command == null || blank(command.definitionCode()) || blank(command.productCode())
