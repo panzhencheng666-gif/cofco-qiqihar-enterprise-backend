@@ -43,7 +43,8 @@ class SupplyAccountRestIntegrationTest {
         jdbc.sql("""
                 TRUNCATE supply.source_adoption_set,supply.source_release,supply.manual_input_decision,supply.approved_adjustment,
                   supply.adoption_decision,supply.calculation_run,production.production_record,
-                  market.market_record,logistics.route_event,logistics.logistics_node RESTART IDENTITY CASCADE
+                  market.market_record,logistics.route_event,logistics.logistics_node,
+                  platform.business_audit_event RESTART IDENTITY CASCADE
                 """).update();
         jdbc.sql("DELETE FROM supply.formula_version WHERE version_no>1").update();
         jdbc.sql("""
@@ -114,6 +115,9 @@ class SupplyAccountRestIntegrationTest {
                 .andExpect(jsonPath("$.error.code").value("SUPPLY_DECISION_VERSION_CONFLICT"));
         assertThat(jdbc.sql("SELECT count(*) FROM supply.calculation_run WHERE product_code='CORN'")
                 .query(Long.class).single()).isEqualTo(3);
+        assertThat(jdbc.sql("SELECT action_code FROM platform.business_audit_event ORDER BY occurred_at, event_id")
+                .query(String.class).list()).contains("SUPPLY_SOURCE_RELEASED", "SUPPLY_MANUAL_INPUT_APPROVED",
+                        "SUPPLY_INPUT_SET_CREATED", "SUPPLY_ACCOUNT_CALCULATED", "SUPPLY_ACCOUNT_PUBLISHED");
     }
 
     @Test

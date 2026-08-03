@@ -4,6 +4,9 @@ import com.cofco.qiqihar.graintrade.shared.application.AuthenticationRequiredExc
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.ServerContractException;
+import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder;
+import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
+import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
 import com.cofco.qiqihar.graintrade.supply.domain.ApprovalState;
 import com.cofco.qiqihar.graintrade.supply.domain.QualityState;
 import com.cofco.qiqihar.graintrade.supply.domain.SupplyAccountCalculation;
@@ -34,6 +37,8 @@ public class SupplyAccountService {
 
     private final SupplyAccountRepository repository;
     private final CurrentActor actor;
+    private final AccessControl accessControl;
+    private final BusinessAuditRecorder audit;
     private final Clock clock;
     private final ObjectMapper objectMapper;
 
@@ -42,8 +47,21 @@ public class SupplyAccountService {
             CurrentActor actor,
             Clock clock,
             ObjectMapper objectMapper) {
+        this(repository, actor, null, null, clock, objectMapper);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public SupplyAccountService(
+            SupplyAccountRepository repository,
+            CurrentActor actor,
+            AccessControl accessControl,
+            BusinessAuditRecorder audit,
+            Clock clock,
+            ObjectMapper objectMapper) {
         this.repository = repository;
         this.actor = actor;
+        this.accessControl = accessControl;
+        this.audit = audit;
         this.clock = clock;
         this.objectMapper = objectMapper;
     }
@@ -59,12 +77,14 @@ public class SupplyAccountService {
 
     @Transactional
     public SupplyAccountView run(SupplyRunCommand command) {
-        String current = actor();
-        Instant now = clock.instant();
         if (command == null || !PRODUCTS.contains(command.productCode()) || blank(command.regionCode())
                 || blank(command.marketingYear()) || blank(command.inputSetId())
                 || command.adjustmentProposalValue() == null || blank(command.adjustmentProposalReason())
                 || command.expectedDecisionVersion() < 0) throw invalid();
+        SecurityPrincipal principal = authorize("BUSINESS_UPDATE", command.regionCode());
+        if (command.publish()) authorize("BUSINESS_APPROVE", command.regionCode());
+        String current = principal.subjectId();
+        Instant now = clock.instant();
 
         repository.lockCalculationContext(command.productCode(), command.regionCode(), command.marketingYear());
         SupplyCalculationMaterial material;
@@ -108,7 +128,7 @@ public class SupplyAccountService {
             repository.persistFormalDecision(command, material, current, now);
             decisionVersion = material.decision().exists() ? material.decision().version() + 1 : 0;
         }
-        return repository.persistRun(new SupplyRunPersistence(
+        SupplyAccountView persisted = repository.persistRun(new SupplyRunPersistence(
                 material,
                 formulaSnapshot(material.formula()),
                 command.productCode(),
@@ -122,16 +142,22 @@ public class SupplyAccountService {
                 current,
                 now,
                 decisionVersion));
+        audit(principal, "SUPPLY_ACCOUNT", persisted.id(), "SUPPLY_ACCOUNT_CALCULATED", command.regionCode());
+        if (formal) {
+            audit(principal, "SUPPLY_ACCOUNT", persisted.id(), "SUPPLY_ACCOUNT_PUBLISHED", command.regionCode());
+        }
+        return persisted;
     }
 
     @Transactional
     public SupplyReleaseView release(UpstreamSourceReleaseCommand command) {
-        String current = actor();
         if (command == null || !Set.of("PRODUCTION", "MARKET", "LOGISTICS").contains(command.sourceDomain())
                 || blank(command.sourceRecordId()) || command.sourceVersion() < 0
                 || !PRODUCTS.contains(command.productCode()) || blank(command.regionCode())
                 || blank(command.marketingYear()) || blank(command.roleCode()) || blank(command.sourceFieldCode())
                 || !Set.of("PASSED", "WARNING", "BLOCKING").contains(command.qualityState())) throw invalid();
+        SecurityPrincipal principal = authorize("BUSINESS_UPDATE", command.regionCode());
+        String current = principal.subjectId();
 
         SupplySourceReleaseMaterial material = repository.loadSourceReleaseMaterial(command);
         if (!material.contextExists()) throw invalid();
@@ -143,32 +169,38 @@ public class SupplyAccountService {
         }
         BigDecimal value = material.upstreamFact().value()
                 .multiply(material.mapping().conversionFactor()).setScale(4, RoundingMode.HALF_UP);
-        return repository.persistSourceRelease(new SupplySourceReleasePersistence(
+        SupplyReleaseView persisted = repository.persistSourceRelease(new SupplySourceReleasePersistence(
                 command, material, value, digest(command, value), current, clock.instant()));
+        audit(principal, "SUPPLY_SOURCE_RELEASE", persisted.id(), "SUPPLY_SOURCE_RELEASED", command.regionCode());
+        return persisted;
     }
 
     @Transactional
     public SupplyReleaseView approveManual(ManualInputDecisionCommand command) {
-        String current = actor();
         if (command == null || !PRODUCTS.contains(command.productCode()) || blank(command.regionCode())
                 || blank(command.marketingYear()) || blank(command.roleCode()) || command.value() == null
                 || blank(command.reason()) || command.expectedVersion() < 0) throw invalid();
+        SecurityPrincipal principal = authorize("BUSINESS_APPROVE", command.regionCode());
+        String current = principal.subjectId();
 
         SupplyManualDecisionMaterial material = repository.loadManualDecisionMaterial(command);
         if (!material.contextExists()) throw invalid();
         if (material.mapping() == null) throw sourceMapping();
         if (material.currentVersion() != command.expectedVersion()) decisionConflict();
         long version = material.decisionExists() ? material.currentVersion() + 1 : 0;
-        return repository.persistManualDecision(new SupplyManualDecisionPersistence(
+        SupplyReleaseView persisted = repository.persistManualDecision(new SupplyManualDecisionPersistence(
                 command, material.mapping(), version, digest(command, command.value()), current, clock.instant()));
+        audit(principal, "SUPPLY_MANUAL_INPUT", persisted.id(), "SUPPLY_MANUAL_INPUT_APPROVED", command.regionCode());
+        return persisted;
     }
 
     @Transactional
     public SupplyInputSetView createInputSet(SupplyInputSetCommand command) {
-        String current = actor();
         if (command == null || !PRODUCTS.contains(command.productCode()) || blank(command.regionCode())
                 || blank(command.marketingYear()) || blank(command.reason()) || command.expectedVersion() < 0
                 || command.items() == null || command.items().isEmpty()) throw invalidInputSet();
+        SecurityPrincipal principal = authorize("BUSINESS_CREATE", command.regionCode());
+        String current = principal.subjectId();
         Set<String> roles = new HashSet<>();
         Set<String> releases = new HashSet<>();
         if (command.items().stream().anyMatch(item -> item == null || blank(item.roleCode())
@@ -187,8 +219,10 @@ public class SupplyAccountService {
         if (material.selectedSources().stream().anyMatch(source -> !upstreamFacts.add(source.upstreamKey()))) {
             throw invalidInputSet();
         }
-        return repository.persistInputSet(new SupplyInputSetPersistence(
+        SupplyInputSetView persisted = repository.persistInputSet(new SupplyInputSetPersistence(
                 command, material.currentVersion() + 1, material.selectedSources(), current, clock.instant()));
+        audit(principal, "SUPPLY_INPUT_SET", persisted.id(), "SUPPLY_INPUT_SET_CREATED", command.regionCode());
+        return persisted;
     }
 
     private void validateFormula(SupplyFormula formula) {
@@ -236,6 +270,19 @@ public class SupplyAccountService {
 
     private String actor() {
         return actor.currentActor().orElseThrow(AuthenticationRequiredException::new).id();
+    }
+
+    private SecurityPrincipal authorize(String permissionCode, String regionCode) {
+        if (accessControl != null) return accessControl.require(permissionCode, regionCode);
+        return new SecurityPrincipal(actor(), "UNIT_TEST", Set.of(), Set.of());
+    }
+
+    private void audit(SecurityPrincipal principal, String aggregateType, String aggregateId,
+            String actionCode, String regionCode) {
+        if (audit != null) {
+            audit.record(principal, aggregateType, aggregateId, actionCode, clock.instant(),
+                    "{\"regionCode\":\"" + regionCode + "\"}");
+        }
     }
 
     private static String digest(Object command, BigDecimal value) {
