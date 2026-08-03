@@ -3,3 +3,7 @@ spring:
     url: ${QIQIHAR_TEST_DB_URL:jdbc:postgresql://127.0.0.1:5432/qiqihar_enterprise_test}
     username: ${QIQIHAR_TEST_DB_USERNAME:${USER}}
     password: ${QIQIHAR_TEST_DB_PASSWORD:}
+
+qiqihar:
+  security:
+    require-read-authentication: false
