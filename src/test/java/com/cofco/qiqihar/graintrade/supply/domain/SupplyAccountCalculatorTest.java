@@ -4,12 +4,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class SupplyAccountCalculatorTest {
-    private static final SupplyFormula FORMULA = new SupplyFormula(
-            "GRAIN_BALANCE_V1", 18, 3, new BigDecimal("0.500"));
+    private static final SupplyFormula FORMULA = formula("1");
 
     @Test
     void calculatesTheAuthoritativeAccountAndSurveyMinusAdoptedDifference() {
@@ -36,12 +36,78 @@ class SupplyAccountCalculatorTest {
         List<SupplySource> sources = completeSources();
         sources.set(0, new SupplySource("OPENING_INVENTORY", "PRODUCTION", "r1", 1,
                 ApprovalState.DRAFT, QualityState.PASSED, new BigDecimal("1.000"), "采用核定值", "/source/r1"));
-        assertThat(SupplyAccountCalculator.validate(sources)).contains("UNAPPROVED_SOURCE");
+        assertThat(SupplyAccountCalculator.validate(FORMULA, sources)).contains("UNAPPROVED_SOURCE");
         sources.set(0, source("OPENING_INVENTORY", "1.000"));
         sources.add(source("OPENING_INVENTORY", "2.000"));
-        assertThat(SupplyAccountCalculator.validate(sources)).contains("DUPLICATE_ROLE_MAPPING");
+        assertThat(SupplyAccountCalculator.validate(FORMULA, sources)).contains("DUPLICATE_ROLE_MAPPING");
         assertThatThrownBy(() -> AdoptionDecision.create(new BigDecimal("1.000"), " ", "actor", 0))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void executesVersionedTermsInsteadOfFrozenJavaArithmetic() {
+        SupplyAccountCalculation changed = SupplyAccountCalculator.calculate(
+                formula("2"), completeSources(), BigDecimal.ZERO);
+        assertThat(changed.totalSupply().toPlainString()).isEqualTo("6.000");
+    }
+
+    @Test
+    void failsClosedForACyclicDefinition() {
+        SupplyFormula cyclic = new SupplyFormula("GRAIN_BALANCE", 3, 18, 3,
+                RoundingMode.HALF_UP, new BigDecimal("0.500"), List.of(
+                result("TOTAL_SUPPLY", 10, term("CALCULATED_ENDING_INVENTORY", "1", 10)),
+                result("TOTAL_USE", 20, term("FOOD_USE", "1", 10)),
+                result("CALCULATED_ENDING_INVENTORY", 30,
+                        term("TOTAL_SUPPLY", "1", 10), term("TOTAL_USE", "-1", 20)),
+                result("ADOPTED_ENDING_INVENTORY", 40,
+                        term("CALCULATED_ENDING_INVENTORY", "1", 10), term("APPROVED_ADJUSTMENT", "1", 20)),
+                result("INVENTORY_RECONCILIATION_DIFFERENCE", 50,
+                        term("SURVEYED_ENDING_INVENTORY", "1", 10), term("ADOPTED_ENDING_INVENTORY", "-1", 20))));
+        assertThatThrownBy(() -> SupplyAccountCalculator.calculate(cyclic, completeSources(), BigDecimal.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("formula");
+    }
+
+    @Test
+    void failsClosedWhenARequiredOperandRoleIsMissing() {
+        List<SupplySource> missing = completeSources();
+        missing.removeIf(source -> source.role().equals("IMPORTS"));
+
+        assertThat(SupplyAccountCalculator.validate(FORMULA, missing))
+                .contains("MISSING_REQUIRED_SOURCE");
+        assertThatThrownBy(() -> SupplyAccountCalculator.calculate(FORMULA, missing, BigDecimal.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("MISSING_REQUIRED_SOURCE");
+    }
+
+    @Test
+    void marksAnAccountOutsideToleranceAsUnbalanced() {
+        List<SupplySource> sources = completeSources();
+        sources.set(13, source("SURVEYED_ENDING_INVENTORY", "100"));
+        assertThat(SupplyAccountCalculator.calculate(FORMULA, sources, BigDecimal.ZERO).balanced())
+                .isFalse();
+    }
+
+    private static SupplyFormula formula(String productionCoefficient) {
+        return new SupplyFormula("GRAIN_BALANCE", 1, 18, 3, RoundingMode.HALF_UP,
+                new BigDecimal("0.500"), List.of(
+                result("TOTAL_SUPPLY", 10, term("OPENING_INVENTORY", "1", 10),
+                        term("LOCAL_PRODUCTION", productionCoefficient, 20), term("EXTERNAL_INFLOW", "1", 30),
+                        term("IMPORTS", "1", 40), term("OTHER_SUPPLY", "1", 50)),
+                result("TOTAL_USE", 20, term("FOOD_USE", "1", 10), term("FEED_USE", "1", 20),
+                        term("SEED_USE", "1", 30), term("PROCESSING_USE", "1", 40), term("LOSS", "1", 50),
+                        term("EXTERNAL_OUTFLOW", "1", 60), term("EXPORTS", "1", 70), term("OTHER_USE", "1", 80)),
+                result("CALCULATED_ENDING_INVENTORY", 30, term("TOTAL_SUPPLY", "1", 10), term("TOTAL_USE", "-1", 20)),
+                result("ADOPTED_ENDING_INVENTORY", 40, term("CALCULATED_ENDING_INVENTORY", "1", 10), term("APPROVED_ADJUSTMENT", "1", 20)),
+                result("INVENTORY_RECONCILIATION_DIFFERENCE", 50, term("SURVEYED_ENDING_INVENTORY", "1", 10), term("ADOPTED_ENDING_INVENTORY", "-1", 20))));
+    }
+
+    private static SupplyFormula.Result result(String role, int order, SupplyFormula.Term... terms) {
+        return new SupplyFormula.Result(role, role, true, order, List.of(terms));
+    }
+
+    private static SupplyFormula.Term term(String role, String coefficient, int order) {
+        return new SupplyFormula.Term(role, new BigDecimal(coefficient), order);
     }
 
     private static List<SupplySource> completeSources() {

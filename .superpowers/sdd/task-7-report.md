@@ -72,3 +72,15 @@ Task 7 已在正式后端和正式前端仓库完成，分支均为 `codex/forma
 - Prettier 在全量门禁中已通过；两仓 `git diff --check` 通过。
 
 最终审计未发现需要新增 V26 的问题：V25 是唯一新增迁移，物流列表无 N+1，供需只读批准发布边界，理由/CAS/符号在 DB、API、UI、测试一致。旧 dashboard backend 与旧 enterprise web 仅只读审计，未修改、未提交。未执行 push、合并或破坏性工作区清理。
+
+## Round 1 Review Addendum（2026-08-03）
+
+本轮在冻结 V1–V25 的前提下新增唯一前向修复 `V26__close_logistics_supply_review_findings.sql`，SHA-256 为 `d52e107a08cef9f9a8b9848e1443f651fb3d33de6fd3e36f832c0ebd13989a7f`。未修改旧迁移，未写业务种子，未 push。
+
+- 公式不再执行 Java 固定算术或表达式文本：V26 用 `formula_result_role` 与有序 `formula_term` 回填 V1；服务端按版本、精度、scale、rounding mode、tolerance 执行线性依赖图。V2 系数改变会改变结果，环、缺失 output/operand 均失败关闭。
+- 来源发布改为受控服务：生产、市场、物流只能从完全匹配 product/region/id/version/field 的真实 `APPROVED` 上游记录派生值；其他角色只能来自带理由、执行人、时间和版本的 `APPROVED manual_input_decision`。draft、returned、错误版本、错误字段和自报值全部拒绝。
+- `source_release`、`source_release_binding`、旧 `source_release_value` 与 approved manual decision 禁止 UPDATE/DELETE。计算引用保存域、记录、版本、字段、单位、审批、质量、角色和来源值完整快照；历史 API 只读快照，不回连当前上游事实。
+- `balanced=false` 或差额超 tolerance 时，即使请求 publish 也只能生成 `TRIAL`，并返回 `publishable=false` 与稳定原因。`resultVersion` 每次试算递增，`decisionVersion` 只在合格采用决定提交时递增；上下文 advisory lock、CAS 与事务保证冲突无部分写入。调整值、理由、执行人、时间和决策版本均进入 calculation/result/API/UI 审计。
+- 物流写契约由 V26 字段定义、适用性、选项和 page actions 控制。REST definition 暴露 control/options/required/readonly/precision/scale/actions；create/update 仅接收 `{productCode, values:{fieldCode:value}}`，节点使用 `nodeCode`，扩展字段走通用存储，未知 code/binding 失败关闭。前端已删除全部 LOG_*→draft 字段枚举、数字 node ID 和 `__` 私有字段，拆分为 thin page、race-safe hook、generic editor 与 return dialog。
+
+本轮仅做定向门禁，未重复既有全量：公式 V2/cycle/missing 3 项 GREEN；供需 REST 真实来源/试算修复/失衡/CAS/不可变快照 2 项 GREEN；物流 DB definition/code-key create-update/extension/CAS 1 项 GREEN；V26 空库回放 selector GREEN。前端 HTTP/page/race 4 files、6 tests GREEN；受影响单条 Chromium 工作流严格运行一次并 1/1 GREEN；`tsc --noEmit`、touched ESLint 与定向 dependency-cruiser（26 modules / 55 dependencies / 0 violations）GREEN。Round 1 后是否运行全量由独立只读复审决定。

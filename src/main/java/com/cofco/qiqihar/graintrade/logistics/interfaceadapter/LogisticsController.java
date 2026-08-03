@@ -1,13 +1,12 @@
 package com.cofco.qiqihar.graintrade.logistics.interfaceadapter;
 import com.cofco.qiqihar.graintrade.logistics.application.LogisticsDraft;
+import com.cofco.qiqihar.graintrade.logistics.application.LogisticsDefinitionView;
 import com.cofco.qiqihar.graintrade.logistics.application.LogisticsRecordView;
 import com.cofco.qiqihar.graintrade.logistics.application.LogisticsService;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.StrictQueryParameters;
-import java.math.BigDecimal;
-import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -21,7 +20,6 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 public class LogisticsController {
  private static final Pattern FILTER=Pattern.compile("^filter\\.([A-Za-z0-9_-]+)$");
- private static final Pattern DECIMAL=Pattern.compile("^-?(?:\\d+(?:\\.\\d*)?|\\.\\d+)$");
  private static final Set<String> CORE=Set.of("productCode","pageNumber","pageSize");
  private final LogisticsService service; public LogisticsController(LogisticsService service){this.service=service;}
  @GetMapping("/api/v1/logistics-records") ApiResponse<PageResponse> list(@RequestParam MultiValueMap<String,String> parameters){
@@ -30,21 +28,19 @@ public class LogisticsController {
   PagedResult<LogisticsRecordView> page=service.list(p.required("productCode"),p.integer("pageNumber",0),p.integer("pageSize",-1),filters);return new ApiResponse<>(PageResponse.from(page));
  }
  @GetMapping("/api/v1/logistics-records/{id}") ApiResponse<RecordResponse> detail(@PathVariable String id){return new ApiResponse<>(RecordResponse.from(service.detail(id)));}
+ @GetMapping("/api/v1/logistics-record-definitions") ApiResponse<LogisticsDefinitionView> definition(@RequestParam String productCode){return new ApiResponse<>(service.definition(productCode));}
  @PostMapping("/api/v1/logistics-records") @ResponseStatus(HttpStatus.CREATED) ApiResponse<RecordResponse> create(@RequestBody DraftRequest request){return new ApiResponse<>(RecordResponse.from(service.create(request.toDraft())));}
  @PutMapping("/api/v1/logistics-records/{id}") ApiResponse<RecordResponse> save(@PathVariable String id,@RequestBody DraftRequest request){return new ApiResponse<>(RecordResponse.from(service.save(id,request.requiredVersion(),request.toDraft())));}
  @PostMapping("/api/v1/logistics-records/{id}/submit") ApiResponse<RecordResponse> submit(@PathVariable String id,@RequestBody VersionRequest r){return new ApiResponse<>(RecordResponse.from(service.submit(id,r.requiredVersion())));}
  @PostMapping("/api/v1/logistics-records/{id}/approve") ApiResponse<RecordResponse> approve(@PathVariable String id,@RequestBody VersionRequest r){return new ApiResponse<>(RecordResponse.from(service.approve(id,r.requiredVersion())));}
  @PostMapping("/api/v1/logistics-records/{id}/return") ApiResponse<RecordResponse> returned(@PathVariable String id,@RequestBody ReturnRequest r){return new ApiResponse<>(RecordResponse.from(service.returned(id,r.requiredVersion(),r.reason())));}
- record DraftRequest(String productCode,String monitoringPeriodCode,String collectionDate,Long originNodeId,Long destinationNodeId,String transportModeCode,String direction,
-   String routeVolume,String volumeUnit,String freightRate,String freightUnit,String transitTime,String transitUnit,String sourceOrganization,String reporter,Long version){
-  LogisticsDraft toDraft(){try{return new LogisticsDraft(productCode,monitoringPeriodCode,LocalDate.parse(collectionDate),required(originNodeId),required(destinationNodeId),transportModeCode,direction,
-    decimal(routeVolume),volumeUnit,decimal(freightRate),freightUnit,decimal(transitTime),transitUnit,sourceOrganization,reporter);}catch(RuntimeException e){if(e instanceof ClientRequestException c)throw c;throw invalid();}}
+ record DraftRequest(String productCode,Map<String,String> values,Long version){
+  LogisticsDraft toDraft(){return new LogisticsDraft(productCode,values);}
   long requiredVersion(){if(version==null||version<0)throw invalid();return version;}
  }
  record VersionRequest(Long version){long requiredVersion(){if(version==null||version<0)throw invalid();return version;}}
  record ReturnRequest(Long version,String reason){long requiredVersion(){if(version==null||version<0)throw invalid();return version;}}
  record RecordResponse(String id,String productCode,Map<String,String> values,String status,String returnReason,List<String> allowedActions,long version){static RecordResponse from(LogisticsRecordView v){return new RecordResponse(v.id(),v.productCode(),v.values(),v.status().name(),v.returnReason(),v.allowedActions(),v.version());}}
  record PageResponse(List<RecordResponse> items,int pageNumber,int pageSize,long totalElements,int totalPages){static PageResponse from(PagedResult<LogisticsRecordView> p){return new PageResponse(p.items().stream().map(RecordResponse::from).toList(),p.pageNumber(),p.pageSize(),p.totalElements(),p.totalPages());}}
- private static long required(Long v){if(v==null||v<=0)throw invalid();return v;} private static BigDecimal decimal(String v){if(v==null||!DECIMAL.matcher(v).matches())throw invalid();return new BigDecimal(v);}
  private static ClientRequestException invalid(){return new ClientRequestException("INVALID_LOGISTICS_RECORD","Logistics record or query is invalid");}
 }

@@ -21,6 +21,22 @@ public class SupplyAccountService{
     ||command.approvedAdjustment()==null||blank(command.adoptionReason())||blank(command.adjustmentReason())||command.expectedDecisionVersion()<0)throw invalid();
   return repository.run(command,current,clock.instant());
  }
+ @Transactional public SupplyReleaseView release(UpstreamSourceReleaseCommand command){
+  String current=actor.currentActor().orElseThrow(AuthenticationRequiredException::new).id();
+  if(command==null||!Set.of("PRODUCTION","MARKET","LOGISTICS").contains(command.sourceDomain())
+    ||blank(command.sourceRecordId())||command.sourceVersion()<0||!PRODUCTS.contains(command.productCode())
+    ||blank(command.regionCode())||blank(command.marketingYear())||blank(command.roleCode())
+    ||blank(command.sourceFieldCode())||blank(command.unitCode())
+    ||!Set.of("PASSED","WARNING","BLOCKING").contains(command.qualityState()))throw invalid();
+  return repository.release(command,current,clock.instant());
+ }
+ @Transactional public SupplyReleaseView approveManual(ManualInputDecisionCommand command){
+  String current=actor.currentActor().orElseThrow(AuthenticationRequiredException::new).id();
+  if(command==null||!PRODUCTS.contains(command.productCode())||blank(command.regionCode())
+    ||blank(command.marketingYear())||blank(command.roleCode())||command.value()==null
+    ||blank(command.unitCode())||blank(command.reason())||command.expectedVersion()<0)throw invalid();
+  return repository.approveManual(command,current,clock.instant());
+ }
  private static boolean blank(String v){return v==null||v.isBlank();}
  private static ClientRequestException invalid(){return new ClientRequestException("INVALID_SUPPLY_ACCOUNT_REQUEST","Supply account request is invalid");}
 }

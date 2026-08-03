@@ -8,7 +8,6 @@ import com.cofco.qiqihar.graintrade.shared.application.PageDefinitionQuery;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
 import java.time.Clock;
-import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.Map;
 import java.util.Set;
@@ -33,6 +32,9 @@ public class LogisticsService {
         return repository.findPage(productCode,pageNumber,pageSize,filters);
     }
     @Transactional(readOnly=true) public LogisticsRecordView detail(String id) { return required(id); }
+    @Transactional(readOnly=true) public LogisticsDefinitionView definition(String productCode) {
+        LogisticsDefinitionView definition=repository.definition(productCode);if(definition==null)throw invalid();return definition;
+    }
     @Transactional public LogisticsRecordView create(LogisticsDraft draft) {
         String actor=actor(); validate(draft); return repository.insert(UUID.randomUUID().toString(),draft,actor,clock.instant());
     }
@@ -54,11 +56,8 @@ public class LogisticsService {
         if(!allowed) throw invalid(); return repository.transition(id,version,target,reason,actor,clock.instant());
     }
     private void validate(LogisticsDraft draft) {
-        if (draft==null || draft.collectionDate()==null || draft.collectionDate().isAfter(LocalDate.now(clock.withZone(ZoneId.of("Asia/Shanghai"))))
-                || draft.routeVolume()==null || draft.routeVolume().signum()<0 || draft.freightRate()==null || draft.freightRate().signum()<0
-                || draft.transitTime()==null || draft.transitTime().signum()<0 || draft.originNodeId()==draft.destinationNodeId()
-                || blank(draft.volumeUnit()) || blank(draft.freightUnit()) || blank(draft.transitUnit())
-                || blank(draft.sourceOrganization()) || blank(draft.reporter()) || !repository.validContext(draft)) throw invalid();
+        if (draft==null || blank(draft.productCode())
+                || !repository.validDraft(draft,java.time.LocalDate.now(clock.withZone(ZoneId.of("Asia/Shanghai"))))) throw invalid();
     }
     private String actor(){return currentActor.currentActor().orElseThrow(AuthenticationRequiredException::new).id();}
     private LogisticsRecordView required(String id){LogisticsRecordView value=repository.find(id); if(value==null) throw new ResourceNotFoundException("LOGISTICS_RECORD_NOT_FOUND","Logistics record was not found"); return value;}
