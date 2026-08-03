@@ -83,9 +83,13 @@ class SupplyAccountCalculatorTest {
     @Test
     void marksAnAccountOutsideToleranceAsUnbalanced() {
         List<SupplySource> sources = completeSources();
-        sources.set(13, source("SURVEYED_ENDING_INVENTORY", "100"));
-        assertThat(SupplyAccountCalculator.calculate(FORMULA, sources, BigDecimal.ZERO).balanced())
-                .isFalse();
+        for (int index = 0; index < 13; index++) {
+            sources.set(index, source(sources.get(index).role(), "0"));
+        }
+        sources.set(13, source("SURVEYED_ENDING_INVENTORY", ".5005"));
+        SupplyAccountCalculation result = SupplyAccountCalculator.calculate(FORMULA, sources, BigDecimal.ZERO);
+        assertThat(result.inventoryReconciliationDifference().toPlainString()).isEqualTo("0.501");
+        assertThat(result.balanced()).isFalse();
     }
 
     private static SupplyFormula formula(String productionCoefficient) {

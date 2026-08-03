@@ -9,5 +9,4 @@ public record UpstreamSourceReleaseCommand(
         String marketingYear,
         String roleCode,
         String sourceFieldCode,
-        String unitCode,
         String qualityState) {}

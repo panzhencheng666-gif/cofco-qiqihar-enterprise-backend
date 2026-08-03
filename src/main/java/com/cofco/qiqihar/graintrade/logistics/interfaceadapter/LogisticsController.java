@@ -40,7 +40,7 @@ public class LogisticsController {
  }
  record VersionRequest(Long version){long requiredVersion(){if(version==null||version<0)throw invalid();return version;}}
  record ReturnRequest(Long version,String reason){long requiredVersion(){if(version==null||version<0)throw invalid();return version;}}
- record RecordResponse(String id,String productCode,Map<String,String> values,String status,String returnReason,List<String> allowedActions,long version){static RecordResponse from(LogisticsRecordView v){return new RecordResponse(v.id(),v.productCode(),v.values(),v.status().name(),v.returnReason(),v.allowedActions(),v.version());}}
+ record RecordResponse(String id,String productCode,Map<String,String> values,Map<String,String> displayValues,String status,String returnReason,List<String> allowedActions,long version){static RecordResponse from(LogisticsRecordView v){return new RecordResponse(v.id(),v.productCode(),v.values(),v.displayValues(),v.status().name(),v.returnReason(),v.allowedActions(),v.version());}}
  record PageResponse(List<RecordResponse> items,int pageNumber,int pageSize,long totalElements,int totalPages){static PageResponse from(PagedResult<LogisticsRecordView> p){return new PageResponse(p.items().stream().map(RecordResponse::from).toList(),p.pageNumber(),p.pageSize(),p.totalElements(),p.totalPages());}}
  private static ClientRequestException invalid(){return new ClientRequestException("INVALID_LOGISTICS_RECORD","Logistics record or query is invalid");}
 }

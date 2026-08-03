@@ -20,6 +20,8 @@ public record SupplyAccountView(
         String adoptedEndingInventory,
         String surveyedEndingInventory,
         String inventoryReconciliationDifference,
+        String inputSetId,
+        SupplyAdjustmentProposalView adjustmentProposal,
         SupplyAdjustmentAuditView adjustmentAudit,
         SupplyFormulaView formula,
         List<SupplySourceView> sources) {}

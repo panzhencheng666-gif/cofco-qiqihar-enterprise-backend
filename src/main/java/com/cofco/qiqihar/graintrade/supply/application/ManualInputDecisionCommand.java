@@ -8,6 +8,5 @@ public record ManualInputDecisionCommand(
         String marketingYear,
         String roleCode,
         BigDecimal value,
-        String unitCode,
         String reason,
         long expectedVersion) {}

@@ -24,10 +24,11 @@ import org.springframework.test.web.servlet.MockMvc;
 class LogisticsRestIntegrationTest {
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
+    JdbcClient jdbc;
 
     @BeforeEach
     void fixture() {
-        JdbcClient jdbc = JdbcClient.create(dataSource);
+        jdbc = JdbcClient.create(dataSource);
         jdbc.sql("TRUNCATE logistics.route_event,logistics.logistics_node RESTART IDENTITY CASCADE").update();
         jdbc.sql("DELETE FROM platform.logistics_core_field_applicability WHERE field_code='LOG_REFERENCE'").update();
         jdbc.sql("DELETE FROM platform.logistics_core_field_definition WHERE code='LOG_REFERENCE'").update();
@@ -45,6 +46,10 @@ class LogisticsRestIntegrationTest {
         jdbc.sql("""
                 INSERT INTO platform.logistics_core_field_applicability(field_code,product_code,sort_order)
                 VALUES('LOG_REFERENCE','CORN',115)
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.logistics_action_applicability(product_code,status_code,action_code)
+                VALUES('CORN','PENDING_REVIEW','APPROVE') ON CONFLICT DO NOTHING
                 """).update();
     }
 
@@ -78,6 +83,23 @@ class LogisticsRestIntegrationTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("DRAFT"))
                 .andExpect(jsonPath("$.data.version").value(3));
         transition(corn, "submit", 3, null);
+        jdbc.sql("""
+                DELETE FROM platform.logistics_action_applicability
+                WHERE product_code='CORN' AND status_code='PENDING_REVIEW' AND action_code='APPROVE'
+                """).update();
+        mvc.perform(post("/api/v1/logistics-records/{id}/approve", corn)
+                        .principal(() -> "logistics-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":4}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_LOGISTICS_RECORD"));
+        mvc.perform(get("/api/v1/logistics-records/{id}", corn))
+                .andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"))
+                .andExpect(jsonPath("$.data.version").value(4))
+                .andExpect(jsonPath("$.data.allowedActions[?(@ == 'APPROVE')]").doesNotExist());
+        jdbc.sql("""
+                INSERT INTO platform.logistics_action_applicability(product_code,status_code,action_code)
+                VALUES('CORN','PENDING_REVIEW','APPROVE')
+                """).update();
         transition(corn, "approve", 4, null).andExpect(jsonPath("$.data.status").value("APPROVED"));
         mvc.perform(put("/api/v1/logistics-records/{id}", corn).principal(() -> "logistics-tester")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -86,6 +108,14 @@ class LogisticsRestIntegrationTest {
                 .andExpect(jsonPath("$.error.code").value("LOGISTICS_RECORD_VERSION_CONFLICT"));
         mvc.perform(get("/api/v1/logistics-records/{id}", corn))
                 .andExpect(jsonPath("$.data.values.LOG_ORIGIN").value("TEST_RAIL"))
+                .andExpect(jsonPath("$.data.values.LOG_TRANSPORT_MODE").value("RAIL"))
+                .andExpect(jsonPath("$.data.values.LOG_DIRECTION").value("INFLOW"))
+                .andExpect(jsonPath("$.data.values.LOG_PERIOD").value("LOG-2026-08"))
+                .andExpect(jsonPath("$.data.displayValues.LOG_ORIGIN").value("测试铁路站"))
+                .andExpect(jsonPath("$.data.displayValues.LOG_TRANSPORT_MODE").value("铁路"))
+                .andExpect(jsonPath("$.data.displayValues.LOG_DIRECTION").value("流入"))
+                .andExpect(jsonPath("$.data.displayValues.LOG_PERIOD").value("2026年8月物流监测期"))
+                .andExpect(jsonPath("$.data.displayValues.LOG_STATUS").value("已审核"))
                 .andExpect(jsonPath("$.data.values.LOG_ROUTE_VOLUME").value("13.5000"))
                 .andExpect(jsonPath("$.data.values.LOG_REFERENCE").value("WB-2026-001"))
                 .andExpect(jsonPath("$.data.values.__originNodeId").doesNotExist());

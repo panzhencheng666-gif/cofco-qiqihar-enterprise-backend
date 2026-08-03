@@ -36,12 +36,15 @@ public class LogisticsService {
         LogisticsDefinitionView definition=repository.definition(productCode);if(definition==null)throw invalid();return definition;
     }
     @Transactional public LogisticsRecordView create(LogisticsDraft draft) {
-        String actor=actor(); validate(draft); return repository.insert(UUID.randomUUID().toString(),draft,actor,clock.instant());
+        String actor=actor(); validate(draft);
+        if(!repository.actionAllowed(draft.productCode(),LogisticsStatus.DRAFT,"NEW"))throw invalid();
+        return repository.insert(UUID.randomUUID().toString(),draft,actor,clock.instant());
     }
     @Transactional public LogisticsRecordView save(String id,long version,LogisticsDraft draft) {
         String actor=actor(); LogisticsRecordView existing=required(id); requireVersion(existing,version);
         if (!existing.productCode().equals(draft.productCode())) throw invalid();
         if (existing.status()!=LogisticsStatus.DRAFT && existing.status()!=LogisticsStatus.RETURNED) throw invalid();
+        if(!repository.actionAllowed(existing.productCode(),existing.status(),"SAVE"))throw invalid();
         validate(draft); return repository.update(id,version,draft,actor,clock.instant());
     }
     @Transactional public LogisticsRecordView submit(String id,long version) { return transition(id,version,LogisticsStatus.PENDING_REVIEW,null); }
@@ -53,7 +56,9 @@ public class LogisticsService {
         String actor=actor(); LogisticsRecordView existing=required(id); requireVersion(existing,version);
         boolean allowed=(target==LogisticsStatus.PENDING_REVIEW && existing.status()==LogisticsStatus.DRAFT)
                 || ((target==LogisticsStatus.APPROVED || target==LogisticsStatus.RETURNED) && existing.status()==LogisticsStatus.PENDING_REVIEW);
-        if(!allowed) throw invalid(); return repository.transition(id,version,target,reason,actor,clock.instant());
+        String action=target==LogisticsStatus.PENDING_REVIEW?"SUBMIT":target==LogisticsStatus.APPROVED?"APPROVE":"RETURN";
+        if(!allowed||!repository.actionAllowed(existing.productCode(),existing.status(),action)) throw invalid();
+        return repository.transition(id,version,target,reason,actor,clock.instant());
     }
     private void validate(LogisticsDraft draft) {
         if (draft==null || blank(draft.productCode())

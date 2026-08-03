@@ -84,3 +84,21 @@ Task 7 已在正式后端和正式前端仓库完成，分支均为 `codex/forma
 - 物流写契约由 V26 字段定义、适用性、选项和 page actions 控制。REST definition 暴露 control/options/required/readonly/precision/scale/actions；create/update 仅接收 `{productCode, values:{fieldCode:value}}`，节点使用 `nodeCode`，扩展字段走通用存储，未知 code/binding 失败关闭。前端已删除全部 LOG_*→draft 字段枚举、数字 node ID 和 `__` 私有字段，拆分为 thin page、race-safe hook、generic editor 与 return dialog。
 
 本轮仅做定向门禁，未重复既有全量：公式 V2/cycle/missing 3 项 GREEN；供需 REST 真实来源/试算修复/失衡/CAS/不可变快照 2 项 GREEN；物流 DB definition/code-key create-update/extension/CAS 1 项 GREEN；V26 空库回放 selector GREEN。前端 HTTP/page/race 4 files、6 tests GREEN；受影响单条 Chromium 工作流严格运行一次并 1/1 GREEN；`tsc --noEmit`、touched ESLint 与定向 dependency-cruiser（26 modules / 55 dependencies / 0 violations）GREEN。Round 1 后是否运行全量由独立只读复审决定。
+
+## Round 2 Review Addendum（2026-08-03）
+
+本轮冻结 V1–V26，仅新增前向迁移 `V27__close_logistics_supply_round_2_findings.sql`，SHA-256 为 `92e8d8b926b33073c3b178c3c38b49b899ed92e08d321902bac0367222e031c7`。Flyway 在受保护测试库成功校验 27 个迁移，未修改旧迁移，未 push。
+
+- 来源资格改为版本化 `role_source_applicability`。发布命令不再接收或信任 value/unit；服务从生产/物流已批准事实读取真实字段、单位和方向，按映射快照换算为账户单位。价格字段、错误字段/版本/单位/方向均稳定拒绝，人工决定固定使用账户规范单位。
+- 新增不可变 `source_adoption_set` 与 item，计算命令必须显式引用完整输入集。数据库和服务共同保证一个角色一个 release、一个 release 不跨角色、同一上游事实不重复、必需角色全集完整；计算不再使用 latest/`row_number` 推断来源，失败事务不产生部分输入集。
+- 运行引用完整公式 DAG 快照，包含版本、precision、scale、HALF_UP、tolerance、result、expression 与有序 term。被运行引用的 formula/result/term 均不可更新或删除；历史查询只读运行时公式和来源快照。V2 系数变化可形成不同结果，V1 历史保持不变；`.5005` 在 scale 3、HALF_UP 下为 `.501`。
+- 服务层显式编排公式验证、来源解析与换算、输入集完整性、calculator、正式门禁、决定和公式快照；JDBC 仓储仅加载材料并持久化已判定结果。`TRIAL`/`FORMAL_CANDIDATE` 只保存调整建议，不产生批准审计或决定推进；只有合格且请求发布的 `FORMAL` 写批准审计和决定。
+- 物流所有 UI `allowedActions` 与 create/save/submit/approve/return 写入口共用数据库动作适用性策略。删除 `APPROVE` 配置后，列表不返回该动作、服务稳定拒绝且状态/版本不变；补回配置后才允许审核。
+- 物流读模型同时返回 raw `values` 和同一元数据来源解析的 `displayValues`。编辑器/写请求保留 `RAIL`、`INFLOW`、node/period code，业务表展示铁路、流入、节点、期间和状态中文标签；字段定义加载拥有独立 retry，不依赖列表重试。
+- 供需前端查询键覆盖 product、region、marketingYear、resultState、version。race-safe hook 以完整上下文隔离 account/runner/busy/issue，晚到的 A 不可覆盖 B，B runner 使用 B 的 `inputSetId` 与 `decisionVersion`；页面拆成 thin composer、hook 和展示组件，并以中文区分“试算调整建议”与“正式批准调整”。
+
+本轮严格执行聚焦验证，未运行全量或 E2E：
+
+- 后端：`mvn -q -DskipTests compile` GREEN；`SupplyAccountRestIntegrationTest` 2/2 GREEN；`LogisticsRestIntegrationTest` 1/1 GREEN；舍入 selector `SupplyAccountCalculatorTest#marksAnAccountOutsideToleranceAsUnbalanced` 1/1 GREEN。供需 REST 最终复验同时显示 Flyway 27 migrations validation GREEN。
+- 前端：物流/供需 HTTP 与 page 共 4 files、7 tests GREEN；`tsc --noEmit` GREEN；touched ESLint GREEN；定向 dependency-cruiser 为 30 modules / 66 dependencies / 0 violations。
+- 两仓 `git diff --check` GREEN；前端无 `pnpm-lock.yaml` 变更或新增。Round 2 后全量与 E2E 是否执行交由独立只读复审决定。

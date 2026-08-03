@@ -8,6 +8,7 @@ public interface LogisticsRepository {
     LogisticsRecordView find(String id);
     LogisticsDefinitionView definition(String productCode);
     boolean validDraft(LogisticsDraft draft, java.time.LocalDate today);
+    boolean actionAllowed(String productCode, LogisticsStatus status, String actionCode);
     LogisticsRecordView insert(String id, LogisticsDraft draft, String actor, Instant now);
     LogisticsRecordView update(String id, long version, LogisticsDraft draft, String actor, Instant now);
     LogisticsRecordView transition(String id, long version, LogisticsStatus status, String reason, String actor, Instant now);

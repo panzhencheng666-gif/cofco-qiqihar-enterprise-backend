@@ -107,6 +107,26 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
     }
 
     @Override
+    public boolean actionAllowed(String productCode, LogisticsStatus status, String actionCode) {
+        if (actionCode.equals("NEW")) {
+            return Boolean.TRUE.equals(jdbc.sql("""
+                    SELECT EXISTS(SELECT 1 FROM platform.page_action
+                      WHERE product_code=:product AND business_domain='LOGISTICS'
+                        AND page_kind='MONITORING' AND code='NEW')
+                    """).param("product", productCode).query(Boolean.class).single());
+        }
+        return Boolean.TRUE.equals(jdbc.sql("""
+                SELECT EXISTS(SELECT 1 FROM platform.logistics_action_applicability policy
+                  JOIN platform.page_action action ON action.product_code=policy.product_code
+                    AND action.business_domain='LOGISTICS' AND action.page_kind='MONITORING'
+                    AND action.code=policy.action_code
+                  WHERE policy.product_code=:product AND policy.status_code=:status
+                    AND policy.action_code=:action)
+                """).param("product", productCode).param("status", status.name()).param("action", actionCode)
+                .query(Boolean.class).single());
+    }
+
+    @Override
     public PagedResult<LogisticsRecordView> findPage(
             String product, int page, int size, Map<String, String> filters) {
         SqlFilter filter = filter(product, filters);
@@ -164,33 +184,66 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
                         row.getString("product_code"), LogisticsStatus.valueOf(row.getString("status_code")),
                         row.getString("return_reason"), row.getLong("version"))).list();
         Map<String, Map<String, String>> values = new LinkedHashMap<>();
+        Map<String, Map<String, String>> displayValues = new LinkedHashMap<>();
         jdbc.sql("""
-                SELECT event.event_id::text id,definition.code,
-                  CASE split_part(definition.binding,'.',1)
+                WITH raw_value AS (
+                  SELECT event.event_id::text id,definition.code,definition.option_source,
+                    CASE split_part(definition.binding,'.',1)
                     WHEN 'EVENT' THEN to_jsonb(event)->>split_part(definition.binding,'.',2)
                     WHEN 'READONLY' THEN to_jsonb(event)->>split_part(definition.binding,'.',2)
                     WHEN 'FACT' THEN fact.value::text
                     WHEN 'EXTENSION' THEN extension.value
-                  END value
-                FROM logistics.route_event event
-                JOIN platform.logistics_core_field_applicability applicability ON applicability.product_code=event.product_code
-                JOIN platform.logistics_core_field_definition definition ON definition.code=applicability.field_code
-                LEFT JOIN logistics.route_fact fact ON fact.event_id=event.event_id
-                  AND fact.fact_code=split_part(definition.binding,'.',2)
-                LEFT JOIN logistics.route_event_core_value extension ON extension.event_id=event.event_id
-                  AND extension.field_code=definition.code
-                WHERE event.event_id::text IN (:ids) ORDER BY event.event_id,applicability.sort_order
+                    END value,applicability.sort_order
+                  FROM logistics.route_event event
+                  JOIN platform.logistics_core_field_applicability applicability ON applicability.product_code=event.product_code
+                  JOIN platform.logistics_core_field_definition definition ON definition.code=applicability.field_code
+                  LEFT JOIN logistics.route_fact fact ON fact.event_id=event.event_id
+                    AND fact.fact_code=split_part(definition.binding,'.',2)
+                  LEFT JOIN logistics.route_event_core_value extension ON extension.event_id=event.event_id
+                    AND extension.field_code=definition.code
+                  WHERE event.event_id::text IN (:ids)
+                )
+                SELECT raw.id,raw.code,raw.value,
+                  COALESCE(option.label,period.name,node.node_name,mode.name,raw.value) display_value
+                FROM raw_value raw
+                LEFT JOIN platform.logistics_core_field_option option
+                  ON option.field_code=raw.code AND option.value=raw.value
+                LEFT JOIN platform.business_period period
+                  ON raw.option_source='BUSINESS_PERIOD' AND period.code=raw.value
+                LEFT JOIN logistics.logistics_node node
+                  ON raw.option_source='LOGISTICS_NODE' AND node.node_code=raw.value
+                LEFT JOIN platform.transport_mode mode
+                  ON raw.option_source='TRANSPORT_MODE' AND mode.code=raw.value
+                ORDER BY raw.id,raw.sort_order
                 """).param("ids", ids).query((row, index) -> new ValueRow(row.getString("id"),
-                        row.getString("code"), row.getString("value"))).list().forEach(value -> {
+                        row.getString("code"), row.getString("value"), row.getString("display_value")))
+                .list().forEach(value -> {
                             if (value.value != null) values.computeIfAbsent(value.id, key -> new LinkedHashMap<>())
                                     .put(value.code, value.value);
+                            if (value.displayValue != null) displayValues
+                                    .computeIfAbsent(value.id, key -> new LinkedHashMap<>())
+                                    .put(value.code, value.displayValue);
                         });
+        Map<String, List<String>> allowedActions = new LinkedHashMap<>();
+        jdbc.sql("""
+                SELECT event.event_id::text id,policy.action_code
+                FROM logistics.route_event event
+                JOIN platform.logistics_action_applicability policy
+                  ON policy.product_code=event.product_code AND policy.status_code=event.status_code
+                JOIN platform.page_action action ON action.product_code=policy.product_code
+                  AND action.business_domain='LOGISTICS' AND action.page_kind='MONITORING'
+                  AND action.code=policy.action_code
+                WHERE event.event_id::text IN (:ids) ORDER BY event.event_id,action.sort_order
+                """).param("ids", ids).query((row, index) -> Map.entry(
+                        row.getString("id"), row.getString("action_code"))).list().forEach(entry ->
+                                allowedActions.computeIfAbsent(entry.getKey(), key -> new ArrayList<>()).add(entry.getValue()));
         Map<String, Header> byId = new LinkedHashMap<>();
         headers.forEach(header -> byId.put(header.id, header));
         return ids.stream().map(byId::get).filter(java.util.Objects::nonNull).map(header ->
                 new LogisticsRecordView(header.id, header.product,
-                        Map.copyOf(values.getOrDefault(header.id, Map.of())), header.status,
-                        header.reason, actions(header.status), header.version)).toList();
+                        Map.copyOf(values.getOrDefault(header.id, Map.of())),
+                        Map.copyOf(displayValues.getOrDefault(header.id, Map.of())), header.status,
+                        header.reason, List.copyOf(allowedActions.getOrDefault(header.id, List.of())), header.version)).toList();
     }
 
     private void writeEvent(String id, Long expectedVersion, LogisticsDraft draft, String actor, Instant now) {
@@ -325,15 +378,6 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
         if (count == 0) throw new ConflictException("LOGISTICS_RECORD_VERSION_CONFLICT", "Logistics record has changed");
     }
 
-    private static List<String> actions(LogisticsStatus status) {
-        return switch (status) {
-            case DRAFT -> List.of("VIEW", "SUBMIT");
-            case PENDING_REVIEW -> List.of("VIEW", "APPROVE", "RETURN");
-            case RETURNED -> List.of("VIEW");
-            case APPROVED -> List.of("VIEW");
-        };
-    }
-
     private static SqlFilter filter(String product, Map<String, String> filters) {
         StringBuilder sql = new StringBuilder("WHERE e.product_code=:product");
         Map<String, Object> params = new LinkedHashMap<>();
@@ -360,7 +404,7 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
                              String optionSource, String unit, Integer precision, Integer scale,
                              boolean required, int order) {}
     private record OptionRow(String field, String value, String label, int order) {}
-    private record ValueRow(String id, String code, String value) {}
+    private record ValueRow(String id, String code, String value, String displayValue) {}
     private record Header(String id, String product, LogisticsStatus status, String reason, long version) {}
     private record SqlFilter(String sql, Map<String, Object> params) {}
 }

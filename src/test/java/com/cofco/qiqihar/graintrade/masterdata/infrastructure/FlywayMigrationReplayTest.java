@@ -160,7 +160,7 @@ class FlywayMigrationReplayTest {
         MigrateResult secondResult = flyway().migrate();
 
         assertThat(secondResult.migrationsExecuted).isZero();
-        assertThat(migrationChecksums()).hasSize(26);
+        assertThat(migrationChecksums()).hasSize(27);
         assertThat(masterDataCounts()).isEqualTo(firstCounts);
         assertThat(firstCounts).containsEntry("region", 29L)
                 .containsEntry("product", 3L)

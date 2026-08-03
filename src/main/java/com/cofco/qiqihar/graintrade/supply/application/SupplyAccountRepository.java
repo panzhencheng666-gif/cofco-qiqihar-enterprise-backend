@@ -3,7 +3,14 @@ import java.time.Instant;
 import java.util.List;
 public interface SupplyAccountRepository{
  List<SupplyAccountView> find(String productCode,String regionCode,String marketingYear,String resultState,Integer version);
- SupplyAccountView run(SupplyRunCommand command,String actor,Instant now);
- SupplyReleaseView release(UpstreamSourceReleaseCommand command,String actor,Instant now);
- SupplyReleaseView approveManual(ManualInputDecisionCommand command,String actor,Instant now);
+ void lockCalculationContext(String productCode,String regionCode,String marketingYear);
+ SupplyCalculationMaterial loadCalculationMaterial(String inputSetId,String productCode,String regionCode,String marketingYear);
+ void persistFormalDecision(SupplyRunCommand command,SupplyCalculationMaterial material,String actor,Instant now);
+ SupplyAccountView persistRun(SupplyRunPersistence run);
+ SupplySourceReleaseMaterial loadSourceReleaseMaterial(UpstreamSourceReleaseCommand command);
+ SupplyReleaseView persistSourceRelease(SupplySourceReleasePersistence release);
+ SupplyManualDecisionMaterial loadManualDecisionMaterial(ManualInputDecisionCommand command);
+ SupplyReleaseView persistManualDecision(SupplyManualDecisionPersistence decision);
+ SupplyInputSetMaterial loadInputSetMaterial(SupplyInputSetCommand command);
+ SupplyInputSetView persistInputSet(SupplyInputSetPersistence inputSet);
 }
