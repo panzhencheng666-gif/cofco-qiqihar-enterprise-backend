@@ -139,8 +139,15 @@ class FlywayMigrationReplayTest {
         restoreVersionTwentyTwoTypedDefinitionFixture();
 
         MigrateResult versionTwentyFourResult = flyway().migrate();
-        assertThat(versionTwentyFourResult.migrationsExecuted).isOne();
+        assertThat(versionTwentyFourResult.migrationsExecuted).isEqualTo(2);
         assertVersionTwentyFourDefinitionGraphGuards();
+        assertThat(queryLong("SELECT count(*) FROM logistics.route_event")).isZero();
+        assertThat(queryLong("SELECT count(*) FROM logistics.logistics_node")).isZero();
+        assertThat(queryLong("SELECT count(*) FROM supply.source_release")).isZero();
+        assertThat(queryLong("SELECT count(*) FROM supply.calculation_run")).isZero();
+        assertThat(queryLong("SELECT count(*) FROM platform.page_definition WHERE business_domain IN ('LOGISTICS','SUPPLY')")).isEqualTo(6);
+        assertThat(queryString("SELECT difference_expression FROM supply.formula_version WHERE active"))
+                .isEqualTo("SURVEYED_ENDING_INVENTORY - ADOPTED_ENDING_INVENTORY");
         exerciseVersionTwentyFixtureThroughFormalService();
 
         deleteVersionTwentyOneWitnessFixture();
@@ -153,13 +160,13 @@ class FlywayMigrationReplayTest {
         MigrateResult secondResult = flyway().migrate();
 
         assertThat(secondResult.migrationsExecuted).isZero();
-        assertThat(migrationChecksums()).hasSize(24);
+        assertThat(migrationChecksums()).hasSize(25);
         assertThat(masterDataCounts()).isEqualTo(firstCounts);
         assertThat(firstCounts).containsEntry("region", 29L)
                 .containsEntry("product", 3L)
                 .containsEntry("cultivar", 2L)
-                .containsEntry("object_type", 10L)
-                .containsEntry("page_definition_field", 87L)
+                .containsEntry("object_type", 12L)
+                .containsEntry("page_definition_field", 147L)
                 .containsEntry("production_fact_category", 4L)
                 .containsEntry("production_fact_definition", 19L)
                 .containsEntry("production_fact_applicability", 102L);
@@ -1090,6 +1097,24 @@ class FlywayMigrationReplayTest {
                 Statement statement = connection.createStatement();
                 ResultSet row = statement.executeQuery(
                         "SELECT obj_description('" + qualifiedTableName + "'::regclass)")) {
+            row.next();
+            return row.getString(1);
+        }
+    }
+
+    private long queryLong(String sql) throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement();
+                ResultSet row = statement.executeQuery(sql)) {
+            row.next();
+            return row.getLong(1);
+        }
+    }
+
+    private String queryString(String sql) throws SQLException {
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement();
+                ResultSet row = statement.executeQuery(sql)) {
             row.next();
             return row.getString(1);
         }
