@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import javax.sql.DataSource;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -50,6 +51,11 @@ class SupplyAccountRestIntegrationTest {
                 VALUES('2026-Q3','2026年第三季度',DATE '2026-07-01',DATE '2026-09-30',202603)
                 ON CONFLICT(code) DO NOTHING
                 """).update();
+    }
+
+    @AfterEach
+    void cleanAfterEach() {
+        clean();
     }
 
     @Test
