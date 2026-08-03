@@ -139,7 +139,7 @@ class FlywayMigrationReplayTest {
         restoreVersionTwentyTwoTypedDefinitionFixture();
 
         MigrateResult versionTwentyFourResult = flyway().migrate();
-        assertThat(versionTwentyFourResult.migrationsExecuted).isEqualTo(8);
+        assertThat(versionTwentyFourResult.migrationsExecuted).isEqualTo(9);
         assertVersionTwentyFourDefinitionGraphGuards();
         assertThat(queryLong("SELECT count(*) FROM logistics.route_event")).isZero();
         assertThat(queryLong("SELECT count(*) FROM logistics.logistics_node")).isZero();
@@ -148,6 +148,7 @@ class FlywayMigrationReplayTest {
         assertThat(queryLong("SELECT count(*) FROM platform.page_definition WHERE business_domain IN ('LOGISTICS','SUPPLY')")).isEqualTo(6);
         assertThat(queryString("SELECT difference_expression FROM supply.formula_version WHERE active"))
                 .isEqualTo("SURVEYED_ENDING_INVENTORY - ADOPTED_ENDING_INVENTORY");
+        provisionMigrationReplaySecuritySubject();
         exerciseVersionTwentyFixtureThroughFormalService();
 
         deleteVersionTwentyOneWitnessFixture();
@@ -160,7 +161,7 @@ class FlywayMigrationReplayTest {
         MigrateResult secondResult = flyway().migrate();
 
         assertThat(secondResult.migrationsExecuted).isZero();
-        assertThat(migrationChecksums()).hasSize(31);
+        assertThat(migrationChecksums()).hasSize(32);
         assertThat(masterDataCounts()).isEqualTo(firstCounts);
         assertThat(firstCounts).containsEntry("region", 29L)
                 .containsEntry("product", 3L)
@@ -826,6 +827,31 @@ class FlywayMigrationReplayTest {
                         """)) {
             row.next();
             return row.getString(1);
+        }
+    }
+
+    private void provisionMigrationReplaySecuritySubject() throws SQLException {
+        try (Connection connection = DATABASE.openConnection(); Statement statement = connection.createStatement()) {
+            statement.execute("""
+                    INSERT INTO platform.work_unit(code,name,sort_order)
+                    VALUES ('MIGRATION_TEST','迁移回放测试工作单位',9999)
+                    """);
+            statement.execute("""
+                    INSERT INTO platform.work_unit_region_scope(work_unit_code,region_code)
+                    SELECT 'MIGRATION_TEST',code FROM platform.region
+                    """);
+            statement.execute("""
+                    INSERT INTO platform.security_user(subject_id,display_name,work_unit_code)
+                    VALUES ('migration-replay-service','迁移回放服务','MIGRATION_TEST')
+                    """);
+            statement.execute("""
+                    INSERT INTO platform.security_user_role(subject_id,role_code)
+                    VALUES ('migration-replay-service','SYSTEM_ADMIN')
+                    """);
+            statement.execute("""
+                    INSERT INTO platform.security_user_region_scope(subject_id,region_code)
+                    SELECT 'migration-replay-service',code FROM platform.region
+                    """);
         }
     }
 

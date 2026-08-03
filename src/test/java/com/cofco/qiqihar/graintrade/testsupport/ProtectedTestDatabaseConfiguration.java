@@ -18,8 +18,11 @@ public class ProtectedTestDatabaseConfiguration {
 
     @Bean
     ApplicationRunner provisionSecurityTestSubjects(DataSource dataSource) {
-        return arguments -> {
-            JdbcClient jdbc = JdbcClient.create(dataSource);
+        return arguments -> provisionSecurityTestSubjects(JdbcClient.create(dataSource));
+    }
+
+    /** Restores shared test identities after a test intentionally replaces the security fixture. */
+    public static void provisionSecurityTestSubjects(JdbcClient jdbc) {
             jdbc.sql("""
                     INSERT INTO platform.work_unit(code,name,sort_order)
                     VALUES ('TEST','自动化测试工作单位',9900)
@@ -55,6 +58,5 @@ public class ProtectedTestDatabaseConfiguration {
                       AND unit_scope.work_unit_code = 'TEST'
                     ON CONFLICT DO NOTHING
                     """).update();
-        };
     }
 }

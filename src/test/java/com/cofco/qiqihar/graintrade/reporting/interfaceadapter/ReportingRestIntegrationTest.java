@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
+import com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabaseConfiguration;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.util.UUID;
@@ -71,6 +72,7 @@ class ReportingRestIntegrationTest {
 
     @AfterEach void cleanAfterEach() {
         clean();
+        ProtectedTestDatabaseConfiguration.provisionSecurityTestSubjects(jdbc);
     }
 
     @Test void requiresApprovedDataThenPreviewsExportsAndPublishes() throws Exception {

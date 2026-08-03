@@ -27,7 +27,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
-public class ProductionRecordService {
+public class ProductionRecordService implements ProductionImportPort {
     private static final String DOMAIN = "PRODUCTION";
     private static final String PAGE_KIND = "MONITORING";
     private static final ZoneId REPORTING_ZONE = ZoneId.of("Asia/Shanghai");
@@ -117,6 +117,11 @@ public class ProductionRecordService {
         ProductionRecord persisted = repository.insert(record, principal.subjectId());
         audit(principal, persisted, "PRODUCTION_RECORD_CREATED");
         return view(persisted);
+    }
+
+    @Override
+    public String importDraft(ProductionDraft draft) {
+        return create(draft).record().id();
     }
 
     @Transactional
