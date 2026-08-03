@@ -10,6 +10,7 @@ import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -51,6 +52,11 @@ class LogisticsRestIntegrationTest {
                 INSERT INTO platform.logistics_action_applicability(product_code,status_code,action_code)
                 VALUES('CORN','PENDING_REVIEW','APPROVE') ON CONFLICT DO NOTHING
                 """).update();
+    }
+
+    @AfterEach
+    void clearAuditEvents() {
+        jdbc.sql("TRUNCATE platform.business_audit_event").update();
     }
 
     @Test
@@ -119,6 +125,10 @@ class LogisticsRestIntegrationTest {
                 .andExpect(jsonPath("$.data.values.LOG_ROUTE_VOLUME").value("13.5000"))
                 .andExpect(jsonPath("$.data.values.LOG_REFERENCE").value("WB-2026-001"))
                 .andExpect(jsonPath("$.data.values.__originNodeId").doesNotExist());
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type = 'LOGISTICS_RECORD' AND aggregate_id = :id
+                """).param("id", corn).query(Long.class).single()).isEqualTo(6L);
 
         mvc.perform(post("/api/v1/logistics-records").principal(() -> "logistics-tester")
                         .contentType(MediaType.APPLICATION_JSON)

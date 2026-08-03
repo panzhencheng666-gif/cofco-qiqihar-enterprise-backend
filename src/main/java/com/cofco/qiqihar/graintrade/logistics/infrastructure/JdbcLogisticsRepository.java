@@ -127,6 +127,31 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
     }
 
     @Override
+    public Set<String> regionsForDraft(LogisticsDraft draft) {
+        return regionsForNodes(List.of(draft.values().get("LOG_ORIGIN"), draft.values().get("LOG_DESTINATION")));
+    }
+
+    @Override
+    public Set<String> regionsForRecord(String id) {
+        return new LinkedHashSet<>(jdbc.sql("""
+                SELECT origin.region_code FROM logistics.route_event event
+                JOIN logistics.logistics_node origin ON origin.node_code = event.origin_node_code
+                WHERE event.event_id::text = :id
+                UNION
+                SELECT destination.region_code FROM logistics.route_event event
+                JOIN logistics.logistics_node destination ON destination.node_code = event.destination_node_code
+                WHERE event.event_id::text = :id
+                """).param("id", id).query(String.class).list());
+    }
+
+    private Set<String> regionsForNodes(List<String> nodeCodes) {
+        List<String> present = nodeCodes.stream().filter(value -> value != null && !value.isBlank()).toList();
+        if (present.size() != 2) return Set.of();
+        return new LinkedHashSet<>(jdbc.sql("SELECT region_code FROM logistics.logistics_node WHERE node_code IN (:nodes)")
+                .param("nodes", present).query(String.class).list());
+    }
+
+    @Override
     public PagedResult<LogisticsRecordView> findPage(
             String product, int page, int size, Map<String, String> filters) {
         SqlFilter filter = filter(product, filters);
