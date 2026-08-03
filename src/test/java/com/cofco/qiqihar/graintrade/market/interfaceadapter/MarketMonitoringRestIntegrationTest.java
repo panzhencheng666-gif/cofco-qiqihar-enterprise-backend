@@ -5,6 +5,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
@@ -15,6 +16,7 @@ import java.time.ZoneId;
 import java.util.List;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -40,6 +42,7 @@ class MarketMonitoringRestIntegrationTest {
     @Autowired MockMvc mockMvc;
     @Autowired DataSource dataSource;
     @BeforeEach void clearRecords() { JdbcClient.create(dataSource).sql("DELETE FROM market.market_record").update(); }
+    @AfterEach void clearAuditEvents() { JdbcClient.create(dataSource).sql("TRUNCATE platform.business_audit_event").update(); }
 
     @Test void createsAndTransitionsCornFeedMillUsingServerCalculatedActualPrice() throws Exception {
         String body = draftBody("CORN", "FEED_MILL", "MOISTURE", null);
@@ -55,6 +58,10 @@ class MarketMonitoringRestIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON).content("{\"version\":1}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("APPROVED"))
                 .andExpect(jsonPath("$.data.facts.MOISTURE").value("14.6000"));
+        assertThat(JdbcClient.create(dataSource).sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type = 'MARKET_RECORD' AND aggregate_id = :id
+                """).param("id", id).query(Long.class).single()).isEqualTo(3L);
     }
 
     @Test void exposesOnlyApplicableFeedMillDefinitionsAndRejectsUnauthenticatedWrites() throws Exception {

@@ -12,6 +12,9 @@ import com.cofco.qiqihar.graintrade.shared.application.PageDefinitionQuery;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
 import com.cofco.qiqihar.graintrade.shared.application.ServerContractException;
+import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder;
+import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
+import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
 import com.cofco.qiqihar.graintrade.shared.domain.BusinessPageKey;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -47,13 +50,23 @@ public class MarketMonitoringService {
     private final MarketMonitoringRepository repository;
     private final PageDefinitionQuery pageDefinitions;
     private final CurrentActor currentActor;
+    private final AccessControl accessControl;
+    private final BusinessAuditRecorder audit;
     private final Clock clock;
 
     public MarketMonitoringService(MarketMonitoringRepository repository, PageDefinitionQuery pageDefinitions,
             CurrentActor currentActor, Clock clock) {
+        this(repository, pageDefinitions, currentActor, null, null, clock);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public MarketMonitoringService(MarketMonitoringRepository repository, PageDefinitionQuery pageDefinitions,
+            CurrentActor currentActor, AccessControl accessControl, BusinessAuditRecorder audit, Clock clock) {
         this.repository = repository;
         this.pageDefinitions = pageDefinitions;
         this.currentActor = currentActor;
+        this.accessControl = accessControl;
+        this.audit = audit;
         this.clock = clock;
     }
 
@@ -126,18 +139,19 @@ public class MarketMonitoringService {
 
     @Transactional
     public MarketRecordView create(MarketMonitoringDraft draft) {
-        AuthenticatedActor actor = actor();
         List<MarketCoreFieldDefinition> definitions = coreDefinitions(draft);
         ParsedDraft parsed = parseDraft(draft, definitions);
         validate(parsed);
+        SecurityPrincipal principal = authorize("BUSINESS_CREATE", parsed.regionCode());
         try {
             MarketMonitoringRecord record = MarketMonitoringRecord.draft(
                     UUID.randomUUID().toString(), parsed.productCode(), parsed.objectTypeCode(),
                     parsed.regionCode(), parsed.tradeDate(), now(), parsed.direction(),
                     parsed.purchaseBasePrice(), parsed.saleBasePrice(), parsed.carriageBoardAmount(),
                     parsed.packagingAmount(), parsed.freightAmount(), parsed.packagingForm(), parsed.facts());
-            return view(repository.insert(record, actor.id(), parsed.extensions()),
-                    definitions, parsed.extensions());
+            MarketMonitoringRecord persisted = repository.insert(record, principal.subjectId(), parsed.extensions());
+            audit(principal, persisted, "MARKET_RECORD_CREATED");
+            return view(persisted, definitions, parsed.extensions());
         } catch (MarketValidationException exception) {
             throw invalid(exception.getMessage());
         }
@@ -145,8 +159,8 @@ public class MarketMonitoringService {
 
     @Transactional
     public MarketRecordView save(String id, long expectedVersion, MarketMonitoringDraft draft) {
-        AuthenticatedActor actor = actor();
         MarketMonitoringRecord existing = required(id);
+        SecurityPrincipal principal = authorize("BUSINESS_UPDATE", existing.regionCode());
         if (expectedVersion != existing.version()) throw stale();
         List<MarketCoreFieldDefinition> definitions = coreDefinitions(draft);
         ParsedDraft parsed = parseDraft(draft, definitions);
@@ -154,14 +168,16 @@ public class MarketMonitoringService {
             throw invalid("Record product cannot change");
         }
         validate(parsed);
+        authorize("BUSINESS_UPDATE", parsed.regionCode());
         try {
             MarketMonitoringRecord revised = existing.revise(
                     parsed.objectTypeCode(), parsed.regionCode(), parsed.tradeDate(), now(), parsed.direction(),
                     parsed.purchaseBasePrice(), parsed.saleBasePrice(), parsed.carriageBoardAmount(),
                     parsed.packagingAmount(), parsed.freightAmount(), parsed.packagingForm(), parsed.facts());
-            return view(repository.updateFacts(
-                    revised, expectedVersion, actor.id(), parsed.extensions()),
-                    definitions, parsed.extensions());
+            MarketMonitoringRecord persisted = repository.updateFacts(
+                    revised, expectedVersion, principal.subjectId(), parsed.extensions());
+            audit(principal, persisted, "MARKET_RECORD_UPDATED");
+            return view(persisted, definitions, parsed.extensions());
         } catch (MarketValidationException exception) {
             throw invalid(exception.getMessage());
         } catch (IllegalStateException exception) {
@@ -171,27 +187,28 @@ public class MarketMonitoringService {
 
     @Transactional
     public MarketRecordView submit(String id, long expectedVersion) {
-        return transition(id, expectedVersion, MarketMonitoringRecord::submit);
+        return transition(id, expectedVersion, "BUSINESS_SUBMIT", "MARKET_RECORD_SUBMITTED", MarketMonitoringRecord::submit);
     }
 
     @Transactional
     public MarketRecordView approve(String id, long expectedVersion) {
-        return transition(id, expectedVersion, MarketMonitoringRecord::approve);
+        return transition(id, expectedVersion, "BUSINESS_APPROVE", "MARKET_RECORD_APPROVED", MarketMonitoringRecord::approve);
     }
 
     @Transactional
     public MarketRecordView returnForCorrection(String id, long expectedVersion, String reason) {
-        return transition(id, expectedVersion, record -> record.returnForCorrection(reason));
+        return transition(id, expectedVersion, "BUSINESS_RETURN", "MARKET_RECORD_RETURNED", record -> record.returnForCorrection(reason));
     }
 
-    private MarketRecordView transition(String id, long expectedVersion,
+    private MarketRecordView transition(String id, long expectedVersion, String permissionCode, String auditAction,
             java.util.function.UnaryOperator<MarketMonitoringRecord> command) {
-        AuthenticatedActor actor = actor();
         MarketMonitoringRecord existing = required(id);
+        SecurityPrincipal principal = authorize(permissionCode, existing.regionCode());
         if (expectedVersion != existing.version()) throw stale();
         try {
             MarketMonitoringRecord updated = repository.updateState(
-                    command.apply(existing), expectedVersion, actor.id(), clock.instant());
+                    command.apply(existing), expectedVersion, principal.subjectId(), clock.instant());
+            audit(principal, updated, auditAction);
             return view(updated, coreFields(updated.productCode()),
                     repository.findExtensionCoreValues(updated.id()));
         } catch (MarketValidationException exception) {
@@ -472,6 +489,18 @@ public class MarketMonitoringService {
 
     private AuthenticatedActor actor() {
         return currentActor.currentActor().orElseThrow(AuthenticationRequiredException::new);
+    }
+
+    private SecurityPrincipal authorize(String permissionCode, String regionCode) {
+        if (accessControl != null) return accessControl.require(permissionCode, regionCode);
+        return new SecurityPrincipal(actor().id(), "UNIT_TEST", Set.of(), Set.of());
+    }
+
+    private void audit(SecurityPrincipal principal, MarketMonitoringRecord record, String actionCode) {
+        if (audit != null) {
+            audit.record(principal, "MARKET_RECORD", record.id(), actionCode, clock.instant(),
+                    "{\"regionCode\":\"" + record.regionCode() + "\"}");
+        }
     }
 
     private OffsetDateTime now() {
