@@ -8,8 +8,10 @@ public interface ReportingRepository {
     ReportPreviewMaterial loadPreviewMaterial(ReportPreviewCommand command);
     ReportPreviewView persistPreview(ReportPreviewPersistence preview);
     ReportPreviewView findPreview(String previewId);
+    String findPreviewRegion(String previewId);
     ReportExportView persistExport(ReportExportPersistence export);
     ReportExportContent findExportContent(String exportTaskId);
+    String findExportRegion(String exportTaskId);
     ReportPublicationView persistPublication(ReportPublicationPersistence publication);
 
     record ReportPreviewMaterial(

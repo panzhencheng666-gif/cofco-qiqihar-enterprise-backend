@@ -10,6 +10,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import javax.sql.DataSource;
@@ -32,11 +33,39 @@ class ReportingRestIntegrationTest {
 
     @BeforeEach void clean() {
         jdbc = JdbcClient.create(dataSource);
-        jdbc.sql("TRUNCATE reporting.report_audit_event,reporting.report_publication,reporting.report_export_task,reporting.report_preview,reporting.approved_dataset,production.production_record RESTART IDENTITY CASCADE").update();
+        jdbc.sql("TRUNCATE platform.business_audit_event,reporting.report_audit_event,reporting.report_publication,reporting.report_export_task,reporting.report_preview,reporting.approved_dataset,production.production_record RESTART IDENTITY CASCADE").update();
+        jdbc.sql("DELETE FROM platform.security_user_region_scope").update();
+        jdbc.sql("DELETE FROM platform.security_user_role").update();
+        jdbc.sql("DELETE FROM platform.security_user").update();
+        jdbc.sql("DELETE FROM platform.work_unit_region_scope").update();
+        jdbc.sql("DELETE FROM platform.work_unit").update();
         jdbc.sql("""
                 INSERT INTO platform.business_period(code,name,starts_on,ends_on,sort_order)
                 VALUES('2026-Q3','2026年第三季度',DATE '2026-07-01',DATE '2026-09-30',202603)
                 ON CONFLICT(code) DO NOTHING
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.work_unit(code,name,sort_order)
+                VALUES ('QI','齐齐哈尔工作单位',9001),('HEI','黑河工作单位',9002)
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.work_unit_region_scope(work_unit_code,region_code)
+                VALUES ('QI','230200'),('QI','230202'),('HEI','231100')
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user(subject_id,display_name,work_unit_code)
+                VALUES ('reporter','报表专员','QI'),('publisher','报表发布员','QI'),
+                       ('limited-reporter','区县报表专员','QI'),('outside-unit-reporter','外单位报表专员','HEI')
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_role(subject_id,role_code)
+                VALUES ('reporter','REPORTER'),('publisher','REPORT_PUBLISHER'),
+                       ('limited-reporter','REPORTER'),('outside-unit-reporter','REPORTER')
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_region_scope(subject_id,region_code)
+                VALUES ('reporter','230200'),('publisher','230200'),
+                       ('limited-reporter','230202'),('outside-unit-reporter','231100')
                 """).update();
     }
 
@@ -47,6 +76,10 @@ class ReportingRestIntegrationTest {
     @Test void requiresApprovedDataThenPreviewsExportsAndPublishes() throws Exception {
         String body = "{\"definitionCode\":\"PRODUCTION_DAILY\",\"productCode\":\"CORN\",\"regionLevel\":\"PREFECTURE\",\"regionCode\":\"230200\",\"periodCode\":\"2026-Q3\"}";
         mvc.perform(post("/api/v1/reports/previews").contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/v1/reports/previews").principal(() -> "limited-reporter").contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+        mvc.perform(post("/api/v1/reports/previews").principal(() -> "outside-unit-reporter").contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
         mvc.perform(post("/api/v1/reports/previews").principal(() -> "reporter").contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("REPORT_APPROVED_DATA_REQUIRED"));
         jdbc.sql("""
@@ -67,5 +100,8 @@ class ReportingRestIntegrationTest {
         mvc.perform(post("/api/v1/reports/previews/{id}/publications",preview).principal(() -> "publisher").contentType(MediaType.APPLICATION_JSON).content("{\"exportTaskId\":\""+export+"\",\"expectedVersion\":0}"))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.data.previewId").value(preview));
         assertThat(jdbc.sql("SELECT count(*) FROM reporting.report_audit_event").query(Long.class).single()).isEqualTo(3L);
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.business_audit_event").query(Long.class).single()).isEqualTo(4L);
+        assertThatThrownBy(() -> jdbc.sql("DELETE FROM platform.business_audit_event").update())
+                .hasMessageContaining("business audit events are immutable");
     }
 }

@@ -71,6 +71,13 @@ public class JdbcReportingRepository implements ReportingRepository {
     @Override public ReportPreviewView findPreview(String id) { return jdbc.sql("""
             SELECT preview.preview_id::text,definition.code,preview.dataset_id::text,preview.content_snapshot::text,preview.expires_at,preview.version
             FROM reporting.report_preview preview JOIN reporting.report_definition definition ON definition.report_definition_id=preview.report_definition_id WHERE preview.preview_id=CAST(:id AS uuid)""").param("id",id).query((r,n)->view(r.getString(1),r.getString(2),r.getString(3),r.getString(4),r.getTimestamp(5).toInstant(),r.getLong(6))).optional().orElse(null); }
+    @Override public String findPreviewRegion(String previewId) {
+        return jdbc.sql("""
+                SELECT dataset.region_code FROM reporting.report_preview preview
+                JOIN reporting.approved_dataset dataset ON dataset.dataset_id = preview.dataset_id
+                WHERE preview.preview_id = CAST(:id AS uuid)
+                """).param("id", previewId).query(String.class).optional().orElse(null);
+    }
     private List<ReportParameterOptionsView.Option> options(String sql){ return jdbc.sql(sql).query((r,n)->new ReportParameterOptionsView.Option(r.getString(1),r.getString(2))).list(); }
     private List<ReportDefinitionView.Section> sections(long id){ return jdbc.sql("SELECT section_code,title,sort_order FROM reporting.report_definition_section WHERE report_definition_id=:id ORDER BY sort_order").param("id",id).query((r,n)->new ReportDefinitionView.Section(r.getString(1),r.getString(2),r.getInt(3))).list(); }
     private boolean exists(String sql,String code){return jdbc.sql(sql).param("code",code).query(Integer.class).optional().isPresent();}
@@ -109,6 +116,14 @@ public class JdbcReportingRepository implements ReportingRepository {
                 WHERE export_task_id=CAST(:id AS uuid) AND status_code='COMPLETED'
                 """).param("id", exportTaskId).query((row, index) -> new ReportExportContent(
                 row.getString(1), row.getString(2), row.getString(3), row.getBytes(4))).optional().orElse(null);
+    }
+    @Override public String findExportRegion(String exportTaskId) {
+        return jdbc.sql("""
+                SELECT dataset.region_code FROM reporting.report_export_task export
+                JOIN reporting.report_preview preview ON preview.preview_id = export.preview_id
+                JOIN reporting.approved_dataset dataset ON dataset.dataset_id = preview.dataset_id
+                WHERE export.export_task_id = CAST(:id AS uuid)
+                """).param("id", exportTaskId).query(String.class).optional().orElse(null);
     }
     @Override public ReportPublicationView persistPublication(ReportPublicationPersistence p){
         Long current=jdbc.sql("SELECT version FROM reporting.report_preview WHERE preview_id=CAST(:id AS uuid) FOR UPDATE").param("id",p.previewId()).query(Long.class).optional().orElse(null);
