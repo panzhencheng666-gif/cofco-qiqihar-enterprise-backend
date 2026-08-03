@@ -17,7 +17,8 @@ public class ReportingWriteAuthenticationInterceptor implements HandlerIntercept
         registry.addInterceptor(this).addPathPatterns("/api/v1/reports/**");
     }
     @Override public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
-        if (!"GET".equals(request.getMethod()) && actor.currentActorId().isEmpty()) throw new AuthenticationRequiredException();
+        boolean parameterOptions = request.getRequestURI().endsWith("/parameter-options");
+        if (!parameterOptions && actor.currentActorId().isEmpty()) throw new AuthenticationRequiredException();
         return true;
     }
 }

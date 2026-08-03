@@ -1,12 +1,17 @@
 package com.cofco.qiqihar.graintrade.reporting.interfaceadapter;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
+import static org.assertj.core.api.Assertions.assertThat;
 import java.util.UUID;
+import org.junit.jupiter.api.AfterEach;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -35,6 +40,10 @@ class ReportingRestIntegrationTest {
                 """).update();
     }
 
+    @AfterEach void cleanAfterEach() {
+        clean();
+    }
+
     @Test void requiresApprovedDataThenPreviewsExportsAndPublishes() throws Exception {
         String body = "{\"definitionCode\":\"PRODUCTION_DAILY\",\"productCode\":\"CORN\",\"regionLevel\":\"PREFECTURE\",\"regionCode\":\"230200\",\"periodCode\":\"2026-Q3\"}";
         mvc.perform(post("/api/v1/reports/previews").contentType(MediaType.APPLICATION_JSON).content(body)).andExpect(status().isUnauthorized());
@@ -47,7 +56,16 @@ class ReportingRestIntegrationTest {
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.data.lines[0].value").value("1")).andReturn().getResponse().getContentAsString().replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
         String export = mvc.perform(post("/api/v1/reports/previews/{id}/exports",preview).principal(() -> "reporter").contentType(MediaType.APPLICATION_JSON).content("{\"formatCode\":\"CSV\"}"))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString().replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+        mvc.perform(get("/api/v1/reports/exports/{id}/content", export))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/reports/exports/{id}/content", export).principal(() -> "reporter"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Disposition", org.hamcrest.Matchers.containsString("attachment")))
+                .andExpect(content().contentTypeCompatibleWith("text/csv"))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("报告名称")))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("核定数据条数")));
         mvc.perform(post("/api/v1/reports/previews/{id}/publications",preview).principal(() -> "publisher").contentType(MediaType.APPLICATION_JSON).content("{\"exportTaskId\":\""+export+"\",\"expectedVersion\":0}"))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.data.previewId").value(preview));
+        assertThat(jdbc.sql("SELECT count(*) FROM reporting.report_audit_event").query(Long.class).single()).isEqualTo(3L);
     }
 }

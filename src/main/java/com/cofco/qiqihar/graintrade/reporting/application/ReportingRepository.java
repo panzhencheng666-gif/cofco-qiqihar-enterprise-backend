@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade.reporting.application;
 
+import com.cofco.qiqihar.graintrade.reporting.domain.ReportExportContent;
 import java.time.Instant;
 
 public interface ReportingRepository {
@@ -8,6 +9,7 @@ public interface ReportingRepository {
     ReportPreviewView persistPreview(ReportPreviewPersistence preview);
     ReportPreviewView findPreview(String previewId);
     ReportExportView persistExport(ReportExportPersistence export);
+    ReportExportContent findExportContent(String exportTaskId);
     ReportPublicationView persistPublication(ReportPublicationPersistence publication);
 
     record ReportPreviewMaterial(

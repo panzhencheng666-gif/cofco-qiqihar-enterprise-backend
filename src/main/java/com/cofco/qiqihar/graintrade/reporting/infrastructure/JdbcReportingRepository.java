@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.reporting.infrastructure;
 
 import com.cofco.qiqihar.graintrade.reporting.application.*;
+import com.cofco.qiqihar.graintrade.reporting.domain.ReportExportContent;
 import java.time.Instant;
 import java.sql.Timestamp;
 import java.util.*;
@@ -100,6 +101,14 @@ public class JdbcReportingRepository implements ReportingRepository {
         if(written!=1) throw new IllegalArgumentException("preview");
         audit("EXPORT",id,"EXPORTED",e.actor(),e.now(),"{\"previewId\":\""+e.previewId()+"\",\"formatCode\":\""+e.formatCode()+"\"}");
         return new ReportExportView(id,e.previewId(),e.formatCode(),e.filename(),e.contentType(),e.now());
+    }
+    @Override public ReportExportContent findExportContent(String exportTaskId) {
+        return jdbc.sql("""
+                SELECT export_task_id::text, filename, content_type, content
+                FROM reporting.report_export_task
+                WHERE export_task_id=CAST(:id AS uuid) AND status_code='COMPLETED'
+                """).param("id", exportTaskId).query((row, index) -> new ReportExportContent(
+                row.getString(1), row.getString(2), row.getString(3), row.getBytes(4))).optional().orElse(null);
     }
     @Override public ReportPublicationView persistPublication(ReportPublicationPersistence p){
         Long current=jdbc.sql("SELECT version FROM reporting.report_preview WHERE preview_id=CAST(:id AS uuid) FOR UPDATE").param("id",p.previewId()).query(Long.class).optional().orElse(null);

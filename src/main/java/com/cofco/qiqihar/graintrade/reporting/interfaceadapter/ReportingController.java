@@ -6,9 +6,15 @@ import com.cofco.qiqihar.graintrade.reporting.application.ReportPreviewCommand;
 import com.cofco.qiqihar.graintrade.reporting.application.ReportPreviewView;
 import com.cofco.qiqihar.graintrade.reporting.application.ReportPublicationView;
 import com.cofco.qiqihar.graintrade.reporting.application.ReportingService;
+import com.cofco.qiqihar.graintrade.reporting.domain.ReportExportContent;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import java.nio.charset.StandardCharsets;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -35,6 +41,16 @@ public class ReportingController {
     @org.springframework.web.bind.annotation.ResponseStatus(HttpStatus.CREATED)
     ApiResponse<ReportExportView> export(@PathVariable String previewId, @RequestBody ExportRequest request) {
         return new ApiResponse<>(service.export(previewId, request.formatCode()));
+    }
+
+    @GetMapping("/exports/{exportTaskId}/content")
+    ResponseEntity<byte[]> download(@PathVariable String exportTaskId) {
+        ReportExportContent export = service.download(exportTaskId);
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(export.contentType()))
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                        .filename(export.filename(), StandardCharsets.UTF_8).build().toString())
+                .body(export.bytes());
     }
 
     @PostMapping("/previews/{previewId}/publications")

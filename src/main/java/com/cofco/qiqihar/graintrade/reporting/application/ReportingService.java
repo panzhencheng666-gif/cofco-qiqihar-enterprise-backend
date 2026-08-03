@@ -4,6 +4,7 @@ import com.cofco.qiqihar.graintrade.shared.application.AuthenticationRequiredExc
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
+import com.cofco.qiqihar.graintrade.reporting.domain.ReportExportContent;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -72,6 +73,17 @@ public class ReportingService {
         return repository.persistExport(new ReportingRepository.ReportExportPersistence(
                 previewId, format, actor(), now, safeFilename(preview) + ".csv", "text/csv;charset=utf-8",
                 digest(content), content));
+    }
+
+    @Transactional(readOnly = true)
+    public ReportExportContent download(String exportTaskId) {
+        if (blank(exportTaskId)) throw invalid();
+        actor();
+        ReportExportContent export = repository.findExportContent(exportTaskId);
+        if (export == null) {
+            throw new ResourceNotFoundException("REPORT_EXPORT_NOT_FOUND", "Report export was not found");
+        }
+        return export;
     }
 
     @Transactional
