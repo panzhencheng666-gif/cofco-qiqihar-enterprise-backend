@@ -58,22 +58,19 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
         StringBuilder sql = new StringBuilder("""
                 SELECT r.calculation_run_id::text id,r.product_code,r.region_code,r.marketing_year,
                   r.result_state,r.validation_codes,r.balanced,r.decision_version,
-                  round(r.total_supply,(r.formula_snapshot->>'scale')::integer) total_supply,
-                  round(r.total_use,(r.formula_snapshot->>'scale')::integer) total_use,
-                  round(r.calculated_ending_inventory,(r.formula_snapshot->>'scale')::integer) calculated_ending_inventory,
-                  round(r.approved_adjustment,(r.formula_snapshot->>'scale')::integer) approved_adjustment,
-                  round(r.adopted_ending_inventory,(r.formula_snapshot->>'scale')::integer) adopted_ending_inventory,
-                  round(r.surveyed_ending_inventory,(r.formula_snapshot->>'scale')::integer) surveyed_ending_inventory,
-                  round(r.inventory_reconciliation_difference,(r.formula_snapshot->>'scale')::integer) inventory_reconciliation_difference,
+                  r.total_supply,r.total_use,r.calculated_ending_inventory,r.approved_adjustment,
+                  r.adopted_ending_inventory,r.surveyed_ending_inventory,r.inventory_reconciliation_difference,
                   r.adjustment_reason_snapshot,r.adjustment_actor_snapshot,r.adjustment_decided_at_snapshot,
                   r.adjustment_proposal_value,r.adjustment_proposal_reason,r.adjustment_requested_by,
                   r.adjustment_requested_at,r.input_set_id::text,
+                  (r.input_set_id IS NULL OR COALESCE(input_set.legacy, false)) legacy_read_only,
                   r.formula_snapshot->>'code' formula_code,(r.formula_snapshot->>'version')::integer formula_version,
                   r.formula_snapshot->>'name' formula_name,(r.formula_snapshot->>'precision')::integer formula_precision,
                   (r.formula_snapshot->>'scale')::integer formula_scale,r.formula_snapshot->>'roundingMode' rounding_mode,
                   r.formula_snapshot->>'tolerance' tolerance,rv.version_no
                 FROM supply.calculation_run r
                 JOIN supply.result_version rv ON rv.calculation_run_id=r.calculation_run_id
+                LEFT JOIN supply.source_adoption_set input_set ON input_set.input_set_id=r.input_set_id
                 WHERE r.product_code=:product AND r.region_code=:region AND r.marketing_year=:year
                 """);
         Map<String, Object> params = new LinkedHashMap<>();
@@ -103,6 +100,7 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                 plain(row.getBigDecimal("adjustment_proposal_value")), row.getString("adjustment_proposal_reason"),
                 row.getString("adjustment_requested_by"),
                 timestamp(row.getObject("adjustment_requested_at", OffsetDateTime.class)), row.getString("input_set_id"),
+                Boolean.TRUE.equals(row.getObject("legacy_read_only", Boolean.class)),
                 new FormulaHeader(row.getString("formula_code"), row.getInt("formula_version"),
                         row.getString("formula_name"), row.getInt("formula_precision"), row.getInt("formula_scale"),
                         row.getString("rounding_mode"), row.getString("tolerance")))).list();
@@ -127,7 +125,7 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                 .param("id", formulaId).query(String.class).single();
         InputSetHeader inputSet = jdbc.sql("""
                 SELECT input_set_id::text,version_no,product_code,region_code,marketing_year,reason
-                FROM supply.source_adoption_set WHERE input_set_id::text=:id
+                FROM supply.source_adoption_set WHERE input_set_id::text=:id AND NOT legacy
                   AND product_code=:product AND region_code=:region AND marketing_year=:year
                 """).param("id", inputSetId).param("product", product).param("region", region).param("year", year)
                 .query((row, index) -> new InputSetHeader(row.getString("input_set_id"), row.getLong("version_no"),
@@ -303,22 +301,28 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
         List<String> requiredRoles = jdbc.sql("""
                 SELECT role_code FROM supply.account_input_role WHERE required
                 """).query(String.class).list();
-        List<SupplyInputSetMaterial.Source> selected = new ArrayList<>();
-        command.items().forEach(item -> jdbc.sql("""
-                SELECT release.source_release_id::text,release.source_domain,release.source_record_id,
-                  release.source_version,binding.source_field_code
-                FROM supply.source_release release JOIN supply.source_release_binding binding
-                  ON binding.source_release_id=release.source_release_id
-                WHERE release.source_release_id::text=:release AND binding.role_code=:role
-                  AND release.product_code=:product AND release.region_code=:region
+        String[] roles = command.items().stream().map(SupplyInputSetCommand.Item::roleCode).toArray(String[]::new);
+        String[] releases = command.items().stream().map(SupplyInputSetCommand.Item::sourceReleaseId)
+                .toArray(String[]::new);
+        List<SupplyInputSetMaterial.Source> selected = jdbc.sql("""
+                WITH requested(role_code,source_release_id) AS (
+                    SELECT * FROM unnest(CAST(:roles AS varchar[]),CAST(:releases AS varchar[]))
+                )
+                SELECT release.source_release_id::text,requested.role_code,release.source_domain,
+                  release.source_record_id,release.source_version,binding.source_field_code
+                FROM requested
+                JOIN supply.source_release release ON release.source_release_id::text=requested.source_release_id
+                JOIN supply.source_release_binding binding ON binding.source_release_id=release.source_release_id
+                  AND binding.role_code=requested.role_code
+                WHERE release.product_code=:product AND release.region_code=:region
                   AND release.marketing_year=:year AND release.approval_state='APPROVED'
                   AND binding.mapping_id IS NOT NULL
-                """).param("release", item.sourceReleaseId()).param("role", item.roleCode())
+                """).param("roles", roles).param("releases", releases)
                 .param("product", command.productCode()).param("region", command.regionCode())
                 .param("year", command.marketingYear()).query((row, index) -> new SupplyInputSetMaterial.Source(
-                        row.getString("source_release_id"), item.roleCode(), row.getString("source_domain"),
-                        row.getString("source_record_id"), row.getLong("source_version"),
-                        row.getString("source_field_code"))).optional().ifPresent(selected::add));
+                        row.getString("source_release_id"), row.getString("role_code"),
+                        row.getString("source_domain"), row.getString("source_record_id"),
+                        row.getLong("source_version"), row.getString("source_field_code"))).list();
         return new SupplyInputSetMaterial(contextExists, currentVersion, Set.copyOf(requiredRoles), selected);
     }
 
@@ -490,10 +494,10 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
             String balanceReason = !header.errors.isEmpty() ? String.join(",", header.errors)
                     : header.balanced ? "WITHIN_TOLERANCE" : "OUTSIDE_BALANCE_TOLERANCE";
             SupplyAdjustmentAuditView audit = header.state.equals("FORMAL") ? new SupplyAdjustmentAuditView(
-                    header.adjustment, header.adjustmentReason, header.adjustmentActor,
+                    normalized(header.adjustment, header.formula), header.adjustmentReason, header.adjustmentActor,
                     header.adjustmentAt, header.decisionVersion) : null;
             SupplyAdjustmentProposalView proposal = header.state.equals("FORMAL") ? null
-                    : new SupplyAdjustmentProposalView(header.proposalValue, header.proposalReason,
+                    : new SupplyAdjustmentProposalView(normalized(header.proposalValue, header.formula), header.proposalReason,
                             header.proposalActor, header.proposalAt);
             List<SupplyFormulaView.Expression> runExpressions = List.copyOf(
                     expressions.getOrDefault(header.id, List.of()));
@@ -502,16 +506,22 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                     .findFirst().orElseThrow(() -> formulaContract("Missing snapshotted difference result"));
             SupplyFormulaView formula = new SupplyFormulaView(header.formula.code, header.formula.version,
                     header.formula.name, header.formula.precision, header.formula.scale,
-                    header.formula.roundingMode, new BigDecimal(header.formula.tolerance)
-                            .setScale(header.formula.scale).toPlainString(),
+                    header.formula.roundingMode, normalized(header.formula.tolerance, header.formula),
                     difference.resultCode(), difference.label(), difference.expression(), runExpressions);
             return new SupplyAccountView(header.id, header.product, header.region, header.year,
                     header.resultVersion, header.decisionVersion, header.state, header.errors,
-                    header.balanced, publishable, balanceReason, header.totalSupply, header.totalUse,
-                    header.calculated, header.adjustment, header.adopted, header.surveyed, header.difference,
-                    header.inputSetId, proposal, audit, formula,
+                    header.balanced, publishable, balanceReason, normalized(header.totalSupply, header.formula),
+                    normalized(header.totalUse, header.formula), normalized(header.calculated, header.formula),
+                    normalized(header.adjustment, header.formula), normalized(header.adopted, header.formula),
+                    normalized(header.surveyed, header.formula), normalized(header.difference, header.formula),
+                    header.inputSetId, header.legacyReadOnly, proposal, audit, formula,
                     List.copyOf(sources.getOrDefault(header.id, List.of())));
         }).toList();
+    }
+
+    private static String normalized(String value, FormulaHeader formula) {
+        return value == null ? null : new BigDecimal(value)
+                .setScale(formula.scale, RoundingMode.valueOf(formula.roundingMode)).toPlainString();
     }
 
     private SupplyFormula domainFormula(long id) {
@@ -691,5 +701,5 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                           String adopted, String surveyed, String difference, String adjustmentReason,
                           String adjustmentActor, String adjustmentAt, String proposalValue,
                           String proposalReason, String proposalActor, String proposalAt,
-                          String inputSetId, FormulaHeader formula) {}
+                          String inputSetId, boolean legacyReadOnly, FormulaHeader formula) {}
 }

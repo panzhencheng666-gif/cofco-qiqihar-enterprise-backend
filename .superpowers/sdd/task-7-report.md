@@ -102,3 +102,14 @@ Task 7 已在正式后端和正式前端仓库完成，分支均为 `codex/forma
 - 后端：`mvn -q -DskipTests compile` GREEN；`SupplyAccountRestIntegrationTest` 2/2 GREEN；`LogisticsRestIntegrationTest` 1/1 GREEN；舍入 selector `SupplyAccountCalculatorTest#marksAnAccountOutsideToleranceAsUnbalanced` 1/1 GREEN。提交后只读复审发现公式 domain 构造异常需要在服务边界转换为稳定契约，补充 `SupplyAccountServiceTest` 1/1 GREEN 后关闭；供需 REST 最终复验同时显示 Flyway 27 migrations validation GREEN。
 - 前端：物流/供需 HTTP 与 page 共 4 files、7 tests GREEN；`tsc --noEmit` GREEN；touched ESLint GREEN；定向 dependency-cruiser 为 30 modules / 66 dependencies / 0 violations。
 - 两仓 `git diff --check` GREEN；前端无 `pnpm-lock.yaml` 变更或新增。Round 2 后全量与 E2E 是否执行交由独立只读复审决定。
+
+## Round 3 Review Addendum（2026-08-03）
+
+本轮冻结 V1–V27，新增唯一前向迁移 `V28__close_logistics_supply_round_3_findings.sql`，SHA-256 为 `271b19d2de5db1923b031675e63a620073f0a69cb0af080ff06f6e68a76dba56`。V28 已在受保护 PostgreSQL 测试库由 V27 成功升级；旧迁移未修改、未写业务种子、未 push。
+
+- REST 结果装配不再使用 PostgreSQL 默认舍入；所有账户数值、调整审计/建议和 formula tolerance 均依据运行快照的 scale 与 roundingMode 归一。scale=3、HALF_UP 的 `.5005` 稳定返回 `.501`。
+- V28 补齐已被 calculation run 引用的 formula term 的 INSERT 不可变门禁；role/source applicability 的更新和删除均失败关闭，新增只能按同一语义键追加紧邻版本。
+- V25/V26 的可表示历史来源快照会回填为不可变 `legacy` input set 及 items；无法表示的旧 run 保留 NULL，并由 API 返回 `legacyReadOnly=true`。legacy input set 永不参与新计算，前端只读展示历史并阻止重新计算。
+- 输入集选择由逐项查询改为一次数组批量查询，消除所选来源数目带来的 N+1。
+
+本轮仅运行受影响的聚焦门禁：公式 tolerance/term INSERT/mapping U-D/历史快照 REST 场景 GREEN；Flyway V1→V28 replay GREEN；前端供需 HTTP history contract 与 `tsc --noEmit` GREEN。未运行全量或 E2E，未变更 `pnpm-lock.yaml`。

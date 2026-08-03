@@ -70,6 +70,7 @@ class SupplyAccountRestIntegrationTest {
                     .andExpect(jsonPath("$.data.publishable").value(true))
                     .andExpect(jsonPath("$.data.inventoryReconciliationDifference").value("-0.250"))
                     .andExpect(jsonPath("$.data.inputSetId").value(inputSet))
+                    .andExpect(jsonPath("$.data.legacyReadOnly").value(false))
                     .andExpect(jsonPath("$.data.adjustmentProposal").doesNotExist())
                     .andExpect(jsonPath("$.data.adjustmentAudit.reason").value("库存覆盖差异调整建议"))
                     .andExpect(jsonPath("$.data.adjustmentAudit.actor").value("supply-reviewer"))
@@ -88,7 +89,7 @@ class SupplyAccountRestIntegrationTest {
                 .andExpect(jsonPath("$.data.publishable").value(false))
                 .andExpect(jsonPath("$.data.balanceReason").value("OUTSIDE_BALANCE_TOLERANCE"))
                 .andExpect(jsonPath("$.data.adjustmentAudit").doesNotExist())
-                .andExpect(jsonPath("$.data.adjustmentProposal.value").value("1.0000"))
+                .andExpect(jsonPath("$.data.adjustmentProposal.value").value("1.000"))
                 .andExpect(jsonPath("$.data.adjustmentProposal.reason").value("库存覆盖差异调整建议"))
                 .andExpect(jsonPath("$.data.adjustmentProposal.requestedBy").value("supply-reviewer"));
 
@@ -175,11 +176,16 @@ class SupplyAccountRestIntegrationTest {
                 UPDATE supply.formula_term SET coefficient=9
                 WHERE formula_version_id=:id AND result_role='TOTAL_SUPPLY' AND operand_role='LOCAL_PRODUCTION'
                 """).param("id", v1).update()).hasMessageContaining("immutable");
+        assertThatThrownBy(() -> jdbc.sql("""
+                INSERT INTO supply.formula_term(formula_version_id,result_role,operand_role,coefficient,term_order)
+                VALUES(:id,'TOTAL_SUPPLY','LEGACY_TAMPER_TERM',1,99)
+                """).param("id", v1).update()).hasMessageContaining("immutable");
         installFormulaV2();
         mvc.perform(post("/api/v1/supply-accounts/runs").principal(() -> "supply-reviewer")
                         .contentType(MediaType.APPLICATION_JSON).content(runBody("CORN", inputSet, "1.000", 0)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.resultState").value("TRIAL"))
                 .andExpect(jsonPath("$.data.formula.version").value(2))
+                .andExpect(jsonPath("$.data.formula.tolerance").value("0.501"))
                 .andExpect(jsonPath("$.data.totalSupply").value("18.000"))
                 .andExpect(jsonPath("$.data.decisionVersion").value(0));
         String productionId = jdbc.sql("SELECT source_record_id FROM supply.source_release WHERE source_domain='PRODUCTION'")
@@ -202,6 +208,17 @@ class SupplyAccountRestIntegrationTest {
                 .param("id", releaseId).update()).hasMessageContaining("immutable");
         assertThatThrownBy(() -> jdbc.sql("UPDATE supply.source_adoption_set SET reason='篡改' WHERE input_set_id::text=:id")
                 .param("id", inputSet).update()).hasMessageContaining("immutable");
+        long mappingId = jdbc.sql("""
+                SELECT mapping_id FROM supply.role_source_applicability
+                WHERE product_code='CORN' AND role_code='LOCAL_PRODUCTION' AND source_domain='PRODUCTION'
+                ORDER BY mapping_version DESC LIMIT 1
+                """).query(Long.class).single();
+        assertThatThrownBy(() -> jdbc.sql("""
+                UPDATE supply.role_source_applicability SET conversion_factor=2
+                WHERE mapping_id=:id
+                """).param("id", mappingId).update()).hasMessageContaining("immutable");
+        assertThatThrownBy(() -> jdbc.sql("DELETE FROM supply.role_source_applicability WHERE mapping_id=:id")
+                .param("id", mappingId).update()).hasMessageContaining("immutable");
     }
 
     private void controlledCornSources() throws Exception {
@@ -249,7 +266,7 @@ class SupplyAccountRestIntegrationTest {
         jdbc.sql("""
                 INSERT INTO supply.formula_version(code,version_no,name,precision_value,scale_value,tolerance,
                   difference_code,difference_label,difference_expression,active,rounding_mode)
-                VALUES('GRAIN_BALANCE',2,'粮食供需平衡公式V2',18,3,0.500,
+                VALUES('GRAIN_BALANCE',2,'粮食供需平衡公式V2',18,3,0.5005,
                   'INVENTORY_RECONCILIATION_DIFFERENCE','库存核对差额',
                   'SURVEYED_ENDING_INVENTORY - ADOPTED_ENDING_INVENTORY',true,'HALF_UP')
                 """).update();

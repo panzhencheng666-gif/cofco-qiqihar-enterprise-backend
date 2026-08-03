@@ -21,6 +21,7 @@ public record SupplyAccountView(
         String surveyedEndingInventory,
         String inventoryReconciliationDifference,
         String inputSetId,
+        boolean legacyReadOnly,
         SupplyAdjustmentProposalView adjustmentProposal,
         SupplyAdjustmentAuditView adjustmentAudit,
         SupplyFormulaView formula,
