@@ -109,5 +109,8 @@ FROM (VALUES
     ('BUSINESS_REVIEWER', 'BUSINESS_APPROVE'), ('BUSINESS_REVIEWER', 'BUSINESS_RETURN')
 ) AS permission_grant(role_code, permission_code);
 
+INSERT INTO platform.access_role_permission(role_code, permission_code)
+SELECT 'SYSTEM_ADMIN', code FROM platform.access_permission;
+
 COMMENT ON TABLE platform.business_audit_event IS
     'Append-only cross-module business audit trail. Database trigger rejects every update and delete.';

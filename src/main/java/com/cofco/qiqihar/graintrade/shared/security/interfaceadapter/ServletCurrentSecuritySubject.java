@@ -1,21 +1,19 @@
 package com.cofco.qiqihar.graintrade.shared.security.interfaceadapter;
 
 import com.cofco.qiqihar.graintrade.shared.security.application.CurrentSecuritySubject;
-import jakarta.servlet.http.HttpServletRequest;
 import java.util.Optional;
 import org.springframework.stereotype.Component;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 @Component
 public class ServletCurrentSecuritySubject implements CurrentSecuritySubject {
-    private final HttpServletRequest request;
-
-    public ServletCurrentSecuritySubject(HttpServletRequest request) {
-        this.request = request;
-    }
-
     @Override
     public Optional<String> subjectId() {
-        return Optional.ofNullable(request.getUserPrincipal()).map(principal -> principal.getName())
-                .filter(value -> !value.isBlank());
+        return Optional.ofNullable(RequestContextHolder.getRequestAttributes())
+                .filter(ServletRequestAttributes.class::isInstance)
+                .map(ServletRequestAttributes.class::cast)
+                .map(attributes -> attributes.getRequest().getUserPrincipal())
+                .map(principal -> principal.getName()).filter(value -> !value.isBlank());
     }
 }
