@@ -139,7 +139,7 @@ class FlywayMigrationReplayTest {
         restoreVersionTwentyTwoTypedDefinitionFixture();
 
         MigrateResult versionTwentyFourResult = flyway().migrate();
-        assertThat(versionTwentyFourResult.migrationsExecuted).isEqualTo(10);
+        assertThat(versionTwentyFourResult.migrationsExecuted).isEqualTo(11);
         assertVersionTwentyFourDefinitionGraphGuards();
         assertThat(queryLong("SELECT count(*) FROM logistics.route_event")).isZero();
         assertThat(queryLong("SELECT count(*) FROM logistics.logistics_node")).isZero();
@@ -161,7 +161,7 @@ class FlywayMigrationReplayTest {
         MigrateResult secondResult = flyway().migrate();
 
         assertThat(secondResult.migrationsExecuted).isZero();
-        assertThat(migrationChecksums()).hasSize(33);
+        assertThat(migrationChecksums()).hasSize(34);
         assertThat(masterDataCounts()).isEqualTo(firstCounts);
         assertThat(firstCounts).containsEntry("region", 29L)
                 .containsEntry("product", 3L)

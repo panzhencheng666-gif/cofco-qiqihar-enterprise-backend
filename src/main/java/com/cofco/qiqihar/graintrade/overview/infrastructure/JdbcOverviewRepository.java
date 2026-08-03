@@ -1,9 +1,13 @@
 package com.cofco.qiqihar.graintrade.overview.infrastructure;
 
 import com.cofco.qiqihar.graintrade.overview.application.OverviewIndicator;
+import com.cofco.qiqihar.graintrade.overview.application.OverviewOption;
+import com.cofco.qiqihar.graintrade.overview.application.OverviewOptions;
+import com.cofco.qiqihar.graintrade.overview.application.OverviewPeriodOption;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewRegion;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewRepository;
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -12,6 +16,17 @@ import org.springframework.stereotype.Repository;
 public class JdbcOverviewRepository implements OverviewRepository {
     private final JdbcClient jdbc;
     public JdbcOverviewRepository(JdbcClient jdbc) { this.jdbc = jdbc; }
+
+    @Override
+    public OverviewOptions options() {
+        List<OverviewOption> products = jdbc.sql("SELECT code,name FROM platform.product ORDER BY sort_order")
+                .query((row, index) -> new OverviewOption(row.getString("code"), row.getString("name"))).list();
+        List<OverviewPeriodOption> periods = jdbc.sql("SELECT code,name,starts_on,ends_on FROM platform.business_period ORDER BY starts_on DESC,sort_order DESC")
+                .query((row, index) -> new OverviewPeriodOption(row.getString("code"), row.getString("name"),
+                        row.getObject("starts_on", LocalDate.class).toString(),
+                        row.getObject("ends_on", LocalDate.class).toString())).list();
+        return new OverviewOptions(products, periods);
+    }
 
     @Override public boolean knownProduct(String productCode) { return exists("SELECT EXISTS(SELECT 1 FROM platform.product WHERE code=:value)", productCode); }
     @Override public boolean knownRegion(String regionCode) { return exists("SELECT EXISTS(SELECT 1 FROM platform.region WHERE code=:value)", regionCode); }
@@ -31,14 +46,18 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   SELECT destination_region_code,event_id::text FROM logistics.route_event,period
                     WHERE product_code=:product AND status_code='APPROVED' AND collection_date BETWEEN starts_on AND ends_on
                 )
-                SELECT region.code,region.name,region.parent_code,region.administrative_level,COUNT(approved.record_id) approved_count
-                FROM platform.region region LEFT JOIN approved ON approved.region_code=region.code
+                SELECT region.code,region.name,region.parent_code,region.administrative_level,COUNT(approved.record_id) approved_count,
+                  ST_AsGeoJSON(boundary.geometry) boundary_geo_json
+                FROM platform.region region
+                LEFT JOIN approved ON approved.region_code=region.code
+                LEFT JOIN overview.administrative_boundary boundary ON boundary.region_code=region.code
                 WHERE region.parent_code IS NOT DISTINCT FROM CAST(:parent AS varchar)
-                GROUP BY region.code,region.name,region.parent_code,region.administrative_level,region.sort_order
+                GROUP BY region.code,region.name,region.parent_code,region.administrative_level,region.sort_order,boundary.geometry
                 ORDER BY region.sort_order
                 """).param("period", periodCode).param("product", productCode).param("parent", parentCode)
                 .query((row, index) -> new OverviewRegion(row.getString("code"), row.getString("name"),
-                        row.getString("parent_code"), row.getString("administrative_level"), row.getLong("approved_count"))).list();
+                        row.getString("parent_code"), row.getString("administrative_level"), row.getLong("approved_count"),
+                        row.getString("boundary_geo_json"))).list();
     }
 
     @Override

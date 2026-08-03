@@ -2,6 +2,7 @@ package com.cofco.qiqihar.graintrade.overview.interfaceadapter;
 
 import com.cofco.qiqihar.graintrade.overview.application.OverviewIndicator;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewRegion;
+import com.cofco.qiqihar.graintrade.overview.application.OverviewOptions;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewService;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import java.util.List;
@@ -14,6 +15,9 @@ public class OverviewController {
     private final OverviewService service;
     public OverviewController(OverviewService service) { this.service = service; }
 
+    @GetMapping("/api/v1/overview/options")
+    ApiResponse<OverviewOptions> options() { return new ApiResponse<>(service.options()); }
+
     @GetMapping("/api/v1/overview/regions")
     ApiResponse<List<OverviewRegion>> regions(@RequestParam(required = false) String parentCode,
             @RequestParam String productCode, @RequestParam String periodCode) {
@@ -22,7 +26,7 @@ public class OverviewController {
 
     @GetMapping("/api/v1/overview/indicators")
     ApiResponse<List<OverviewIndicator>> indicators(@RequestParam String productCode, @RequestParam String regionCode,
-            @RequestParam String periodCode, @RequestParam String marketingYear) {
+            @RequestParam String periodCode, @RequestParam(required = false) String marketingYear) {
         return new ApiResponse<>(service.indicators(productCode, regionCode, periodCode, marketingYear));
     }
 }

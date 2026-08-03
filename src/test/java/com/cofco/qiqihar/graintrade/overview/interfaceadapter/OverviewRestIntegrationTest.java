@@ -37,6 +37,13 @@ class OverviewRestIntegrationTest {
                 VALUES('2026-Q3','2026年第三季度',DATE '2026-07-01',DATE '2026-09-30',202603)
                 ON CONFLICT(code) DO NOTHING
                 """).update();
+        jdbc.sql("DELETE FROM overview.administrative_boundary WHERE region_code='230200'").update();
+        jdbc.sql("""
+                INSERT INTO overview.administrative_boundary(
+                  region_code,geometry,source_name,source_url,source_revision,source_license,geometry_sha256
+                ) VALUES ('230200',ST_GeomFromText('MULTIPOLYGON(((123 47,124 47,124 48,123 47)))',4326),
+                  'test fixture','https://example.invalid/boundary','test','test',repeat('0',64))
+                """).update();
     }
     @AfterEach void cleanAfterEach() { clean(); }
 
@@ -71,10 +78,14 @@ class OverviewRestIntegrationTest {
         jdbc.sql("INSERT INTO logistics.route_fact(event_id,fact_code,value,unit_code) VALUES(CAST(:id AS uuid),'ROUTE_VOLUME',2,'万吨')")
                 .param("id", eventId).update();
 
+        mvc.perform(get("/api/v1/overview/options"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.products[0].code").value("CORN"))
+                .andExpect(jsonPath("$.data.periods[0].code").value("2026-Q3"));
         mvc.perform(get("/api/v1/overview/regions").queryParam("productCode", "CORN").queryParam("periodCode", "2026-Q3"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].code").value("230200"));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].code").value("230200"))
+                .andExpect(jsonPath("$.data[0].boundaryGeoJson").isString());
         mvc.perform(get("/api/v1/overview/indicators").queryParam("productCode", "CORN")
-                        .queryParam("regionCode", "230200").queryParam("periodCode", "2026-Q3").queryParam("marketingYear", "2026/27"))
+                        .queryParam("regionCode", "230200").queryParam("periodCode", "2026-Q3"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].value").value("10"))
                 .andExpect(jsonPath("$.data[1].value").value("200"))
                 .andExpect(jsonPath("$.data[2].value").value("2050"))

@@ -11,6 +11,9 @@ public class OverviewService {
     public OverviewService(OverviewRepository repository) { this.repository = repository; }
 
     @Transactional(readOnly = true)
+    public OverviewOptions options() { return repository.options(); }
+
+    @Transactional(readOnly = true)
     public List<OverviewRegion> regions(String parentCode, String productCode, String periodCode) {
         if (blank(productCode) || blank(periodCode) || !repository.knownProduct(productCode)
                 || !repository.knownPeriod(periodCode) || (parentCode != null && !repository.knownRegion(parentCode))) throw invalid();
@@ -19,7 +22,7 @@ public class OverviewService {
 
     @Transactional(readOnly = true)
     public List<OverviewIndicator> indicators(String productCode, String regionCode, String periodCode, String marketingYear) {
-        if (blank(productCode) || blank(regionCode) || blank(periodCode) || blank(marketingYear)
+        if (blank(productCode) || blank(regionCode) || blank(periodCode)
                 || !repository.knownProduct(productCode) || !repository.knownRegion(regionCode)
                 || !repository.knownPeriod(periodCode)) throw invalid();
         return repository.indicators(productCode, regionCode, periodCode, marketingYear);
