@@ -180,6 +180,10 @@ class SupplyAccountRestIntegrationTest {
                 INSERT INTO supply.formula_term(formula_version_id,result_role,operand_role,coefficient,term_order)
                 VALUES(:id,'TOTAL_SUPPLY','LEGACY_TAMPER_TERM',1,99)
                 """).param("id", v1).update()).hasMessageContaining("immutable");
+        assertThatThrownBy(() -> jdbc.sql("""
+                INSERT INTO supply.formula_result_role(formula_version_id,result_role,label,required,sort_order)
+                VALUES(:id,'LEGACY_TAMPER_RESULT','篡改结果',false,99)
+                """).param("id", v1).update()).hasMessageContaining("immutable");
         installFormulaV2();
         mvc.perform(post("/api/v1/supply-accounts/runs").principal(() -> "supply-reviewer")
                         .contentType(MediaType.APPLICATION_JSON).content(runBody("CORN", inputSet, "1.000", 0)))

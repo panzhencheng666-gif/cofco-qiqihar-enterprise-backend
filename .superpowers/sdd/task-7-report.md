@@ -113,3 +113,9 @@ Task 7 已在正式后端和正式前端仓库完成，分支均为 `codex/forma
 - 输入集选择由逐项查询改为一次数组批量查询，消除所选来源数目带来的 N+1。
 
 本轮仅运行受影响的聚焦门禁：公式 tolerance/term INSERT/mapping U-D/历史快照 REST 场景 GREEN；Flyway V1→V28 replay GREEN；前端供需 HTTP history contract 与 `tsc --noEmit` GREEN。未运行全量或 E2E，未变更 `pnpm-lock.yaml`。
+
+## Round 4 Review Addendum（2026-08-03）
+
+最终独立只读复审确认 V28 遗漏了 `formula_result_role` 的 INSERT 门禁。冻结 V1–V28 后，新增唯一前向迁移 `V29__freeze_referenced_formula_result_roles.sql`：已被 `calculation_run` 引用的公式版本不能再新增结果节点，因此 result role、term 与 version 三层共同构成不可原地改变的完整 DAG。
+
+本轮只做必要验证：Flyway V1→V29 回放及第二启动幂等检查 GREEN（29 migrations）；受影响的供需 REST 单例验证 GREEN，明确覆盖已引用公式新增 result role 的拒绝。未运行全量、E2E 或重复前端测试。
