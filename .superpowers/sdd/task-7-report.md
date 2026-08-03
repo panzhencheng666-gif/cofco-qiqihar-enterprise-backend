@@ -99,6 +99,6 @@ Task 7 已在正式后端和正式前端仓库完成，分支均为 `codex/forma
 
 本轮严格执行聚焦验证，未运行全量或 E2E：
 
-- 后端：`mvn -q -DskipTests compile` GREEN；`SupplyAccountRestIntegrationTest` 2/2 GREEN；`LogisticsRestIntegrationTest` 1/1 GREEN；舍入 selector `SupplyAccountCalculatorTest#marksAnAccountOutsideToleranceAsUnbalanced` 1/1 GREEN。供需 REST 最终复验同时显示 Flyway 27 migrations validation GREEN。
+- 后端：`mvn -q -DskipTests compile` GREEN；`SupplyAccountRestIntegrationTest` 2/2 GREEN；`LogisticsRestIntegrationTest` 1/1 GREEN；舍入 selector `SupplyAccountCalculatorTest#marksAnAccountOutsideToleranceAsUnbalanced` 1/1 GREEN。提交后只读复审发现公式 domain 构造异常需要在服务边界转换为稳定契约，补充 `SupplyAccountServiceTest` 1/1 GREEN 后关闭；供需 REST 最终复验同时显示 Flyway 27 migrations validation GREEN。
 - 前端：物流/供需 HTTP 与 page 共 4 files、7 tests GREEN；`tsc --noEmit` GREEN；touched ESLint GREEN；定向 dependency-cruiser 为 30 modules / 66 dependencies / 0 violations。
 - 两仓 `git diff --check` GREEN；前端无 `pnpm-lock.yaml` 变更或新增。Round 2 后全量与 E2E 是否执行交由独立只读复审决定。

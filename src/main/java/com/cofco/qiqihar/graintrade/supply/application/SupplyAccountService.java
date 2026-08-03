@@ -67,8 +67,13 @@ public class SupplyAccountService {
                 || command.expectedDecisionVersion() < 0) throw invalid();
 
         repository.lockCalculationContext(command.productCode(), command.regionCode(), command.marketingYear());
-        SupplyCalculationMaterial material = repository.loadCalculationMaterial(
-                command.inputSetId(), command.productCode(), command.regionCode(), command.marketingYear());
+        SupplyCalculationMaterial material;
+        try {
+            material = repository.loadCalculationMaterial(
+                    command.inputSetId(), command.productCode(), command.regionCode(), command.marketingYear());
+        } catch (IllegalArgumentException exception) {
+            throw formulaContract(exception.getMessage());
+        }
         if (material == null
                 || !material.inputSet().productCode().equals(command.productCode())
                 || !material.inputSet().regionCode().equals(command.regionCode())
