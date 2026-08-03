@@ -10,6 +10,9 @@ import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.PageDefinitionQuery;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
+import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder;
+import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
+import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
@@ -31,13 +34,23 @@ public class ProductionRecordService {
     private final ProductionRecordRepository repository;
     private final PageDefinitionQuery pageDefinitions;
     private final CurrentActor currentActor;
+    private final AccessControl accessControl;
+    private final BusinessAuditRecorder audit;
     private final Clock clock;
 
     public ProductionRecordService(ProductionRecordRepository repository, PageDefinitionQuery pageDefinitions,
             CurrentActor currentActor, Clock clock) {
+        this(repository, pageDefinitions, currentActor, null, null, clock);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ProductionRecordService(ProductionRecordRepository repository, PageDefinitionQuery pageDefinitions,
+            CurrentActor currentActor, AccessControl accessControl, BusinessAuditRecorder audit, Clock clock) {
         this.repository = repository;
         this.pageDefinitions = pageDefinitions;
         this.currentActor = currentActor;
+        this.accessControl = accessControl;
+        this.audit = audit;
         this.clock = clock;
     }
 
@@ -90,8 +103,8 @@ public class ProductionRecordService {
 
     @Transactional
     public ProductionRecordView create(ProductionDraft draft) {
-        AuthenticatedActor actor = actor();
         validateDraft(draft);
+        SecurityPrincipal principal = authorize("BUSINESS_CREATE", draft.regionCode());
         ProductionRecord record;
         try {
             record = ProductionRecord.draft(UUID.randomUUID().toString(), draft.productCode(),
@@ -101,16 +114,19 @@ public class ProductionRecordService {
         } catch (ProductionValidationException exception) {
             throw invalidDraft(exception.getMessage());
         }
-        return view(repository.insert(record, actor.id()));
+        ProductionRecord persisted = repository.insert(record, principal.subjectId());
+        audit(principal, persisted, "PRODUCTION_RECORD_CREATED");
+        return view(persisted);
     }
 
     @Transactional
     public ProductionRecordView saveDraft(String id, long expectedVersion, ProductionDraft draft) {
-        AuthenticatedActor actor = actor();
         ProductionRecord existing = requiredRecord(id);
+        SecurityPrincipal principal = authorize("BUSINESS_UPDATE", existing.regionCode());
         if (expectedVersion != existing.version()) throw stale();
         if (!existing.productCode().equals(draft.productCode())) throw invalidDraft("Record product cannot be changed");
         validateDraft(draft);
+        authorize("BUSINESS_UPDATE", draft.regionCode());
         ProductionRecord revised;
         try {
             revised = existing.revise(draft.productCode(), draft.objectTypeCode(), draft.regionCode(),
@@ -121,31 +137,35 @@ public class ProductionRecordService {
         } catch (IllegalStateException exception) {
             throw invalidTransition(exception);
         }
-        return view(repository.updateFacts(revised, expectedVersion, actor.id()));
+        ProductionRecord persisted = repository.updateFacts(revised, expectedVersion, principal.subjectId());
+        audit(principal, persisted, "PRODUCTION_RECORD_UPDATED");
+        return view(persisted);
     }
 
     @Transactional
     public ProductionRecordView submit(String id, long expectedVersion) {
-        return transition(id, expectedVersion, ProductionRecord::submit);
+        return transition(id, expectedVersion, "BUSINESS_SUBMIT", "PRODUCTION_RECORD_SUBMITTED", ProductionRecord::submit);
     }
 
     @Transactional
     public ProductionRecordView approve(String id, long expectedVersion) {
-        return transition(id, expectedVersion, ProductionRecord::approve);
+        return transition(id, expectedVersion, "BUSINESS_APPROVE", "PRODUCTION_RECORD_APPROVED", ProductionRecord::approve);
     }
 
     @Transactional
     public ProductionRecordView returnForCorrection(String id, long expectedVersion, String reason) {
-        return transition(id, expectedVersion, record -> record.returnForCorrection(reason));
+        return transition(id, expectedVersion, "BUSINESS_RETURN", "PRODUCTION_RECORD_RETURNED", record -> record.returnForCorrection(reason));
     }
 
-    private ProductionRecordView transition(String id, long expectedVersion,
+    private ProductionRecordView transition(String id, long expectedVersion, String permission, String auditAction,
             java.util.function.UnaryOperator<ProductionRecord> command) {
-        AuthenticatedActor actor = actor();
         ProductionRecord existing = requiredRecord(id);
+        SecurityPrincipal principal = authorize(permission, existing.regionCode());
         if (expectedVersion != existing.version()) throw stale();
         try {
-            return view(repository.updateState(command.apply(existing), expectedVersion, actor.id()));
+            ProductionRecord persisted = repository.updateState(command.apply(existing), expectedVersion, principal.subjectId());
+            audit(principal, persisted, auditAction);
+            return view(persisted);
         } catch (ProductionValidationException exception) {
             throw invalidDraft(exception.getMessage());
         } catch (IllegalStateException exception) {
@@ -188,6 +208,18 @@ public class ProductionRecordService {
 
     private AuthenticatedActor actor() {
         return currentActor.currentActor().orElseThrow(AuthenticationRequiredException::new);
+    }
+
+    private SecurityPrincipal authorize(String permissionCode, String regionCode) {
+        if (accessControl != null) return accessControl.require(permissionCode, regionCode);
+        return new SecurityPrincipal(actor().id(), "UNIT_TEST", Set.of(), Set.of());
+    }
+
+    private void audit(SecurityPrincipal principal, ProductionRecord record, String actionCode) {
+        if (audit != null) {
+            audit.record(principal, "PRODUCTION_RECORD", record.id(), actionCode, clock.instant(),
+                    "{\"regionCode\":\"" + record.regionCode() + "\"}");
+        }
     }
 
     private OffsetDateTime now() { return OffsetDateTime.ofInstant(clock.instant(), REPORTING_ZONE); }

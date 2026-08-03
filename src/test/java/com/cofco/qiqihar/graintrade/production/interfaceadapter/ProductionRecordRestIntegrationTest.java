@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.production.interfaceadapter;
 
 import static org.hamcrest.Matchers.hasItem;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -39,7 +40,9 @@ class ProductionRecordRestIntegrationTest {
 
     @AfterEach
     void removeTestRecords() {
-        JdbcClient.create(dataSource).sql(
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        jdbc.sql("TRUNCATE platform.business_audit_event").update();
+        jdbc.sql(
                 "DELETE FROM production.production_record WHERE last_modified_by = 'production-tester'").update();
     }
 
@@ -88,6 +91,10 @@ class ProductionRecordRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("DRAFT"))
                 .andExpect(jsonPath("$.data.costs.LAND_RENT").value("4.0000"));
+        assertThat(JdbcClient.create(dataSource).sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type = 'PRODUCTION_RECORD' AND aggregate_id = :id
+                """).param("id", id).query(Long.class).single()).isEqualTo(4L);
     }
 
     @ParameterizedTest(name = "{0} / {2} approval preserves all four formal fact categories")
@@ -123,6 +130,10 @@ class ProductionRecordRestIntegrationTest {
 
         expectApprovedFullFactDetail(id, product, objectType, qualityCode);
         expectApprovedFullFactList(product, objectType, qualityCode);
+        assertThat(JdbcClient.create(dataSource).sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type = 'PRODUCTION_RECORD' AND aggregate_id = :id
+                """).param("id", id).query(Long.class).single()).isEqualTo(3L);
     }
 
     @ParameterizedTest(name = "{0} / AGRICULTURAL_TECH_STATION round-trips quality only")
