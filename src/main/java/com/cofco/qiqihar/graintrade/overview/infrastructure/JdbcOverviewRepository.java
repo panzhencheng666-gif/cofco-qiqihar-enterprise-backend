@@ -35,7 +35,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
     @Override
     public List<OverviewRegion> regions(String parentCode, String productCode, String periodCode) {
         return jdbc.sql("""
-                WITH period AS (SELECT starts_on,ends_on FROM platform.business_period WHERE code=:period),
+                WITH period AS (SELECT starts_on,ends_on FROM platform.business_period WHERE code=CAST(:period AS varchar)),
                 approved AS (
                   SELECT region_code,record_id FROM production.production_record,period
                     WHERE product_code=:product AND status_code='APPROVED' AND survey_date BETWEEN starts_on AND ends_on

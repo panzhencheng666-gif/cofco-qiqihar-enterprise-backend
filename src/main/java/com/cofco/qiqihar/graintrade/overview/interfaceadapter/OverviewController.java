@@ -20,7 +20,7 @@ public class OverviewController {
 
     @GetMapping("/api/v1/overview/regions")
     ApiResponse<List<OverviewRegion>> regions(@RequestParam(required = false) String parentCode,
-            @RequestParam String productCode, @RequestParam String periodCode) {
+            @RequestParam String productCode, @RequestParam(required = false) String periodCode) {
         return new ApiResponse<>(service.regions(parentCode, productCode, periodCode));
     }
 

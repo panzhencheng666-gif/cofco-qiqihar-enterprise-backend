@@ -80,7 +80,7 @@ class OverviewRestIntegrationTest {
 
         mvc.perform(get("/api/v1/overview/options"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.products[0].code").value("CORN"))
-                .andExpect(jsonPath("$.data.periods[0].code").value("2026-Q3"));
+                .andExpect(jsonPath("$.data.periods[?(@.code == '2026-Q3')]").isNotEmpty());
         mvc.perform(get("/api/v1/overview/regions").queryParam("productCode", "CORN").queryParam("periodCode", "2026-Q3"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].code").value("230200"))
                 .andExpect(jsonPath("$.data[0].boundaryGeoJson").isString());
@@ -92,5 +92,14 @@ class OverviewRestIntegrationTest {
                 .andExpect(jsonPath("$.data[3].value").value("20000"))
                 .andExpect(jsonPath("$.data[0].sourceCount").value(1))
                 .andExpect(jsonPath("$.data[5].value").value("0"));
+    }
+
+    @Test
+    void returnsVerifiedBoundaryGeometryWhenTheCockpitHasNoPeriodSelected() throws Exception {
+        mvc.perform(get("/api/v1/overview/regions").queryParam("productCode", "CORN"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].code").value("230200"))
+                .andExpect(jsonPath("$.data[0].boundaryGeoJson").isString())
+                .andExpect(jsonPath("$.data[0].approvedRecordCount").value(0));
     }
 }

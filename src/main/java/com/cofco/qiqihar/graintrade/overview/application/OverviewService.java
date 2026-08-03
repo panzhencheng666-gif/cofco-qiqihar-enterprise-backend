@@ -15,8 +15,9 @@ public class OverviewService {
 
     @Transactional(readOnly = true)
     public List<OverviewRegion> regions(String parentCode, String productCode, String periodCode) {
-        if (blank(productCode) || blank(periodCode) || !repository.knownProduct(productCode)
-                || !repository.knownPeriod(periodCode) || (parentCode != null && !repository.knownRegion(parentCode))) throw invalid();
+        if (blank(productCode) || !repository.knownProduct(productCode)
+                || (!blank(periodCode) && !repository.knownPeriod(periodCode))
+                || (parentCode != null && !repository.knownRegion(parentCode))) throw invalid();
         return repository.regions(parentCode, productCode, periodCode);
     }
 
