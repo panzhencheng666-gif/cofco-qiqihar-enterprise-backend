@@ -4,19 +4,29 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
+import com.cofco.qiqihar.graintrade.importing.application.ImportJobRepository;
 import com.cofco.qiqihar.graintrade.importing.application.ProductionImportTemplate;
-import com.cofco.qiqihar.graintrade.production.application.ProductionDraft;
-import com.cofco.qiqihar.graintrade.production.application.ProductionImportPort;
-import com.cofco.qiqihar.graintrade.production.application.ProductionRecordService;
+import com.cofco.qiqihar.graintrade.importing.domain.ImportJob;
+import com.cofco.qiqihar.graintrade.importing.infrastructure.JdbcImportJobRepository;
+import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditWriter;
+import com.cofco.qiqihar.graintrade.shared.audit.domain.BusinessAuditEvent;
+import com.cofco.qiqihar.graintrade.shared.audit.infrastructure.JdbcBusinessAuditWriter;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -33,18 +43,23 @@ import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
-@SpringBootTest(classes = GrainTradeApplication.class)
+@SpringBootTest(classes = GrainTradeApplication.class,
+        properties = "qiqihar.import.reservation-lock-timeout=500ms")
 @AutoConfigureMockMvc
 @UsesProtectedTestDatabase
 @Import(ProductionImportConcurrencyIntegrationTest.ConcurrencyConfiguration.class)
 class ProductionImportConcurrencyIntegrationTest {
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
+    @Autowired CoordinatedImportJobRepository importJobs;
+    @Autowired FaultInjectingBusinessAuditWriter auditWriter;
     JdbcClient jdbc;
 
     @BeforeEach
     void clean() {
         jdbc = JdbcClient.create(dataSource);
+        importJobs.reset();
+        auditWriter.reset();
         truncateImportEffects();
     }
 
@@ -58,21 +73,14 @@ class ProductionImportConcurrencyIntegrationTest {
         byte[] csv = (String.join(",", ProductionImportTemplate.HEADERS) + "\n"
                 + row(Map.of()) + "\n")
                 .getBytes(StandardCharsets.UTF_8);
-        CyclicBarrier start = new CyclicBarrier(2);
+        List<MvcResult> results = submitConcurrently("atomic-concurrent-import", csv, csv);
 
-        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
-            Future<MvcResult> first = executor.submit(() -> submit(start, csv));
-            Future<MvcResult> second = executor.submit(() -> submit(start, csv));
-
-            MvcResult firstResult = first.get(15, TimeUnit.SECONDS);
-            MvcResult secondResult = second.get(15, TimeUnit.SECONDS);
-            assertThat(count("platform.import_job")).isEqualTo(1);
-            assertThat(count("platform.import_row_result")).isEqualTo(1);
-            assertThat(count("production.production_record")).isEqualTo(1);
-            assertThat(firstResult.getResponse().getStatus()).isEqualTo(201);
-            assertThat(secondResult.getResponse().getStatus()).isEqualTo(201);
-            assertThat(jobId(firstResult)).isEqualTo(jobId(secondResult));
-        }
+        assertThat(count("platform.import_job")).isEqualTo(1);
+        assertThat(count("platform.import_row_result")).isEqualTo(1);
+        assertThat(count("production.production_record")).isEqualTo(1);
+        assertThat(results).allSatisfy(result -> assertThat(result.getResponse().getStatus()).isEqualTo(201));
+        assertThat(jobId(results.get(0))).isEqualTo(jobId(results.get(1)));
+        assertThat(importJobs.lockTimeoutWasRestored()).isTrue();
 
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM platform.business_audit_event
@@ -80,11 +88,81 @@ class ProductionImportConcurrencyIntegrationTest {
                 """).query(Long.class).single()).isEqualTo(2);
     }
 
-    private MvcResult submit(CyclicBarrier start, byte[] csv) throws Exception {
-        start.await(5, TimeUnit.SECONDS);
+    @Test
+    void sameUnusedKeyWithDifferentDigestsHasOneOwnerAndOneConflict() throws Exception {
+        byte[] firstCsv = csv(Map.of("cultivatedAreaMu", "10.5"));
+        byte[] secondCsv = csv(Map.of("cultivatedAreaMu", "11.5"));
+
+        List<MvcResult> results = submitConcurrently("atomic-digest-conflict", firstCsv, secondCsv);
+
+        assertThat(results).extracting(result -> result.getResponse().getStatus())
+                .containsExactlyInAnyOrder(201, 409);
+        assertThat(results).filteredOn(result -> result.getResponse().getStatus() == 409)
+                .singleElement().satisfies(result -> assertThat(result.getResponse().getContentAsString())
+                        .contains("IMPORT_IDEMPOTENCY_KEY_CONFLICT"));
+        assertThat(count("platform.import_job")).isEqualTo(1);
+        assertThat(count("platform.import_row_result")).isEqualTo(1);
+        assertThat(count("production.production_record")).isEqualTo(1);
+    }
+
+    @Test
+    void completionFailureRollsBackEveryImportEffect() throws Exception {
+        importJobs.failAfterNextCompletion();
+
+        MvcResult result = submit("completion-failure", csv(Map.of()));
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(500);
+        assertNoDurableEffects();
+    }
+
+    @Test
+    void auditFailureRollsBackEveryImportEffect() throws Exception {
+        auditWriter.failNextImportCompletion();
+
+        MvcResult result = submit("audit-failure", csv(Map.of()));
+
+        assertThat(result.getResponse().getStatus()).isEqualTo(500);
+        assertNoDurableEffects();
+    }
+
+    @Test
+    void reservationLockWaitIsBoundedAndReturnsRetryableConflict() throws Exception {
+        try (Connection owner = dataSource.getConnection();
+                ExecutorService executor = Executors.newSingleThreadExecutor()) {
+            owner.setAutoCommit(false);
+            insertUncommittedReservation(owner, "held-reservation");
+
+            Future<MvcResult> request = executor.submit(() -> submit("held-reservation", csv(Map.of())));
+            MvcResult result;
+            try {
+                result = request.get(3, TimeUnit.SECONDS);
+            } catch (TimeoutException exception) {
+                owner.rollback();
+                request.get(5, TimeUnit.SECONDS);
+                throw new AssertionError("Reservation lock wait exceeded the test's three-second outer bound", exception);
+            }
+
+            assertThat(result.getResponse().getStatus()).isEqualTo(409);
+            assertThat(result.getResponse().getContentAsString()).contains("IMPORT_RESERVATION_BUSY");
+            assertNoDurableEffects();
+            owner.rollback();
+        }
+        assertNoDurableEffects();
+    }
+
+    private List<MvcResult> submitConcurrently(String key, byte[] firstCsv, byte[] secondCsv) throws Exception {
+        importJobs.coordinateNextTwoReservations();
+        try (ExecutorService executor = Executors.newFixedThreadPool(2)) {
+            Future<MvcResult> first = executor.submit(() -> submit(key, firstCsv));
+            Future<MvcResult> second = executor.submit(() -> submit(key, secondCsv));
+            return List.of(first.get(10, TimeUnit.SECONDS), second.get(10, TimeUnit.SECONDS));
+        }
+    }
+
+    private MvcResult submit(String key, byte[] csv) throws Exception {
         return mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "production.csv", "text/csv", csv))
-                        .header("Idempotency-Key", "atomic-concurrent-import")
+                        .header("Idempotency-Key", key)
                         .principal(() -> "production-tester"))
                 .andReturn();
     }
@@ -106,8 +184,39 @@ class ProductionImportConcurrencyIntegrationTest {
         return ProductionImportTemplate.HEADERS.stream().map(values::get).collect(java.util.stream.Collectors.joining(","));
     }
 
+    private static byte[] csv(Map<String, String> overrides) {
+        return (String.join(",", ProductionImportTemplate.HEADERS) + "\n" + row(overrides) + "\n")
+                .getBytes(StandardCharsets.UTF_8);
+    }
+
+    private void insertUncommittedReservation(Connection connection, String key) throws Exception {
+        try (PreparedStatement statement = connection.prepareStatement("""
+                INSERT INTO platform.import_job(import_job_id,domain_code,idempotency_key,content_sha256,source_content,
+                  requested_by,work_unit_code,retry_of_import_job_id,status_code,created_at,completed_at)
+                VALUES(?,?,?,?,?,?,?,NULL,'COMPLETED',?,?)
+                """)) {
+            statement.setObject(1, UUID.randomUUID());
+            statement.setString(2, ProductionImportTemplate.DOMAIN);
+            statement.setString(3, key);
+            statement.setString(4, "0".repeat(64));
+            statement.setString(5, "held by test transaction");
+            statement.setString(6, "production-tester");
+            statement.setString(7, "TEST");
+            statement.setTimestamp(8, Timestamp.from(Instant.now()));
+            statement.setTimestamp(9, Timestamp.from(Instant.now()));
+            statement.executeUpdate();
+        }
+    }
+
     private long count(String table) {
         return jdbc.sql("SELECT count(*) FROM " + table).query(Long.class).single();
+    }
+
+    private void assertNoDurableEffects() {
+        assertThat(count("platform.import_job")).isZero();
+        assertThat(count("platform.import_row_result")).isZero();
+        assertThat(count("production.production_record")).isZero();
+        assertThat(count("platform.business_audit_event")).isZero();
     }
 
     private void truncateImportEffects() {
@@ -120,30 +229,129 @@ class ProductionImportConcurrencyIntegrationTest {
     @TestConfiguration(proxyBeanMethods = false)
     static class ConcurrencyConfiguration {
         @Bean
+        CoordinatedImportJobRepository coordinatedImportJobRepository(
+                JdbcImportJobRepository delegate, JdbcClient jdbc) {
+            return new CoordinatedImportJobRepository(delegate, jdbc);
+        }
+
+        @Bean
         @Primary
-        ProductionImportPort coordinatedProductionImportPort(ProductionRecordService delegate) {
-            return new CoordinatedProductionImportPort(delegate);
+        ImportJobRepository testImportJobRepository(CoordinatedImportJobRepository repository) {
+            return repository;
+        }
+
+        @Bean
+        FaultInjectingBusinessAuditWriter faultInjectingBusinessAuditWriter(JdbcBusinessAuditWriter delegate) {
+            return new FaultInjectingBusinessAuditWriter(delegate);
+        }
+
+        @Bean
+        @Primary
+        BusinessAuditWriter testBusinessAuditWriter(FaultInjectingBusinessAuditWriter writer) {
+            return writer;
         }
     }
 
-    private static final class CoordinatedProductionImportPort implements ProductionImportPort {
-        private final ProductionImportPort delegate;
-        private final CountDownLatch firstCalls = new CountDownLatch(2);
+    static final class CoordinatedImportJobRepository implements ImportJobRepository {
+        private final ImportJobRepository delegate;
+        private final JdbcClient jdbc;
+        private volatile CountDownLatch reservationBoundary;
+        private volatile boolean failAfterCompletion;
+        private volatile boolean lockTimeoutRestored = true;
 
-        private CoordinatedProductionImportPort(ProductionImportPort delegate) {
+        private CoordinatedImportJobRepository(ImportJobRepository delegate, JdbcClient jdbc) {
+            this.delegate = delegate;
+            this.jdbc = jdbc;
+        }
+
+        @Override
+        public ImportReservation reserve(String subjectId, String domainCode, String idempotencyKey,
+                String digest, String workUnitCode, Instant now) {
+            CountDownLatch boundary = reservationBoundary;
+            if (boundary != null) {
+                boundary.countDown();
+                try {
+                    if (!boundary.await(5, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("Both requests did not reach the reservation boundary");
+                    }
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("Concurrent reservation test was interrupted", exception);
+                }
+            }
+            String before = currentLockTimeout();
+            ImportReservation reservation = delegate.reserve(
+                    subjectId, domainCode, idempotencyKey, digest, workUnitCode, now);
+            if (!before.equals(currentLockTimeout())) lockTimeoutRestored = false;
+            return reservation;
+        }
+
+        @Override
+        public Optional<StoredImportJob> findByIdempotency(String subjectId, String domainCode, String idempotencyKey) {
+            return delegate.findByIdempotency(subjectId, domainCode, idempotencyKey);
+        }
+
+        @Override
+        public Optional<StoredImportJob> findById(UUID jobId) {
+            return delegate.findById(jobId);
+        }
+
+        @Override
+        public ImportJob complete(ImportJob job, String sourceContent) {
+            ImportJob completed = delegate.complete(job, sourceContent);
+            if (failAfterCompletion) {
+                failAfterCompletion = false;
+                throw new IllegalStateException("Injected import completion failure");
+            }
+            return completed;
+        }
+
+        void coordinateNextTwoReservations() {
+            reservationBoundary = new CountDownLatch(2);
+        }
+
+        void failAfterNextCompletion() {
+            failAfterCompletion = true;
+        }
+
+        void reset() {
+            reservationBoundary = null;
+            failAfterCompletion = false;
+            lockTimeoutRestored = true;
+        }
+
+        boolean lockTimeoutWasRestored() {
+            return lockTimeoutRestored;
+        }
+
+        private String currentLockTimeout() {
+            return jdbc.sql("SELECT current_setting('lock_timeout')").query(String.class).single();
+        }
+    }
+
+    static final class FaultInjectingBusinessAuditWriter implements BusinessAuditWriter {
+        private final BusinessAuditWriter delegate;
+        private volatile boolean failImportCompletion;
+
+        private FaultInjectingBusinessAuditWriter(BusinessAuditWriter delegate) {
             this.delegate = delegate;
         }
 
         @Override
-        public String importDraft(ProductionDraft draft) {
-            firstCalls.countDown();
-            try {
-                firstCalls.await(1, TimeUnit.SECONDS);
-            } catch (InterruptedException exception) {
-                Thread.currentThread().interrupt();
-                throw new IllegalStateException("Concurrent import test was interrupted", exception);
+        public void append(BusinessAuditEvent event) {
+            if (failImportCompletion && event.actionCode().equals("IMPORT_JOB_COMPLETED")) {
+                failImportCompletion = false;
+                throw new IllegalStateException("Injected import audit failure");
             }
-            return delegate.importDraft(draft);
+            delegate.append(event);
+        }
+
+        void failNextImportCompletion() {
+            failImportCompletion = true;
+        }
+
+        void reset() {
+            failImportCompletion = false;
         }
     }
 }

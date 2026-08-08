@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.importing.domain;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -73,6 +74,56 @@ class CsvTableLimitTest {
         assertRejected("byte-limit", bytes, "INVALID_IMPORT_REQUEST");
     }
 
+    @Test
+    void rowLimitWinsBeforeReadingAnOverlongFiveThousandAndFirstRecord() {
+        String csv = fullOneColumnTable().append("x".repeat(501)).toString();
+
+        assertLimit(csv, "IMPORT_ROW_LIMIT_EXCEEDED");
+    }
+
+    @Test
+    void rowLimitWinsBeforeReadingAQuotedFiveThousandAndFirstRecord() {
+        String csv = fullOneColumnTable().append(quoted("x".repeat(501))).toString();
+
+        assertLimit(csv, "IMPORT_ROW_LIMIT_EXCEEDED");
+    }
+
+    @Test
+    void terminalNewlineDoesNotCreateAnExtraLogicalRecordAtTheLimit() {
+        assertThat(CsvTable.parse(fullOneColumnTable().toString(), 1)).hasSize(CsvTable.MAX_ROWS + 1);
+    }
+
+    @Test
+    void anExplicitBlankLineRemainsAnEmptyLogicalRecord() {
+        assertThat(CsvTable.parse("header\n\n", 1)).containsExactly(
+                java.util.List.of("header"), java.util.List.of(""));
+    }
+
+    @Test
+    void countsEmojiAsUnicodeCodePoints() {
+        String fiveHundred = "\ud83d\ude00".repeat(500);
+
+        assertThat(CsvTable.parse(quoted(fiveHundred), 1).getFirst().getFirst()).isEqualTo(fiveHundred);
+        assertLimit(quoted(fiveHundred + "\ud83d\ude00"), "IMPORT_CELL_LIMIT_EXCEEDED");
+    }
+
+    @Test
+    void preservesBmpCharacterBoundary() {
+        String fiveHundred = "\u9f50".repeat(500);
+
+        assertThat(CsvTable.parse(quoted(fiveHundred), 1).getFirst().getFirst()).isEqualTo(fiveHundred);
+        assertLimit(quoted(fiveHundred + "\u9f50"), "IMPORT_CELL_LIMIT_EXCEEDED");
+    }
+
+    @Test
+    void anEscapedQuoteCountsAsOneCellCharacter() {
+        String encodedFiveHundred = "x".repeat(499) + "\"\"";
+
+        assertThat(CsvTable.parse(quoted(encodedFiveHundred), 1).getFirst().getFirst())
+                .isEqualTo("x".repeat(499) + "\"");
+        assertLimit(quoted(encodedFiveHundred + "y"), "IMPORT_CELL_LIMIT_EXCEEDED");
+    }
+
     private void assertRejected(String key, byte[] bytes, String code) throws Exception {
         mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "production.csv", "text/csv", bytes))
@@ -85,6 +136,20 @@ class CsvTableLimitTest {
 
     private static String validRow() {
         return row(Map.of());
+    }
+
+    private static StringBuilder fullOneColumnTable() {
+        return new StringBuilder("header\n").append("value\n".repeat(CsvTable.MAX_ROWS));
+    }
+
+    private static String quoted(String encodedCell) {
+        return "\"" + encodedCell + "\"";
+    }
+
+    private static void assertLimit(String csv, String code) {
+        assertThatThrownBy(() -> CsvTable.parse(csv, 1))
+                .isInstanceOfSatisfying(CsvTable.LimitExceededException.class,
+                        exception -> assertThat(exception.code()).isEqualTo(code));
     }
 
     private static String row(Map<String, String> overrides) {
