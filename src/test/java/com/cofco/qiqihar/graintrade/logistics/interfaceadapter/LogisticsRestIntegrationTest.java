@@ -74,6 +74,24 @@ class LogisticsRestIntegrationTest {
     }
 
     @Test
+    void bindsLogisticsReporterToTheAuthenticatedEmployeeAndPreservesItOnRevision() throws Exception {
+        String id = mvc.perform(post("/api/v1/logistics-records").principal(() -> "logistics-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("CORN", "RAIL", "TEST_RAIL", "TEST_ROAD", "12.500", true, null)
+                                .replace("测试填报人", "客户端伪造姓名")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.values.LOG_REPORTER").value("物流测试员"))
+                .andReturn().getResponse().getContentAsString().replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+
+        mvc.perform(put("/api/v1/logistics-records/{id}", id).principal(() -> "logistics-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("CORN", "RAIL", "TEST_RAIL", "TEST_ROAD", "12.500", true, 0)
+                                .replace("测试填报人", "再次伪造姓名")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.values.LOG_REPORTER").value("物流测试员"));
+    }
+
+    @Test
     void databaseDefinitionControlsCodeKeyedFieldsNodeCodesExtensionsWorkflowAndCas() throws Exception {
         mvc.perform(get("/api/v1/logistics-record-definitions").queryParam("productCode", "CORN"))
                 .andExpect(status().isOk())

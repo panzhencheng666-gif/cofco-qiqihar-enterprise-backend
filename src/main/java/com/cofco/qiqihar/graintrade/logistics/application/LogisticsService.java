@@ -53,16 +53,20 @@ public class LogisticsService {
         LogisticsDefinitionView definition=repository.definition(productCode);if(definition==null)throw invalid();return definition;
     }
     @Transactional public LogisticsRecordView create(LogisticsDraft draft) {
-        validate(draft); SecurityPrincipal principal=authorize("BUSINESS_CREATE",repository.regionsForDraft(draft));
-        if(!repository.actionAllowed(draft.productCode(),LogisticsStatus.DRAFT,"NEW"))throw invalid();
-        LogisticsRecordView created=repository.insert(UUID.randomUUID().toString(),draft,principal.subjectId(),clock.instant()); audit(principal,created,"LOGISTICS_RECORD_CREATED"); return created;
+        SecurityPrincipal principal=authorize("BUSINESS_CREATE",repository.regionsForDraft(draft));
+        LogisticsDraft securedDraft=withReporter(draft,principal.displayName());
+        validate(securedDraft);
+        if(!repository.actionAllowed(securedDraft.productCode(),LogisticsStatus.DRAFT,"NEW"))throw invalid();
+        LogisticsRecordView created=repository.insert(UUID.randomUUID().toString(),securedDraft,principal.subjectId(),clock.instant()); audit(principal,created,"LOGISTICS_RECORD_CREATED"); return created;
     }
     @Transactional public LogisticsRecordView save(String id,long version,LogisticsDraft draft) {
         LogisticsRecordView existing=required(id); SecurityPrincipal principal=authorize("BUSINESS_UPDATE",repository.regionsForRecord(id)); requireVersion(existing,version);
         if (!existing.productCode().equals(draft.productCode())) throw invalid();
         if (existing.status()!=LogisticsStatus.DRAFT && existing.status()!=LogisticsStatus.RETURNED) throw invalid();
         if(!repository.actionAllowed(existing.productCode(),existing.status(),"SAVE"))throw invalid();
-        validate(draft); authorize("BUSINESS_UPDATE",repository.regionsForDraft(draft)); LogisticsRecordView updated=repository.update(id,version,draft,principal.subjectId(),clock.instant()); audit(principal,updated,"LOGISTICS_RECORD_UPDATED"); return updated;
+        String reporter=existing.values().get("LOG_REPORTER");
+        LogisticsDraft securedDraft=withReporter(draft,blank(reporter)?principal.displayName():reporter);
+        validate(securedDraft); authorize("BUSINESS_UPDATE",repository.regionsForDraft(securedDraft)); LogisticsRecordView updated=repository.update(id,version,securedDraft,principal.subjectId(),clock.instant()); audit(principal,updated,"LOGISTICS_RECORD_UPDATED"); return updated;
     }
     @Transactional public LogisticsRecordView submit(String id,long version) { return transition(id,version,LogisticsStatus.PENDING_REVIEW,null,"BUSINESS_SUBMIT","LOGISTICS_RECORD_SUBMITTED"); }
     @Transactional public LogisticsRecordView approve(String id,long version) { return transition(id,version,LogisticsStatus.APPROVED,null,"BUSINESS_APPROVE","LOGISTICS_RECORD_APPROVED"); }
@@ -92,6 +96,11 @@ public class LogisticsService {
     private void audit(SecurityPrincipal principal,LogisticsRecordView record,String action){if(audit!=null)audit.record(principal,"LOGISTICS_RECORD",record.id(),action,clock.instant(),"{}");}
     private LogisticsRecordView required(String id){LogisticsRecordView value=repository.find(id); if(value==null) throw new ResourceNotFoundException("LOGISTICS_RECORD_NOT_FOUND","Logistics record was not found"); return value;}
     private static void requireVersion(LogisticsRecordView value,long version){if(version<0||value.version()!=version)throw new ConflictException("LOGISTICS_RECORD_VERSION_CONFLICT","Logistics record has changed");}
+    private static LogisticsDraft withReporter(LogisticsDraft draft,String reporter){
+        Map<String,String> values=new java.util.LinkedHashMap<>(draft.values());
+        values.put("LOG_REPORTER",reporter);
+        return new LogisticsDraft(draft.productCode(),values);
+    }
     private static boolean blank(String value){return value==null||value.isBlank();}
     private static ClientRequestException invalid(){return new ClientRequestException("INVALID_LOGISTICS_RECORD","Logistics record or query is invalid");}
 }
