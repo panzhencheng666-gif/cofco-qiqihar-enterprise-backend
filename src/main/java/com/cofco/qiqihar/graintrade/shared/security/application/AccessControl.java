@@ -11,20 +11,15 @@ import org.springframework.transaction.annotation.Transactional;
 public class AccessControl {
     private final CurrentSecuritySubject currentSubject;
     private final SecurityPrincipalRepository principals;
-    private final boolean readAuthenticationRequired;
 
     public AccessControl(CurrentSecuritySubject currentSubject, SecurityPrincipalRepository principals,
             @Value("${qiqihar.security.require-read-authentication:true}") boolean readAuthenticationRequired) {
         this.currentSubject = currentSubject;
         this.principals = principals;
-        this.readAuthenticationRequired = readAuthenticationRequired;
     }
 
     @Transactional(readOnly = true)
     public AuthorizedReadScope requireReadScope() {
-        if (!readAuthenticationRequired && currentSubject.subjectId().isEmpty()) {
-            return AuthorizedReadScope.unrestricted();
-        }
         SecurityPrincipal principal = require("BUSINESS_READ", null);
         return new AuthorizedReadScope(principal.subjectId(), principal.regionCodes());
     }

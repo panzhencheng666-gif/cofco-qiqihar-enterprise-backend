@@ -25,7 +25,11 @@ public class OverviewService {
         if (blank(productCode) || !repository.knownProduct(productCode)
                 || (!blank(periodCode) && !repository.knownPeriod(periodCode))
                 || (parentCode != null && !repository.knownRegion(parentCode))) throw invalid();
-        AuthorizedReadScope scope=readScope(); if(!blank(parentCode))scope.requireRegion(parentCode);
+        AuthorizedReadScope scope=readScope();
+        if (scope.regionCodes().isEmpty()) return List.of();
+        if (!blank(parentCode) && !repository.canNavigateRegion(parentCode, scope.regionCodes())) {
+            scope.requireRegion(parentCode);
+        }
         return repository.regions(parentCode, productCode, periodCode, scope.regionCodes());
     }
 

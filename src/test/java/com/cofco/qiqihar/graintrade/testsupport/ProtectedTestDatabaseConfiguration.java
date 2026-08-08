@@ -1,6 +1,10 @@
 package com.cofco.qiqihar.graintrade.testsupport;
 
 import javax.sql.DataSource;
+import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
+import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
+import com.cofco.qiqihar.graintrade.shared.security.application.CurrentSecuritySubject;
+import com.cofco.qiqihar.graintrade.shared.security.application.SecurityPrincipalRepository;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
@@ -19,6 +23,20 @@ public class ProtectedTestDatabaseConfiguration {
     @Bean
     ApplicationRunner provisionSecurityTestSubjects(DataSource dataSource) {
         return arguments -> provisionSecurityTestSubjects(JdbcClient.create(dataSource));
+    }
+
+    @Bean
+    @Primary
+    AccessControl testAccessControl(
+            CurrentSecuritySubject currentSubject, SecurityPrincipalRepository principals) {
+        return new AccessControl(currentSubject, principals, true) {
+            @Override
+            public AuthorizedReadScope requireReadScope() {
+                return currentSubject.subjectId().isEmpty()
+                        ? AuthorizedReadScope.unrestricted()
+                        : super.requireReadScope();
+            }
+        };
     }
 
     /** Restores shared test identities after a test intentionally replaces the security fixture. */

@@ -17,6 +17,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
@@ -44,7 +45,7 @@ public class LogisticsService {
         if(filters.get("regionCode")!=null)scope.requireRegion(filters.get("regionCode"));
         return repository.findPage(productCode,pageNumber,pageSize,filters,scope.regionCodes());
     }
-    @Transactional(readOnly=true) public LogisticsRecordView detail(String id) {
+    @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ) public LogisticsRecordView detail(String id) {
         LogisticsRecordView record=required(id); AuthorizedReadScope scope=readScope();
         repository.regionsForRecord(id).forEach(scope::requireRegion); return record;
     }

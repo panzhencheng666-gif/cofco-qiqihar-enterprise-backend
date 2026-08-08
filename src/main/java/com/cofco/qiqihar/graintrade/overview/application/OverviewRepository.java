@@ -8,6 +8,7 @@ public interface OverviewRepository {
     boolean knownProduct(String productCode);
     boolean knownRegion(String regionCode);
     boolean knownPeriod(String periodCode);
+    boolean canNavigateRegion(String regionCode, Set<String> authorizedRegionCodes);
     List<OverviewRegion> regions(String parentCode, String productCode, String periodCode,
             Set<String> authorizedRegionCodes);
     List<OverviewIndicator> indicators(String productCode, String regionCode, String periodCode, String marketingYear,

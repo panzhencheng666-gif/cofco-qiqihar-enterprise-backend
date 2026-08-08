@@ -4,7 +4,10 @@ import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
+import org.springframework.core.env.Profiles;
 import org.springframework.web.servlet.HandlerInterceptor;
 import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
@@ -19,7 +22,16 @@ public class BusinessReadAuthenticationInterceptor implements HandlerInterceptor
             AccessControl accessControl,
             @Value("${qiqihar.security.require-read-authentication:true}") boolean required) {
         this.accessControl = accessControl;
-        this.required = required;
+        this.required = true;
+    }
+
+    @Autowired
+    public BusinessReadAuthenticationInterceptor(
+            AccessControl accessControl,
+            @Value("${qiqihar.security.require-read-authentication:true}") boolean configuredRequired,
+            Environment environment) {
+        this.accessControl = accessControl;
+        this.required = configuredRequired || !environment.acceptsProfiles(Profiles.of("test"));
     }
 
     @Override

@@ -29,6 +29,9 @@ public class JdbcMarketRecordRepository implements MarketRecordRepository {
 
     @Override
     public PagedResult<MarketRecord> findPage(MarketRecordQuery query) {
+        if (query.authorizedRegionCodes().isEmpty()) {
+            return new PagedResult<>(List.of(), query.pageNumber(), query.pageSize(), 0);
+        }
         String filtersJson = json(query.filters());
         long totalElements = statement("""
                         SELECT count(*)
@@ -37,6 +40,10 @@ public class JdbcMarketRecordRepository implements MarketRecordRepository {
                           AND business_domain = 'MARKET'
                           AND page_kind = :pageKind
                           AND values @> CAST(:filters AS jsonb)
+                          AND (:unrestricted OR EXISTS(
+                            SELECT 1 FROM market.market_record source
+                            WHERE source.record_id=market_record_projection.record_id
+                              AND source.region_code IN (:authorizedRegionCodes)))
                         """, query, filtersJson)
                 .query(Long.class)
                 .single();
@@ -47,6 +54,10 @@ public class JdbcMarketRecordRepository implements MarketRecordRepository {
                           AND business_domain = 'MARKET'
                           AND page_kind = :pageKind
                           AND values @> CAST(:filters AS jsonb)
+                          AND (:unrestricted OR EXISTS(
+                            SELECT 1 FROM market.market_record source
+                            WHERE source.record_id=market_record_projection.record_id
+                              AND source.region_code IN (:authorizedRegionCodes)))
                         ORDER BY observed_at, record_id
                         LIMIT :pageSize OFFSET :offset
                         """, query, filtersJson)
@@ -65,7 +76,9 @@ public class JdbcMarketRecordRepository implements MarketRecordRepository {
         return jdbc.sql(sql)
                 .param("productCode", query.productCode())
                 .param("pageKind", query.pageKind())
-                .param("filters", filtersJson);
+                .param("filters", filtersJson)
+                .param("unrestricted", query.authorizedRegionCodes().contains("*"))
+                .param("authorizedRegionCodes", query.authorizedRegionCodes());
     }
 
     private String json(Map<String, String> values) {

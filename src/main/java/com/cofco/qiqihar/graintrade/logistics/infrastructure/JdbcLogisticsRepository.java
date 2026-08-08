@@ -134,12 +134,10 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
     @Override
     public Set<String> regionsForRecord(String id) {
         return new LinkedHashSet<>(jdbc.sql("""
-                SELECT origin.region_code FROM logistics.route_event event
-                JOIN logistics.logistics_node origin ON origin.node_code = event.origin_node_code
+                SELECT event.origin_region_code FROM logistics.route_event event
                 WHERE event.event_id::text = :id
                 UNION
-                SELECT destination.region_code FROM logistics.route_event event
-                JOIN logistics.logistics_node destination ON destination.node_code = event.destination_node_code
+                SELECT event.destination_region_code FROM logistics.route_event event
                 WHERE event.event_id::text = :id
                 """).param("id", id).query(String.class).list());
     }

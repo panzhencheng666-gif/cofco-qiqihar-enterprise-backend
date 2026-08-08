@@ -34,19 +34,47 @@ public class JdbcOverviewRepository implements OverviewRepository {
     @Override public boolean knownPeriod(String periodCode) { return exists("SELECT EXISTS(SELECT 1 FROM platform.business_period WHERE code=:value)", periodCode); }
 
     @Override
+    public boolean canNavigateRegion(String regionCode, Set<String> authorizedRegionCodes) {
+        if (authorizedRegionCodes.contains("*")) return true;
+        if (authorizedRegionCodes.isEmpty()) return false;
+        return Boolean.TRUE.equals(jdbc.sql("""
+                WITH RECURSIVE navigable(code,parent_code) AS (
+                  SELECT code,parent_code FROM platform.region WHERE code IN (:authorizedRegions)
+                  UNION
+                  SELECT parent.code,parent.parent_code FROM platform.region parent
+                  JOIN navigable child ON child.parent_code=parent.code
+                )
+                SELECT EXISTS(SELECT 1 FROM navigable WHERE code=:region)
+                """).param("authorizedRegions", authorizedRegionCodes).param("region", regionCode)
+                .query(Boolean.class).single());
+    }
+
+    @Override
     public List<OverviewRegion> regions(
             String parentCode, String productCode, String periodCode, Set<String> authorizedRegionCodes) {
         return jdbc.sql("""
-                WITH period AS (SELECT starts_on,ends_on FROM platform.business_period WHERE code=CAST(:period AS varchar)),
+                WITH RECURSIVE authorized_region(code,parent_code) AS (
+                  SELECT code,parent_code FROM platform.region
+                  WHERE :unrestricted OR code IN (:authorizedRegions)
+                ), navigable_region(code,parent_code) AS (
+                  SELECT code,parent_code FROM authorized_region
+                  UNION
+                  SELECT parent.code,parent.parent_code FROM platform.region parent
+                  JOIN navigable_region child ON child.parent_code=parent.code
+                ), period AS (SELECT starts_on,ends_on FROM platform.business_period WHERE code=CAST(:period AS varchar)),
                 approved AS (
                   SELECT region_code,record_id FROM production.production_record,period
                     WHERE product_code=:product AND status_code='APPROVED' AND survey_date BETWEEN starts_on AND ends_on
+                      AND (:unrestricted OR region_code IN (:authorizedRegions))
                   UNION ALL
                   SELECT region_code,record_id FROM market.market_record,period
                     WHERE product_code=:product AND status_code='APPROVED' AND trade_date BETWEEN starts_on AND ends_on
+                      AND (:unrestricted OR region_code IN (:authorizedRegions))
                   UNION ALL
                   SELECT destination_region_code,event_id::text FROM logistics.route_event,period
                     WHERE product_code=:product AND status_code='APPROVED' AND collection_date BETWEEN starts_on AND ends_on
+                      AND (:unrestricted OR (origin_region_code IN (:authorizedRegions)
+                        AND destination_region_code IN (:authorizedRegions)))
                 )
                 SELECT region.code,region.name,region.parent_code,region.administrative_level,COUNT(approved.record_id) approved_count,
                   ST_AsGeoJSON(boundary.geometry) boundary_geo_json
@@ -54,7 +82,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 LEFT JOIN approved ON approved.region_code=region.code
                 LEFT JOIN overview.administrative_boundary boundary ON boundary.region_code=region.code
                 WHERE region.parent_code IS NOT DISTINCT FROM CAST(:parent AS varchar)
-                  AND (:unrestricted OR region.code IN (:authorizedRegions))
+                  AND (:unrestricted OR region.code IN (SELECT code FROM navigable_region))
                 GROUP BY region.code,region.name,region.parent_code,region.administrative_level,region.sort_order,boundary.geometry
                 ORDER BY region.sort_order
                 """).param("period", periodCode).param("product", productCode).param("parent", parentCode)
@@ -88,8 +116,8 @@ public class JdbcOverviewRepository implements OverviewRepository {
                     WHEN 'PRODUCTION_CULTIVATED_AREA' THEN (SELECT COALESCE(SUM(record.cultivated_area_mu),0) FROM production.production_record record,period WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.region_code IN(SELECT code FROM scope) AND record.survey_date BETWEEN period.starts_on AND period.ends_on)
                     WHEN 'PRODUCTION_ESTIMATED_OUTPUT' THEN (SELECT COALESCE(SUM(record.estimated_output_kg),0) FROM production.production_record record,period WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.region_code IN(SELECT code FROM scope) AND record.survey_date BETWEEN period.starts_on AND period.ends_on)
                     WHEN 'MARKET_AVERAGE_TRADE_PRICE' THEN (SELECT COALESCE(AVG(record.actual_trade_price),0) FROM market.market_record record,period WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.region_code IN(SELECT code FROM scope) AND record.trade_date BETWEEN period.starts_on AND period.ends_on)
-                    WHEN 'LOGISTICS_INFLOW_VOLUME' THEN (SELECT COALESCE(SUM(CASE fact.unit_code WHEN '吨' THEN fact.value WHEN '万吨' THEN fact.value*10000 ELSE 0 END),0) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id,period WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.destination_region_code IN(SELECT code FROM scope) AND event.collection_date BETWEEN period.starts_on AND period.ends_on AND fact.fact_code='ROUTE_VOLUME')
-                    WHEN 'LOGISTICS_OUTFLOW_VOLUME' THEN (SELECT COALESCE(SUM(CASE fact.unit_code WHEN '吨' THEN fact.value WHEN '万吨' THEN fact.value*10000 ELSE 0 END),0) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id,period WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.origin_region_code IN(SELECT code FROM scope) AND event.collection_date BETWEEN period.starts_on AND period.ends_on AND fact.fact_code='ROUTE_VOLUME')
+                    WHEN 'LOGISTICS_INFLOW_VOLUME' THEN (SELECT COALESCE(SUM(CASE fact.unit_code WHEN '吨' THEN fact.value WHEN '万吨' THEN fact.value*10000 ELSE 0 END),0) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id,period WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.origin_region_code IN(SELECT code FROM authorized) AND event.destination_region_code IN(SELECT code FROM scope) AND event.collection_date BETWEEN period.starts_on AND period.ends_on AND fact.fact_code='ROUTE_VOLUME')
+                    WHEN 'LOGISTICS_OUTFLOW_VOLUME' THEN (SELECT COALESCE(SUM(CASE fact.unit_code WHEN '吨' THEN fact.value WHEN '万吨' THEN fact.value*10000 ELSE 0 END),0) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id,period WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.origin_region_code IN(SELECT code FROM scope) AND event.destination_region_code IN(SELECT code FROM authorized) AND event.collection_date BETWEEN period.starts_on AND period.ends_on AND fact.fact_code='ROUTE_VOLUME')
                     WHEN 'SUPPLY_TOTAL_SUPPLY' THEN (SELECT COALESCE(SUM(total_supply),0) FROM latest_supply)
                     WHEN 'SUPPLY_TOTAL_USE' THEN (SELECT COALESCE(SUM(total_use),0) FROM latest_supply)
                     WHEN 'SUPPLY_ADOPTED_ENDING_INVENTORY' THEN (SELECT COALESCE(SUM(adopted_ending_inventory),0) FROM latest_supply)
@@ -98,8 +126,8 @@ public class JdbcOverviewRepository implements OverviewRepository {
                     WHEN 'PRODUCTION_CULTIVATED_AREA' THEN (SELECT COUNT(*) FROM production.production_record record,period WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.region_code IN(SELECT code FROM scope) AND record.survey_date BETWEEN period.starts_on AND period.ends_on)
                     WHEN 'PRODUCTION_ESTIMATED_OUTPUT' THEN (SELECT COUNT(*) FROM production.production_record record,period WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.region_code IN(SELECT code FROM scope) AND record.survey_date BETWEEN period.starts_on AND period.ends_on)
                     WHEN 'MARKET_AVERAGE_TRADE_PRICE' THEN (SELECT COUNT(*) FROM market.market_record record,period WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.region_code IN(SELECT code FROM scope) AND record.trade_date BETWEEN period.starts_on AND period.ends_on)
-                    WHEN 'LOGISTICS_INFLOW_VOLUME' THEN (SELECT COUNT(*) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id,period WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.destination_region_code IN(SELECT code FROM scope) AND event.collection_date BETWEEN period.starts_on AND period.ends_on AND fact.fact_code='ROUTE_VOLUME')
-                    WHEN 'LOGISTICS_OUTFLOW_VOLUME' THEN (SELECT COUNT(*) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id,period WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.origin_region_code IN(SELECT code FROM scope) AND event.collection_date BETWEEN period.starts_on AND period.ends_on AND fact.fact_code='ROUTE_VOLUME')
+                    WHEN 'LOGISTICS_INFLOW_VOLUME' THEN (SELECT COUNT(*) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id,period WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.origin_region_code IN(SELECT code FROM authorized) AND event.destination_region_code IN(SELECT code FROM scope) AND event.collection_date BETWEEN period.starts_on AND period.ends_on AND fact.fact_code='ROUTE_VOLUME')
+                    WHEN 'LOGISTICS_OUTFLOW_VOLUME' THEN (SELECT COUNT(*) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id,period WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.origin_region_code IN(SELECT code FROM scope) AND event.destination_region_code IN(SELECT code FROM authorized) AND event.collection_date BETWEEN period.starts_on AND period.ends_on AND fact.fact_code='ROUTE_VOLUME')
                     ELSE (SELECT COUNT(*) FROM latest_supply)
                   END AS source_count
                 FROM overview.indicator_definition definition ORDER BY definition.sort_order
