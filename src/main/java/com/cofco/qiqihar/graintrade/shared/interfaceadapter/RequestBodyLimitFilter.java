@@ -1,7 +1,10 @@
 package com.cofco.qiqihar.graintrade.shared.interfaceadapter;
 
+import jakarta.servlet.AsyncContext;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ReadListener;
+import jakarta.servlet.ServletRequest;
+import jakarta.servlet.ServletResponse;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.ServletInputStream;
 import jakarta.servlet.http.HttpServletRequest;
@@ -12,8 +15,10 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.security.autoconfigure.web.servlet.SecurityFilterProperties;
 import org.springframework.core.annotation.Order;
@@ -43,14 +48,26 @@ public final class RequestBodyLimitFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        if (!request.getRequestURI().startsWith("/api/")) return true;
+        if (!applicationPath(request).startsWith("/api/")) return true;
         String contentType = request.getContentType();
         if (contentType == null) return true;
         try {
-            return !MediaType.APPLICATION_JSON.isCompatibleWith(MediaType.parseMediaType(contentType));
+            MediaType mediaType = MediaType.parseMediaType(contentType);
+            String subtype = mediaType.getSubtype().toLowerCase(Locale.ROOT);
+            return !"application".equalsIgnoreCase(mediaType.getType())
+                    || !("json".equals(subtype) || subtype.endsWith("+json"));
         } catch (InvalidMediaTypeException exception) {
             return true;
         }
+    }
+
+    private static String applicationPath(HttpServletRequest request) {
+        String servletPath = request.getServletPath();
+        if (servletPath != null && !servletPath.isEmpty()) return servletPath;
+        String requestUri = request.getRequestURI();
+        String contextPath = request.getContextPath();
+        return contextPath != null && !contextPath.isEmpty() && requestUri.startsWith(contextPath)
+                ? requestUri.substring(contextPath.length()) : requestUri;
     }
 
     @Override
@@ -61,7 +78,7 @@ public final class RequestBodyLimitFilter extends OncePerRequestFilter {
             return;
         }
         try {
-            chain.doFilter(new LimitedRequest(request, maximumBytes), response);
+            chain.doFilter(new LimitedRequest(request, response, maximumBytes), response);
         } catch (RequestBodyTooLargeException exception) {
             if (response.isCommitted()) throw exception;
             writeTooLarge(response, request);
@@ -88,6 +105,17 @@ public final class RequestBodyLimitFilter extends OncePerRequestFilter {
                 ERROR_CODE, "JSON request body exceeds the allowed byte limit", Map.of(), traceId(request)));
     }
 
+    private void writeAsyncTooLarge(HttpServletResponse response, HttpServletRequest request) {
+        synchronized (response) {
+            if (response.isCommitted()) return;
+            try {
+                writeTooLarge(response, request);
+            } catch (IOException | IllegalStateException ignored) {
+                // The stream exception still aborts the async reader if the client disconnected or committed first.
+            }
+        }
+    }
+
     private static String traceId(HttpServletRequest request) {
         Object traceId = request.getAttribute(RequestTraceFilter.TRACE_ID_ATTRIBUTE);
         return traceId instanceof String value && !value.isBlank() ? value : UUID.randomUUID().toString();
@@ -99,18 +127,23 @@ public final class RequestBodyLimitFilter extends OncePerRequestFilter {
         }
     }
 
-    private static final class LimitedRequest extends HttpServletRequestWrapper {
+    private final class LimitedRequest extends HttpServletRequestWrapper {
+        private final HttpServletResponse response;
         private final long maximumBytes;
+        private final AtomicBoolean asyncLimitHandled = new AtomicBoolean();
         private ServletInputStream inputStream;
 
-        private LimitedRequest(HttpServletRequest request, long maximumBytes) {
+        private LimitedRequest(HttpServletRequest request, HttpServletResponse response, long maximumBytes) {
             super(request);
+            this.response = response;
             this.maximumBytes = maximumBytes;
         }
 
         @Override
         public ServletInputStream getInputStream() throws IOException {
-            if (inputStream == null) inputStream = new LimitedInputStream(super.getInputStream(), maximumBytes);
+            if (inputStream == null) {
+                inputStream = new LimitedInputStream(super.getInputStream(), maximumBytes, this::handleAsyncLimit);
+            }
             return inputStream;
         }
 
@@ -120,16 +153,44 @@ public final class RequestBodyLimitFilter extends OncePerRequestFilter {
             Charset charset = encoding == null ? StandardCharsets.UTF_8 : Charset.forName(encoding);
             return new BufferedReader(new InputStreamReader(getInputStream(), charset));
         }
+
+        @Override
+        public AsyncContext startAsync() throws IllegalStateException {
+            return super.startAsync(this, response);
+        }
+
+        @Override
+        public AsyncContext startAsync(ServletRequest request, ServletResponse response) throws IllegalStateException {
+            return super.startAsync(this, this.response);
+        }
+
+        private void handleAsyncLimit() {
+            if (!isAsyncStarted() || !asyncLimitHandled.compareAndSet(false, true)) return;
+            AsyncContext asyncContext;
+            try {
+                asyncContext = getAsyncContext();
+            } catch (IllegalStateException exception) {
+                return;
+            }
+            writeAsyncTooLarge(response, this);
+            try {
+                if (isAsyncStarted()) asyncContext.complete();
+            } catch (IllegalStateException ignored) {
+                // Another async participant already completed the request.
+            }
+        }
     }
 
     private static final class LimitedInputStream extends ServletInputStream {
         private final ServletInputStream delegate;
         private final long maximumBytes;
+        private final Runnable limitHandler;
         private long bytesRead;
 
-        private LimitedInputStream(ServletInputStream delegate, long maximumBytes) {
+        private LimitedInputStream(ServletInputStream delegate, long maximumBytes, Runnable limitHandler) {
             this.delegate = delegate;
             this.maximumBytes = maximumBytes;
+            this.limitHandler = limitHandler;
         }
 
         @Override
@@ -148,7 +209,10 @@ public final class RequestBodyLimitFilter extends OncePerRequestFilter {
 
         private void add(int count) throws RequestBodyTooLargeException {
             bytesRead += count;
-            if (bytesRead > maximumBytes) throw new RequestBodyTooLargeException();
+            if (bytesRead > maximumBytes) {
+                limitHandler.run();
+                throw new RequestBodyTooLargeException();
+            }
         }
 
         @Override

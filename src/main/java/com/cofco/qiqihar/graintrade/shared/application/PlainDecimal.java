@@ -12,10 +12,10 @@ public final class PlainDecimal {
 
     public static BigDecimal parse(
             String value, int integerDigits, int fractionDigits, String code) {
-        if (integerDigits < 1 || fractionDigits < 0) {
+        if (integerDigits < 0 || fractionDigits < 0 || integerDigits + fractionDigits < 1) {
             throw new IllegalArgumentException("Decimal precision bounds are invalid");
         }
-        int maximumLength = integerDigits + fractionDigits + (fractionDigits == 0 ? 1 : 2);
+        int maximumLength = 1 + Math.max(1, integerDigits) + (fractionDigits == 0 ? 0 : 1 + fractionDigits);
         if (value == null || value.isEmpty() || value.length() > maximumLength
                 || !PLAIN.matcher(value).matches()) {
             throw invalid(code, "Decimal value is invalid");
@@ -24,11 +24,16 @@ public final class PlainDecimal {
         int decimalPoint = value.indexOf('.');
         int integerLength = (decimalPoint < 0 ? value.length() : decimalPoint) - signOffset;
         int fractionLength = decimalPoint < 0 ? 0 : value.length() - decimalPoint - 1;
-        if (integerLength > integerDigits || fractionLength > fractionDigits) {
+        boolean integerPartAllowed = integerDigits == 0
+                ? integerLength == 1 && value.charAt(signOffset) == '0'
+                : integerLength <= integerDigits;
+        if (!integerPartAllowed || fractionLength > fractionDigits) {
             throw invalid(code, "Decimal value is outside the allowed range");
         }
         BigDecimal decimal = new BigDecimal(value);
-        if (decimal.precision() - decimal.scale() > integerDigits || decimal.scale() > fractionDigits) {
+        int significantIntegerDigits = decimal.signum() == 0
+                ? 0 : Math.max(0, decimal.precision() - decimal.scale());
+        if (significantIntegerDigits > integerDigits || decimal.scale() > fractionDigits) {
             throw invalid(code, "Decimal value is outside the allowed range");
         }
         return decimal;

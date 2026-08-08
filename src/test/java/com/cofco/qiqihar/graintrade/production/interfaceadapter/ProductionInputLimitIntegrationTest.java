@@ -265,6 +265,38 @@ class ProductionInputLimitIntegrationTest {
     }
 
     @Test
+    void vendorJsonUsesTheSameBoundaryAndRejectsProductionBeforeService() throws Exception {
+        MediaType mergePatchJson = MediaType.parseMediaType("application/merge-patch+json");
+        mockMvc.perform(post("/api/v1/input-limit-probe")
+                        .principal(() -> "input-limit-tester")
+                        .contentType(mergePatchJson)
+                        .content(jsonStringBody(JSON_BODY_LIMIT)))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/v1/production-records")
+                        .principal(() -> "input-limit-tester")
+                        .contentType(mergePatchJson)
+                        .content(productionBodyWithProductCode("a".repeat(JSON_BODY_LIMIT))))
+                .andExpect(status().isPayloadTooLarge())
+                .andExpect(jsonPath("$.error.code").value("REQUEST_BODY_TOO_LARGE"))
+                .andExpect(jsonPath("$.traceId").isString());
+
+        verify(productionService, never()).create(any());
+    }
+
+    @Test
+    void contextPathCannotBypassTheJsonBodyLimit() throws Exception {
+        mockMvc.perform(post("/graintrade/api/v1/input-limit-probe")
+                        .contextPath("/graintrade")
+                        .servletPath("/api/v1/input-limit-probe")
+                        .principal(() -> "input-limit-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(jsonStringBody(JSON_BODY_LIMIT + 1)))
+                .andExpect(status().isPayloadTooLarge())
+                .andExpect(jsonPath("$.error.code").value("REQUEST_BODY_TOO_LARGE"));
+    }
+
+    @Test
     void doesNotApplyJsonBodyLimitToHealthOrStaticPaths() throws Exception {
         byte[] oversized = jsonStringBody(JSON_BODY_LIMIT + 1);
 
