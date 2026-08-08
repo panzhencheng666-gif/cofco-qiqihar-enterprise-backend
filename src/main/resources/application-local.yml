@@ -1,0 +1,14 @@
+spring:
+  config:
+    activate:
+      on-profile: local
+
+server:
+  address: 127.0.0.1
+
+# The local browser demo has no SSO adapter. Keep production's authenticated
+# read default intact and opt out only when the explicit local profile is used.
+qiqihar:
+  security:
+    require-read-authentication: false
+    trusted-subject-header: X-Actor

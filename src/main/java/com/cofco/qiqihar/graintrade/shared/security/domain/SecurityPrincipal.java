@@ -7,6 +7,9 @@ public record SecurityPrincipal(
     public SecurityPrincipal {
         permissionCodes = Set.copyOf(permissionCodes);
         regionCodes = Set.copyOf(regionCodes);
+        if (regionCodes.contains("*")) {
+            throw new IllegalArgumentException("Persisted region code must not use the unrestricted test sentinel");
+        }
     }
 
     public boolean permits(String permissionCode) {

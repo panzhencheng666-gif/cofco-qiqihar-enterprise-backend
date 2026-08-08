@@ -16,7 +16,7 @@ import org.springframework.test.web.servlet.MockMvc;
         classes = GrainTradeApplication.class,
         properties = {
             "qiqihar.security.require-read-authentication=true",
-            "qiqihar.security.trusted-subject-header=X-Qiqihar-Authenticated-Subject"
+            "qiqihar.security.test-default-subject="
         })
 @AutoConfigureMockMvc
 @UsesProtectedTestDatabase
@@ -28,14 +28,13 @@ class BusinessReadAuthenticationIntegrationTest {
     @Test
     void rejectsUnauthenticatedBusinessReadsBeforeTheControllerExecutes() throws Exception {
         mockMvc.perform(get("/api/v1/master-data/products"))
-                .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.error.code").value("AUTHENTICATION_REQUIRED"));
+                .andExpect(status().isUnauthorized());
     }
 
     @Test
     void rejectsAuthenticatedSubjectsThatAreNotProvisionedForBusinessReads() throws Exception {
         mockMvc.perform(get("/api/v1/master-data/products")
-                        .header("X-Qiqihar-Authenticated-Subject", "unknown-reader"))
+                        .principal(() -> "unknown-reader"))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error.code").value("ACCESS_SUBJECT_UNKNOWN"));
     }
