@@ -27,8 +27,10 @@ import org.springframework.test.web.servlet.MockMvc;
 class BusinessReadRegionIsolationIntegrationTest {
     private static final String READER_A = "region-reader-a";
     private static final String READER_B = "region-reader-b";
-    private static final String REGION_A = "230202";
-    private static final String REGION_B = "231102";
+    private static final String REGION_A = "230200991";
+    private static final String REGION_B = "230200992";
+    private static final java.util.List<String> ISOLATION_REGION_CODES =
+            java.util.List.of(REGION_A, REGION_B);
     private static final String PERIOD = "REGION-ISOLATION-2026";
     private static final String PRODUCTION_A = "isolation-production-a";
     private static final String PRODUCTION_B = "isolation-production-b";
@@ -51,6 +53,7 @@ class BusinessReadRegionIsolationIntegrationTest {
     void createDisjointSubjectsAndBusinessRows() {
         jdbc = JdbcClient.create(dataSource);
         cleanup();
+        createOverviewScopeFixture();
         jdbc.sql("""
                 INSERT INTO platform.work_unit(code,name,sort_order)
                 VALUES ('REGION_TEST_A','区域隔离测试单位A',9910),
@@ -281,6 +284,29 @@ class BusinessReadRegionIsolationIntegrationTest {
         assertForbidden(path, READER_A);
     }
 
+    private void createOverviewScopeFixture() {
+        jdbc.sql("""
+                INSERT INTO platform.region(code,name,parent_code,administrative_level,sort_order)
+                VALUES (:regionA,'区域隔离测试地区A','230200','COUNTY',991),
+                       (:regionB,'区域隔离测试地区B','230200','COUNTY',992)
+                """).param("regionA", REGION_A).param("regionB", REGION_B).update();
+        jdbc.sql("""
+                INSERT INTO platform.monitoring_scope_region(scope_code,region_code,included)
+                VALUES ('FORMAL_BUSINESS',:regionA,true),('FORMAL_BUSINESS',:regionB,true)
+                """).param("regionA", REGION_A).param("regionB", REGION_B).update();
+        jdbc.sql("""
+                INSERT INTO overview.administrative_boundary(
+                  region_code,geometry,source_name,source_url,source_revision,source_license,geometry_sha256
+                )
+                SELECT fixture.region_code,
+                       ST_Multi(ST_Buffer(ST_SetSRID(ST_MakePoint(123 + fixture.longitude_delta,47),4326),0.01)),
+                       'region isolation fixture','https://example.invalid/region-isolation','test','test',repeat('9',64)
+                  FROM (VALUES (:regionA,0.01),(:regionB,0.02)) fixture(region_code,longitude_delta)
+                """).param("regionA", REGION_A).param("regionB", REGION_B).update();
+        jdbc.sql("SELECT overview.refresh_administrative_boundary_render()")
+                .query(Object.class).single();
+    }
+
     private void assertForbidden(String path, String reader) throws Exception {
         mockMvc.perform(get(path).principal(() -> reader))
                 .andExpect(status().isForbidden())
@@ -423,5 +449,15 @@ class BusinessReadRegionIsolationIntegrationTest {
                 DELETE FROM platform.work_unit
                 WHERE code IN ('REGION_TEST_A','REGION_TEST_B','REGION_TEST_EMPTY')
                 """).update();
+        jdbc.sql("DELETE FROM overview.administrative_boundary_display_reference WHERE region_code IN (:codes)")
+                .param("codes", ISOLATION_REGION_CODES).update();
+        jdbc.sql("DELETE FROM overview.administrative_boundary_render WHERE region_code IN (:codes)")
+                .param("codes", ISOLATION_REGION_CODES).update();
+        jdbc.sql("DELETE FROM overview.administrative_boundary WHERE region_code IN (:codes)")
+                .param("codes", ISOLATION_REGION_CODES).update();
+        jdbc.sql("DELETE FROM platform.monitoring_scope_region WHERE region_code IN (:codes)")
+                .param("codes", ISOLATION_REGION_CODES).update();
+        jdbc.sql("DELETE FROM platform.region WHERE code IN (:codes)")
+                .param("codes", ISOLATION_REGION_CODES).update();
     }
 }

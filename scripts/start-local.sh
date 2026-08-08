@@ -184,6 +184,7 @@ start_backend() {
     "$backend_log" \
     env \
     "QIQIHAR_SERVER_PORT=$backend_port" \
+    "SERVER_ADDRESS=$local_access_host" \
     mvn \
     spring-boot:run \
     -Dspring-boot.run.profiles=local

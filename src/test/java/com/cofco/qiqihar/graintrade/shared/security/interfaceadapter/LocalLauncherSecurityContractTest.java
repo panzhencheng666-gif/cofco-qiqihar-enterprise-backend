@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 class LocalLauncherSecurityContractTest {
     private static final Path START_SCRIPT = Path.of("scripts/start-local.sh");
     private static final Path LISTENER_GUARD = Path.of("scripts/verify-loopback-listener.sh");
+    private static final Path OWNERSHIP_SCRIPT = Path.of("scripts/local-process-ownership.sh");
 
     @Test
     void bothViteLaunchesOverrideConfigurationWithNumericLoopback() throws IOException {
@@ -55,6 +56,14 @@ class LocalLauncherSecurityContractTest {
             assertThat(result.exitCode()).as(result.output()).isNotZero();
             assertThat(result.output()).contains("outside numeric loopback");
         }
+    }
+
+    @Test
+    void ownedStopNeverEscalatesToAnUnrecoverableSignal() throws IOException {
+        String script = java.nio.file.Files.readString(OWNERSHIP_SCRIPT);
+
+        assertThat(script).doesNotContain("kill -9");
+        assertThat(script).contains("leaving it running");
     }
 
     private static int occurrences(String text, String fragment) {

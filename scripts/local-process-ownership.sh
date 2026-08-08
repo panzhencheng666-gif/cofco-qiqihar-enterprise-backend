@@ -97,8 +97,8 @@ stop_owned_process() {
     fi
   done
   if [[ "$(cofco_process_identity "$pid")" == "$identity" ]] && kill -0 "$pid" 2>/dev/null; then
-    echo "[$(date '+%F %T')] $name: forcing owned pid=$pid"
-    kill -9 "$pid" 2>/dev/null || true
+    echo "[$(date '+%F %T')] $name: owned pid=$pid did not stop after SIGTERM; leaving it running."
+    return 1
   fi
   rm -f "$pid_file"
 }
