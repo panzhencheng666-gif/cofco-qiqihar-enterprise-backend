@@ -43,6 +43,7 @@ public class JdbcMarketRecordRepository implements MarketRecordRepository {
                           AND (:unrestricted OR EXISTS(
                             SELECT 1 FROM market.market_record source
                             WHERE source.record_id=market_record_projection.record_id
+                              AND source.product_code=market_record_projection.product_code
                               AND source.region_code IN (:authorizedRegionCodes)))
                         """, query, filtersJson)
                 .query(Long.class)
@@ -57,6 +58,7 @@ public class JdbcMarketRecordRepository implements MarketRecordRepository {
                           AND (:unrestricted OR EXISTS(
                             SELECT 1 FROM market.market_record source
                             WHERE source.record_id=market_record_projection.record_id
+                              AND source.product_code=market_record_projection.product_code
                               AND source.region_code IN (:authorizedRegionCodes)))
                         ORDER BY observed_at, record_id
                         LIMIT :pageSize OFFSET :offset

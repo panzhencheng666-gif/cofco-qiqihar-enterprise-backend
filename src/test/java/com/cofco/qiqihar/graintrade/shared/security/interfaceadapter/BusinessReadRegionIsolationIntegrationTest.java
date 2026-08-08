@@ -37,6 +37,7 @@ class BusinessReadRegionIsolationIntegrationTest {
     private static final String QUALITY_A = "isolation-quality-a";
     private static final String QUALITY_B = "isolation-quality-b";
     private static final String QUALITY_ORPHAN = "isolation-quality-orphan";
+    private static final String QUALITY_PRODUCT_MISMATCH = "isolation-quality-product-mismatch";
     private static final String LOGISTICS_A = "10000000-0000-0000-0000-000000000001";
     private static final String LOGISTICS_B = "10000000-0000-0000-0000-000000000002";
     private static final String LOGISTICS_CROSS = "10000000-0000-0000-0000-000000000003";
@@ -88,6 +89,13 @@ class BusinessReadRegionIsolationIntegrationTest {
         market(MARKET_B, REGION_B, "2026-08-05", "200");
         quality(QUALITY_A, REGION_A, "区域A质量记录");
         quality(QUALITY_B, REGION_B, "区域B质量记录");
+        market(QUALITY_PRODUCT_MISMATCH, REGION_A, "2026-08-06", "300");
+        jdbc.sql("""
+                INSERT INTO market.market_record_projection(
+                  record_id,product_code,business_domain,page_kind,observed_at,values)
+                VALUES (:id,'RICE','MARKET','QUALITY','2026-08-08T08:00:00+08:00',
+                  '{"subjectName":"跨产品借用来源区域"}'::jsonb)
+                """).param("id", QUALITY_PRODUCT_MISMATCH).update();
         jdbc.sql("""
                 INSERT INTO market.market_record_projection(
                   record_id,product_code,business_domain,page_kind,observed_at,values)
@@ -254,6 +262,21 @@ class BusinessReadRegionIsolationIntegrationTest {
                 .andExpect(jsonPath("$.data.length()").value(0));
     }
 
+    @Test
+    void qualityProjectionCannotBorrowRegionAuthorizationFromDifferentProductSource() throws Exception {
+        mockMvc.perform(get("/api/v1/market-records")
+                        .principal(() -> READER_A)
+                        .queryParam("productCode", "RICE")
+                        .queryParam("pageKind", "QUALITY")
+                        .queryParam("pageNumber", "0")
+                        .queryParam("pageSize", "20"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString(QUALITY_A)))
+                .andExpect(content().string(not(containsString(QUALITY_PRODUCT_MISMATCH))))
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.totalElements").value(1));
+    }
+
     private void assertForbidden(String path) throws Exception {
         assertForbidden(path, READER_A);
     }
@@ -373,7 +396,7 @@ class BusinessReadRegionIsolationIntegrationTest {
         if (jdbc == null) return;
         jdbc.sql("DELETE FROM workflow.work_item WHERE task_name IN ('区域A待办','区域B待办')").update();
         jdbc.sql("DELETE FROM market.market_record_projection WHERE record_id IN (:ids)")
-                .param("ids", java.util.List.of(QUALITY_A, QUALITY_B, QUALITY_ORPHAN)).update();
+                .param("ids", java.util.List.of(QUALITY_A, QUALITY_B, QUALITY_ORPHAN, QUALITY_PRODUCT_MISMATCH)).update();
         jdbc.sql("DELETE FROM logistics.route_event WHERE event_id::text IN (:ids)")
                 .param("ids", java.util.List.of(LOGISTICS_A, LOGISTICS_B, LOGISTICS_CROSS)).update();
         jdbc.sql("""
@@ -381,7 +404,8 @@ class BusinessReadRegionIsolationIntegrationTest {
                 WHERE node_code LIKE 'ISO_A_%' OR node_code LIKE 'ISO_B_%' OR node_code LIKE 'ISO_CROSS_%'
                 """).update();
         jdbc.sql("DELETE FROM market.market_record WHERE record_id IN (:ids)")
-                .param("ids", java.util.List.of(MARKET_A, MARKET_B, QUALITY_A, QUALITY_B)).update();
+                .param("ids", java.util.List.of(
+                        MARKET_A, MARKET_B, QUALITY_A, QUALITY_B, QUALITY_PRODUCT_MISMATCH)).update();
         jdbc.sql("DELETE FROM production.production_record WHERE record_id IN (:ids)")
                 .param("ids", java.util.List.of(PRODUCTION_A, PRODUCTION_B)).update();
         jdbc.sql("DELETE FROM platform.business_period WHERE code=:period").param("period", PERIOD).update();
