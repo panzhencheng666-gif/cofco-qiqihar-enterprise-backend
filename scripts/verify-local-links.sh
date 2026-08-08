@@ -38,6 +38,7 @@ done
 require_loopback_listener "$backend_port" "backend"
 require_loopback_listener "$business_port" "business frontend"
 require_loopback_listener "$overview_port" "overview frontend"
+"${backend_root}/scripts/verify-local-region-hierarchy.sh"
 
 legacy_project="cofco-qiqihar-""dashboard"
 runtime_files=(
@@ -46,6 +47,7 @@ runtime_files=(
   "${backend_root}/scripts/healthcheck-local.sh" \
   "${backend_root}/scripts/local-process-ownership.sh" \
   "${backend_root}/scripts/verify-loopback-listener.sh" \
+  "${backend_root}/scripts/verify-local-region-hierarchy.sh" \
   "${overview_frontend_root}/package.json" \
   "${overview_frontend_root}/vite.config.ts" \
   "${business_frontend_root}/package.json" \

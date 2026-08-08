@@ -15,6 +15,8 @@ class LocalLauncherSecurityContractTest {
     private static final Path LISTENER_GUARD = Path.of("scripts/verify-loopback-listener.sh");
     private static final Path OWNERSHIP_SCRIPT = Path.of("scripts/local-process-ownership.sh");
     private static final Path LINK_VERIFIER = Path.of("scripts/verify-local-links.sh");
+    private static final Path HEALTHCHECK = Path.of("scripts/healthcheck-local.sh");
+    private static final Path REGION_HIERARCHY_VERIFIER = Path.of("scripts/verify-local-region-hierarchy.sh");
 
     @Test
     void bothViteLaunchesOverrideConfigurationWithNumericLoopback() throws IOException {
@@ -83,6 +85,23 @@ class LocalLauncherSecurityContractTest {
         assertThat(script).contains("overview_frontend_root", "business_frontend_root");
         assertThat(script).contains("${overview_frontend_root}/package.json", "${overview_frontend_root}/vite.config.ts");
         assertThat(script).contains("${business_frontend_root}/package.json", "${business_frontend_root}/vite.prototype.config.ts");
+    }
+
+    @Test
+    void localReadinessRequiresTheThreePrefecturesAndRepresentativeVillagePaths() throws IOException {
+        String hierarchyVerifier = java.nio.file.Files.readString(REGION_HIERARCHY_VERIFIER);
+        String startScript = java.nio.file.Files.readString(START_SCRIPT);
+        String healthcheck = java.nio.file.Files.readString(HEALTHCHECK);
+        String linkVerifier = java.nio.file.Files.readString(LINK_VERIFIER);
+
+        assertThat(hierarchyVerifier)
+                .contains("230200", "231100", "150700")
+                .contains("231102", "231102101", "231102101001")
+                .contains("150721", "150721100", "150721100001")
+                .contains("boundaryGeoJson");
+        assertThat(startScript).contains("verify-local-region-hierarchy.sh");
+        assertThat(healthcheck).contains("verify-local-region-hierarchy.sh");
+        assertThat(linkVerifier).contains("verify-local-region-hierarchy.sh");
     }
 
     private static int occurrences(String text, String fragment) {

@@ -16,6 +16,7 @@ fi
 required_fragments=(
   "/Users/federal/Desktop/cofco-qiqihar-enterprise-backend"
   "scripts/start-local.sh"
+  "scripts/verify-local-region-hierarchy.sh"
   "http://127.0.0.1:63182/"
   "http://127.0.0.1:63200/"
   "http://127.0.0.1:8090/actuator/health"

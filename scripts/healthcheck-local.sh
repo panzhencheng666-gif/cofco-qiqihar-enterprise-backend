@@ -51,6 +51,7 @@ if [[ "$runtime_profile" == "local" ]]; then
   require_loopback_listener "$business_port" "business frontend"
   require_loopback_listener "$overview_port" "overview frontend"
   echo "[OK] 三个本地监听均绑定 numeric loopback"
+  "${backend_root}/scripts/verify-local-region-hierarchy.sh"
 fi
 
 echo

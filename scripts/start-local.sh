@@ -321,6 +321,7 @@ start_business() {
 start_backend
 start_overview
 start_business
+"${backend_root}/scripts/verify-local-region-hierarchy.sh"
 
 log "Started services."
 log "Business: http://$local_access_host:${business_port}/prototype.html"
