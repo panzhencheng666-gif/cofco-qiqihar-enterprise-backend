@@ -1,5 +1,7 @@
 package com.cofco.qiqihar.graintrade.workflow.domain;
 
+import java.util.Set;
+
 public record WorkItemQuery(
         WorkItemScope scope,
         WorkItemStatus status,
@@ -7,7 +9,8 @@ public record WorkItemQuery(
         String regionId,
         String productCode,
         int pageNumber,
-        int pageSize) {
+        int pageSize,
+        Set<String> authorizedRegionCodes) {
 
     public WorkItemQuery {
         if (scope == null) {
@@ -19,6 +22,12 @@ public record WorkItemQuery(
         if (pageNumber < 0 || pageSize < 1) {
             throw new IllegalArgumentException("invalid pagination");
         }
+        authorizedRegionCodes = Set.copyOf(authorizedRegionCodes);
+    }
+
+    public WorkItemQuery(WorkItemScope scope, WorkItemStatus status, String domain, String regionId,
+            String productCode, int pageNumber, int pageSize) {
+        this(scope, status, domain, regionId, productCode, pageNumber, pageSize, Set.of("*"));
     }
 
     public static WorkItemQuery of(
@@ -37,5 +46,9 @@ public record WorkItemQuery(
                 productCode,
                 pageNumber,
                 pageSize);
+    }
+
+    public WorkItemQuery authorizedFor(Set<String> regionCodes) {
+        return new WorkItemQuery(scope, status, domain, regionId, productCode, pageNumber, pageSize, regionCodes);
     }
 }

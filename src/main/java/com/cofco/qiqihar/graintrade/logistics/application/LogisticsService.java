@@ -9,6 +9,7 @@ import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
 import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder;
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
+import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
 import java.time.Clock;
 import java.time.ZoneId;
@@ -39,9 +40,14 @@ public class LogisticsService {
     public PagedResult<LogisticsRecordView> list(String productCode, int pageNumber, int pageSize, Map<String,String> filters) {
         if (pageNumber < 0 || pageSize < 1 || filters.keySet().stream().anyMatch(k -> !FILTERS.contains(k))
                 || !pages.allowsListQueryValues("LOGISTICS","MONITORING",productCode,pageSize,filters)) throw invalid();
-        return repository.findPage(productCode,pageNumber,pageSize,filters);
+        AuthorizedReadScope scope=readScope();
+        if(filters.get("regionCode")!=null)scope.requireRegion(filters.get("regionCode"));
+        return repository.findPage(productCode,pageNumber,pageSize,filters,scope.regionCodes());
     }
-    @Transactional(readOnly=true) public LogisticsRecordView detail(String id) { return required(id); }
+    @Transactional(readOnly=true) public LogisticsRecordView detail(String id) {
+        LogisticsRecordView record=required(id); AuthorizedReadScope scope=readScope();
+        repository.regionsForRecord(id).forEach(scope::requireRegion); return record;
+    }
     @Transactional(readOnly=true) public LogisticsDefinitionView definition(String productCode) {
         LogisticsDefinitionView definition=repository.definition(productCode);if(definition==null)throw invalid();return definition;
     }
@@ -81,6 +87,7 @@ public class LogisticsService {
         if(accessControl!=null) regions.forEach(region->accessControl.require(permission,region));
         return principal;
     }
+    private AuthorizedReadScope readScope(){return accessControl==null?AuthorizedReadScope.unrestricted():accessControl.requireReadScope();}
     private void audit(SecurityPrincipal principal,LogisticsRecordView record,String action){if(audit!=null)audit.record(principal,"LOGISTICS_RECORD",record.id(),action,clock.instant(),"{}");}
     private LogisticsRecordView required(String id){LogisticsRecordView value=repository.find(id); if(value==null) throw new ResourceNotFoundException("LOGISTICS_RECORD_NOT_FOUND","Logistics record was not found"); return value;}
     private static void requireVersion(LogisticsRecordView value,long version){if(version<0||value.version()!=version)throw new ConflictException("LOGISTICS_RECORD_VERSION_CONFLICT","Logistics record has changed");}

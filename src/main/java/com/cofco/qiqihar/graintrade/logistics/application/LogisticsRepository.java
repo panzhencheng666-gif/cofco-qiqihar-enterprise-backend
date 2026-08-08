@@ -5,7 +5,12 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Set;
 public interface LogisticsRepository {
-    PagedResult<LogisticsRecordView> findPage(String productCode, int pageNumber, int pageSize, Map<String,String> filters);
+    default PagedResult<LogisticsRecordView> findPage(
+            String productCode, int pageNumber, int pageSize, Map<String,String> filters) {
+        return findPage(productCode, pageNumber, pageSize, filters, Set.of("*"));
+    }
+    PagedResult<LogisticsRecordView> findPage(String productCode, int pageNumber, int pageSize,
+            Map<String,String> filters, Set<String> authorizedRegionCodes);
     LogisticsRecordView find(String id);
     LogisticsDefinitionView definition(String productCode);
     boolean validDraft(LogisticsDraft draft, java.time.LocalDate today);

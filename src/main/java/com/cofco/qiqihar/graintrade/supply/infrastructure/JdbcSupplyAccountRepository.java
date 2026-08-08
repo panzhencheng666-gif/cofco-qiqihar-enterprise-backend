@@ -55,6 +55,13 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
     @Override
     public List<SupplyAccountView> find(
             String product, String region, String year, String state, Integer resultVersion) {
+        return find(product, region, year, state, resultVersion, Set.of("*"));
+    }
+
+    @Override
+    public List<SupplyAccountView> find(
+            String product, String region, String year, String state, Integer resultVersion,
+            Set<String> authorizedRegionCodes) {
         StringBuilder sql = new StringBuilder("""
                 SELECT r.calculation_run_id::text id,r.product_code,r.region_code,r.marketing_year,
                   r.result_state,r.validation_codes,r.balanced,r.decision_version,
@@ -77,6 +84,13 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
         params.put("product", product);
         params.put("region", region);
         params.put("year", year);
+        if (!authorizedRegionCodes.contains("*")) {
+            if (authorizedRegionCodes.isEmpty()) sql.append(" AND 1=0");
+            else {
+                sql.append(" AND r.region_code IN (:authorizedRegions)");
+                params.put("authorizedRegions", authorizedRegionCodes);
+            }
+        }
         if (state != null) {
             sql.append(" AND r.result_state=:state");
             params.put("state", state);

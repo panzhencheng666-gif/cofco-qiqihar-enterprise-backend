@@ -12,6 +12,7 @@ import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
 import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder;
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
+import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
 import java.time.Clock;
 import java.time.LocalDate;
@@ -60,7 +61,9 @@ public class ProductionRecordService implements ProductionImportPort {
                 query.pageSize(), query.filters())) throw invalidQuery();
         String regionCode = query.filters().get("regionCode");
         if (regionCode != null && !repository.isKnownRegion(regionCode)) throw invalidQuery();
-        PagedResult<ProductionListRow> page = repository.findPage(query);
+        AuthorizedReadScope scope = readScope();
+        if (regionCode != null) scope.requireRegion(regionCode);
+        PagedResult<ProductionListRow> page = repository.findPage(query.authorizedFor(scope.regionCodes()));
         List<ProductionListItem> items = page.items().stream().map(row -> new ProductionListItem(
                 row.id(), row.values(), ProductionActionPolicy.allowedActions(row.status()).stream()
                         .filter(row.configuredActions()::contains).toList(), row.version())).toList();
@@ -68,7 +71,11 @@ public class ProductionRecordService implements ProductionImportPort {
     }
 
     @Transactional(readOnly = true)
-    public ProductionRecordView detail(String id) { return view(requiredRecord(id)); }
+    public ProductionRecordView detail(String id) {
+        ProductionRecord record = requiredRecord(id);
+        readScope().requireRegion(record.regionCode());
+        return view(record);
+    }
 
     @Transactional(readOnly = true)
     public ProductionFormDefinition factDefinition(String productCode, String objectTypeCode) {
@@ -218,6 +225,10 @@ public class ProductionRecordService implements ProductionImportPort {
     private SecurityPrincipal authorize(String permissionCode, String regionCode) {
         if (accessControl != null) return accessControl.require(permissionCode, regionCode);
         return new SecurityPrincipal(actor().id(), "UNIT_TEST", Set.of(), Set.of());
+    }
+
+    private AuthorizedReadScope readScope() {
+        return accessControl == null ? AuthorizedReadScope.unrestricted() : accessControl.requireReadScope();
     }
 
     private void audit(SecurityPrincipal principal, ProductionRecord record, String actionCode) {

@@ -6,6 +6,7 @@ import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.ServerContractException;
 import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder;
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
+import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
 import com.cofco.qiqihar.graintrade.supply.domain.ApprovalState;
 import com.cofco.qiqihar.graintrade.supply.domain.QualityState;
@@ -72,7 +73,8 @@ public class SupplyAccountService {
         if (!PRODUCTS.contains(product) || blank(region) || blank(year)
                 || (state != null && !Set.of("TRIAL", "FORMAL_CANDIDATE", "FORMAL").contains(state))
                 || (version != null && version < 1)) throw invalid();
-        return repository.find(product, region, year, state, version);
+        AuthorizedReadScope scope=readScope(); scope.requireRegion(region);
+        return repository.find(product, region, year, state, version, scope.regionCodes());
     }
 
     @Transactional
@@ -275,6 +277,10 @@ public class SupplyAccountService {
     private SecurityPrincipal authorize(String permissionCode, String regionCode) {
         if (accessControl != null) return accessControl.require(permissionCode, regionCode);
         return new SecurityPrincipal(actor(), "UNIT_TEST", Set.of(), Set.of());
+    }
+
+    private AuthorizedReadScope readScope() {
+        return accessControl == null ? AuthorizedReadScope.unrestricted() : accessControl.requireReadScope();
     }
 
     private void audit(SecurityPrincipal principal, String aggregateType, String aggregateId,

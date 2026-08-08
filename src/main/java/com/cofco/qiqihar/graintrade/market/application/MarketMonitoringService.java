@@ -14,6 +14,7 @@ import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException
 import com.cofco.qiqihar.graintrade.shared.application.ServerContractException;
 import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder;
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
+import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
 import com.cofco.qiqihar.graintrade.shared.domain.BusinessPageKey;
 import java.math.BigDecimal;
@@ -83,7 +84,9 @@ public class MarketMonitoringService {
         }
         String regionCode = query.filters().get("regionCode");
         if (regionCode != null && !repository.isKnownRegion(regionCode)) throw invalidQuery();
-        PagedResult<MarketListRow> page = repository.findPage(query);
+        AuthorizedReadScope scope = readScope();
+        if (regionCode != null) scope.requireRegion(regionCode);
+        PagedResult<MarketListRow> page = repository.findPage(query.authorizedFor(scope.regionCodes()));
         List<MarketListItem> items = page.items().stream().map(row -> new MarketListItem(
                 row.id(), row.values(), MarketActionPolicy.allowedActions(row.status()).stream()
                         .filter(row.configuredActions()::contains).toList(), row.version())).toList();
@@ -93,6 +96,7 @@ public class MarketMonitoringService {
     @Transactional(readOnly = true)
     public MarketRecordView detail(String id) {
         MarketMonitoringRecord record = required(id);
+        readScope().requireRegion(record.regionCode());
         return view(record, coreFields(record.productCode()),
                 repository.findExtensionCoreValues(id));
     }
@@ -494,6 +498,10 @@ public class MarketMonitoringService {
     private SecurityPrincipal authorize(String permissionCode, String regionCode) {
         if (accessControl != null) return accessControl.require(permissionCode, regionCode);
         return new SecurityPrincipal(actor().id(), "UNIT_TEST", Set.of(), Set.of());
+    }
+
+    private AuthorizedReadScope readScope() {
+        return accessControl == null ? AuthorizedReadScope.unrestricted() : accessControl.requireReadScope();
     }
 
     private void audit(SecurityPrincipal principal, MarketMonitoringRecord record, String actionCode) {

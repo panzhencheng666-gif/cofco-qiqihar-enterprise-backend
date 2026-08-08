@@ -9,6 +9,7 @@ import com.cofco.qiqihar.graintrade.overview.application.OverviewRepository;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Set;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
@@ -33,7 +34,8 @@ public class JdbcOverviewRepository implements OverviewRepository {
     @Override public boolean knownPeriod(String periodCode) { return exists("SELECT EXISTS(SELECT 1 FROM platform.business_period WHERE code=:value)", periodCode); }
 
     @Override
-    public List<OverviewRegion> regions(String parentCode, String productCode, String periodCode) {
+    public List<OverviewRegion> regions(
+            String parentCode, String productCode, String periodCode, Set<String> authorizedRegionCodes) {
         return jdbc.sql("""
                 WITH period AS (SELECT starts_on,ends_on FROM platform.business_period WHERE code=CAST(:period AS varchar)),
                 approved AS (
@@ -52,20 +54,29 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 LEFT JOIN approved ON approved.region_code=region.code
                 LEFT JOIN overview.administrative_boundary boundary ON boundary.region_code=region.code
                 WHERE region.parent_code IS NOT DISTINCT FROM CAST(:parent AS varchar)
+                  AND (:unrestricted OR region.code IN (:authorizedRegions))
                 GROUP BY region.code,region.name,region.parent_code,region.administrative_level,region.sort_order,boundary.geometry
                 ORDER BY region.sort_order
                 """).param("period", periodCode).param("product", productCode).param("parent", parentCode)
+                .param("unrestricted", authorizedRegionCodes.contains("*"))
+                .param("authorizedRegions", authorizedRegionCodes)
                 .query((row, index) -> new OverviewRegion(row.getString("code"), row.getString("name"),
                         row.getString("parent_code"), row.getString("administrative_level"), row.getLong("approved_count"),
                         row.getString("boundary_geo_json"))).list();
     }
 
     @Override
-    public List<OverviewIndicator> indicators(String productCode, String regionCode, String periodCode, String marketingYear) {
+    public List<OverviewIndicator> indicators(String productCode, String regionCode, String periodCode,
+            String marketingYear, Set<String> authorizedRegionCodes) {
         return jdbc.sql("""
-                WITH RECURSIVE scope AS (
-                  SELECT code FROM platform.region WHERE code=:region
+                WITH RECURSIVE authorized(code) AS (
+                  SELECT code FROM platform.region
+                  WHERE :unrestricted OR code IN (:authorizedRegions)
+                ), scope AS (
+                  SELECT region.code FROM platform.region region JOIN authorized ON authorized.code=region.code
+                  WHERE region.code=:region
                   UNION ALL SELECT child.code FROM platform.region child JOIN scope parent ON child.parent_code=parent.code
+                  JOIN authorized ON authorized.code=child.code
                 ), period AS (SELECT starts_on,ends_on FROM platform.business_period WHERE code=:period),
                 latest_supply AS (
                   SELECT DISTINCT ON (run.region_code) run.* FROM supply.calculation_run run JOIN scope ON scope.code=run.region_code
@@ -93,6 +104,8 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   END AS source_count
                 FROM overview.indicator_definition definition ORDER BY definition.sort_order
                 """).param("region", regionCode).param("period", periodCode).param("product", productCode).param("year", marketingYear)
+                .param("unrestricted", authorizedRegionCodes.contains("*"))
+                .param("authorizedRegions", authorizedRegionCodes)
                 .query((row, index) -> new OverviewIndicator(row.getString("code"), row.getString("name"),
                         row.getString("unit_code"), decimal(row.getBigDecimal("value")), row.getString("source_domain"),
                         row.getLong("source_count"), sourcePath(row.getString("source_domain")))).list();

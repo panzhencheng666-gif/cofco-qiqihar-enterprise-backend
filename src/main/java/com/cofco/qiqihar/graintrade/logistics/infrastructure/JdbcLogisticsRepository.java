@@ -153,8 +153,8 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
 
     @Override
     public PagedResult<LogisticsRecordView> findPage(
-            String product, int page, int size, Map<String, String> filters) {
-        SqlFilter filter = filter(product, filters);
+            String product, int page, int size, Map<String, String> filters, Set<String> authorizedRegionCodes) {
+        SqlFilter filter = filter(product, filters, authorizedRegionCodes);
         long total = jdbc.sql("SELECT count(*) FROM logistics.route_event e " + filter.sql)
                 .params(filter.params).query(Long.class).single();
         List<String> ids = jdbc.sql("""
@@ -403,10 +403,19 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
         if (count == 0) throw new ConflictException("LOGISTICS_RECORD_VERSION_CONFLICT", "Logistics record has changed");
     }
 
-    private static SqlFilter filter(String product, Map<String, String> filters) {
+    private static SqlFilter filter(
+            String product, Map<String, String> filters, Set<String> authorizedRegionCodes) {
         StringBuilder sql = new StringBuilder("WHERE e.product_code=:product");
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("product", product);
+        if (!authorizedRegionCodes.contains("*")) {
+            if (authorizedRegionCodes.isEmpty()) sql.append(" AND 1=0");
+            else {
+                sql.append(" AND e.origin_region_code IN (:authorizedRegions)")
+                        .append(" AND e.destination_region_code IN (:authorizedRegions)");
+                params.put("authorizedRegions", authorizedRegionCodes);
+            }
+        }
         filters.forEach((key, value) -> {
             switch (key) {
                 case "status" -> sql.append(" AND e.status_code=:status");

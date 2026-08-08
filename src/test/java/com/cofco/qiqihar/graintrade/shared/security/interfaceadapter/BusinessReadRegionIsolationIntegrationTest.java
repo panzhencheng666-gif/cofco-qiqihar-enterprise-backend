@@ -1,0 +1,240 @@
+package com.cofco.qiqihar.graintrade.shared.security.interfaceadapter;
+
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.not;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
+import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
+import javax.sql.DataSource;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.test.web.servlet.MockMvc;
+
+@SpringBootTest(
+        classes = GrainTradeApplication.class,
+        properties = "qiqihar.security.require-read-authentication=true")
+@AutoConfigureMockMvc
+@UsesProtectedTestDatabase
+class BusinessReadRegionIsolationIntegrationTest {
+    private static final String READER_A = "region-reader-a";
+    private static final String READER_B = "region-reader-b";
+    private static final String REGION_A = "230202";
+    private static final String REGION_B = "231102";
+    private static final String PERIOD = "REGION-ISOLATION-2026";
+    private static final String PRODUCTION_A = "isolation-production-a";
+    private static final String PRODUCTION_B = "isolation-production-b";
+    private static final String MARKET_A = "isolation-market-a";
+    private static final String MARKET_B = "isolation-market-b";
+    private static final String LOGISTICS_A = "10000000-0000-0000-0000-000000000001";
+    private static final String LOGISTICS_B = "10000000-0000-0000-0000-000000000002";
+
+    @Autowired MockMvc mockMvc;
+    @Autowired DataSource dataSource;
+    private JdbcClient jdbc;
+
+    @BeforeEach
+    void createDisjointSubjectsAndBusinessRows() {
+        jdbc = JdbcClient.create(dataSource);
+        cleanup();
+        jdbc.sql("""
+                INSERT INTO platform.work_unit(code,name,sort_order)
+                VALUES ('REGION_TEST_A','区域隔离测试单位A',9910),('REGION_TEST_B','区域隔离测试单位B',9920)
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.work_unit_region_scope(work_unit_code,region_code)
+                VALUES ('REGION_TEST_A',:regionA),('REGION_TEST_B',:regionB)
+                """).param("regionA", REGION_A).param("regionB", REGION_B).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user(subject_id,display_name,work_unit_code)
+                VALUES (:readerA,'区域读取员A','REGION_TEST_A'),(:readerB,'区域读取员B','REGION_TEST_B')
+                """).param("readerA", READER_A).param("readerB", READER_B).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_role(subject_id,role_code)
+                VALUES (:readerA,'SYSTEM_ADMIN'),(:readerB,'SYSTEM_ADMIN')
+                """).param("readerA", READER_A).param("readerB", READER_B).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_region_scope(subject_id,region_code)
+                VALUES (:readerA,:regionA),(:readerB,:regionB)
+                """).param("readerA", READER_A).param("readerB", READER_B)
+                .param("regionA", REGION_A).param("regionB", REGION_B).update();
+        jdbc.sql("""
+                INSERT INTO platform.business_period(code,name,starts_on,ends_on,sort_order)
+                VALUES (:period,'区域隔离测试期间','2026-08-01','2026-08-31',9930)
+                """).param("period", PERIOD).update();
+
+        production(PRODUCTION_A, REGION_A, "2026-08-04", "10");
+        production(PRODUCTION_B, REGION_B, "2026-08-05", "20");
+        market(MARKET_A, REGION_A, "2026-08-04", "100");
+        market(MARKET_B, REGION_B, "2026-08-05", "200");
+        logistics(LOGISTICS_A, REGION_A, "ISO_A");
+        logistics(LOGISTICS_B, REGION_B, "ISO_B");
+        workItem(REGION_A, "区域A待办");
+        workItem(REGION_B, "区域B待办");
+    }
+
+    @AfterEach
+    void removeIsolationFixture() {
+        cleanup();
+    }
+
+    @Test
+    void subjectCanReadOnlyItsAssignedRegionAcrossBusinessReads() throws Exception {
+        assertForbidden("/api/v1/production-records/" + PRODUCTION_B);
+        mockMvc.perform(get("/api/v1/production-records")
+                        .principal(() -> READER_A)
+                        .queryParam("productCode", "CORN")
+                        .queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0")
+                        .queryParam("pageSize", "20"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString(PRODUCTION_A)))
+                .andExpect(content().string(not(containsString(PRODUCTION_B))));
+
+        assertForbidden("/api/v1/market-records/" + MARKET_B);
+        mockMvc.perform(get("/api/v1/market-records")
+                        .principal(() -> READER_A)
+                        .queryParam("productCode", "CORN")
+                        .queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0")
+                        .queryParam("pageSize", "20"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString(MARKET_A)))
+                .andExpect(content().string(not(containsString(MARKET_B))));
+
+        assertForbidden("/api/v1/logistics-records/" + LOGISTICS_B);
+        mockMvc.perform(get("/api/v1/logistics-records")
+                        .principal(() -> READER_A)
+                        .queryParam("productCode", "CORN")
+                        .queryParam("pageNumber", "0")
+                        .queryParam("pageSize", "20"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString(LOGISTICS_A)))
+                .andExpect(content().string(not(containsString(LOGISTICS_B))));
+
+        mockMvc.perform(get("/api/v1/supply-accounts")
+                        .principal(() -> READER_A)
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", REGION_B)
+                        .queryParam("marketingYear", "2026"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+
+        mockMvc.perform(get("/api/v1/work-items")
+                        .principal(() -> READER_A)
+                        .queryParam("scope", "PENDING")
+                        .queryParam("page", "0")
+                        .queryParam("pageSize", "20"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("区域A待办")))
+                .andExpect(content().string(not(containsString("区域B待办"))));
+
+        mockMvc.perform(get("/api/v1/overview/indicators")
+                        .principal(() -> READER_A)
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", REGION_B)
+                        .queryParam("periodCode", PERIOD)
+                        .queryParam("marketingYear", "2026"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+    }
+
+    private void assertForbidden(String path) throws Exception {
+        mockMvc.perform(get(path).principal(() -> READER_A))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+    }
+
+    private void production(String id, String region, String surveyDate, String area) {
+        jdbc.sql("""
+                INSERT INTO production.production_record(
+                  record_id,product_code,object_type_code,region_code,survey_date,reported_at,
+                  cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by)
+                VALUES (:id,'CORN','FARMER',:region,CAST(:surveyDate AS date),'2026-08-08T08:00:00+08:00',
+                  CAST(:area AS numeric),10,'APPROVED',:reader)
+                """).param("id", id).param("region", region).param("surveyDate", surveyDate)
+                .param("area", area).param("reader", READER_A).update();
+    }
+
+    private void market(String id, String region, String tradeDate, String price) {
+        jdbc.sql("""
+                INSERT INTO market.market_record(
+                  record_id,product_code,object_type_code,region_code,trade_date,reported_at,
+                  purchase_base_price,trade_direction,carriage_board_amount,packaging_amount,
+                  freight_amount,packaging_form,status_code,last_modified_by)
+                VALUES (:id,'CORN','TRADER',:region,CAST(:tradeDate AS date),'2026-08-08T08:00:00+08:00',
+                  CAST(:price AS numeric),'PURCHASE',0,0,0,'BULK','APPROVED',:reader)
+                """).param("id", id).param("region", region).param("tradeDate", tradeDate)
+                .param("price", price).param("reader", READER_A).update();
+    }
+
+    private void logistics(String id, String region, String prefix) {
+        jdbc.sql("""
+                INSERT INTO logistics.logistics_node(node_code,node_name,node_type_code,region_code)
+                VALUES (:origin,:originName,'RAIL_NODE',:region),(:destination,:destinationName,'ROAD_NODE',:region)
+                """).param("origin", prefix + "_ORIGIN").param("originName", prefix + "起点")
+                .param("destination", prefix + "_DESTINATION").param("destinationName", prefix + "终点")
+                .param("region", region).update();
+        jdbc.sql("""
+                INSERT INTO logistics.route_event(
+                  event_id,product_code,monitoring_period_code,collection_date,reported_at,
+                  origin_region_code,origin_node_code,destination_region_code,destination_node_code,
+                  transport_mode_code,direction_code,source_organization,reporter,status_code,
+                  version,created_by,last_modified_by,created_at,updated_at)
+                VALUES (CAST(:id AS uuid),'CORN',:period,'2026-08-04','2026-08-08T08:00:00+08:00',
+                  :region,:origin,:region,:destination,'ROAD','INFLOW','隔离测试来源','隔离测试员','APPROVED',
+                  0,:reader,:reader,'2026-08-08T08:00:00+08:00','2026-08-08T08:00:00+08:00')
+                """).param("id", id).param("region", region).param("origin", prefix + "_ORIGIN")
+                .param("destination", prefix + "_DESTINATION").param("period", PERIOD)
+                .param("reader", READER_A).update();
+    }
+
+    private void workItem(String region, String task) {
+        jdbc.sql("""
+                INSERT INTO workflow.workflow_node(code,label) VALUES ('REGION_ISOLATION','区域隔离节点')
+                ON CONFLICT(code) DO NOTHING
+                """).update();
+        jdbc.sql("""
+                INSERT INTO workflow.responsible_party(party_type,external_code,display_name)
+                VALUES ('USER','REGION_ISOLATION','区域隔离责任人') ON CONFLICT DO NOTHING
+                """).update();
+        jdbc.sql("""
+                INSERT INTO workflow.work_item(
+                  task_name,business_domain,region_code,product_code,business_period_code,due_at,
+                  workflow_node_id,status_code,responsible_party_id)
+                SELECT :task,'PRODUCTION',:region,'CORN',:period,'2026-08-09T08:00:00+08:00',
+                  node.node_id,'TO_REVIEW',party.responsible_party_id
+                FROM workflow.workflow_node node,workflow.responsible_party party
+                WHERE node.code='REGION_ISOLATION' AND party.external_code='REGION_ISOLATION'
+                """).param("task", task).param("region", region).param("period", PERIOD).update();
+    }
+
+    private void cleanup() {
+        if (jdbc == null) return;
+        jdbc.sql("DELETE FROM workflow.work_item WHERE task_name IN ('区域A待办','区域B待办')").update();
+        jdbc.sql("DELETE FROM logistics.route_event WHERE event_id::text IN (:ids)")
+                .param("ids", java.util.List.of(LOGISTICS_A, LOGISTICS_B)).update();
+        jdbc.sql("DELETE FROM logistics.logistics_node WHERE node_code LIKE 'ISO_A_%' OR node_code LIKE 'ISO_B_%'").update();
+        jdbc.sql("DELETE FROM market.market_record WHERE record_id IN (:ids)")
+                .param("ids", java.util.List.of(MARKET_A, MARKET_B)).update();
+        jdbc.sql("DELETE FROM production.production_record WHERE record_id IN (:ids)")
+                .param("ids", java.util.List.of(PRODUCTION_A, PRODUCTION_B)).update();
+        jdbc.sql("DELETE FROM platform.business_period WHERE code=:period").param("period", PERIOD).update();
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id IN (:ids)")
+                .param("ids", java.util.List.of(READER_A, READER_B)).update();
+        jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id IN (:ids)")
+                .param("ids", java.util.List.of(READER_A, READER_B)).update();
+        jdbc.sql("DELETE FROM platform.security_user WHERE subject_id IN (:ids)")
+                .param("ids", java.util.List.of(READER_A, READER_B)).update();
+        jdbc.sql("DELETE FROM platform.work_unit_region_scope WHERE work_unit_code IN ('REGION_TEST_A','REGION_TEST_B')").update();
+        jdbc.sql("DELETE FROM platform.work_unit WHERE code IN ('REGION_TEST_A','REGION_TEST_B')").update();
+    }
+}

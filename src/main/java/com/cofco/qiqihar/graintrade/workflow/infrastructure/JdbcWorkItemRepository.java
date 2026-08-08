@@ -95,6 +95,10 @@ public class JdbcWorkItemRepository implements WorkItemRepository {
         if (query.domain() != null) sql.append(" AND item.business_domain = :domain");
         if (query.regionId() != null) sql.append(" AND item.region_code = :regionId");
         if (query.productCode() != null) sql.append(" AND item.product_code = :productCode");
+        if (!query.authorizedRegionCodes().contains("*")) {
+            if (query.authorizedRegionCodes().isEmpty()) sql.append(" AND 1=0");
+            else sql.append(" AND item.region_code IN (:authorizedRegionCodes)");
+        }
         return sql.toString();
     }
 
@@ -103,6 +107,10 @@ public class JdbcWorkItemRepository implements WorkItemRepository {
         if (query.domain() != null) statement = statement.param("domain", query.domain());
         if (query.regionId() != null) statement = statement.param("regionId", query.regionId());
         if (query.productCode() != null) statement = statement.param("productCode", query.productCode());
+        if (!query.authorizedRegionCodes().isEmpty()
+                && !query.authorizedRegionCodes().contains("*")) {
+            statement = statement.param("authorizedRegionCodes", query.authorizedRegionCodes());
+        }
         return statement;
     }
 

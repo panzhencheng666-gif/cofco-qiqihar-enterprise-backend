@@ -39,7 +39,7 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
 
     @Override
     public PagedResult<MarketListRow> findPage(MarketRecordQuery query) {
-        SqlFilter filter = filter(query.productCode(), query.filters());
+        SqlFilter filter = filter(query.productCode(), query.filters(), query.authorizedRegionCodes());
         long total = jdbc.sql("SELECT count(*) FROM market.market_record r " + filter.sql())
                 .params(filter.parameters()).query(Long.class).single();
         long offset = Math.multiplyExact((long) query.pageNumber(), query.pageSize());
@@ -476,10 +476,18 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
         }
     }
 
-    private static SqlFilter filter(String productCode, Map<String, String> filters) {
+    private static SqlFilter filter(
+            String productCode, Map<String, String> filters, Set<String> authorizedRegionCodes) {
         StringBuilder sql = new StringBuilder("WHERE r.product_code = :productCode");
         Map<String, Object> parameters = new LinkedHashMap<>();
         parameters.put("productCode", productCode);
+        if (!authorizedRegionCodes.contains("*")) {
+            if (authorizedRegionCodes.isEmpty()) sql.append(" AND 1=0");
+            else {
+                sql.append(" AND r.region_code IN (:authorizedRegionCodes)");
+                parameters.put("authorizedRegionCodes", authorizedRegionCodes);
+            }
+        }
         filters.forEach((code, value) -> {
             switch (code) {
                 case "status" -> {

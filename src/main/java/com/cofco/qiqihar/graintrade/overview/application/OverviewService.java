@@ -1,6 +1,8 @@
 package com.cofco.qiqihar.graintrade.overview.application;
 
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
+import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
+import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
 import java.util.List;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -8,7 +10,12 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class OverviewService {
     private final OverviewRepository repository;
-    public OverviewService(OverviewRepository repository) { this.repository = repository; }
+    private final AccessControl accessControl;
+    public OverviewService(OverviewRepository repository) { this(repository, null); }
+    @org.springframework.beans.factory.annotation.Autowired
+    public OverviewService(OverviewRepository repository, AccessControl accessControl) {
+        this.repository = repository; this.accessControl = accessControl;
+    }
 
     @Transactional(readOnly = true)
     public OverviewOptions options() { return repository.options(); }
@@ -18,7 +25,8 @@ public class OverviewService {
         if (blank(productCode) || !repository.knownProduct(productCode)
                 || (!blank(periodCode) && !repository.knownPeriod(periodCode))
                 || (parentCode != null && !repository.knownRegion(parentCode))) throw invalid();
-        return repository.regions(parentCode, productCode, periodCode);
+        AuthorizedReadScope scope=readScope(); if(!blank(parentCode))scope.requireRegion(parentCode);
+        return repository.regions(parentCode, productCode, periodCode, scope.regionCodes());
     }
 
     @Transactional(readOnly = true)
@@ -26,8 +34,11 @@ public class OverviewService {
         if (blank(productCode) || blank(regionCode) || blank(periodCode)
                 || !repository.knownProduct(productCode) || !repository.knownRegion(regionCode)
                 || !repository.knownPeriod(periodCode)) throw invalid();
-        return repository.indicators(productCode, regionCode, periodCode, marketingYear);
+        AuthorizedReadScope scope=readScope(); scope.requireRegion(regionCode);
+        return repository.indicators(productCode, regionCode, periodCode, marketingYear, scope.regionCodes());
     }
+
+    private AuthorizedReadScope readScope(){return accessControl==null?AuthorizedReadScope.unrestricted():accessControl.requireReadScope();}
 
     private static boolean blank(String value) { return value == null || value.isBlank(); }
     private static ClientRequestException invalid() { return new ClientRequestException("INVALID_OVERVIEW_QUERY", "Overview query context is invalid"); }
