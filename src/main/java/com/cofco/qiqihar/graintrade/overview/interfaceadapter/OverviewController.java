@@ -6,6 +6,7 @@ import com.cofco.qiqihar.graintrade.overview.application.OverviewMapScope;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewRegion;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewOptions;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewService;
+import com.cofco.qiqihar.graintrade.overview.application.AnnualComparisonView;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import java.util.List;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -40,6 +41,13 @@ public class OverviewController {
     ApiResponse<List<OverviewIndicator>> indicators(@RequestParam String productCode, @RequestParam String regionCode,
             @RequestParam String periodCode, @RequestParam(required = false) String marketingYear) {
         return new ApiResponse<>(service.indicators(productCode, regionCode, periodCode, marketingYear));
+    }
+
+    @GetMapping("/api/v1/overview/annual-comparisons")
+    ApiResponse<AnnualComparisonView> annualComparison(@RequestParam String productCode,
+            @RequestParam(required = false) String cultivarCode, @RequestParam String regionCode,
+            @RequestParam String periodCode, @RequestParam String indicatorCode) {
+        return new ApiResponse<>(service.annualComparison(productCode, cultivarCode, regionCode, periodCode, indicatorCode));
     }
 
     @GetMapping("/api/v1/overview/dashboard")

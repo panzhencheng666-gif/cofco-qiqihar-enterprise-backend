@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.overview.application;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 
 public interface OverviewRepository {
@@ -9,6 +10,8 @@ public interface OverviewRepository {
     boolean knownProduct(String productCode);
     boolean knownRegion(String regionCode);
     boolean knownPeriod(String periodCode);
+    boolean knownCultivar(String productCode, String cultivarCode);
+    Optional<AnnualComparisonDefinition> annualComparisonDefinition(String indicatorCode);
     boolean canNavigateRegion(String regionCode, Set<String> authorizedRegionCodes);
     List<OverviewRegion> regions(String parentCode, String productCode, String periodCode, Set<String> authorizedRegionCodes);
     List<OverviewRegion> locations(String ancestorCode, String level, String productCode, String periodCode, Set<String> authorizedRegionCodes);
@@ -16,4 +19,6 @@ public interface OverviewRepository {
             Set<String> authorizedRegionCodes);
     OverviewDashboard dashboard(String productCode, String periodCode, String regionCode, String marketingYear,
             Set<String> authorizedRegionCodes);
+    List<AnnualComparisonPoint> annualComparison(String productCode, String cultivarCode, String regionCode,
+            String periodCode, AnnualComparisonDefinition definition, Set<String> authorizedRegionCodes);
 }

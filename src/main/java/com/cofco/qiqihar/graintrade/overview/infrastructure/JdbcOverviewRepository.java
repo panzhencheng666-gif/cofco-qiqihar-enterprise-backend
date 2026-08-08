@@ -8,10 +8,14 @@ import com.cofco.qiqihar.graintrade.overview.application.OverviewOptions;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewPeriodOption;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewRegion;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewRepository;
+import com.cofco.qiqihar.graintrade.overview.application.AnnualComparisonDefinition;
+import com.cofco.qiqihar.graintrade.overview.application.AnnualComparisonPoint;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -65,6 +69,21 @@ public class JdbcOverviewRepository implements OverviewRepository {
         return exists("SELECT EXISTS(SELECT 1 FROM platform.region WHERE code=:value)", regionCode);
     }
     @Override public boolean knownPeriod(String periodCode) { return exists("SELECT EXISTS(SELECT 1 FROM platform.business_period WHERE code=:value)", periodCode); }
+    @Override public boolean knownCultivar(String productCode, String cultivarCode) {
+        return Boolean.TRUE.equals(jdbc.sql("""
+                SELECT EXISTS(SELECT 1 FROM platform.cultivar WHERE product_code=:product AND code=:cultivar)
+                """).param("product", productCode).param("cultivar", cultivarCode).query(Boolean.class).single());
+    }
+
+    @Override
+    public Optional<AnnualComparisonDefinition> annualComparisonDefinition(String indicatorCode) {
+        return jdbc.sql("""
+                SELECT code,name,unit_code,source_domain FROM overview.indicator_definition
+                 WHERE code=:code AND code IN ('PRODUCTION_CULTIVATED_AREA','PRODUCTION_ESTIMATED_OUTPUT','MARKET_AVERAGE_TRADE_PRICE')
+                """).param("code", indicatorCode).query((row, index) -> new AnnualComparisonDefinition(
+                        row.getString("code"), row.getString("name"), row.getString("unit_code"), row.getString("source_domain")))
+                .optional();
+    }
 
     @Override
     public boolean canNavigateRegion(String regionCode, Set<String> authorizedRegionCodes) {
@@ -277,6 +296,80 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 dashboardAlerts(productCode, periodCode, regionCode, authorizedRegionCodes),
                 yearOnYear.cultivatedArea(),
                 yearOnYear.output());
+    }
+
+    @Override
+    public List<AnnualComparisonPoint> annualComparison(String productCode, String cultivarCode, String regionCode,
+            String periodCode, AnnualComparisonDefinition definition, Set<String> authorizedRegionCodes) {
+        String sourceTable;
+        String occurredOn;
+        String value;
+        String cultivarFilter;
+        String publication;
+        if ("PRODUCTION".equals(definition.sourceDomain())) {
+            sourceTable = "production.production_record";
+            occurredOn = "record.survey_date";
+            value = switch (definition.code()) {
+                case "PRODUCTION_CULTIVATED_AREA" -> "SUM(record.cultivated_area_mu)";
+                case "PRODUCTION_ESTIMATED_OUTPUT" -> "SUM(record.estimated_output_kg)";
+                default -> throw new IllegalArgumentException("Unsupported production indicator");
+            };
+            cultivarFilter = "AND (:cultivar IS NULL OR record.cultivar_code=:cultivar)";
+            publication = "APPROVED_PRODUCTION_RECORD:v";
+        } else if ("MARKET".equals(definition.sourceDomain())
+                && "MARKET_AVERAGE_TRADE_PRICE".equals(definition.code())) {
+            sourceTable = "market.market_record";
+            occurredOn = "record.trade_date";
+            value = "AVG(record.actual_trade_price)";
+            cultivarFilter = "";
+            publication = "APPROVED_MARKET_RECORD:v";
+        } else {
+            throw new IllegalArgumentException("Unsupported annual comparison indicator");
+        }
+        return jdbc.sql("""
+                WITH RECURSIVE monitoring_scope AS (
+                  SELECT region_code FROM platform.monitoring_scope_region
+                  WHERE scope_code='FORMAL_BUSINESS' AND included
+                    AND (:unrestricted OR region_code IN (:authorizedRegions))
+                ), scope(code) AS (
+                  SELECT region.code FROM platform.region region JOIN monitoring_scope ON monitoring_scope.region_code=region.code
+                  WHERE region.code=:region
+                  UNION
+                  SELECT child.code FROM platform.region child
+                  JOIN scope parent ON child.parent_code=parent.code
+                  JOIN monitoring_scope ON monitoring_scope.region_code=child.code
+                ), period AS (
+                  SELECT starts_on,ends_on FROM platform.business_period WHERE code=:period
+                ), comparison_year AS (
+                  SELECT (EXTRACT(YEAR FROM period.ends_on)::integer-year_offset)::text business_year,
+                    (period.starts_on-make_interval(years=>year_offset))::date starts_on,
+                    (period.ends_on-make_interval(years=>year_offset))::date ends_on
+                  FROM period CROSS JOIN generate_series(0,3) year_offset
+                ), approved AS (
+                  SELECT record.* FROM %s record,period
+                  WHERE record.product_code=:product AND record.status_code='APPROVED'
+                    AND record.region_code IN (SELECT code FROM scope)
+                    AND %s BETWEEN (period.starts_on-INTERVAL '3 years')::date AND period.ends_on
+                    %s
+                )
+                SELECT comparison_year.business_year,%s value,COUNT(record.record_id) source_count,
+                  MAX(record.version) source_version,MAX(record.reported_at) data_cutoff
+                FROM comparison_year LEFT JOIN approved record
+                  ON %s BETWEEN comparison_year.starts_on AND comparison_year.ends_on
+                GROUP BY comparison_year.business_year,comparison_year.ends_on
+                ORDER BY comparison_year.ends_on DESC
+                """.formatted(sourceTable, occurredOn, cultivarFilter, value, occurredOn))
+                .param("region", regionCode).param("period", periodCode).param("product", productCode)
+                .param("cultivar", cultivarCode).param("unrestricted", authorizedRegionCodes.contains("*"))
+                .param("authorizedRegions", authorizedRegionCodes)
+                .query((row, index) -> {
+                    long count = row.getLong("source_count");
+                    OffsetDateTime cutoff = row.getObject("data_cutoff", OffsetDateTime.class);
+                    return new AnnualComparisonPoint(row.getString("business_year"), row.getBigDecimal("value"),
+                            count == 0 ? null : publication + row.getLong("source_version"),
+                            cutoff == null ? null : DateTimeFormatter.ISO_INSTANT.format(cutoff.toInstant()),
+                            count == 0 ? "NO_APPROVED_RECORDS" : null);
+                }).list();
     }
 
     private OverviewDashboard.Scope dashboardScope(

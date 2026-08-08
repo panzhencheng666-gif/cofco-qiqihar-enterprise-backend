@@ -67,6 +67,25 @@ public class OverviewService {
         return repository.dashboard(productCode, periodCode, regionCode, marketingYear, scope.regionCodes());
     }
 
+    @Transactional(readOnly = true)
+    public AnnualComparisonView annualComparison(String productCode, String cultivarCode, String regionCode,
+            String periodCode, String indicatorCode) {
+        if (blank(productCode) || blank(regionCode) || blank(periodCode) || blank(indicatorCode)
+                || !repository.knownProduct(productCode) || !repository.knownRegion(regionCode)
+                || !repository.knownPeriod(periodCode)
+                || (!blank(cultivarCode) && !repository.knownCultivar(productCode, cultivarCode))) throw invalid();
+        AnnualComparisonDefinition definition = repository.annualComparisonDefinition(indicatorCode)
+                .orElseThrow(OverviewService::invalid);
+        if (!("PRODUCTION".equals(definition.sourceDomain()) || "MARKET".equals(definition.sourceDomain()))
+                || ("MARKET".equals(definition.sourceDomain()) && !blank(cultivarCode))) throw invalid();
+        AuthorizedReadScope scope = readScope();
+        scope.requireRegion(regionCode);
+        return new AnnualComparisonView(definition.code(), definition.name(), definition.sourceDomain(), productCode,
+                cultivarCode, regionCode, periodCode, definition.unitCode(), "OVERVIEW_APPROVED_FACTS_V1",
+                repository.annualComparison(productCode, cultivarCode, regionCode, periodCode, definition,
+                        scope.regionCodes()));
+    }
+
     private AuthorizedReadScope readScope(){return accessControl==null?AuthorizedReadScope.unrestricted():accessControl.requireReadScope();}
 
     private static boolean blank(String value) { return value == null || value.isBlank(); }

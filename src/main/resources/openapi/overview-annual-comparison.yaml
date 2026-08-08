@@ -1,0 +1,53 @@
+openapi: 3.0.3
+info:
+  title: Grain Trade Overview Annual Comparison API
+  version: v1
+paths:
+  /api/v1/overview/annual-comparisons:
+    get:
+      summary: Read four comparable annual approved-fact values
+      parameters:
+        - {name: productCode, in: query, required: true, schema: {type: string}}
+        - {name: cultivarCode, in: query, required: false, schema: {type: string}, description: Production-only cultivar filter.}
+        - {name: regionCode, in: query, required: true, schema: {type: string}}
+        - {name: periodCode, in: query, required: true, schema: {type: string}, description: Cutoff business period; its dates are shifted by zero through three years.}
+        - {name: indicatorCode, in: query, required: true, schema: {type: string, enum: [PRODUCTION_CULTIVATED_AREA, PRODUCTION_ESTIMATED_OUTPUT, MARKET_AVERAGE_TRADE_PRICE]}}
+      responses:
+        '200':
+          description: Four current/prior-year values from approved database records only.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    $ref: '#/components/schemas/AnnualComparison'
+        '403': {description: Requested region is outside the caller read scope.}
+components:
+  schemas:
+    AnnualComparison:
+      type: object
+      required: [indicatorCode, indicatorName, sourceDomain, productCode, regionCode, cutoffPeriodCode, unitCode, methodologyVersion, points]
+      properties:
+        indicatorCode: {type: string}
+        indicatorName: {type: string}
+        sourceDomain: {type: string, enum: [PRODUCTION, MARKET]}
+        productCode: {type: string}
+        cultivarCode: {type: string, nullable: true}
+        regionCode: {type: string}
+        cutoffPeriodCode: {type: string}
+        unitCode: {type: string}
+        methodologyVersion: {type: string, example: OVERVIEW_APPROVED_FACTS_V1}
+        points:
+          type: array
+          minItems: 4
+          maxItems: 4
+          items:
+            type: object
+            required: [businessYear, value, sourcePublicationVersion, dataCutoff, missingReason]
+            properties:
+              businessYear: {type: string, example: '2026'}
+              value: {type: number, nullable: true}
+              sourcePublicationVersion: {type: string, nullable: true}
+              dataCutoff: {type: string, format: date-time, nullable: true}
+              missingReason: {type: string, nullable: true, enum: [NO_APPROVED_RECORDS]}
