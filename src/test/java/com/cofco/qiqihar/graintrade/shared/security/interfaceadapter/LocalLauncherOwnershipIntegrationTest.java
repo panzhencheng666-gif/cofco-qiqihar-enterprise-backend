@@ -548,6 +548,7 @@ class LocalLauncherOwnershipIntegrationTest {
                     "COFCO_ENTERPRISE_LOCAL_RUNTIME_ROOT", runtimeRoot.toString(),
                     "COFCO_ENTERPRISE_FRONTEND_ROOT", temporaryDirectoryStaticWorkaround(),
                     "COFCO_ENTERPRISE_WEB_ROOT", temporaryDirectoryStaticWorkaround(),
+                    "COFCO_ENTERPRISE_REGION_VERIFY_SCRIPT", "/usr/bin/true",
                     "JAVA_HOME", "/opt/homebrew/opt/openjdk@21",
                     "PATH", fakeBin + ":" + System.getenv("PATH")));
         }

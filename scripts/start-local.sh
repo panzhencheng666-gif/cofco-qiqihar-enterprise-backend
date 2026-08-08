@@ -3,6 +3,7 @@ set -euo pipefail
 
 backend_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 workspace_root="$(cd "${backend_root}/.." && pwd)"
+region_verify_script="${COFCO_ENTERPRISE_REGION_VERIFY_SCRIPT:-${backend_root}/scripts/verify-local-region-hierarchy.sh}"
 source "${backend_root}/scripts/verify-loopback-listener.sh"
 source "${backend_root}/scripts/local-process-ownership.sh"
 
@@ -321,7 +322,7 @@ start_business() {
 start_backend
 start_overview
 start_business
-"${backend_root}/scripts/verify-local-region-hierarchy.sh"
+"$region_verify_script"
 
 log "Started services."
 log "Business: http://$local_access_host:${business_port}/prototype.html"
