@@ -16,13 +16,19 @@ public class LocalSecurityBootstrapConfiguration {
         return args -> {
             jdbc.sql("""
                     INSERT INTO platform.work_unit(code, name, sort_order)
-                    VALUES ('LOCAL_DEV', '本地开发操作组', 9900)
+                    SELECT 'LOCAL_DEV', '本地开发操作组', COALESCE(MAX(sort_order), 0) + 1
+                    FROM platform.work_unit
                     ON CONFLICT (code) DO NOTHING
                     """).update();
             jdbc.sql("""
+                    DELETE FROM platform.work_unit_region_scope
+                    WHERE work_unit_code = 'LOCAL_DEV'
+                    """).update();
+            jdbc.sql("""
                     INSERT INTO platform.work_unit_region_scope(work_unit_code, region_code)
-                    SELECT 'LOCAL_DEV', code FROM platform.region WHERE code LIKE '2302%'
-                    ON CONFLICT DO NOTHING
+                    SELECT 'LOCAL_DEV', region_code
+                    FROM platform.monitoring_scope_region
+                    WHERE scope_code = 'FORMAL_BUSINESS' AND included
                     """).update();
             jdbc.sql("""
                     INSERT INTO platform.security_user(subject_id, display_name, work_unit_code)
@@ -38,9 +44,14 @@ public class LocalSecurityBootstrapConfiguration {
                     ON CONFLICT DO NOTHING
                     """).update();
             jdbc.sql("""
+                    DELETE FROM platform.security_user_region_scope
+                    WHERE subject_id = 'wang-yang'
+                    """).update();
+            jdbc.sql("""
                     INSERT INTO platform.security_user_region_scope(subject_id, region_code)
-                    SELECT 'wang-yang', code FROM platform.region WHERE code LIKE '2302%'
-                    ON CONFLICT DO NOTHING
+                    SELECT 'wang-yang', region_code
+                    FROM platform.monitoring_scope_region
+                    WHERE scope_code = 'FORMAL_BUSINESS' AND included
                     """).update();
         };
     }
