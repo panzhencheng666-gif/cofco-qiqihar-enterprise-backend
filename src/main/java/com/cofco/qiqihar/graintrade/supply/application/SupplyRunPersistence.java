@@ -8,6 +8,7 @@ import java.util.List;
 public record SupplyRunPersistence(
         SupplyCalculationMaterial material,
         String formulaSnapshot,
+        String calculationChecksum,
         String productCode,
         String regionCode,
         String marketingYear,

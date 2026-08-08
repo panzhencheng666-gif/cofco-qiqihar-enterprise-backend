@@ -7,6 +7,7 @@ public record SupplyAccountView(
         String regionCode,
         String marketingYear,
         int resultVersion,
+        String calculationChecksum,
         long decisionVersion,
         String resultState,
         List<String> validationCodes,

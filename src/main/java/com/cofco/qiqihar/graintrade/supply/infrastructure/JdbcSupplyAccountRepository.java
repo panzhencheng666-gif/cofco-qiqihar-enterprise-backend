@@ -59,13 +59,14 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
             Set<String> authorizedRegionCodes) {
         StringBuilder sql = new StringBuilder("""
                 SELECT r.calculation_run_id::text id,r.product_code,r.region_code,r.marketing_year,
-                  r.result_state,r.validation_codes,r.balanced,r.decision_version,
+                  r.result_state,r.validation_codes,r.balanced,r.calculation_checksum,r.decision_version,
                   r.total_supply,r.total_use,r.calculated_ending_inventory,r.approved_adjustment,
                   r.adopted_ending_inventory,r.surveyed_ending_inventory,r.inventory_reconciliation_difference,
                   r.adjustment_reason_snapshot,r.adjustment_actor_snapshot,r.adjustment_decided_at_snapshot,
                   r.adjustment_proposal_value,r.adjustment_proposal_reason,r.adjustment_requested_by,
                   r.adjustment_requested_at,r.input_set_id::text,
-                  (r.input_set_id IS NULL OR COALESCE(input_set.legacy, false)) legacy_read_only,
+                  (r.input_set_id IS NULL OR COALESCE(input_set.legacy, false)
+                    OR r.calculation_checksum IS NULL) legacy_read_only,
                   r.formula_snapshot->>'code' formula_code,(r.formula_snapshot->>'version')::integer formula_version,
                   r.formula_snapshot->>'name' formula_name,(r.formula_snapshot->>'precision')::integer formula_precision,
                   (r.formula_snapshot->>'scale')::integer formula_scale,r.formula_snapshot->>'roundingMode' rounding_mode,
@@ -97,7 +98,7 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
         sql.append(" ORDER BY rv.version_no DESC");
         List<Header> headers = jdbc.sql(sql.toString()).params(params).query((row, index) -> new Header(
                 row.getString("id"), row.getString("product_code"), row.getString("region_code"),
-                row.getString("marketing_year"), row.getInt("version_no"), row.getLong("decision_version"),
+                row.getString("marketing_year"), row.getInt("version_no"), row.getString("calculation_checksum"), row.getLong("decision_version"),
                 row.getString("result_state"), strings(row.getArray("validation_codes")),
                 Boolean.TRUE.equals(row.getObject("balanced", Boolean.class)), plain(row.getBigDecimal("total_supply")),
                 plain(row.getBigDecimal("total_use")), plain(row.getBigDecimal("calculated_ending_inventory")),
@@ -478,13 +479,13 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                   approved_adjustment,adopted_ending_inventory,surveyed_ending_inventory,
                   inventory_reconciliation_difference,balanced,decision_version,adjustment_reason_snapshot,
                   adjustment_actor_snapshot,adjustment_decided_at_snapshot,created_by,created_at,input_set_id,
-                  formula_snapshot,adjustment_proposal_value,adjustment_proposal_reason,adjustment_requested_by,
+                  formula_snapshot,calculation_checksum,adjustment_proposal_value,adjustment_proposal_reason,adjustment_requested_by,
                   adjustment_requested_at)
                 VALUES(CAST(:id AS uuid),:product,:region,:year,:formula,:state,CAST(:errors AS text[]),:supply,
                   :use,:calculated,:adjustment,:adopted,:surveyed,:difference,:balanced,:decisionVersion,
                   :auditReason,:auditActor,:auditAt,:actor,:now,CAST(:inputSet AS uuid),
                   CAST(:formulaSnapshot AS jsonb),
-                  :proposalValue,:proposalReason,:requestedBy,:requestedAt)
+                  :checksum,:proposalValue,:proposalReason,:requestedBy,:requestedAt)
                 """).param("id", id).param("product", run.productCode()).param("region", run.regionCode())
                 .param("year", run.marketingYear()).param("formula", run.material().formula().id())
                 .param("state", run.resultState()).param("errors", run.validationCodes().toArray(String[]::new))
@@ -501,6 +502,7 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                 .param("auditActor", formal ? run.actor() : null).param("auditAt", formal ? now : null)
                 .param("actor", run.actor()).param("now", now).param("inputSet", run.material().inputSet().id())
                 .param("formulaSnapshot", run.formulaSnapshot())
+                .param("checksum", run.calculationChecksum())
                 .param("proposalValue", formal ? null : run.proposalValue())
                 .param("proposalReason", formal ? null : run.proposalReason())
                 .param("requestedBy", formal ? null : run.actor()).param("requestedAt", formal ? null : now).update();
@@ -595,7 +597,7 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                     header.formula.roundingMode, normalized(header.formula.tolerance, header.formula),
                     difference.resultCode(), difference.label(), difference.expression(), runExpressions);
             return new SupplyAccountView(header.id, header.product, header.region, header.year,
-                    header.resultVersion, header.decisionVersion, header.state, header.errors,
+                    header.resultVersion, header.calculationChecksum, header.decisionVersion, header.state, header.errors,
                     header.balanced, publishable, balanceReason, normalized(header.totalSupply, header.formula),
                     normalized(header.totalUse, header.formula), normalized(header.calculated, header.formula),
                     normalized(header.adjustment, header.formula), normalized(header.adopted, header.formula),
@@ -784,7 +786,7 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
     private record FormulaHeader(String code, int version, String name, int precision, int scale,
                                  String roundingMode, String tolerance) {}
     private record Header(String id, String product, String region, String year, int resultVersion,
-                          long decisionVersion, String state, List<String> errors, boolean balanced,
+                          String calculationChecksum, long decisionVersion, String state, List<String> errors, boolean balanced,
                           String totalSupply, String totalUse, String calculated, String adjustment,
                           String adopted, String surveyed, String difference, String adjustmentReason,
                           String adjustmentActor, String adjustmentAt, String proposalValue,

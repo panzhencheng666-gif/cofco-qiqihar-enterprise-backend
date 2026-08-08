@@ -90,6 +90,8 @@ class SupplyAccountRestIntegrationTest {
                     .andExpect(jsonPath("$.data.balanced").value(true))
                     .andExpect(jsonPath("$.data.publishable").value(true))
                     .andExpect(jsonPath("$.data.inventoryReconciliationDifference").value("-0.250"))
+                    .andExpect(jsonPath("$.data.calculationChecksum")
+                            .value(org.hamcrest.Matchers.matchesPattern("[0-9a-f]{64}")))
                     .andExpect(jsonPath("$.data.inputSetId").value(inputSet))
                     .andExpect(jsonPath("$.data.legacyReadOnly").value(false))
                     .andExpect(jsonPath("$.data.adjustmentProposal").doesNotExist())
@@ -129,6 +131,9 @@ class SupplyAccountRestIntegrationTest {
                 .andExpect(jsonPath("$.error.code").value("SUPPLY_DECISION_VERSION_CONFLICT"));
         assertThat(jdbc.sql("SELECT count(*) FROM supply.calculation_run WHERE product_code='CORN'")
                 .query(Long.class).single()).isEqualTo(3);
+        assertThat(jdbc.sql("SELECT calculation_checksum FROM supply.calculation_run WHERE product_code='CORN'")
+                .query(String.class).list()).hasSize(3)
+                .allSatisfy(checksum -> assertThat(checksum).matches("[0-9a-f]{64}"));
         assertThat(jdbc.sql("SELECT action_code FROM platform.business_audit_event ORDER BY occurred_at, event_id")
                 .query(String.class).list()).contains("SUPPLY_SOURCE_RELEASED", "SUPPLY_MANUAL_INPUT_APPROVED",
                         "SUPPLY_INPUT_SET_CREATED", "SUPPLY_ACCOUNT_CALCULATED", "SUPPLY_ACCOUNT_PUBLISHED");

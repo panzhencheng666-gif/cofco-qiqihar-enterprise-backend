@@ -142,6 +142,7 @@ public class SupplyAccountService {
         SupplyAccountView persisted = repository.persistRun(new SupplyRunPersistence(
                 material,
                 formulaSnapshot(material.formula()),
+                calculationChecksum(material, calculation),
                 command.productCode(),
                 command.regionCode(),
                 command.marketingYear(),
@@ -301,9 +302,34 @@ public class SupplyAccountService {
     }
 
     private static String digest(Object command, BigDecimal value) {
+        return digest(command + "|" + value.toPlainString());
+    }
+
+    private String calculationChecksum(SupplyCalculationMaterial material, SupplyAccountCalculation calculation) {
+        StringBuilder contents = new StringBuilder(formulaSnapshot(material.formula()))
+                .append('|').append(material.inputSet().id())
+                .append('|').append(material.inputSet().version());
+        material.inputSet().sources().forEach(source -> contents.append('|').append(source.roleCode())
+                .append('|').append(source.releaseId()).append('|').append(source.recordId())
+                .append('|').append(source.sourceVersion()).append('|').append(source.sourceFieldCode())
+                .append('|').append(source.accountValue().toPlainString()));
+        if (calculation != null) {
+            contents.append('|').append(calculation.totalSupply().toPlainString())
+                    .append('|').append(calculation.totalUse().toPlainString())
+                    .append('|').append(calculation.calculatedEndingInventory().toPlainString())
+                    .append('|').append(calculation.approvedAdjustment().toPlainString())
+                    .append('|').append(calculation.adoptedEndingInventory().toPlainString())
+                    .append('|').append(calculation.surveyedEndingInventory().toPlainString())
+                    .append('|').append(calculation.inventoryReconciliationDifference().toPlainString())
+                    .append('|').append(calculation.balanced());
+        }
+        return digest(contents.toString());
+    }
+
+    private static String digest(String contents) {
         try {
             byte[] bytes = MessageDigest.getInstance("SHA-256")
-                    .digest((command + "|" + value.toPlainString()).getBytes(StandardCharsets.UTF_8));
+                    .digest(contents.getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(bytes);
         } catch (NoSuchAlgorithmException exception) {
             throw new IllegalStateException(exception);
