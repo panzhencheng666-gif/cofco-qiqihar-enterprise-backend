@@ -3,12 +3,14 @@ package com.cofco.qiqihar.graintrade.importing.application;
 import com.cofco.qiqihar.graintrade.importing.domain.CsvTable;
 import com.cofco.qiqihar.graintrade.importing.domain.ImportJob;
 import com.cofco.qiqihar.graintrade.importing.domain.ImportRowOutcome;
+import com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable;
 import com.cofco.qiqihar.graintrade.production.application.ProductionDraft;
 import com.cofco.qiqihar.graintrade.production.application.ProductionImportPort;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.BoundedInput;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.PlainDecimal;
+import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
 import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder;
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
@@ -51,15 +53,16 @@ public class ProductionImportService {
     public String template() { return ProductionImportTemplate.csv(); }
 
     @Transactional
-    public ImportJobView importCsv(String idempotencyKey, byte[] bytes) {
+    public ImportJobView importFile(String idempotencyKey, String filename, String mediaType, byte[] bytes) {
         if (idempotencyKey == null || idempotencyKey.isBlank() || idempotencyKey.length() > 128
+                || filename == null || filename.isBlank() || filename.length() > 255
                 || bytes == null || bytes.length == 0 || bytes.length > MAX_BYTES) throw invalid();
         SecurityPrincipal principal = accessControl.require("BUSINESS_IMPORT", null);
-        String content = new String(bytes, StandardCharsets.UTF_8);
         String digest = digest(bytes);
         var reservation = repository.reserve(principal.subjectId(), ProductionImportTemplate.DOMAIN, idempotencyKey,
                 digest, principal.workUnitCode(), clock.instant());
         if (!reservation.owner()) return ImportJobView.from(reservation.stored().job());
+        String content = canonicalContent(table(filename, mediaType, bytes));
         return ImportJobView.from(process(reservation.stored().job(), idempotencyKey,
                 content, digest, null, null, principal));
     }
@@ -106,28 +109,77 @@ public class ProductionImportService {
         if (retryRows != null) rows = rows.stream().filter(row -> retryRows.contains(row.number)).toList();
         rows.stream().filter(row -> row.error == null).map(row -> row.values.get("regionCode"))
                 .distinct().forEach(region -> accessControl.require("BUSINESS_IMPORT", region));
-        List<ImportRowOutcome> outcomes = new ArrayList<>();
-        for (ParsedRow row : rows) {
-            if (row.error != null) {
-                outcomes.add(ImportRowOutcome.error(row.number, row.error.code, row.error.message, row.values));
-                continue;
-            }
-            try {
+        List<ParsedRow> validated = rows.stream().map(this::validate).toList();
+        boolean hasErrors = validated.stream().anyMatch(row -> row.error != null);
+        List<ImportRowOutcome> outcomes = new ArrayList<>(validated.size());
+        if (hasErrors) {
+            validated.forEach(row -> outcomes.add(row.error == null
+                    ? ImportRowOutcome.error(row.number, "NOT_IMPORTED_ATOMIC_BATCH",
+                            "Another row failed; the atomic batch was not written", row.values)
+                    : ImportRowOutcome.error(row.number, row.error.code, row.error.message, row.values)));
+        } else {
+            for (ParsedRow row : validated) {
                 String recordId = production.importDraft(row.draft());
                 outcomes.add(ImportRowOutcome.imported(row.number, recordId, row.values));
-            } catch (ClientRequestException exception) {
-                outcomes.add(ImportRowOutcome.error(row.number, exception.code(), exception.clientMessage(), row.values));
             }
         }
         var now = clock.instant();
-        String status = outcomes.stream().anyMatch(row -> row.outcomeCode().equals("ERROR"))
-                ? "COMPLETED_WITH_ERRORS" : "COMPLETED";
+        String status = hasErrors ? "COMPLETED_WITH_ERRORS" : "COMPLETED";
         ImportJob job = repository.complete(new ImportJob(reserved.id(), ProductionImportTemplate.DOMAIN, idempotencyKey,
                 digest, principal.subjectId(), principal.workUnitCode(), retryOf, status,
                 reserved.createdAt(), now, outcomes), content);
         audit.record(principal, "IMPORT_JOB", job.id().toString(), "IMPORT_JOB_COMPLETED", now,
                 detail(job.importedRows(), job.failedRows()));
         return job;
+    }
+
+    private ParsedRow validate(ParsedRow row) {
+        if (row.error != null) return row;
+        try {
+            production.validateImportDraft(row.draft());
+            return row;
+        } catch (ClientRequestException exception) {
+            return ParsedRow.error(row.number, row.values, exception.code(), exception.clientMessage());
+        } catch (ConflictException exception) {
+            return ParsedRow.error(row.number, row.values, exception.code(), exception.clientMessage());
+        } catch (ResourceNotFoundException exception) {
+            return ParsedRow.error(row.number, row.values, exception.code(), exception.clientMessage());
+        }
+    }
+
+    private static List<List<String>> table(String filename, String mediaType, byte[] bytes) {
+        String lower = filename.toLowerCase(java.util.Locale.ROOT);
+        if (lower.endsWith(".csv") && (mediaType == null || mediaType.equals("text/csv")
+                || mediaType.equals("application/csv") || mediaType.equals("application/vnd.ms-excel"))) {
+            try {
+                return CsvTable.parse(new String(bytes, StandardCharsets.UTF_8), ProductionImportTemplate.HEADERS.size());
+            } catch (CsvTable.LimitExceededException exception) {
+                throw new ClientRequestException(exception.code(), exception.getMessage());
+            } catch (IllegalArgumentException exception) {
+                throw new ClientRequestException("INVALID_IMPORT_CSV", "CSV syntax is invalid");
+            }
+        }
+        if (lower.endsWith(".xlsx") && (mediaType == null || mediaType.equals(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))) {
+            try {
+                return XlsxTable.parse(bytes, ProductionImportTemplate.HEADERS.size());
+            } catch (IllegalArgumentException exception) {
+                throw new ClientRequestException("INVALID_IMPORT_FORMAT", "XLSX import file is invalid");
+            }
+        }
+        throw new ClientRequestException("INVALID_IMPORT_FORMAT", "Import file format is not supported");
+    }
+
+    private static String canonicalContent(List<List<String>> table) {
+        StringBuilder csv = new StringBuilder();
+        table.forEach(row -> {
+            for (int index = 0; index < row.size(); index++) {
+                if (index > 0) csv.append(',');
+                csv.append(CsvTable.escape(row.get(index)));
+            }
+            csv.append('\n');
+        });
+        return csv.toString();
     }
 
     private List<ParsedRow> parse(String content) {
@@ -162,7 +214,7 @@ public class ProductionImportService {
             BoundedInput.requireMapText("IMPORT_ROW_VALUE_FORMAT", values);
             if (required(values, "productCode") || required(values, "objectTypeCode") || required(values, "regionCode")
                     || required(values, "surveyDate") || required(values, "cultivatedAreaMu")
-                    || required(values, "yieldPerMuKilograms")
+                    || required(values, "yieldPerMuKilograms") || required(values, "evidencePhotoId")
                     || ProductionImportTemplate.SUBMISSION_METADATA_HEADERS.stream()
                             .anyMatch(header -> required(values, header))) {
                 return ParsedRow.error(number, values, "IMPORT_ROW_REQUIRED_VALUE", "Required production import value is blank");
@@ -176,7 +228,8 @@ public class ProductionImportService {
                     values.get("regionCode"), emptyToNull(values.get("cultivarCode")), LocalDate.parse(values.get("surveyDate")),
                     PlainDecimal.parse(values.get("cultivatedAreaMu"), 14, 4, "IMPORT_ROW_VALUE_FORMAT"),
                     PlainDecimal.parse(values.get("yieldPerMuKilograms"), 14, 4, "IMPORT_ROW_VALUE_FORMAT"),
-                    Map.of(), Map.of(), Map.of(), Map.of(), submissionMetadata));
+                    Map.of(), Map.of(), Map.of(), Map.of(), submissionMetadata,
+                    List.of(UUID.fromString(values.get("evidencePhotoId")))));
         } catch (RuntimeException exception) {
             return ParsedRow.error(number, values, "IMPORT_ROW_VALUE_FORMAT", "Production date or decimal value is invalid");
         }

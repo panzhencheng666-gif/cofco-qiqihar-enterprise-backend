@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade.production.interfaceadapter;
 
+import com.cofco.qiqihar.graintrade.evidence.application.EvidencePhotoView;
 import com.cofco.qiqihar.graintrade.production.application.ProductionDraft;
 import com.cofco.qiqihar.graintrade.production.application.ProductionListItem;
 import com.cofco.qiqihar.graintrade.production.application.ProductionFactDefinition;
@@ -22,6 +23,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.http.HttpStatus;
@@ -110,7 +112,8 @@ public class ProductionRecordController {
     record DraftRequest(String productCode, String objectTypeCode, String regionCode, String cultivarCode,
                         LocalDate surveyDate, String cultivatedAreaMu, String yieldPerMuKilograms,
                         Map<String, String> quality, Map<String, String> costs, Map<String, String> insurance,
-                        Map<String, String> subsidies, Map<String, String> submissionMetadata, Long version) {
+                        Map<String, String> subsidies, Map<String, String> submissionMetadata,
+                        List<UUID> evidencePhotoIds, Long version) {
         ProductionDraft toDraft() {
             String code = "INVALID_PRODUCTION_RECORD";
             BoundedInput.requireAggregateSize(code, quality, costs, insurance, subsidies, submissionMetadata);
@@ -119,7 +122,7 @@ public class ProductionRecordController {
             validateCoordinates(submissionMetadata);
             return new ProductionDraft(productCode, objectTypeCode, regionCode, cultivarCode, surveyDate,
                     decimal(cultivatedAreaMu), decimal(yieldPerMuKilograms), values(quality), values(costs),
-                    values(insurance), values(subsidies), submissionMetadata);
+                    values(insurance), values(subsidies), submissionMetadata, evidencePhotoIds);
         }
         long requiredVersion() {
             if (version == null || version < 0) throw new ClientRequestException(
@@ -162,7 +165,7 @@ public class ProductionRecordController {
                           String returnReason, Map<String, String> quality, Map<String, String> costs,
                           Map<String, String> insurance, Map<String, String> subsidies,
                           Map<String, String> submissionMetadata,
-                          List<String> allowedActions, long version) {
+                          List<EvidencePhotoResponse> evidencePhotos, List<String> allowedActions, long version) {
         static RecordResponse from(ProductionRecordView view) {
             ProductionRecord record = view.record();
             return new RecordResponse(record.id(), record.productCode(), record.objectTypeCode(), record.regionCode(),
@@ -170,6 +173,7 @@ public class ProductionRecordController {
                     decimal(record.yieldPerMuKilograms()), decimal(record.estimatedOutputKilograms()),
                     record.status().name(), record.returnReason(), values(record.quality()), values(record.costs()),
                     values(record.insurance()), values(record.subsidies()), record.submissionMetadata(),
+                    view.evidencePhotos().stream().map(EvidencePhotoResponse::from).toList(),
                     view.allowedActions(), record.version());
         }
         private static String decimal(BigDecimal value) { return value.toPlainString(); }
@@ -177,6 +181,15 @@ public class ProductionRecordController {
             Map<String, String> response = new LinkedHashMap<>();
             values.forEach((code, value) -> response.put(code, decimal(value)));
             return response;
+        }
+    }
+    record EvidencePhotoResponse(UUID id, String state, String originalFilename, String mediaType, long byteLength,
+                                 String sha256, OffsetDateTime capturedAt, String latitude, String longitude,
+                                 String watermarkText) {
+        static EvidencePhotoResponse from(EvidencePhotoView photo) {
+            return new EvidencePhotoResponse(photo.id(), photo.state(), photo.originalFilename(), photo.mediaType(),
+                    photo.byteLength(), photo.sha256(), photo.capturedAt(), photo.latitude(), photo.longitude(),
+                    photo.watermarkText());
         }
     }
     record ListItemResponse(String id, Map<String, String> values, List<String> allowedActions, long version) {

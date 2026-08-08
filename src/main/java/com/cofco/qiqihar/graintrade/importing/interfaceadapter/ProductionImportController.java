@@ -32,7 +32,9 @@ public class ProductionImportController {
     @org.springframework.web.bind.annotation.ResponseStatus(org.springframework.http.HttpStatus.CREATED)
     ApiResponse<ImportJobView> upload(@RequestHeader("Idempotency-Key") String idempotencyKey,
             @RequestParam("file") MultipartFile file) throws java.io.IOException {
-        return new ApiResponse<>(service.importCsv(idempotencyKey, file == null ? null : file.getBytes()));
+        return new ApiResponse<>(service.importFile(idempotencyKey,
+                file == null ? null : file.getOriginalFilename(), file == null ? null : file.getContentType(),
+                file == null ? null : file.getBytes()));
     }
 
     @PostMapping("/{importJobId}/retries")

@@ -1,0 +1,195 @@
+package com.cofco.qiqihar.graintrade.evidence.application;
+
+import com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException;
+import com.cofco.qiqihar.graintrade.shared.application.BoundedInput;
+import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
+import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
+import com.cofco.qiqihar.graintrade.shared.application.PlainDecimal;
+import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
+import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
+import java.awt.AlphaComposite;
+import java.awt.Color;
+import java.awt.Font;
+import java.awt.Graphics2D;
+import java.awt.RenderingHints;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.security.MessageDigest;
+import java.time.Clock;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.util.HexFormat;
+import java.util.Iterator;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
+import javax.imageio.ImageIO;
+import javax.imageio.ImageReader;
+import javax.imageio.stream.ImageInputStream;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+@Service
+public class EvidencePhotoService {
+    private static final int MAX_BYTES = 10 * 1024 * 1024;
+    private static final long MAX_PIXELS = 40_000_000L;
+    private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
+    private static final Set<String> MEDIA_TYPES = Set.of("image/jpeg", "image/png");
+    private final EvidencePhotoRepository repository;
+    private final AccessControl accessControl;
+    private final Clock clock;
+
+    public EvidencePhotoService(EvidencePhotoRepository repository, AccessControl accessControl, Clock clock) {
+        this.repository = repository;
+        this.accessControl = accessControl;
+        this.clock = clock;
+    }
+
+    @Transactional
+    public EvidencePhotoView upload(String filename, String mediaType, byte[] bytes, OffsetDateTime capturedAt,
+            String latitude, String longitude, String watermarkText) {
+        String subjectId = accessControl.require("BUSINESS_CREATE", null).subjectId();
+        validateMetadata(filename, mediaType, bytes, capturedAt, latitude, longitude, watermarkText);
+        BufferedImage image = readImage(bytes, mediaType);
+        byte[] watermarked = watermark(image, mediaType, watermarkText, capturedAt, latitude, longitude);
+        OffsetDateTime uploadedAt = OffsetDateTime.ofInstant(clock.instant(), ZONE);
+        return repository.insert(new EvidencePhotoRepository.EvidencePhotoUpload(UUID.randomUUID(), filename.trim(),
+                mediaType, bytes.clone(), watermarked, bytes.length, sha256(bytes), capturedAt, latitude,
+                longitude, watermarkText.trim(), subjectId, uploadedAt));
+    }
+
+    @Transactional(readOnly = true)
+    public EvidenceContent content(UUID id) {
+        String subjectId = accessControl.require("BUSINESS_READ", null).subjectId();
+        var stored = repository.find(id).orElseThrow(() -> new ResourceNotFoundException(
+                "EVIDENCE_PHOTO_NOT_FOUND", "Evidence photo does not exist"));
+        if (stored.view().state().equals("ATTACHED")) {
+            accessControl.require("BUSINESS_READ", stored.attachedRegionCode());
+        } else if (!stored.view().uploadedBy().equals(subjectId)) {
+            throw new AccessDeniedException("EVIDENCE_PHOTO_ACCESS_DENIED", "Evidence photo access is denied");
+        }
+        return new EvidenceContent(stored.view().mediaType(), stored.watermarkedBytes().clone());
+    }
+
+    @Transactional(readOnly = true)
+    public List<EvidencePhotoView> validateAvailable(List<UUID> ids, String subjectId) {
+        if (ids == null || ids.isEmpty() || ids.size() > 5 || new LinkedHashSet<>(ids).size() != ids.size()) {
+            throw invalid();
+        }
+        return ids.stream().map(id -> {
+            var photo = repository.find(id).orElseThrow(() -> new ResourceNotFoundException(
+                    "EVIDENCE_PHOTO_NOT_FOUND", "Evidence photo does not exist"));
+            if (!photo.view().state().equals("STAGED") || !photo.view().uploadedBy().equals(subjectId)) {
+                throw new ConflictException("EVIDENCE_PHOTO_NOT_AVAILABLE", "Evidence photo is not available");
+            }
+            return photo.view();
+        }).toList();
+    }
+
+    @Transactional
+    public List<EvidencePhotoView> attachToProduction(
+            List<UUID> ids, String recordId, String regionCode, String subjectId) {
+        validateAvailable(ids, subjectId);
+        for (UUID id : ids) {
+            if (!repository.attach(id, "PRODUCTION", recordId, regionCode, subjectId)) {
+                throw new ConflictException("EVIDENCE_PHOTO_NOT_AVAILABLE", "Evidence photo is not available");
+            }
+        }
+        return repository.findAttached("PRODUCTION", recordId);
+    }
+
+    @Transactional(readOnly = true)
+    public List<EvidencePhotoView> productionPhotos(String recordId) {
+        return repository.findAttached("PRODUCTION", recordId);
+    }
+
+    private static void validateMetadata(String filename, String mediaType, byte[] bytes, OffsetDateTime capturedAt,
+            String latitude, String longitude, String watermarkText) {
+        if (filename == null || filename.isBlank() || filename.length() > 255 || mediaType == null
+                || !MEDIA_TYPES.contains(mediaType) || bytes == null || bytes.length == 0 || bytes.length > MAX_BYTES
+                || capturedAt == null || watermarkText == null || watermarkText.isBlank()) throw invalid();
+        BoundedInput.requireText("INVALID_EVIDENCE_PHOTO", watermarkText);
+        var parsedLatitude = PlainDecimal.parse(latitude, 3, 7, "INVALID_EVIDENCE_PHOTO");
+        var parsedLongitude = PlainDecimal.parse(longitude, 3, 7, "INVALID_EVIDENCE_PHOTO");
+        if (parsedLatitude.compareTo(new java.math.BigDecimal("-90")) < 0
+                || parsedLatitude.compareTo(new java.math.BigDecimal("90")) > 0
+                || parsedLongitude.compareTo(new java.math.BigDecimal("-180")) < 0
+                || parsedLongitude.compareTo(new java.math.BigDecimal("180")) > 0) throw invalid();
+    }
+
+    private static BufferedImage readImage(byte[] bytes, String mediaType) {
+        try (ImageInputStream input = ImageIO.createImageInputStream(new ByteArrayInputStream(bytes))) {
+            Iterator<ImageReader> readers = ImageIO.getImageReaders(input);
+            if (!readers.hasNext()) throw invalid();
+            ImageReader reader = readers.next();
+            try {
+                reader.setInput(input, true, true);
+                int width = reader.getWidth(0);
+                int height = reader.getHeight(0);
+                String format = reader.getFormatName().toLowerCase(java.util.Locale.ROOT);
+                boolean expected = mediaType.equals("image/png") ? format.equals("png")
+                        : format.equals("jpeg") || format.equals("jpg");
+                if (!expected || width < 1 || height < 1 || (long) width * height > MAX_PIXELS) throw invalid();
+                return reader.read(0);
+            } finally {
+                reader.dispose();
+            }
+        } catch (IOException | RuntimeException exception) {
+            if (exception instanceof ClientRequestException client) throw client;
+            throw invalid();
+        }
+    }
+
+    private static byte[] watermark(BufferedImage source, String mediaType, String text, OffsetDateTime capturedAt,
+            String latitude, String longitude) {
+        int type = mediaType.equals("image/jpeg") ? BufferedImage.TYPE_INT_RGB : BufferedImage.TYPE_INT_ARGB;
+        BufferedImage target = new BufferedImage(source.getWidth(), source.getHeight(), type);
+        Graphics2D graphics = target.createGraphics();
+        try {
+            graphics.drawImage(source, 0, 0, null);
+            int fontSize = Math.max(12, Math.min(32, source.getWidth() / 20));
+            int bandHeight = Math.min(source.getHeight(), fontSize * 3);
+            graphics.setComposite(AlphaComposite.SrcOver.derive(0.65f));
+            graphics.setColor(Color.BLACK);
+            graphics.fillRect(0, source.getHeight() - bandHeight, source.getWidth(), bandHeight);
+            graphics.setComposite(AlphaComposite.SrcOver);
+            graphics.setColor(Color.WHITE);
+            graphics.setFont(new Font(Font.SANS_SERIF, Font.BOLD, fontSize));
+            graphics.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+            graphics.drawString(text, 10, source.getHeight() - fontSize - 8);
+            graphics.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, Math.max(10, fontSize - 4)));
+            graphics.drawString(capturedAt + "  " + latitude + "," + longitude, 10, source.getHeight() - 8);
+        } finally {
+            graphics.dispose();
+        }
+        try {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            if (!ImageIO.write(target, mediaType.equals("image/png") ? "png" : "jpg", output)) throw invalid();
+            return output.toByteArray();
+        } catch (IOException exception) {
+            throw invalid();
+        }
+    }
+
+    private static String sha256(byte[] bytes) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (java.security.NoSuchAlgorithmException exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private static ClientRequestException invalid() {
+        return new ClientRequestException("INVALID_EVIDENCE_PHOTO", "Evidence photo is invalid");
+    }
+
+    public record EvidenceContent(String mediaType, byte[] bytes) {
+        public EvidenceContent {
+            bytes = bytes.clone();
+        }
+        public byte[] bytes() { return bytes.clone(); }
+    }
+}

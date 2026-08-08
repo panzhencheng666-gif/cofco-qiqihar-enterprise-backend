@@ -3,14 +3,16 @@ package com.cofco.qiqihar.graintrade.production.application;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 public record ProductionDraft(
         String productCode, String objectTypeCode, String regionCode, String cultivarCode,
         LocalDate surveyDate, BigDecimal cultivatedAreaMu,
         BigDecimal yieldPerMuKilograms, Map<String, BigDecimal> quality,
         Map<String, BigDecimal> costs, Map<String, BigDecimal> insurance, Map<String, BigDecimal> subsidies,
-        Map<String, String> submissionMetadata) {
+        Map<String, String> submissionMetadata, List<UUID> evidencePhotoIds) {
 
     public Map<String, String> submissionMetadata() {
         return submissionMetadata;
@@ -19,9 +21,18 @@ public record ProductionDraft(
             String productCode, String objectTypeCode, String regionCode, String cultivarCode,
             LocalDate surveyDate, BigDecimal cultivatedAreaMu,
             BigDecimal yieldPerMuKilograms, Map<String, BigDecimal> quality,
+            Map<String, BigDecimal> costs, Map<String, BigDecimal> insurance, Map<String, BigDecimal> subsidies,
+            Map<String, String> submissionMetadata) {
+        this(productCode, objectTypeCode, regionCode, cultivarCode, surveyDate, cultivatedAreaMu,
+                yieldPerMuKilograms, quality, costs, insurance, subsidies, submissionMetadata, List.of());
+    }
+    public ProductionDraft(
+            String productCode, String objectTypeCode, String regionCode, String cultivarCode,
+            LocalDate surveyDate, BigDecimal cultivatedAreaMu,
+            BigDecimal yieldPerMuKilograms, Map<String, BigDecimal> quality,
             Map<String, BigDecimal> costs, Map<String, BigDecimal> insurance, Map<String, BigDecimal> subsidies) {
         this(productCode, objectTypeCode, regionCode, cultivarCode, surveyDate, cultivatedAreaMu,
-                yieldPerMuKilograms, quality, costs, insurance, subsidies, Map.of());
+                yieldPerMuKilograms, quality, costs, insurance, subsidies, Map.of(), List.of());
     }
 
     public ProductionDraft {
@@ -32,6 +43,7 @@ public record ProductionDraft(
         Map<String, String> metadata = new LinkedHashMap<>();
         if (submissionMetadata != null) submissionMetadata.forEach(metadata::put);
         submissionMetadata = Map.copyOf(metadata);
+        evidencePhotoIds = evidencePhotoIds == null ? List.of() : List.copyOf(evidencePhotoIds);
     }
 
     private static Map<String, BigDecimal> copy(Map<String, BigDecimal> values) {

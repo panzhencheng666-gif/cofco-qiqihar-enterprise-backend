@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Map;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -29,6 +30,7 @@ import org.springframework.test.web.servlet.MockMvc;
 @AutoConfigureMockMvc
 @UsesProtectedTestDatabase
 class ProductionRecordRestIntegrationTest {
+    private static final String EVIDENCE_PHOTO_ID = "00000000-0000-0000-0000-000000000001";
     private static final Map<String, String> QUALITY_FACT = Map.of(
             "CORN", "MOISTURE", "SOYBEAN", "PROTEIN", "RICE", "MILLING_YIELD");
 
@@ -38,12 +40,24 @@ class ProductionRecordRestIntegrationTest {
     @Autowired
     private DataSource dataSource;
 
+    @BeforeEach
+    void stageEvidencePhoto() {
+        JdbcClient.create(dataSource).sql("""
+                INSERT INTO evidence.evidence_photo(photo_id,state_code,original_filename,media_type,
+                  original_bytes,watermarked_bytes,byte_length,sha256,captured_at,capture_latitude,
+                  capture_longitude,watermark_text,uploaded_by,uploaded_at)
+                VALUES(CAST(:id AS uuid),'STAGED','fixture.png','image/png',decode('00','hex'),decode('01','hex'),
+                  1,repeat('a',64),now(),47.3543,123.9182,'测试水印','production-tester',now())
+                """).param("id", EVIDENCE_PHOTO_ID).update();
+    }
+
     @AfterEach
     void removeTestRecords() {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         jdbc.sql("TRUNCATE platform.business_audit_event").update();
         jdbc.sql(
                 "DELETE FROM production.production_record WHERE last_modified_by = 'production-tester'").update();
+        jdbc.sql("TRUNCATE evidence.evidence_photo").update();
     }
 
     @Test
@@ -300,7 +314,7 @@ class ProductionRecordRestIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.data.reportedAt").exists())
                 .andReturn().getResponse().getContentAsString()
-                .replaceFirst("(?s).*\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+                .replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
     }
 
     private void expectDefinitionFacts(String product, String objectType, String qualityCode,
@@ -441,10 +455,10 @@ class ProductionRecordRestIntegrationTest {
 
     private static String submissionMetadataProperty() {
         return """
-                "submissionMetadata":{"PROD_REPORTER_NAME":"测试填报员","PROD_REPORTER_PHONE":"13800000000",
+                 "submissionMetadata":{"PROD_REPORTER_NAME":"测试填报员","PROD_REPORTER_PHONE":"13800000000",
                  "PROD_SAMPLE_CONTACT":"13900000000","PROD_SAMPLE_LATITUDE":"47.3543",
-                 "PROD_SAMPLE_LONGITUDE":"123.9182"}
-                """.strip();
+                 "PROD_SAMPLE_LONGITUDE":"123.9182"},"evidencePhotoIds":["%s"]
+                """.formatted(EVIDENCE_PHOTO_ID).strip();
     }
 
     private static List<Arguments> farmerAndVillageContexts() {

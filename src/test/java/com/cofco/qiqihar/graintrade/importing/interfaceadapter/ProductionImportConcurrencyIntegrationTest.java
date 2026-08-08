@@ -49,6 +49,7 @@ import org.springframework.test.web.servlet.MvcResult;
 @UsesProtectedTestDatabase
 @Import(ProductionImportConcurrencyIntegrationTest.ConcurrencyConfiguration.class)
 class ProductionImportConcurrencyIntegrationTest {
+    private static final String PHOTO_ID = "00000000-0000-0000-0000-000000000031";
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
     @Autowired CoordinatedImportJobRepository importJobs;
@@ -61,6 +62,13 @@ class ProductionImportConcurrencyIntegrationTest {
         importJobs.reset();
         auditWriter.reset();
         truncateImportEffects();
+        jdbc.sql("""
+                INSERT INTO evidence.evidence_photo(photo_id,state_code,original_filename,media_type,
+                  original_bytes,watermarked_bytes,byte_length,sha256,captured_at,capture_latitude,
+                  capture_longitude,watermark_text,uploaded_by,uploaded_at)
+                VALUES(CAST(:id AS uuid),'STAGED','fixture.png','image/png',decode('00','hex'),decode('01','hex'),
+                  1,repeat('c',64),now(),47.3543,123.9182,'测试水印','production-tester',now())
+                """).param("id", PHOTO_ID).update();
     }
 
     @AfterEach
@@ -179,7 +187,8 @@ class ProductionImportConcurrencyIntegrationTest {
                 Map.entry("surveyDate", "2026-07-31"), Map.entry("cultivatedAreaMu", "10.5"),
                 Map.entry("yieldPerMuKilograms", "20"), Map.entry("PROD_REPORTER_NAME", "\u5e76\u53d1\u5bfc\u5165\u5458"),
                 Map.entry("PROD_REPORTER_PHONE", "13800000000"), Map.entry("PROD_SAMPLE_CONTACT", "13900000000"),
-                Map.entry("PROD_SAMPLE_LATITUDE", "47.3543"), Map.entry("PROD_SAMPLE_LONGITUDE", "123.9182")));
+                Map.entry("PROD_SAMPLE_LATITUDE", "47.3543"), Map.entry("PROD_SAMPLE_LONGITUDE", "123.9182"),
+                Map.entry("evidencePhotoId", PHOTO_ID)));
         values.putAll(overrides);
         return ProductionImportTemplate.HEADERS.stream().map(values::get).collect(java.util.stream.Collectors.joining(","));
     }
@@ -222,7 +231,7 @@ class ProductionImportConcurrencyIntegrationTest {
     private void truncateImportEffects() {
         JdbcClient.create(dataSource).sql("""
                 TRUNCATE platform.import_row_result,platform.import_job,platform.business_audit_event,
-                  production.production_record RESTART IDENTITY CASCADE
+                  production.production_record,evidence.evidence_photo RESTART IDENTITY CASCADE
                 """).update();
     }
 

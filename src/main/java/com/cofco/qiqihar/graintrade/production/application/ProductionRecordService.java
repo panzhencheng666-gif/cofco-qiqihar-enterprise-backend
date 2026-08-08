@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade.production.application;
 
+import com.cofco.qiqihar.graintrade.evidence.application.EvidencePhotoService;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecord;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecordQuery;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionActionPolicy;
@@ -38,21 +39,24 @@ public class ProductionRecordService implements ProductionImportPort {
     private final CurrentActor currentActor;
     private final AccessControl accessControl;
     private final BusinessAuditRecorder audit;
+    private final EvidencePhotoService evidencePhotos;
     private final Clock clock;
 
     public ProductionRecordService(ProductionRecordRepository repository, PageDefinitionQuery pageDefinitions,
             CurrentActor currentActor, Clock clock) {
-        this(repository, pageDefinitions, currentActor, null, null, clock);
+        this(repository, pageDefinitions, currentActor, null, null, null, clock);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public ProductionRecordService(ProductionRecordRepository repository, PageDefinitionQuery pageDefinitions,
-            CurrentActor currentActor, AccessControl accessControl, BusinessAuditRecorder audit, Clock clock) {
+            CurrentActor currentActor, AccessControl accessControl, BusinessAuditRecorder audit,
+            EvidencePhotoService evidencePhotos, Clock clock) {
         this.repository = repository;
         this.pageDefinitions = pageDefinitions;
         this.currentActor = currentActor;
         this.accessControl = accessControl;
         this.audit = audit;
+        this.evidencePhotos = evidencePhotos;
         this.clock = clock;
     }
 
@@ -114,6 +118,7 @@ public class ProductionRecordService implements ProductionImportPort {
         validateDraft(draft);
         Map<String, String> submissionMetadata = canonicalSubmissionMetadata(draft);
         SecurityPrincipal principal = authorize("BUSINESS_CREATE", draft.regionCode());
+        validateEvidence(draft, principal);
         ProductionRecord record;
         try {
             record = ProductionRecord.draft(UUID.randomUUID().toString(), draft.productCode(),
@@ -124,6 +129,10 @@ public class ProductionRecordService implements ProductionImportPort {
             throw invalidDraft(exception.getMessage());
         }
         ProductionRecord persisted = repository.insert(record, principal.subjectId());
+        if (evidencePhotos != null) {
+            evidencePhotos.attachToProduction(
+                    draft.evidencePhotoIds(), persisted.id(), persisted.regionCode(), principal.subjectId());
+        }
         audit(principal, persisted, "PRODUCTION_RECORD_CREATED");
         return view(persisted);
     }
@@ -131,6 +140,14 @@ public class ProductionRecordService implements ProductionImportPort {
     @Override
     public String importDraft(ProductionDraft draft) {
         return create(draft).record().id();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public void validateImportDraft(ProductionDraft draft) {
+        validateDraft(draft);
+        SecurityPrincipal principal = authorize("BUSINESS_IMPORT", draft.regionCode());
+        validateEvidence(draft, principal);
     }
 
     @Transactional
@@ -227,8 +244,13 @@ public class ProductionRecordService implements ProductionImportPort {
                 "PRODUCTION_RECORD_NOT_FOUND", "Production record does not exist"));
     }
 
-    private static ProductionRecordView view(ProductionRecord record) {
-        return new ProductionRecordView(record, ProductionActionPolicy.allowedActions(record.status()));
+    private ProductionRecordView view(ProductionRecord record) {
+        return new ProductionRecordView(record, ProductionActionPolicy.allowedActions(record.status()),
+                evidencePhotos == null ? List.of() : evidencePhotos.productionPhotos(record.id()));
+    }
+
+    private void validateEvidence(ProductionDraft draft, SecurityPrincipal principal) {
+        if (evidencePhotos != null) evidencePhotos.validateAvailable(draft.evidencePhotoIds(), principal.subjectId());
     }
 
     private AuthenticatedActor actor() {

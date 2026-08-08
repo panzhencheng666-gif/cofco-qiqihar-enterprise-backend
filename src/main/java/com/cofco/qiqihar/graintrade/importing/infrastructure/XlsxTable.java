@@ -1,0 +1,146 @@
+package com.cofco.qiqihar.graintrade.importing.infrastructure;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import javax.xml.parsers.DocumentBuilderFactory;
+import org.w3c.dom.Element;
+
+/** Bounded OOXML worksheet reader. It intentionally never evaluates formulas. */
+public final class XlsxTable {
+    private static final int MAX_EXPANDED_BYTES = 8 * 1024 * 1024;
+    private static final int MAX_ROWS = 5_001;
+    private static final int MAX_CELL_CODE_POINTS = 500;
+
+    private XlsxTable() {}
+
+    public static List<List<String>> parse(byte[] bytes, int expectedColumns) {
+        if (bytes == null || bytes.length == 0 || expectedColumns < 1) throw invalid();
+        Map<String, byte[]> entries = unzip(bytes);
+        if (entries.keySet().stream().anyMatch(name -> name.contains("vbaProject")
+                || name.startsWith("xl/externalLinks/"))) throw invalid();
+        List<String> sharedStrings = entries.containsKey("xl/sharedStrings.xml")
+                ? sharedStrings(entries.get("xl/sharedStrings.xml")) : List.of();
+        byte[] sheet = entries.entrySet().stream()
+                .filter(entry -> entry.getKey().matches("xl/worksheets/sheet[0-9]+\\.xml"))
+                .min(Comparator.comparing(Map.Entry::getKey)).map(Map.Entry::getValue).orElseThrow(XlsxTable::invalid);
+        return rows(sheet, sharedStrings, expectedColumns);
+    }
+
+    private static Map<String, byte[]> unzip(byte[] bytes) {
+        Map<String, byte[]> entries = new HashMap<>();
+        int total = 0;
+        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes), StandardCharsets.UTF_8)) {
+            for (ZipEntry entry; (entry = zip.getNextEntry()) != null;) {
+                String name = entry.getName();
+                if (entry.isDirectory()) continue;
+                if (name.startsWith("/") || name.contains("..") || name.contains("\\")) throw invalid();
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                byte[] buffer = new byte[8192];
+                for (int count; (count = zip.read(buffer)) >= 0;) {
+                    if (count == 0) continue;
+                    total = Math.addExact(total, count);
+                    if (total > MAX_EXPANDED_BYTES) throw invalid();
+                    output.write(buffer, 0, count);
+                }
+                if (entries.put(name, output.toByteArray()) != null) throw invalid();
+            }
+        } catch (RuntimeException exception) {
+            throw exception;
+        } catch (Exception exception) {
+            throw invalid();
+        }
+        return entries;
+    }
+
+    private static List<String> sharedStrings(byte[] xml) {
+        var document = document(xml);
+        var nodes = document.getElementsByTagNameNS("*", "si");
+        List<String> values = new ArrayList<>(nodes.getLength());
+        for (int index = 0; index < nodes.getLength(); index++) values.add(nodes.item(index).getTextContent());
+        return List.copyOf(values);
+    }
+
+    private static List<List<String>> rows(byte[] xml, List<String> sharedStrings, int expectedColumns) {
+        var document = document(xml);
+        if (document.getElementsByTagNameNS("*", "f").getLength() > 0) throw invalid();
+        var rowNodes = document.getElementsByTagNameNS("*", "row");
+        if (rowNodes.getLength() > MAX_ROWS) throw invalid();
+        List<List<String>> rows = new ArrayList<>(rowNodes.getLength());
+        for (int rowIndex = 0; rowIndex < rowNodes.getLength(); rowIndex++) {
+            List<String> values = new ArrayList<>(java.util.Collections.nCopies(expectedColumns, ""));
+            var cells = ((Element) rowNodes.item(rowIndex)).getElementsByTagNameNS("*", "c");
+            for (int cellIndex = 0; cellIndex < cells.getLength(); cellIndex++) {
+                Element cell = (Element) cells.item(cellIndex);
+                int column = column(cell.getAttribute("r"));
+                if (column < 0 || column >= expectedColumns) throw invalid();
+                String value = cellValue(cell, sharedStrings);
+                if (value.codePointCount(0, value.length()) > MAX_CELL_CODE_POINTS) throw invalid();
+                values.set(column, value);
+            }
+            rows.add(List.copyOf(values));
+        }
+        return List.copyOf(rows);
+    }
+
+    private static String cellValue(Element cell, List<String> sharedStrings) {
+        String type = cell.getAttribute("t");
+        if (type.equals("inlineStr")) return text(cell, "t");
+        String raw = text(cell, "v");
+        if (type.equals("s")) {
+            try {
+                int index = Integer.parseInt(raw);
+                if (index < 0 || index >= sharedStrings.size()) throw invalid();
+                return sharedStrings.get(index);
+            } catch (NumberFormatException exception) {
+                throw invalid();
+            }
+        }
+        if (type.isEmpty() || type.equals("n") || type.equals("str")) return raw;
+        throw invalid();
+    }
+
+    private static String text(Element parent, String localName) {
+        var nodes = parent.getElementsByTagNameNS("*", localName);
+        return nodes.getLength() == 0 ? "" : nodes.item(0).getTextContent();
+    }
+
+    private static int column(String reference) {
+        if (reference == null || reference.isEmpty()) throw invalid();
+        int value = 0;
+        int index = 0;
+        while (index < reference.length() && Character.isLetter(reference.charAt(index))) {
+            char letter = Character.toUpperCase(reference.charAt(index++));
+            value = Math.addExact(Math.multiplyExact(value, 26), letter - 'A' + 1);
+        }
+        if (index == 0 || index == reference.length()) throw invalid();
+        return value - 1;
+    }
+
+    private static org.w3c.dom.Document document(byte[] xml) {
+        try {
+            DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+            factory.setNamespaceAware(true);
+            factory.setXIncludeAware(false);
+            factory.setExpandEntityReferences(false);
+            factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+            factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+            factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+            factory.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
+            return factory.newDocumentBuilder().parse(new ByteArrayInputStream(xml));
+        } catch (Exception exception) {
+            throw invalid();
+        }
+    }
+
+    private static IllegalArgumentException invalid() {
+        return new IllegalArgumentException("INVALID_XLSX");
+    }
+}
