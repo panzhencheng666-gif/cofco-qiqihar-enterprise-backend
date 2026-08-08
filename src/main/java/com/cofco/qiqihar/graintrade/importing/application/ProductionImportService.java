@@ -23,6 +23,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 
 @Service
@@ -47,22 +48,21 @@ public class ProductionImportService {
 
     public String template() { return ProductionImportTemplate.csv(); }
 
+    @Transactional
     public ImportJobView importCsv(String idempotencyKey, byte[] bytes) {
         if (idempotencyKey == null || idempotencyKey.isBlank() || idempotencyKey.length() > 128
                 || bytes == null || bytes.length == 0 || bytes.length > MAX_BYTES) throw invalid();
         SecurityPrincipal principal = accessControl.require("BUSINESS_IMPORT", null);
         String content = new String(bytes, StandardCharsets.UTF_8);
         String digest = digest(bytes);
-        var existing = repository.findByIdempotency(principal.subjectId(), ProductionImportTemplate.DOMAIN, idempotencyKey);
-        if (existing.isPresent()) {
-            if (!existing.get().job().contentSha256().equals(digest)) {
-                throw new ConflictException("IMPORT_IDEMPOTENCY_KEY_CONFLICT", "Idempotency key was already used for different content");
-            }
-            return ImportJobView.from(existing.get().job());
-        }
-        return ImportJobView.from(process(idempotencyKey, content, digest, null, null, principal));
+        var reservation = repository.reserve(principal.subjectId(), ProductionImportTemplate.DOMAIN, idempotencyKey,
+                digest, principal.workUnitCode(), clock.instant());
+        if (!reservation.owner()) return ImportJobView.from(reservation.stored().job());
+        return ImportJobView.from(process(reservation.stored().job(), idempotencyKey,
+                content, digest, null, null, principal));
     }
 
+    @Transactional
     public ImportJobView retry(UUID importJobId) {
         SecurityPrincipal principal = accessControl.require("BUSINESS_IMPORT", null);
         var prior = repository.findById(importJobId).orElseThrow(() -> new ClientRequestException(
@@ -75,7 +75,10 @@ public class ProductionImportService {
         if (failedRows.isEmpty()) {
             throw new ConflictException("IMPORT_RETRY_NOT_AVAILABLE", "Import job has no failed rows to retry");
         }
-        return ImportJobView.from(process("retry-" + UUID.randomUUID(), prior.sourceContent(),
+        String retryKey = "retry-" + UUID.randomUUID();
+        var reservation = repository.reserve(principal.subjectId(), ProductionImportTemplate.DOMAIN, retryKey,
+                prior.job().contentSha256(), principal.workUnitCode(), clock.instant());
+        return ImportJobView.from(process(reservation.stored().job(), retryKey, prior.sourceContent(),
                 prior.job().contentSha256(), prior.job().id(), failedRows, principal));
     }
 
@@ -95,7 +98,7 @@ public class ProductionImportService {
         return new ImportErrorFile("production-import-errors-" + job.id() + ".csv", csv.toString().getBytes(StandardCharsets.UTF_8));
     }
 
-    private ImportJob process(String idempotencyKey, String content, String digest, UUID retryOf,
+    private ImportJob process(ImportJob reserved, String idempotencyKey, String content, String digest, UUID retryOf,
             Set<Integer> retryRows, SecurityPrincipal principal) {
         List<ParsedRow> rows = parse(content);
         if (retryRows != null) rows = rows.stream().filter(row -> retryRows.contains(row.number)).toList();
@@ -117,8 +120,9 @@ public class ProductionImportService {
         var now = clock.instant();
         String status = outcomes.stream().anyMatch(row -> row.outcomeCode().equals("ERROR"))
                 ? "COMPLETED_WITH_ERRORS" : "COMPLETED";
-        ImportJob job = repository.save(new ImportJob(UUID.randomUUID(), ProductionImportTemplate.DOMAIN, idempotencyKey,
-                digest, principal.subjectId(), principal.workUnitCode(), retryOf, status, now, now, outcomes), content);
+        ImportJob job = repository.complete(new ImportJob(reserved.id(), ProductionImportTemplate.DOMAIN, idempotencyKey,
+                digest, principal.subjectId(), principal.workUnitCode(), retryOf, status,
+                reserved.createdAt(), now, outcomes), content);
         audit.record(principal, "IMPORT_JOB", job.id().toString(), "IMPORT_JOB_COMPLETED", now,
                 detail(job.importedRows(), job.failedRows()));
         return job;
@@ -126,7 +130,10 @@ public class ProductionImportService {
 
     private List<ParsedRow> parse(String content) {
         List<List<String>> table;
-        try { table = CsvTable.parse(content); }
+        try { table = CsvTable.parse(content, ProductionImportTemplate.HEADERS.size()); }
+        catch (CsvTable.LimitExceededException exception) {
+            throw new ClientRequestException(exception.code(), exception.getMessage());
+        }
         catch (IllegalArgumentException exception) { throw new ClientRequestException("INVALID_IMPORT_CSV", "CSV syntax is invalid"); }
         if (table.isEmpty() || !table.getFirst().equals(ProductionImportTemplate.HEADERS)) {
             throw new ClientRequestException("INVALID_IMPORT_TEMPLATE", "CSV header does not match the current production template");
@@ -138,9 +145,7 @@ public class ProductionImportService {
             for (int column = 0; column < ProductionImportTemplate.HEADERS.size(); column++) {
                 values.put(ProductionImportTemplate.HEADERS.get(column), column < cells.size() ? cells.get(column).trim() : "");
             }
-            if (cells.size() != ProductionImportTemplate.HEADERS.size()) {
-                rows.add(ParsedRow.error(index + 1, values, "IMPORT_ROW_COLUMN_COUNT", "Row column count does not match template"));
-            } else if (values.values().stream().allMatch(String::isBlank)) {
+            if (values.values().stream().allMatch(String::isBlank)) {
                 rows.add(ParsedRow.error(index + 1, values, "IMPORT_ROW_EMPTY", "Import row is empty"));
             } else {
                 rows.add(toDraft(index + 1, values));

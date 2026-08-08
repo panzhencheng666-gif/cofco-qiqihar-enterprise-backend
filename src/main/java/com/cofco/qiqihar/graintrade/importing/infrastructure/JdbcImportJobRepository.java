@@ -3,7 +3,9 @@ package com.cofco.qiqihar.graintrade.importing.infrastructure;
 import com.cofco.qiqihar.graintrade.importing.application.ImportJobRepository;
 import com.cofco.qiqihar.graintrade.importing.domain.ImportJob;
 import com.cofco.qiqihar.graintrade.importing.domain.ImportRowOutcome;
+import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -20,6 +22,32 @@ public class JdbcImportJobRepository implements ImportJobRepository {
     public JdbcImportJobRepository(JdbcClient jdbc, ObjectMapper objectMapper) {
         this.jdbc = jdbc;
         this.objectMapper = objectMapper;
+    }
+
+    @Override
+    public ImportReservation reserve(String subjectId, String domainCode, String idempotencyKey,
+            String digest, String workUnitCode, Instant now) {
+        UUID id = UUID.randomUUID();
+        int inserted = jdbc.sql("""
+                INSERT INTO platform.import_job(import_job_id,domain_code,idempotency_key,content_sha256,source_content,
+                  requested_by,work_unit_code,retry_of_import_job_id,status_code,created_at,completed_at)
+                VALUES(CAST(:id AS uuid),:domain,:key,:digest,'',:requestedBy,:workUnit,NULL,'COMPLETED',:now,:now)
+                ON CONFLICT(requested_by,domain_code,idempotency_key) DO NOTHING
+                """).param("id", id.toString()).param("domain", domainCode).param("key", idempotencyKey)
+                .param("digest", digest).param("requestedBy", subjectId).param("workUnit", workUnitCode)
+                .param("now", Timestamp.from(now)).update();
+        if (inserted == 1) {
+            ImportJob reserved = new ImportJob(id, domainCode, idempotencyKey, digest, subjectId, workUnitCode,
+                    null, "COMPLETED", now, now, List.of());
+            return new ImportReservation(true, new StoredImportJob(reserved, ""));
+        }
+        StoredImportJob existing = findByIdempotency(subjectId, domainCode, idempotencyKey)
+                .orElseThrow(() -> new IllegalStateException("Conflicting import reservation is not visible"));
+        if (!existing.job().contentSha256().equals(digest)) {
+            throw new ConflictException("IMPORT_IDEMPOTENCY_KEY_CONFLICT",
+                    "Idempotency key was already used for different content");
+        }
+        return new ImportReservation(false, existing);
     }
 
     @Override
@@ -50,17 +78,16 @@ public class JdbcImportJobRepository implements ImportJobRepository {
     }
 
     @Override
-    public ImportJob save(ImportJob job, String sourceContent) {
-        jdbc.sql("""
-                INSERT INTO platform.import_job(import_job_id,domain_code,idempotency_key,content_sha256,source_content,
-                  requested_by,work_unit_code,retry_of_import_job_id,status_code,created_at,completed_at)
-                VALUES(CAST(:id AS uuid),:domain,:key,:digest,:content,:requestedBy,:workUnit,CAST(:retryOf AS uuid),
-                  :status,:createdAt,:completedAt)
-                """).param("id", job.id().toString()).param("domain", job.domainCode()).param("key", job.idempotencyKey())
-                .param("digest", job.contentSha256()).param("content", sourceContent).param("requestedBy", job.requestedBy())
-                .param("workUnit", job.workUnitCode()).param("retryOf", job.retryOf() == null ? null : job.retryOf().toString())
-                .param("status", job.statusCode()).param("createdAt", Timestamp.from(job.createdAt()))
-                .param("completedAt", Timestamp.from(job.completedAt())).update();
+    public ImportJob complete(ImportJob job, String sourceContent) {
+        int updated = jdbc.sql("""
+                UPDATE platform.import_job
+                SET source_content=:content,retry_of_import_job_id=CAST(:retryOf AS uuid),status_code=:status,
+                  completed_at=:completedAt
+                WHERE import_job_id=CAST(:id AS uuid)
+                """).param("id", job.id().toString()).param("content", sourceContent)
+                .param("retryOf", job.retryOf() == null ? null : job.retryOf().toString())
+                .param("status", job.statusCode()).param("completedAt", Timestamp.from(job.completedAt())).update();
+        if (updated != 1) throw new IllegalStateException("Import reservation no longer exists");
         job.rows().forEach(row -> jdbc.sql("""
                 INSERT INTO platform.import_row_result(import_job_id,row_number,outcome_code,error_code,error_message,
                   production_record_id,row_data)
