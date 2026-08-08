@@ -154,7 +154,9 @@ class ProductionRecordServiceTest {
 
         ProductionRecordView created = service.create(draft);
 
-        assertThat(created.record().submissionMetadata()).containsExactlyInAnyOrderEntriesOf(submissionMetadata());
+        Map<String, String> expected = new java.util.LinkedHashMap<>(submissionMetadata());
+        expected.put("PROD_REPORTER_NAME", "tester");
+        assertThat(created.record().submissionMetadata()).containsExactlyInAnyOrderEntriesOf(expected);
     }
 
     @Test
@@ -181,7 +183,7 @@ class ProductionRecordServiceTest {
         ProductionRecordView saved = service.saveDraft("record-1", 0, draft);
 
         assertThat(saved.record().version()).isOne();
-        assertThat(saved.record().submissionMetadata()).containsExactlyInAnyOrderEntriesOf(replacement);
+        assertThat(saved.record().submissionMetadata()).containsExactlyInAnyOrderEntriesOf(submissionMetadata());
     }
 
     private static ProductionRecordService service(ProductionRecordRepository repository,

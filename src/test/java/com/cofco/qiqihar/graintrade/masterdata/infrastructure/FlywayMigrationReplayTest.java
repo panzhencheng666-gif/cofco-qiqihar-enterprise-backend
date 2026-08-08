@@ -895,7 +895,7 @@ class FlywayMigrationReplayTest {
             assertThat(modified.record().version()).isOne();
             assertThat(modified.coreValues())
                     .containsEntry("MKT_SOURCE_NOTE", "V23服务修改来源")
-                    .containsEntry("MKT_REPORTER_NAME", "迁移回放填报员")
+                    .containsEntry("MKT_REPORTER_NAME", "迁移回放服务")
                     .containsEntry("MKT_SAMPLE_LONGITUDE", "123.9182000");
 
             var cleared = service.save("v20-core-upgrade", 1, versionTwentyDraft(null));

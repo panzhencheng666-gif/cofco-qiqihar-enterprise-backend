@@ -67,7 +67,7 @@ class ProductionSubmissionReadThroughIntegrationTest {
         mvc.perform(get("/api/v1/production-records/{id}", recordId)
                         .principal(() -> "production-tester"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.submissionMetadata.PROD_REPORTER_NAME").value("测试填报员"))
+                .andExpect(jsonPath("$.data.submissionMetadata.PROD_REPORTER_NAME").value("产情测试员"))
                 .andExpect(jsonPath("$.data.submissionMetadata.PROD_SAMPLE_LATITUDE").value("47.3543"))
                 .andExpect(jsonPath("$.data.evidencePhotos[0].state").value("ATTACHED"));
         expectProductionMetrics("10", "200", 1);

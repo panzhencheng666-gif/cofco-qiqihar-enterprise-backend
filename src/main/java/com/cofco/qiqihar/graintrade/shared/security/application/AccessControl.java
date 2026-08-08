@@ -25,10 +25,15 @@ public class AccessControl {
     }
 
     @Transactional(readOnly = true)
-    public SecurityPrincipal require(String permissionCode, String regionCode) {
+    public SecurityPrincipal requireAuthenticated() {
         String subjectId = currentSubject.subjectId().orElseThrow(AuthenticationRequiredException::new);
-        SecurityPrincipal principal = principals.findEnabled(subjectId)
+        return principals.findEnabled(subjectId)
                 .orElseThrow(() -> new AccessDeniedException("ACCESS_SUBJECT_UNKNOWN", "Access subject is not authorized"));
+    }
+
+    @Transactional(readOnly = true)
+    public SecurityPrincipal require(String permissionCode, String regionCode) {
+        SecurityPrincipal principal = requireAuthenticated();
         if (!principal.permits(permissionCode)) {
             throw new AccessDeniedException("ACCESS_PERMISSION_DENIED", "Operation permission is denied");
         }

@@ -19,12 +19,13 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
     @Override
     public Optional<SecurityPrincipal> findEnabled(String subjectId) {
         return jdbc.sql("""
-                SELECT subject_id, work_unit_code
+                SELECT subject_id, display_name, work_unit_code
                 FROM platform.security_user
                 WHERE subject_id = :subjectId AND enabled
                 """).param("subjectId", subjectId).query((row, index) -> new SecuritySubject(
-                row.getString(1), row.getString(2))).optional().map(subject -> new SecurityPrincipal(
-                subject.id(), subject.workUnitCode(), permissions(subject.id()), regions(subject.id(), subject.workUnitCode())));
+                row.getString(1), row.getString(2), row.getString(3))).optional().map(subject -> new SecurityPrincipal(
+                subject.id(), subject.displayName(), subject.workUnitCode(),
+                permissions(subject.id()), regions(subject.id(), subject.workUnitCode())));
     }
 
     private Set<String> permissions(String subjectId) {
@@ -49,5 +50,5 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
                 """).param("subjectId", subjectId).param("workUnitCode", workUnitCode).query(String.class).list());
     }
 
-    private record SecuritySubject(String id, String workUnitCode) {}
+    private record SecuritySubject(String id, String displayName, String workUnitCode) {}
 }

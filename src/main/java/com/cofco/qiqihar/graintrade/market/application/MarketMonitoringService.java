@@ -151,11 +151,13 @@ public class MarketMonitoringService {
 
     @Transactional
     public MarketRecordView create(MarketMonitoringDraft draft) {
-        List<MarketCoreFieldDefinition> definitions = coreDefinitions(draft);
-        ParsedDraft parsed = parseDraft(draft, definitions);
+        SecurityPrincipal principal = authorize("BUSINESS_CREATE", null);
+        MarketMonitoringDraft securedDraft = withReporter(draft, principal.displayName());
+        List<MarketCoreFieldDefinition> definitions = coreDefinitions(securedDraft);
+        ParsedDraft parsed = parseDraft(securedDraft, definitions);
         validate(parsed);
-        SecurityPrincipal principal = authorize("BUSINESS_CREATE", parsed.regionCode());
-        validateEvidence(draft, principal);
+        principal = authorize("BUSINESS_CREATE", parsed.regionCode());
+        validateEvidence(securedDraft, principal);
         try {
             MarketMonitoringRecord record = MarketMonitoringRecord.draft(
                     UUID.randomUUID().toString(), parsed.productCode(), parsed.objectTypeCode(),
@@ -165,7 +167,7 @@ public class MarketMonitoringService {
             MarketMonitoringRecord persisted = repository.insert(record, principal.subjectId(), parsed.extensions());
             if (evidencePhotos != null) {
                 evidencePhotos.attachToMarket(
-                        draft.evidencePhotoIds(), persisted.id(), persisted.regionCode(), principal.subjectId());
+                        securedDraft.evidencePhotoIds(), persisted.id(), persisted.regionCode(), principal.subjectId());
             }
             audit(principal, persisted, "MARKET_RECORD_CREATED");
             return view(persisted, definitions, parsed.extensions());
@@ -179,8 +181,14 @@ public class MarketMonitoringService {
         MarketMonitoringRecord existing = required(id);
         SecurityPrincipal principal = authorize("BUSINESS_UPDATE", existing.regionCode());
         if (expectedVersion != existing.version()) throw stale();
-        List<MarketCoreFieldDefinition> definitions = coreDefinitions(draft);
-        ParsedDraft parsed = parseDraft(draft, definitions);
+        Map<String, String> originalExtensions = repository.findExtensionCoreValues(id);
+        String originalReporter = originalExtensions.get("MKT_REPORTER_NAME");
+        // Forward-only compatibility: records created before reporter provenance existed
+        // are bound to the first authenticated employee who revises them, never to input.
+        if (originalReporter == null || originalReporter.isBlank()) originalReporter = principal.displayName();
+        MarketMonitoringDraft securedDraft = withReporter(draft, originalReporter);
+        List<MarketCoreFieldDefinition> definitions = coreDefinitions(securedDraft);
+        ParsedDraft parsed = parseDraft(securedDraft, definitions);
         if (!existing.productCode().equals(parsed.productCode())) {
             throw invalid("Record product cannot change");
         }
@@ -502,6 +510,14 @@ public class MarketMonitoringService {
         if (evidencePhotos != null) {
             evidencePhotos.validateAvailable(draft.evidencePhotoIds(), principal.subjectId());
         }
+    }
+
+    private static MarketMonitoringDraft withReporter(
+            MarketMonitoringDraft draft, String authoritativeReporterName) {
+        Map<String, String> coreValues = new LinkedHashMap<>(draft.coreValues());
+        coreValues.put("MKT_REPORTER_NAME", authoritativeReporterName);
+        return new MarketMonitoringDraft(
+                draft.productCode(), coreValues, draft.facts(), draft.evidencePhotoIds());
     }
 
     private static String decimal(BigDecimal value) {

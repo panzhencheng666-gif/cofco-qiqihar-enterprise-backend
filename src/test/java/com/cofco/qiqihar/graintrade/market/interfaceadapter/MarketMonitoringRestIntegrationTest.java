@@ -58,7 +58,7 @@ class MarketMonitoringRestIntegrationTest {
         String id = mockMvc.perform(post("/api/v1/market-records").principal(() -> "market-tester")
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.data.coreValues.MKT_ACTUAL_TRADE_PRICE").value("2420.0000"))
-                .andExpect(jsonPath("$.data.coreValues.MKT_REPORTER_NAME").value("测试填报员"))
+                .andExpect(jsonPath("$.data.coreValues.MKT_REPORTER_NAME").value("市场测试员"))
                 .andExpect(jsonPath("$.data.coreValues.MKT_SAMPLE_LATITUDE").value("47.3543000"))
                 .andExpect(jsonPath("$.data.facts.PURCHASE_VOLUME").value("12.0000"))
                 .andReturn().getResponse().getContentAsString()

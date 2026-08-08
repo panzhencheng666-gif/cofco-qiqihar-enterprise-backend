@@ -115,9 +115,10 @@ public class ProductionRecordService implements ProductionImportPort {
 
     @Transactional
     public ProductionRecordView create(ProductionDraft draft) {
-        validateDraft(draft);
-        Map<String, String> submissionMetadata = canonicalSubmissionMetadata(draft);
         SecurityPrincipal principal = authorize("BUSINESS_CREATE", draft.regionCode());
+        Map<String, String> submissionMetadata = canonicalSubmissionMetadata(
+                draft.submissionMetadata(), principal.displayName());
+        validateDraft(draft, submissionMetadata);
         validateEvidence(draft, principal);
         ProductionRecord record;
         try {
@@ -145,8 +146,9 @@ public class ProductionRecordService implements ProductionImportPort {
     @Override
     @Transactional(readOnly = true)
     public void validateImportDraft(ProductionDraft draft) {
-        validateDraft(draft);
         SecurityPrincipal principal = authorize("BUSINESS_IMPORT", draft.regionCode());
+        validateDraft(draft, canonicalSubmissionMetadata(
+                draft.submissionMetadata(), principal.displayName()));
         validateEvidence(draft, principal);
     }
 
@@ -156,8 +158,9 @@ public class ProductionRecordService implements ProductionImportPort {
         SecurityPrincipal principal = authorize("BUSINESS_UPDATE", existing.regionCode());
         if (expectedVersion != existing.version()) throw stale();
         if (!existing.productCode().equals(draft.productCode())) throw invalidDraft("Record product cannot be changed");
-        validateDraft(draft);
-        Map<String, String> submissionMetadata = canonicalSubmissionMetadata(draft);
+        Map<String, String> submissionMetadata = canonicalSubmissionMetadata(
+                draft.submissionMetadata(), existing.submissionMetadata().get("PROD_REPORTER_NAME"));
+        validateDraft(draft, submissionMetadata);
         authorize("BUSINESS_UPDATE", draft.regionCode());
         ProductionRecord revised;
         try {
@@ -206,12 +209,12 @@ public class ProductionRecordService implements ProductionImportPort {
         }
     }
 
-    private void validateDraft(ProductionDraft draft) {
+    private void validateDraft(ProductionDraft draft, Map<String, String> submissionMetadata) {
         if (draft.surveyDate() == null || draft.surveyDate().isAfter(LocalDate.now(clock.withZone(REPORTING_ZONE)))) {
             throw invalidDraft("Survey date cannot be in the future");
         }
         try {
-            ProductionSubmissionMetadata.from(draft.submissionMetadata());
+            ProductionSubmissionMetadata.from(submissionMetadata);
         } catch (IllegalArgumentException exception) {
             throw invalidDraft(exception.getMessage());
         }
@@ -235,8 +238,16 @@ public class ProductionRecordService implements ProductionImportPort {
         }
     }
 
-    private Map<String, String> canonicalSubmissionMetadata(ProductionDraft draft) {
-        return ProductionSubmissionMetadata.from(draft.submissionMetadata()).asMap();
+    private Map<String, String> canonicalSubmissionMetadata(
+            Map<String, String> submittedMetadata, String authoritativeReporterName) {
+        Map<String, String> metadata = new LinkedHashMap<>();
+        if (submittedMetadata != null) metadata.putAll(submittedMetadata);
+        metadata.put("PROD_REPORTER_NAME", authoritativeReporterName);
+        try {
+            return ProductionSubmissionMetadata.from(metadata).asMap();
+        } catch (IllegalArgumentException exception) {
+            throw invalidDraft(exception.getMessage());
+        }
     }
 
     private ProductionRecord requiredRecord(String id) {

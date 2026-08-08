@@ -106,7 +106,7 @@ class ProductionRecordRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("DRAFT"))
                 .andExpect(jsonPath("$.data.costs.LAND_RENT").value("4.0000"))
-                .andExpect(jsonPath("$.data.submissionMetadata.PROD_REPORTER_NAME").value("修改填报员"))
+                .andExpect(jsonPath("$.data.submissionMetadata.PROD_REPORTER_NAME").value("产情测试员"))
                 .andExpect(jsonPath("$.data.submissionMetadata.PROD_SAMPLE_LATITUDE").value("47.3543"));
         assertThat(JdbcClient.create(dataSource).sql("""
                 SELECT count(*) FROM platform.business_audit_event
@@ -278,7 +278,7 @@ class ProductionRecordRestIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].values.PROD_REGION").value("龙沙区"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_OBJECT_TYPE").value("农户"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_STATUS").value("草稿"))
-                .andExpect(jsonPath("$.data.items[0].values.PROD_REPORTER_NAME").value("测试填报员"))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_REPORTER_NAME").value("产情测试员"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_SAMPLE_LONGITUDE").value("123.9182"))
                 .andExpect(jsonPath("$.data.items[0].values.LAND_RENT").value("4.0000"))
                 .andExpect(jsonPath("$.data.items[0].allowedActions.length()").value(2))
