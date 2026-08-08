@@ -106,6 +106,23 @@ public class EvidencePhotoService {
         return repository.findAttached("PRODUCTION", recordId);
     }
 
+    @Transactional
+    public List<EvidencePhotoView> attachToMarket(
+            List<UUID> ids, String recordId, String regionCode, String subjectId) {
+        validateAvailable(ids, subjectId);
+        for (UUID id : ids) {
+            if (!repository.attach(id, "MARKET", recordId, regionCode, subjectId)) {
+                throw new ConflictException("EVIDENCE_PHOTO_NOT_AVAILABLE", "Evidence photo is not available");
+            }
+        }
+        return repository.findAttached("MARKET", recordId);
+    }
+
+    @Transactional(readOnly = true)
+    public List<EvidencePhotoView> marketPhotos(String recordId) {
+        return repository.findAttached("MARKET", recordId);
+    }
+
     private static void validateMetadata(String filename, String mediaType, byte[] bytes, OffsetDateTime capturedAt,
             String latitude, String longitude, String watermarkText) {
         if (filename == null || filename.isBlank() || filename.length() > 255 || mediaType == null

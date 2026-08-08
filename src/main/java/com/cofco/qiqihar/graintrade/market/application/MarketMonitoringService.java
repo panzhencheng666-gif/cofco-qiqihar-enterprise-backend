@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade.market.application;
 
+import com.cofco.qiqihar.graintrade.evidence.application.EvidencePhotoService;
 import com.cofco.qiqihar.graintrade.market.domain.MarketActionPolicy;
 import com.cofco.qiqihar.graintrade.market.domain.MarketMonitoringRecord;
 import com.cofco.qiqihar.graintrade.market.domain.MarketRecordQuery;
@@ -52,21 +53,29 @@ public class MarketMonitoringService {
     private final CurrentActor currentActor;
     private final AccessControl accessControl;
     private final BusinessAuditRecorder audit;
+    private final EvidencePhotoService evidencePhotos;
     private final Clock clock;
 
     public MarketMonitoringService(MarketMonitoringRepository repository, PageDefinitionQuery pageDefinitions,
             CurrentActor currentActor, Clock clock) {
-        this(repository, pageDefinitions, currentActor, null, null, clock);
+        this(repository, pageDefinitions, currentActor, null, null, null, clock);
+    }
+
+    public MarketMonitoringService(MarketMonitoringRepository repository, PageDefinitionQuery pageDefinitions,
+            CurrentActor currentActor, AccessControl accessControl, BusinessAuditRecorder audit, Clock clock) {
+        this(repository, pageDefinitions, currentActor, accessControl, audit, null, clock);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public MarketMonitoringService(MarketMonitoringRepository repository, PageDefinitionQuery pageDefinitions,
-            CurrentActor currentActor, AccessControl accessControl, BusinessAuditRecorder audit, Clock clock) {
+            CurrentActor currentActor, AccessControl accessControl, BusinessAuditRecorder audit,
+            EvidencePhotoService evidencePhotos, Clock clock) {
         this.repository = repository;
         this.pageDefinitions = pageDefinitions;
         this.currentActor = currentActor;
         this.accessControl = accessControl;
         this.audit = audit;
+        this.evidencePhotos = evidencePhotos;
         this.clock = clock;
     }
 
@@ -146,6 +155,7 @@ public class MarketMonitoringService {
         ParsedDraft parsed = parseDraft(draft, definitions);
         validate(parsed);
         SecurityPrincipal principal = authorize("BUSINESS_CREATE", parsed.regionCode());
+        validateEvidence(draft, principal);
         try {
             MarketMonitoringRecord record = MarketMonitoringRecord.draft(
                     UUID.randomUUID().toString(), parsed.productCode(), parsed.objectTypeCode(),
@@ -153,6 +163,10 @@ public class MarketMonitoringService {
                     parsed.purchaseBasePrice(), parsed.saleBasePrice(), parsed.carriageBoardAmount(),
                     parsed.packagingAmount(), parsed.freightAmount(), parsed.packagingForm(), parsed.facts());
             MarketMonitoringRecord persisted = repository.insert(record, principal.subjectId(), parsed.extensions());
+            if (evidencePhotos != null) {
+                evidencePhotos.attachToMarket(
+                        draft.evidencePhotoIds(), persisted.id(), persisted.regionCode(), principal.subjectId());
+            }
             audit(principal, persisted, "MARKET_RECORD_CREATED");
             return view(persisted, definitions, parsed.extensions());
         } catch (MarketValidationException exception) {
@@ -448,7 +462,7 @@ public class MarketMonitoringService {
         return value == null ? null : new BigDecimal(value);
     }
 
-    private static MarketRecordView view(
+    private MarketRecordView view(
             MarketMonitoringRecord record, List<MarketCoreFieldDefinition> definitions,
             Map<String, String> extensions) {
         Set<String> extensionCodes = definitions.stream()
@@ -479,7 +493,15 @@ public class MarketMonitoringService {
                     default -> throw new IllegalStateException(
                             "Unsupported market core domain binding: " + definition.domainBinding());
                 }));
-        return new MarketRecordView(record, values, MarketActionPolicy.allowedActions(record.status()));
+        return new MarketRecordView(record, values,
+                evidencePhotos == null ? List.of() : evidencePhotos.marketPhotos(record.id()),
+                MarketActionPolicy.allowedActions(record.status()));
+    }
+
+    private void validateEvidence(MarketMonitoringDraft draft, SecurityPrincipal principal) {
+        if (evidencePhotos != null) {
+            evidencePhotos.validateAvailable(draft.evidencePhotoIds(), principal.subjectId());
+        }
     }
 
     private static String decimal(BigDecimal value) {

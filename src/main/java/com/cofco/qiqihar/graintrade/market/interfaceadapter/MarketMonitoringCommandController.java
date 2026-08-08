@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade.market.interfaceadapter;
 
+import com.cofco.qiqihar.graintrade.evidence.application.EvidencePhotoView;
 import com.cofco.qiqihar.graintrade.market.application.MarketCoreFieldDefinition;
 import com.cofco.qiqihar.graintrade.market.application.MarketFactDefinition;
 import com.cofco.qiqihar.graintrade.market.application.MarketFactGroup;
@@ -17,6 +18,7 @@ import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -82,13 +84,14 @@ public class MarketMonitoringCommandController {
 
     record DraftRequest(
             String productCode, Map<String, String> coreValues,
-            Map<String, String> facts, Long version) {
+            Map<String, String> facts, List<UUID> evidencePhotoIds, Long version) {
         MarketMonitoringDraft toDraft() {
             try {
                 BoundedInput.requireAggregateSize("INVALID_MARKET_RECORD", coreValues, facts);
                 BoundedInput.requireText("INVALID_MARKET_RECORD", productCode);
                 BoundedInput.requireMapText("INVALID_MARKET_RECORD", coreValues, facts);
-                return new MarketMonitoringDraft(productCode, coreValues, parseDecimals(facts));
+                return new MarketMonitoringDraft(
+                        productCode, coreValues, parseDecimals(facts), evidencePhotoIds);
             } catch (RuntimeException exception) {
                 if (exception instanceof ClientRequestException clientRequestException) {
                     throw clientRequestException;
@@ -172,12 +175,27 @@ public class MarketMonitoringCommandController {
     record RecordResponse(
             String id, String productCode, Map<String, String> coreValues,
             String status, String returnReason,
-            Map<String, String> facts, List<String> allowedActions, long version) {
+            Map<String, String> facts, List<EvidencePhotoResponse> evidencePhotos,
+            List<String> allowedActions, long version) {
         static RecordResponse from(MarketRecordView view) {
             return new RecordResponse(
                     view.record().id(), view.record().productCode(), view.coreValues(),
                     view.record().status().name(), view.record().returnReason(),
-                    formatDecimals(view.record().facts()), view.allowedActions(), view.record().version());
+                    formatDecimals(view.record().facts()),
+                    view.evidencePhotos().stream().map(EvidencePhotoResponse::from).toList(),
+                    view.allowedActions(), view.record().version());
+        }
+    }
+
+    record EvidencePhotoResponse(
+            UUID id, String state, String originalFilename, String mediaType, long byteLength,
+            String sha256, java.time.OffsetDateTime capturedAt, String latitude, String longitude,
+            String watermarkText) {
+        static EvidencePhotoResponse from(EvidencePhotoView photo) {
+            return new EvidencePhotoResponse(
+                    photo.id(), photo.state(), photo.originalFilename(), photo.mediaType(),
+                    photo.byteLength(), photo.sha256(), photo.capturedAt(), photo.latitude(),
+                    photo.longitude(), photo.watermarkText());
         }
     }
 
