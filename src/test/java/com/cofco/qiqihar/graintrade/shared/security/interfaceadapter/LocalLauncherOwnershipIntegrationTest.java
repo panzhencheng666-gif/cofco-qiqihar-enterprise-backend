@@ -170,6 +170,84 @@ class LocalLauncherOwnershipIntegrationTest {
         assertThat(unrelated.isAlive()).as("unrelated test process must remain alive").isTrue();
     }
 
+    @Test
+    void manualStopTerminatesOwnedParentAndListenerChildAndReleasesThePort() throws Exception {
+        Fixture fixture = fixture();
+        ManagedListener managed = startManagedListener(fixture.backendPort(), fixture.documentRoot(), false);
+        Path pidFile = fixture.runtimeRoot().resolve("pids/backend.pid");
+
+        ProcessResult record = recordOwnership(pidFile, managed, fixture.backendPort(), "backend");
+        ProcessResult stop = run(STOP_SCRIPT, List.of(), fixture.environment());
+
+        assertThat(record.exitCode()).as(record.output()).isZero();
+        assertThat(stop.exitCode()).as(stop.output()).isZero();
+        awaitNotAlive(managed.parentPid());
+        awaitNotAlive(managed.listenerPid());
+        awaitPortReleased(fixture.backendPort());
+        assertThat(pidFile).doesNotExist();
+    }
+
+    @Test
+    void refusingListenerRetainsCompleteOwnershipRecordAndFailsStop() throws Exception {
+        Fixture fixture = fixture();
+        ManagedListener managed = startManagedListener(fixture.backendPort(), fixture.documentRoot(), true);
+        Path pidFile = fixture.runtimeRoot().resolve("pids/backend.pid");
+
+        ProcessResult record = recordOwnership(pidFile, managed, fixture.backendPort(), "backend");
+        ProcessResult stop = run(STOP_SCRIPT, List.of(), fixture.environment());
+
+        assertThat(record.exitCode()).as(record.output()).isZero();
+        assertThat(stop.exitCode()).as(stop.output()).isNotZero();
+        assertThat(ProcessHandle.of(managed.listenerPid())).isPresent();
+        assertThat(pidFile).exists();
+        assertThat(Files.readString(pidFile)).startsWith("owned-v2\n")
+                .contains(Long.toString(managed.parentPid()))
+                .contains(Long.toString(managed.listenerPid()))
+                .contains(Integer.toString(fixture.backendPort()));
+    }
+
+    @Test
+    void replacementListenerIsNeverSignalledAndRetainsOwnershipRecord() throws Exception {
+        Fixture fixture = fixture();
+        ManagedListener managed = startManagedListener(fixture.backendPort(), fixture.documentRoot(), false);
+        Path pidFile = fixture.runtimeRoot().resolve("pids/backend.pid");
+        ProcessResult record = recordOwnership(pidFile, managed, fixture.backendPort(), "backend");
+        assertThat(record.exitCode()).as(record.output()).isZero();
+
+        ProcessHandle.of(managed.listenerPid()).orElseThrow().destroy();
+        awaitNotAlive(managed.listenerPid());
+        awaitNotAlive(managed.parentPid());
+        Process competitor = startHttpServer(fixture.backendPort(), "127.0.0.1", fixture.documentRoot());
+
+        ProcessResult stop = run(STOP_SCRIPT, List.of(), fixture.environment());
+
+        assertThat(stop.exitCode()).as(stop.output()).isNotZero();
+        assertThat(competitor.isAlive()).as("replacement listener must remain untouched").isTrue();
+        assertThat(pidFile).exists();
+    }
+
+    @Test
+    void stopUsesTheExactListenerWhenTheRecordedRootHasAlreadyExited() throws Exception {
+        Fixture fixture = fixture();
+        Path releaseRoot = temporaryDirectory.resolve("release-root");
+        ManagedListener managed = startRootThatCanExitWithLiveListener(
+                fixture.backendPort(), fixture.documentRoot(), releaseRoot);
+        Path pidFile = fixture.runtimeRoot().resolve("pids/backend.pid");
+        ProcessResult record = recordOwnership(pidFile, managed, fixture.backendPort(), "backend");
+        assertThat(record.exitCode()).as(record.output()).isZero();
+
+        Files.createFile(releaseRoot);
+        awaitNotAlive(managed.parentPid());
+        assertThat(ProcessHandle.of(managed.listenerPid())).isPresent();
+
+        ProcessResult stop = run(STOP_SCRIPT, List.of(), fixture.environment());
+
+        assertThat(stop.exitCode()).as(stop.output()).isZero();
+        awaitNotAlive(managed.listenerPid());
+        awaitPortReleased(fixture.backendPort());
+        assertThat(pidFile).doesNotExist();
+    }
+
     private Fixture fixture() throws Exception {
         Set<Integer> usedPorts = new HashSet<>();
         int backendPort = freePort(usedPorts);
@@ -199,6 +277,73 @@ class LocalLauncherOwnershipIntegrationTest {
         testProcesses.add(process.toHandle());
         awaitListening(port, process);
         return process;
+    }
+
+    private ManagedListener startManagedListener(int port, Path documentRoot, boolean ignoreTerm)
+            throws Exception {
+        Path childPidFile = temporaryDirectory.resolve("listener-child.pid");
+        String childCommand = ignoreTerm
+                ? "(trap '' TERM; exec python3 -m http.server \"$port\" --bind 127.0.0.1 --directory \"$root\") &"
+                : "python3 -m http.server \"$port\" --bind 127.0.0.1 --directory \"$root\" &";
+        String command = "set -euo pipefail; port=$1; root=$2; child_file=$3; "
+                + childCommand
+                + " child=$!; printf '%s\\n' \"$child\" > \"$child_file\"; "
+                + "trap 'wait \"$child\"; exit 0' TERM INT; wait \"$child\"";
+        Process parent = new ProcessBuilder("bash", "-c", command, "managed-listener",
+                Integer.toString(port), documentRoot.toString(), childPidFile.toString())
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .start();
+        testProcesses.add(parent.toHandle());
+        long listenerPid = readPid(childPidFile);
+        awaitListening(port, parent);
+        return new ManagedListener(parent.pid(), listenerPid);
+    }
+
+    private ManagedListener startRootThatCanExitWithLiveListener(
+            int port, Path documentRoot, Path releaseRoot) throws Exception {
+        Path childPidFile = temporaryDirectory.resolve("detached-listener-child.pid");
+        String command = "set -euo pipefail; port=$1; root=$2; child_file=$3; release=$4; "
+                + "python3 -m http.server \"$port\" --bind 127.0.0.1 --directory \"$root\" & "
+                + "child=$!; printf '%s\\n' \"$child\" > \"$child_file\"; "
+                + "while [[ ! -f \"$release\" ]]; do sleep 0.02; done";
+        Process parent = new ProcessBuilder("bash", "-c", command, "detached-listener",
+                Integer.toString(port), documentRoot.toString(), childPidFile.toString(), releaseRoot.toString())
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .start();
+        testProcesses.add(parent.toHandle());
+        long listenerPid = readPid(childPidFile);
+        awaitListening(port, parent);
+        return new ManagedListener(parent.pid(), listenerPid);
+    }
+
+    private ProcessResult recordOwnership(Path pidFile, ManagedListener managed, int port, String service)
+            throws Exception {
+        return runOwnership("record_owned_process " + shellQuote(pidFile) + " "
+                + managed.parentPid() + " " + managed.listenerPid() + " " + port + " "
+                + shellQuote(service));
+    }
+
+    private ProcessResult runOwnership(String command) throws Exception {
+        Process process = new ProcessBuilder("bash", "-c",
+                "source " + shellQuote(REPOSITORY.resolve("scripts/local-process-ownership.sh"))
+                        + "; " + command)
+                .directory(REPOSITORY.toFile())
+                .redirectErrorStream(true)
+                .start();
+        testProcesses.add(process.toHandle());
+        assertThat(process.waitFor(10, TimeUnit.SECONDS)).as("ownership command timeout").isTrue();
+        return new ProcessResult(process.exitValue(),
+                new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+    }
+
+    private static String shellQuote(Path value) {
+        return shellQuote(value.toString());
+    }
+
+    private static String shellQuote(String value) {
+        return "'" + value.replace("'", "'\\\"'\\\"'") + "'";
     }
 
     private void installFakeMaven(Path fakeBin, String mode) throws IOException {
@@ -369,6 +514,23 @@ class LocalLauncherOwnershipIntegrationTest {
         assertThat(pids)
                 .as("all exact owned children should be stopped")
                 .allMatch(pid -> ProcessHandle.of(pid).isEmpty());
+    }
+
+    private static void awaitPortReleased(int port) throws Exception {
+        for (int attempt = 0; attempt < 100; attempt++) {
+            Process probe = new ProcessBuilder("lsof", "-tiTCP:" + port, "-sTCP:LISTEN", "-P", "-n")
+                    .redirectError(ProcessBuilder.Redirect.DISCARD)
+                    .start();
+            if (probe.waitFor(2, TimeUnit.SECONDS)
+                    && new String(probe.getInputStream().readAllBytes(), StandardCharsets.UTF_8).isBlank()) {
+                return;
+            }
+            Thread.sleep(20);
+        }
+        throw new IllegalStateException("Port was not released: " + port);
+    }
+
+    private record ManagedListener(long parentPid, long listenerPid) {
     }
 
     private record Fixture(

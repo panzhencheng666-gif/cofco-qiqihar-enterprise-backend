@@ -72,23 +72,18 @@ service_state() {
   local port=$2
   local name=$3
   local probe_url=${4:-}
-  local owned_pid=""
-
-  if owned_process_is_running "$pid_file"; then
-    owned_pid=$COFCO_OWNED_PID
-  fi
-
   local listener_pid
   listener_pid="$(pid_from_port "$port")"
   if [[ -n "${listener_pid:-}" ]]; then
-    if [[ -n "$owned_pid" ]] && process_is_same_or_descendant "$owned_pid" "$listener_pid"; then
-      log "$name owned listener pid=$listener_pid (launcher pid=$owned_pid)"
+    if owned_listener_matches_port_and_service "$pid_file" "$listener_pid" "$port" "$name"; then
+      log "$name owned listener pid=$listener_pid (root pid=$COFCO_OWNED_ROOT_PID)"
       return 2
     fi
 
-    # This launcher did not create the listener. Forget any stale ownership
-    # record so cleanup and stop-local can never signal an attached process.
-    rm -f "$pid_file"
+    if [[ -f "$pid_file" ]]; then
+      log "$name listener does not match its ownership record; process and record were left untouched."
+      return 3
+    fi
     if [[ -n "$probe_url" ]]; then
       if curl -sSf --max-time 2 "$probe_url" >/dev/null 2>&1; then
         log "$name already listening on :$port, attached pid=$listener_pid"
@@ -103,11 +98,10 @@ service_state() {
     return 0
   fi
 
-  if [[ -n "$owned_pid" ]]; then
-    return 2
+  if [[ -f "$pid_file" ]]; then
+    log "$name ownership record exists but no matching listener is present; record was left untouched."
+    return 3
   fi
-
-  rm -f "$pid_file"
   return 1
 }
 
@@ -140,6 +134,25 @@ stop_newly_started_service() {
   # unrelated listener. Only the identity-bound child record is eligible.
   log "Stopping newly started $name after loopback verification failed."
   stop_owned_process "$pid_file" "$name"
+}
+
+record_started_listener() {
+  local pid_file=$1
+  local root_pid=$2
+  local port=$3
+  local name=$4
+  local listener_pid
+
+  listener_pid="$(pid_from_port "$port")"
+  if [[ -z "$listener_pid" ]]; then
+    log "$name did not expose a listener to record."
+    return 1
+  fi
+  if ! record_owned_process "$pid_file" "$root_pid" "$listener_pid" "$port" "$name"; then
+    log "$name listener pid=$listener_pid is not a live child of root pid=$root_pid; it was left untouched."
+    return 1
+  fi
+  log "$name owned listener pid=$listener_pid (root pid=$root_pid)"
 }
 
 cleanup() {
@@ -189,11 +202,13 @@ start_backend() {
     spring-boot:run \
     -Dspring-boot.run.profiles=local
   backend_pid=$!
-  if ! record_owned_process "$backend_pid_file" "$backend_pid"; then
-    log "Backend child exited before ownership could be recorded."
+  if ! wait_for_ready "backend" "http://127.0.0.1:${backend_port}/actuator/health" 30 "$backend_log"; then
+    log "Backend did not become ready; no unverified listener was signalled."
     return 1
   fi
-  wait_for_ready "backend" "http://127.0.0.1:${backend_port}/actuator/health" 30 "$backend_log" || true
+  if ! record_started_listener "$backend_pid_file" "$backend_pid" "$backend_port" "backend"; then
+    return 1
+  fi
   if ! require_loopback_listener "$backend_port" "backend"; then
     stop_newly_started_service "$backend_pid_file" "backend"
     return 1
@@ -238,11 +253,13 @@ start_overview() {
     "$overview_port" \
     --strictPort
   overview_pid=$!
-  if ! record_owned_process "$overview_pid_file" "$overview_pid"; then
-    log "Overview child exited before ownership could be recorded."
+  if ! wait_for_ready "overview frontend" "http://127.0.0.1:${overview_port}/" 30 "$overview_log"; then
+    log "Overview frontend did not become ready; no unverified listener was signalled."
     return 1
   fi
-  wait_for_ready "overview frontend" "http://127.0.0.1:${overview_port}/" 30 "$overview_log" || true
+  if ! record_started_listener "$overview_pid_file" "$overview_pid" "$overview_port" "overview frontend"; then
+    return 1
+  fi
   if ! require_loopback_listener "$overview_port" "overview frontend"; then
     stop_newly_started_service "$overview_pid_file" "overview frontend"
     return 1
@@ -287,11 +304,13 @@ start_business() {
     "$business_port" \
     --strictPort
   business_pid=$!
-  if ! record_owned_process "$business_pid_file" "$business_pid"; then
-    log "Business child exited before ownership could be recorded."
+  if ! wait_for_ready "business frontend" "http://127.0.0.1:${business_port}/prototype.html" 30 "$business_log"; then
+    log "Business frontend did not become ready; no unverified listener was signalled."
     return 1
   fi
-  wait_for_ready "business frontend" "http://127.0.0.1:${business_port}/prototype.html" 30 "$business_log" || true
+  if ! record_started_listener "$business_pid_file" "$business_pid" "$business_port" "business frontend"; then
+    return 1
+  fi
   if ! require_loopback_listener "$business_port" "business frontend"; then
     stop_newly_started_service "$business_pid_file" "business frontend"
     return 1

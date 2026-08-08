@@ -4,6 +4,10 @@ set -euo pipefail
 backend_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${backend_root}/scripts/verify-loopback-listener.sh"
 
+workspace_root="$(cd "${backend_root}/.." && pwd)"
+overview_frontend_root="${COFCO_ENTERPRISE_FRONTEND_ROOT:-${workspace_root}/cofco-qiqihar-enterprise-frontend}"
+business_frontend_root="${COFCO_ENTERPRISE_WEB_ROOT:-${workspace_root}/cofco-qiqihar-enterprise-web}"
+
 launcher="${COFCO_ENTERPRISE_DESKTOP_LAUNCHER:-/Users/federal/Desktop/启动齐齐哈尔粮食商情系统.command}"
 host="127.0.0.1"
 
@@ -36,12 +40,19 @@ require_loopback_listener "$business_port" "business frontend"
 require_loopback_listener "$overview_port" "overview frontend"
 
 legacy_project="cofco-qiqihar-""dashboard"
-if grep -R -Fq -- "$legacy_project" \
+runtime_files=(
   "${backend_root}/scripts/start-local.sh" \
   "${backend_root}/scripts/stop-local.sh" \
   "${backend_root}/scripts/healthcheck-local.sh" \
   "${backend_root}/scripts/local-process-ownership.sh" \
-  "$launcher"; then
+  "${backend_root}/scripts/verify-loopback-listener.sh" \
+  "${overview_frontend_root}/package.json" \
+  "${overview_frontend_root}/vite.config.ts" \
+  "${business_frontend_root}/package.json" \
+  "${business_frontend_root}/vite.prototype.config.ts" \
+  "$launcher"
+)
+if grep -Fq -- "$legacy_project" "${runtime_files[@]}"; then
   echo "[FAIL] launcher/runtime scripts still reference the legacy dashboard project" >&2
   exit 1
 fi

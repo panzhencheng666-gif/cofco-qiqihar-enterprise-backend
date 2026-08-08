@@ -14,6 +14,7 @@ class LocalLauncherSecurityContractTest {
     private static final Path START_SCRIPT = Path.of("scripts/start-local.sh");
     private static final Path LISTENER_GUARD = Path.of("scripts/verify-loopback-listener.sh");
     private static final Path OWNERSHIP_SCRIPT = Path.of("scripts/local-process-ownership.sh");
+    private static final Path LINK_VERIFIER = Path.of("scripts/verify-local-links.sh");
 
     @Test
     void bothViteLaunchesOverrideConfigurationWithNumericLoopback() throws IOException {
@@ -63,7 +64,25 @@ class LocalLauncherSecurityContractTest {
         String script = java.nio.file.Files.readString(OWNERSHIP_SCRIPT);
 
         assertThat(script).doesNotContain("kill -9");
-        assertThat(script).contains("leaving it running");
+        assertThat(script).contains("retaining record");
+    }
+
+    @Test
+    void ownershipRecordBindsTheRootAndActualListenerBeforeStoppingEither() throws IOException {
+        String script = java.nio.file.Files.readString(OWNERSHIP_SCRIPT);
+
+        assertThat(script).contains("owned-v2", "listener_pid", "process_is_same_or_descendant");
+        assertThat(script).contains("kill -TERM \"$COFCO_OWNED_LISTENER_PID\"");
+        assertThat(script).contains("kill -TERM \"$COFCO_OWNED_ROOT_PID\"");
+    }
+
+    @Test
+    void legacyScanCoversBothFrontendRuntimeConfigurations() throws IOException {
+        String script = java.nio.file.Files.readString(LINK_VERIFIER);
+
+        assertThat(script).contains("overview_frontend_root", "business_frontend_root");
+        assertThat(script).contains("${overview_frontend_root}/package.json", "${overview_frontend_root}/vite.config.ts");
+        assertThat(script).contains("${business_frontend_root}/package.json", "${business_frontend_root}/vite.prototype.config.ts");
     }
 
     private static int occurrences(String text, String fragment) {
