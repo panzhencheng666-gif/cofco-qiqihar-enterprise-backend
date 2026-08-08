@@ -3,6 +3,7 @@ set -euo pipefail
 
 backend_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 workspace_root="$(cd "${backend_root}/.." && pwd)"
+source "${backend_root}/scripts/verify-loopback-listener.sh"
 
 overview_frontend_root="${COFCO_ENTERPRISE_FRONTEND_ROOT:-${workspace_root}/cofco-qiqihar-enterprise-frontend}"
 business_frontend_root="${COFCO_ENTERPRISE_WEB_ROOT:-${workspace_root}/cofco-qiqihar-enterprise-web}"
@@ -24,84 +25,7 @@ if [[ "${1:-}" == "--no-watch" ]]; then
   watch_mode=0
 fi
 
-cofco_is_lan_ipv4() {
-  local cofco_ip=$1
-  if [[ "$cofco_ip" == 10.* ]]; then
-    return 0
-  fi
-  if [[ "$cofco_ip" == 192.168.* ]]; then
-    return 0
-  fi
-  if [[ "$cofco_ip" =~ ^172\.(1[6-9]|2[0-9]|3[0-1])\.[0-9]+\.[0-9]+$ ]]; then
-    return 0
-  fi
-  return 1
-}
-
-cofco_is_unusable_ipv4() {
-  local cofco_ip=$1
-  if [[ -z "$cofco_ip" ]]; then
-    return 0
-  fi
-  if [[ "$cofco_ip" == 127.* || "$cofco_ip" == 169.254.* || "$cofco_ip" == 198.18.* ]]; then
-    return 0
-  fi
-  return 1
-}
-
-cofco_collect_local_ipv4_candidates() {
-  local cofco_candidate
-  for cofco_iface in en0 en1 en2 en3 en4 en5 en6; do
-    cofco_candidate="$(ipconfig getifaddr "$cofco_iface" 2>/dev/null || true)"
-    if [[ -n "$cofco_candidate" ]]; then
-      printf '%s\n' "$cofco_candidate"
-    fi
-  done
-  ifconfig -a | awk 'BEGIN {OFS="";} ($1=="inet" && $2 !~ /^127\\./ && $2 !~ /^169\\.254\\./) {print $2}' \
-    | sed -E "s/^([0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+).*/\\1/" \
-    | while read -r cofco_candidate; do
-      printf '%s\n' "$cofco_candidate"
-    done
-}
-
-cofco_resolve_local_access_host() {
-  if [[ -n "${COFCO_ENTERPRISE_ACCESS_HOST:-}" ]]; then
-    printf '%s\n' "${COFCO_ENTERPRISE_ACCESS_HOST}"
-    return 0
-  fi
-
-  local cofco_candidate
-  local cofco_preferred=""
-  local cofco_fallback=""
-
-  while IFS= read -r cofco_candidate; do
-    if cofco_is_unusable_ipv4 "$cofco_candidate"; then
-      continue
-    fi
-    if [[ -z "$cofco_preferred" ]] && cofco_is_lan_ipv4 "$cofco_candidate"; then
-      cofco_preferred="$cofco_candidate"
-    fi
-    if [[ -z "$cofco_fallback" ]]; then
-      cofco_fallback="$cofco_candidate"
-    fi
-    if [[ -n "$cofco_preferred" ]]; then
-      break
-    fi
-  done < <(cofco_collect_local_ipv4_candidates | awk '!seen[$0]++')
-
-  if [[ -n "$cofco_preferred" ]]; then
-    printf '%s\n' "$cofco_preferred"
-    return 0
-  fi
-  if [[ -n "$cofco_fallback" ]]; then
-    printf '%s\n' "$cofco_fallback"
-    return 0
-  fi
-
-  printf '127.0.0.1\n'
-}
-
-local_access_host="$(cofco_resolve_local_access_host)"
+local_access_host="127.0.0.1"
 
 backend_port="${COFCO_ENTERPRISE_BACKEND_PORT:-8090}"
 business_port="${COFCO_ENTERPRISE_BUSINESS_PORT:-63182}"
@@ -155,23 +79,6 @@ read_pid() {
 pid_from_port() {
   local port=$1
   lsof -tiTCP:"$port" -sTCP:LISTEN -P -n 2>/dev/null | head -n 1
-}
-
-backend_listener_is_loopback_only() {
-  local listener
-  local found=0
-  while IFS= read -r listener; do
-    [[ -z "$listener" ]] && continue
-    found=1
-    case "$listener" in
-      127.*:"$backend_port"|\[::1\]:"$backend_port") ;;
-      *)
-        log "Refusing backend listener outside loopback: $listener"
-        return 1
-        ;;
-    esac
-  done < <(lsof -nP -a -iTCP:"$backend_port" -sTCP:LISTEN -Fn 2>/dev/null | sed -n 's/^n//p')
-  [[ "$found" -eq 1 ]]
 }
 
 service_state() {
@@ -230,6 +137,26 @@ start_service_background() {
   nohup "$@" </dev/null >> "$log_file" 2>&1 &
 }
 
+stop_newly_started_service() {
+  local launcher_pid=$1
+  local port=$2
+  local pid_file=$3
+  local name=$4
+  local listener_pid
+
+  # This path is reached only after the port was observed free and this launch
+  # attempt recorded launcher_pid. It must never be used for an attached process.
+  listener_pid="$(pid_from_port "$port")"
+  log "Stopping newly started $name after loopback verification failed."
+  if [[ -n "${listener_pid:-}" ]]; then
+    kill "$listener_pid" 2>/dev/null || true
+  fi
+  if [[ "$launcher_pid" != "${listener_pid:-}" ]]; then
+    kill "$launcher_pid" 2>/dev/null || true
+  fi
+  rm -f "$pid_file"
+}
+
 cleanup() {
   if [[ "$watch_mode" -eq 1 ]]; then
     log "Watch mode exit requested: stopping managed local services."
@@ -242,7 +169,8 @@ trap cleanup INT TERM
 start_backend() {
   local service_state
 
-  if [[ -n "$(pid_from_port "$backend_port")" ]] && ! backend_listener_is_loopback_only; then
+  if [[ -n "$(pid_from_port "$backend_port")" ]] &&
+      ! require_loopback_listener "$backend_port" "backend"; then
     log "Backend must listen only on 127.0.0.1; existing process was left untouched."
     return 1
   fi
@@ -268,8 +196,8 @@ start_backend() {
   backend_pid=$!
   echo "$backend_pid" > "$backend_pid_file"
   wait_for_ready "backend" "http://127.0.0.1:${backend_port}/actuator/health" 30 "$backend_log" || true
-  if ! backend_listener_is_loopback_only; then
-    log "Backend listener verification failed; process was left untouched."
+  if ! require_loopback_listener "$backend_port" "backend"; then
+    stop_newly_started_service "$backend_pid" "$backend_port" "$backend_pid_file" "backend"
     return 1
   fi
   cd - >/dev/null
@@ -277,6 +205,12 @@ start_backend() {
 
 start_overview() {
   local service_state
+
+  if [[ -n "$(pid_from_port "$overview_port")" ]] &&
+      ! require_loopback_listener "$overview_port" "overview frontend"; then
+    log "Overview frontend must listen only on 127.0.0.1; existing process was left untouched."
+    return 1
+  fi
 
   if service_state "$overview_pid_file" "$overview_port" "overview frontend" "http://127.0.0.1:${overview_port}/"; then
     return
@@ -298,18 +232,28 @@ start_overview() {
     run \
     dev \
     -- --host \
-    0.0.0.0 \
+    127.0.0.1 \
     --port \
     "$overview_port" \
     --strictPort
   overview_pid=$!
   echo "$overview_pid" > "$overview_pid_file"
   wait_for_ready "overview frontend" "http://127.0.0.1:${overview_port}/" 30 "$overview_log" || true
+  if ! require_loopback_listener "$overview_port" "overview frontend"; then
+    stop_newly_started_service "$overview_pid" "$overview_port" "$overview_pid_file" "overview frontend"
+    return 1
+  fi
   cd - >/dev/null
 }
 
 start_business() {
   local service_state
+
+  if [[ -n "$(pid_from_port "$business_port")" ]] &&
+      ! require_loopback_listener "$business_port" "business frontend"; then
+    log "Business frontend must listen only on 127.0.0.1; existing process was left untouched."
+    return 1
+  fi
 
   if service_state "$business_pid_file" "$business_port" "business frontend" "http://127.0.0.1:${business_port}/prototype.html"; then
     return
@@ -331,13 +275,17 @@ start_business() {
     run \
     prototype \
     -- --host \
-    0.0.0.0 \
+    127.0.0.1 \
     --port \
     "$business_port" \
     --strictPort
   business_pid=$!
   echo "$business_pid" > "$business_pid_file"
   wait_for_ready "business frontend" "http://127.0.0.1:${business_port}/prototype.html" 30 "$business_log" || true
+  if ! require_loopback_listener "$business_port" "business frontend"; then
+    stop_newly_started_service "$business_pid" "$business_port" "$business_pid_file" "business frontend"
+    return 1
+  fi
   cd - >/dev/null
 }
 
@@ -347,13 +295,7 @@ start_business
 
 log "Started services."
 log "Business: http://$local_access_host:${business_port}/prototype.html"
-if [[ "$local_access_host" != "127.0.0.1" ]]; then
-  log "Business（本机）: http://127.0.0.1:${business_port}/prototype.html"
-fi
 log "Overview: http://$local_access_host:${overview_port}/"
-if [[ "$local_access_host" != "127.0.0.1" ]]; then
-  log "Overview（本机）: http://127.0.0.1:${overview_port}/"
-fi
 log "Backend（仅本机）:  http://127.0.0.1:${backend_port}/actuator/health"
 log "Logs: $log_dir"
 

@@ -39,4 +39,31 @@ class SecurityStartupInvariantTest {
                 Set.of("local"), "127.0.0.1", "X-Actor", ""))
                 .doesNotThrowAnyException();
     }
+
+    @Test
+    void rejectsHostnameEvenWhenItUsuallyAliasesLoopback() {
+        assertThatThrownBy(() -> SecurityStartupInvariant.validate(
+                Set.of("local"), "localhost", "X-Actor", ""))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("numeric loopback");
+    }
+
+    @Test
+    void acceptsNumericIpv4AndIpv6LoopbackAddresses() {
+        assertThatCode(() -> SecurityStartupInvariant.validate(
+                Set.of("local"), "127.0.0.2", "X-Actor", ""))
+                .doesNotThrowAnyException();
+        assertThatCode(() -> SecurityStartupInvariant.validate(
+                Set.of("local"), "::1", "X-Actor", ""))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void rejectsTestProfileWithoutTheTestClasspathMarker() {
+        assertThatThrownBy(() -> SecurityStartupInvariant.validate(
+                Set.of("test"), "127.0.0.1", "", "", false))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("test profile")
+                .hasMessageContaining("production artifact");
+    }
 }
