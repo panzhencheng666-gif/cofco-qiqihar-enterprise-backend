@@ -72,10 +72,20 @@ service_state() {
   local port=$2
   local name=$3
   local probe_url=${4:-}
+  local owned_pid=""
+
+  if owned_process_is_running "$pid_file"; then
+    owned_pid=$COFCO_OWNED_PID
+  fi
 
   local listener_pid
   listener_pid="$(pid_from_port "$port")"
   if [[ -n "${listener_pid:-}" ]]; then
+    if [[ -n "$owned_pid" ]] && process_is_same_or_descendant "$owned_pid" "$listener_pid"; then
+      log "$name owned listener pid=$listener_pid (launcher pid=$owned_pid)"
+      return 2
+    fi
+
     # This launcher did not create the listener. Forget any stale ownership
     # record so cleanup and stop-local can never signal an attached process.
     rm -f "$pid_file"
@@ -93,7 +103,7 @@ service_state() {
     return 0
   fi
 
-  if owned_process_is_running "$pid_file"; then
+  if [[ -n "$owned_pid" ]]; then
     return 2
   fi
 

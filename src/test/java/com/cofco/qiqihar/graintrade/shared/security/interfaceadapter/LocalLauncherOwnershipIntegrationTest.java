@@ -84,6 +84,39 @@ class LocalLauncherOwnershipIntegrationTest {
     }
 
     @Test
+    void watchTerminationStopsAllOwnedChildrenAndLeavesUnrelatedProcessAlive() throws Exception {
+        Fixture fixture = fixture();
+        Path capturedPids = temporaryDirectory.resolve("owned-pids");
+        Files.createDirectories(capturedPids);
+        installNormalOwnedTools(fixture.fakeBin());
+        Process unrelated = startHttpServer(freePort(Set.of(
+                fixture.backendPort(), fixture.overviewPort(), fixture.businessPort())),
+                "127.0.0.1", fixture.documentRoot());
+        Map<String, String> environment = fixture.environment();
+        environment.put("COFCO_OWNERSHIP_DOCROOT", fixture.documentRoot().toString());
+        environment.put("COFCO_OWNERSHIP_CAPTURE_DIR", capturedPids.toString());
+        Path launcherLog = temporaryDirectory.resolve("owned-launcher.log");
+        Process launcher = start(START_SCRIPT, List.of(), environment, launcherLog);
+        List<Long> ownedPids = List.of(
+                readPid(capturedPids.resolve("backend.pid")),
+                readPid(capturedPids.resolve("overview.pid")),
+                readPid(capturedPids.resolve("business.pid")));
+        ownedPids.stream()
+                .map(ProcessHandle::of)
+                .map(handle -> handle.orElseThrow(() -> new AssertionError("owned child exited early")))
+                .forEach(testProcesses::add);
+        awaitFileOccurrences(launcherLog, "owned listener pid=", 3);
+
+        launcher.destroy();
+        assertThat(launcher.waitFor(10, TimeUnit.SECONDS))
+                .as("SIGTERM should finish the watch launcher")
+                .isTrue();
+
+        awaitNotAlive(ownedPids);
+        assertThat(unrelated.isAlive()).as("unrelated test process must remain alive").isTrue();
+    }
+
+    @Test
     void exitedOwnedChildCannotCauseCompetingListenerToBeKilled() throws Exception {
         Fixture fixture = fixture();
         startHttpServer(fixture.overviewPort(), "127.0.0.1", fixture.documentRoot());
@@ -187,6 +220,40 @@ class LocalLauncherOwnershipIntegrationTest {
         assertThat(fakeMaven.toFile().setExecutable(true)).isTrue();
     }
 
+    private void installNormalOwnedTools(Path fakeBin) throws IOException {
+        Path fakeMaven = fakeBin.resolve("mvn");
+        Files.writeString(fakeMaven, """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                printf '%s\\n' "$$" > "$COFCO_OWNERSHIP_CAPTURE_DIR/backend.pid"
+                exec python3 -m http.server "$QIQIHAR_SERVER_PORT" \\
+                  --bind 127.0.0.1 --directory "$COFCO_OWNERSHIP_DOCROOT"
+                """, StandardCharsets.UTF_8);
+        Path fakeNpm = fakeBin.resolve("npm");
+        Files.writeString(fakeNpm, """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                if [[ "$2" == "dev" ]]; then
+                  service="overview"
+                else
+                  service="business"
+                fi
+                port=""
+                while [[ $# -gt 0 ]]; do
+                  if [[ "$1" == "--port" ]]; then
+                    port="$2"
+                    break
+                  fi
+                  shift
+                done
+                printf '%s\\n' "$$" > "$COFCO_OWNERSHIP_CAPTURE_DIR/${service}.pid"
+                exec python3 -m http.server "$port" \\
+                  --bind 127.0.0.1 --directory "$COFCO_OWNERSHIP_DOCROOT"
+                """, StandardCharsets.UTF_8);
+        assertThat(fakeMaven.toFile().setExecutable(true)).isTrue();
+        assertThat(fakeNpm.toFile().setExecutable(true)).isTrue();
+    }
+
     private ProcessResult run(Path script, List<String> arguments, Map<String, String> environment)
             throws Exception {
         List<String> command = new ArrayList<>();
@@ -231,6 +298,21 @@ class LocalLauncherOwnershipIntegrationTest {
         throw new IllegalStateException("Output did not contain '" + expected + "': " + file);
     }
 
+    private static void awaitFileOccurrences(Path file, String expected, int count) throws Exception {
+        for (int attempt = 0; attempt < 500; attempt++) {
+            if (Files.exists(file) && occurrences(Files.readString(file), expected) >= count) {
+                return;
+            }
+            Thread.sleep(20);
+        }
+        throw new IllegalStateException("Output did not contain " + count + " occurrences of '"
+                + expected + "': " + file);
+    }
+
+    private static int occurrences(String text, String expected) {
+        return (text.length() - text.replace(expected, "").length()) / expected.length();
+    }
+
     private static int freePort(Set<Integer> excluded) throws IOException {
         for (int attempt = 0; attempt < 20; attempt++) {
             try (ServerSocket socket = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))) {
@@ -258,7 +340,7 @@ class LocalLauncherOwnershipIntegrationTest {
     }
 
     private static long readPid(Path pidFile) throws Exception {
-        for (int attempt = 0; attempt < 100; attempt++) {
+        for (int attempt = 0; attempt < 500; attempt++) {
             if (Files.exists(pidFile)) {
                 return Long.parseLong(Files.readString(pidFile).trim());
             }
@@ -275,6 +357,18 @@ class LocalLauncherOwnershipIntegrationTest {
             Thread.sleep(20);
         }
         assertThat(ProcessHandle.of(pid)).isEmpty();
+    }
+
+    private static void awaitNotAlive(List<Long> pids) throws InterruptedException {
+        for (int attempt = 0; attempt < 100; attempt++) {
+            if (pids.stream().noneMatch(pid -> ProcessHandle.of(pid).isPresent())) {
+                return;
+            }
+            Thread.sleep(20);
+        }
+        assertThat(pids)
+                .as("all exact owned children should be stopped")
+                .allMatch(pid -> ProcessHandle.of(pid).isEmpty());
     }
 
     private record Fixture(

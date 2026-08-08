@@ -56,6 +56,25 @@ owned_process_is_running() {
   load_owned_process "$1"
 }
 
+process_is_same_or_descendant() {
+  local owned_pid=$1
+  local candidate_pid=$2
+  local current_pid=$candidate_pid
+  local parent_pid
+
+  for _ in {1..64}; do
+    if [[ "$current_pid" == "$owned_pid" ]]; then
+      return 0
+    fi
+    parent_pid="$(ps -p "$current_pid" -o ppid= 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ ! "$parent_pid" =~ ^[0-9]+$ || "$parent_pid" -le 1 || "$parent_pid" == "$current_pid" ]]; then
+      return 1
+    fi
+    current_pid=$parent_pid
+  done
+  return 1
+}
+
 stop_owned_process() {
   local pid_file=$1
   local name=$2
