@@ -299,7 +299,7 @@ class ProductionRecordRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.productCode").value(product))
                 .andExpect(jsonPath("$.data.objectTypeCode").value(objectType))
-                .andExpect(jsonPath("$.data.cultivatedAreaMu").value("1.2346"))
+                .andExpect(jsonPath("$.data.cultivatedAreaMu").value("1.2345"))
                 .andExpect(jsonPath("$.data.quality." + qualityCode).value("3.0000"))
                 .andExpect(jsonPath("$.data.costs.LAND_RENT").value("4.0000"))
                 .andExpect(jsonPath("$.data.insurance.INSURANCE_AMOUNT").value("5.0000"))
@@ -382,7 +382,7 @@ class ProductionRecordRestIntegrationTest {
         String versionProperty = version == null ? "" : ",\"version\":" + version;
         return """
                 {"productCode":"%s","objectTypeCode":"%s","regionCode":"230202",
-                 "surveyDate":"2026-08-01","cultivatedAreaMu":"1.23456","yieldPerMuKilograms":"2.34567",
+                 "surveyDate":"2026-08-01","cultivatedAreaMu":"1.2345","yieldPerMuKilograms":"2.3456",
                  "quality":{"%s":"3"},"costs":{"LAND_RENT":"4"},
                  "insurance":{"INSURANCE_AMOUNT":"5"},"subsidies":{"SUBSIDY_AMOUNT":"6"}%s}
                 """.formatted(product, objectType, qualityCode, versionProperty);

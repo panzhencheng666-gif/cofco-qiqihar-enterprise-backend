@@ -17,6 +17,10 @@ spring:
 server:
   port: ${QIQIHAR_SERVER_PORT:8090}
 
+qiqihar:
+  request-limits:
+    json-body-bytes: ${QIQIHAR_JSON_BODY_MAX_BYTES:1048576}
+
 management:
   endpoints:
     web:

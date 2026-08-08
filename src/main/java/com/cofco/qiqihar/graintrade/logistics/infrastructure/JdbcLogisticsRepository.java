@@ -7,6 +7,7 @@ import com.cofco.qiqihar.graintrade.logistics.application.LogisticsRepository;
 import com.cofco.qiqihar.graintrade.logistics.domain.LogisticsStatus;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
+import com.cofco.qiqihar.graintrade.shared.application.PlainDecimal;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -93,7 +94,7 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
             if (blank(value)) continue;
             try {
                 if (field.control.equals("DECIMAL")) {
-                    BigDecimal decimal = new BigDecimal(value);
+                    BigDecimal decimal = decimal(value, field);
                     if (decimal.signum() < 0 || decimal.precision() > field.precision || decimal.scale() > field.scale) return false;
                 } else if (field.control.equals("DATE") && LocalDate.parse(value).isAfter(today)) return false;
                 else if (field.control.equals("SELECT") && !optionValues.get(field.code).contains(value)) return false;
@@ -278,7 +279,7 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
             String column = storageKey(field.binding);
             String parameter = "field_" + field.code.toLowerCase(java.util.Locale.ROOT);
             assignments.add(column + "=" + parameterExpression(parameter, field.control));
-            parameters.put(parameter, databaseValue(draft.values().get(field.code), field.control));
+            parameters.put(parameter, databaseValue(draft.values().get(field.code), field));
         }
         String origin = valueForBinding(fields, draft.values(), "EVENT.origin_node_code");
         String destination = valueForBinding(fields, draft.values(), "EVENT.destination_node_code");
@@ -332,7 +333,7 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
                         INSERT INTO logistics.route_fact(event_id,fact_code,value,unit_code)
                         VALUES(CAST(:id AS uuid),:code,:value,:unit)
                         """).param("id", id).param("code", storageKey(field.binding))
-                        .param("value", new BigDecimal(value)).param("unit", field.unit).update();
+                        .param("value", decimal(value, field)).param("unit", field.unit).update();
             } else if (field.binding.startsWith("EXTENSION.")) {
                 jdbc.sql("""
                         INSERT INTO logistics.route_event_core_value(event_id,field_code,value)
@@ -393,8 +394,15 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
         return control.equals("DATE") ? "CAST(:" + parameter + " AS date)" : ":" + parameter;
     }
 
-    private static Object databaseValue(String value, String control) {
-        return control.equals("DECIMAL") ? new BigDecimal(value) : value;
+    private static Object databaseValue(String value, FieldMeta field) {
+        return field.control.equals("DECIMAL") ? decimal(value, field) : value;
+    }
+
+    private static BigDecimal decimal(String value, FieldMeta field) {
+        if (field.precision == null || field.scale == null) {
+            throw new IllegalStateException("Logistics decimal metadata is incomplete: " + field.code);
+        }
+        return PlainDecimal.parse(value, field.precision - field.scale, field.scale, "INVALID_LOGISTICS_RECORD");
     }
 
     private static void require(int count) {

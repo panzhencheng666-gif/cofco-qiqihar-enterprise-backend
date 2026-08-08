@@ -63,6 +63,27 @@ class ProductionImportRestIntegrationTest {
     @AfterEach void cleanAfterEach() { clean(); }
 
     @Test
+    void rejectsPathologicalAndOverPrecisionImportDecimalsWithoutProductionWrites() throws Exception {
+        String csv = """
+                productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms
+                CORN,FARMER,230200,,2026-07-31,1E999999999,20
+                CORN,FARMER,230200,,2026-07-31,100000000000000.0000,20
+                """;
+
+        mvc.perform(multipart("/api/v1/imports/production")
+                        .file(new MockMultipartFile("file", "hostile-decimals.csv", "text/csv",
+                                csv.getBytes(StandardCharsets.UTF_8)))
+                        .header("Idempotency-Key", "hostile-decimals")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.statusCode").value("COMPLETED_WITH_ERRORS"))
+                .andExpect(jsonPath("$.data.importedRows").value(0))
+                .andExpect(jsonPath("$.data.failedRows").value(2));
+
+        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record").query(Long.class).single()).isZero();
+    }
+
+    @Test
     void validatesRowsDownloadsErrorsAndRetriesWithoutDuplicatingTheOriginalImport() throws Exception {
         mvc.perform(get("/api/v1/imports/production/template").principal(() -> "production-tester"))
                 .andExpect(status().isOk()).andExpect(content().string(

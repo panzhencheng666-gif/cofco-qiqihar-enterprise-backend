@@ -9,8 +9,10 @@ import com.cofco.qiqihar.graintrade.production.application.ProductionRecordView;
 import com.cofco.qiqihar.graintrade.production.application.ProductionRecordService;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecord;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecordQuery;
+import com.cofco.qiqihar.graintrade.shared.application.BoundedInput;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
+import com.cofco.qiqihar.graintrade.shared.application.PlainDecimal;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.StrictQueryParameters;
 import java.math.BigDecimal;
@@ -98,7 +100,7 @@ public class ProductionRecordController {
     @PostMapping("/api/v1/production-records/{id}/return")
     ApiResponse<RecordResponse> returnForCorrection(@PathVariable String id, @RequestBody ReturnRequest request) {
         return new ApiResponse<>(RecordResponse.from(
-                service.returnForCorrection(id, request.requiredVersion(), request.reason())));
+                service.returnForCorrection(id, request.requiredVersion(), request.validatedReason())));
     }
 
     private static ClientRequestException invalidQuery() {
@@ -110,20 +112,22 @@ public class ProductionRecordController {
                         Map<String, String> quality, Map<String, String> costs, Map<String, String> insurance,
                         Map<String, String> subsidies, Long version) {
         ProductionDraft toDraft() {
-            try {
-                return new ProductionDraft(productCode, objectTypeCode, regionCode, cultivarCode, surveyDate,
-                        decimal(cultivatedAreaMu), decimal(yieldPerMuKilograms), values(quality), values(costs),
-                        values(insurance), values(subsidies));
-            } catch (NumberFormatException exception) {
-                throw new ClientRequestException("INVALID_PRODUCTION_RECORD", "Production decimal values are invalid");
-            }
+            String code = "INVALID_PRODUCTION_RECORD";
+            BoundedInput.requireAggregateSize(code, quality, costs, insurance, subsidies);
+            BoundedInput.requireText(code, productCode, objectTypeCode, regionCode, cultivarCode);
+            BoundedInput.requireMapText(code, quality, costs, insurance, subsidies);
+            return new ProductionDraft(productCode, objectTypeCode, regionCode, cultivarCode, surveyDate,
+                    decimal(cultivatedAreaMu), decimal(yieldPerMuKilograms), values(quality), values(costs),
+                    values(insurance), values(subsidies));
         }
         long requiredVersion() {
             if (version == null || version < 0) throw new ClientRequestException(
                     "INVALID_PRODUCTION_RECORD", "A non-negative version is required");
             return version;
         }
-        private static BigDecimal decimal(String value) { return value == null ? null : new BigDecimal(value); }
+        private static BigDecimal decimal(String value) {
+            return value == null ? null : PlainDecimal.parse(value, 14, 4, "INVALID_PRODUCTION_RECORD");
+        }
         private static Map<String, BigDecimal> values(Map<String, String> values) {
             Map<String, BigDecimal> parsed = new LinkedHashMap<>();
             if (values != null) values.forEach((code, value) -> parsed.put(code, decimal(value)));
@@ -139,6 +143,10 @@ public class ProductionRecordController {
     }
     record ReturnRequest(String reason, Long version) {
         long requiredVersion() { return new VersionRequest(version).requiredVersion(); }
+        String validatedReason() {
+            BoundedInput.requireText("INVALID_PRODUCTION_RECORD", reason);
+            return reason;
+        }
     }
     record RecordResponse(String id, String productCode, String objectTypeCode, String regionCode, String cultivarCode,
                           LocalDate surveyDate, OffsetDateTime reportedAt, String cultivatedAreaMu,

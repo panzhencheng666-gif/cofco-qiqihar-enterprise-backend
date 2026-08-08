@@ -9,13 +9,14 @@ import com.cofco.qiqihar.graintrade.market.application.MarketMonitoringDraft;
 import com.cofco.qiqihar.graintrade.market.application.MarketMonitoringService;
 import com.cofco.qiqihar.graintrade.market.application.MarketRecordView;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
+import com.cofco.qiqihar.graintrade.shared.application.BoundedInput;
+import com.cofco.qiqihar.graintrade.shared.application.PlainDecimal;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.StrictQueryParameters;
 import java.math.BigDecimal;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Pattern;
 import org.springframework.http.HttpStatus;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -29,8 +30,6 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 public class MarketMonitoringCommandController {
-    private static final Pattern PLAIN_DECIMAL = Pattern.compile(
-            "^-?(?:\\d+(?:\\.\\d*)?|\\.\\d+)$");
     private final MarketMonitoringService service;
 
     public MarketMonitoringCommandController(MarketMonitoringService service) {
@@ -78,7 +77,7 @@ public class MarketMonitoringCommandController {
     @PostMapping("/api/v1/market-records/{id}/return")
     ApiResponse<RecordResponse> returned(@PathVariable String id, @RequestBody ReturnRequest request) {
         return new ApiResponse<>(RecordResponse.from(
-                service.returnForCorrection(id, request.requiredVersion(), request.reason())));
+                service.returnForCorrection(id, request.requiredVersion(), request.validatedReason())));
     }
 
     record DraftRequest(
@@ -86,6 +85,9 @@ public class MarketMonitoringCommandController {
             Map<String, String> facts, Long version) {
         MarketMonitoringDraft toDraft() {
             try {
+                BoundedInput.requireAggregateSize("INVALID_MARKET_RECORD", coreValues, facts);
+                BoundedInput.requireText("INVALID_MARKET_RECORD", productCode);
+                BoundedInput.requireMapText("INVALID_MARKET_RECORD", coreValues, facts);
                 return new MarketMonitoringDraft(productCode, coreValues, parseDecimals(facts));
             } catch (RuntimeException exception) {
                 if (exception instanceof ClientRequestException clientRequestException) {
@@ -111,6 +113,11 @@ public class MarketMonitoringCommandController {
     record ReturnRequest(String reason, Long version) {
         long requiredVersion() {
             return new VersionRequest(version).requiredVersion();
+        }
+
+        String validatedReason() {
+            BoundedInput.requireText("INVALID_MARKET_RECORD", reason);
+            return reason;
         }
     }
 
@@ -175,11 +182,7 @@ public class MarketMonitoringCommandController {
     }
 
     private static BigDecimal decimal(String value) {
-        if (value == null) return null;
-        if (!PLAIN_DECIMAL.matcher(value).matches()) {
-            throw invalid("Market fact value is not a plain decimal");
-        }
-        return new BigDecimal(value);
+        return value == null ? null : PlainDecimal.parse(value, 14, 4, "INVALID_MARKET_RECORD");
     }
 
     private static Map<String, BigDecimal> parseDecimals(Map<String, String> values) {

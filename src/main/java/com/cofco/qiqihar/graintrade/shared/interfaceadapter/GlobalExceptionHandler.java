@@ -45,6 +45,12 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
             HttpStatusCode statusCode,
             WebRequest request) {
         String traceId = traceId(request);
+        if (causedByBodyLimit(exception)) {
+            return new ResponseEntity<>(ApiErrorResponse.of(
+                    RequestBodyLimitFilter.ERROR_CODE,
+                    "JSON request body exceeds the allowed byte limit",
+                    Map.of(), traceId), headers, HttpStatus.PAYLOAD_TOO_LARGE);
+        }
         if (statusCode.is5xxServerError()) {
             LOGGER.error("Framework request failure [traceId={}]", traceId, exception);
         }
@@ -154,5 +160,14 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return request instanceof ServletWebRequest servletWebRequest
                 ? traceId(servletWebRequest.getRequest())
                 : UUID.randomUUID().toString();
+    }
+
+    private static boolean causedByBodyLimit(Throwable exception) {
+        Throwable cause = exception;
+        while (cause != null) {
+            if (cause instanceof RequestBodyLimitFilter.RequestBodyTooLargeException) return true;
+            cause = cause.getCause();
+        }
+        return false;
     }
 }

@@ -258,6 +258,22 @@ class MarketMonitoringRestIntegrationTest {
         org.assertj.core.api.Assertions.assertThat(recordCount()).isZero();
     }
 
+    @Test
+    void rejectsPathologicalAndOverPrecisionCoreDecimalsWithoutWrites() throws Exception {
+        String valid = draftBody("CORN", "FEED_MILL", "MOISTURE", null);
+        for (String invalid : List.of("1E999999999", "2300.00000")) {
+            mockMvc.perform(post("/api/v1/market-records")
+                            .principal(() -> "market-tester")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(valid.replace("\"MKT_PURCHASE_BASE_PRICE\":\"2300\"",
+                                    "\"MKT_PURCHASE_BASE_PRICE\":\"" + invalid + "\"")))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error.code").value("INVALID_MARKET_RECORD"));
+        }
+
+        assertThat(recordCount()).isZero();
+    }
+
     @ParameterizedTest(name = "{0} fact uses the shared plain-decimal parser")
     @MethodSource("decimalFactCategories")
     void rejectsNonPlainDecimalSyntaxAcrossEveryFactCategoryWithoutWriting(

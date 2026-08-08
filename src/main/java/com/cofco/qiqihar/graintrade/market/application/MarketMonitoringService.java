@@ -6,10 +6,12 @@ import com.cofco.qiqihar.graintrade.market.domain.MarketRecordQuery;
 import com.cofco.qiqihar.graintrade.market.domain.MarketTradeDirection;
 import com.cofco.qiqihar.graintrade.market.domain.MarketValidationException;
 import com.cofco.qiqihar.graintrade.shared.application.AuthenticationRequiredException;
+import com.cofco.qiqihar.graintrade.shared.application.BoundedInput;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.PageDefinitionQuery;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
+import com.cofco.qiqihar.graintrade.shared.application.PlainDecimal;
 import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
 import com.cofco.qiqihar.graintrade.shared.application.ServerContractException;
 import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder;
@@ -33,7 +35,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.regex.Pattern;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -42,8 +43,6 @@ public class MarketMonitoringService {
     private static final String DOMAIN = "MARKET";
     private static final String PAGE_KIND = "MONITORING";
     private static final ZoneId REPORTING_ZONE = ZoneId.of("Asia/Shanghai");
-    private static final Pattern PLAIN_DECIMAL = Pattern.compile(
-            "^-?(?:\\d+(?:\\.\\d*)?|\\.\\d+)$");
     private static final Set<String> REQUIRED_TYPED_BINDINGS = Set.of(
             "OBJECT_TYPE", "REGION", "TRADE_DATE", "REPORTED_AT", "TRADE_DIRECTION",
             "PURCHASE_BASE_PRICE", "SALE_BASE_PRICE", "CARRIAGE_BOARD_AMOUNT",
@@ -394,15 +393,14 @@ public class MarketMonitoringService {
             }
             case "DECIMAL" -> {
                 try {
-                    if (!PLAIN_DECIMAL.matcher(value).matches()) {
-                        throw invalid("Invalid decimal for market core field: " + definition.code());
-                    }
                     if (definition.precision() == null || definition.scale() == null) {
                         throw new IllegalStateException(
                                 "Decimal market core metadata is incomplete: " + definition.code());
                     }
-                    BigDecimal normalized = new BigDecimal(value).setScale(
-                            definition.scale(), RoundingMode.HALF_UP);
+                    BigDecimal parsed = PlainDecimal.parse(value,
+                            definition.precision() - definition.scale(), definition.scale(),
+                            "INVALID_MARKET_RECORD");
+                    BigDecimal normalized = parsed.setScale(definition.scale(), RoundingMode.HALF_UP);
                     if (normalized.signum() < 0 || normalized.precision() > definition.precision()) {
                         throw invalid("Decimal is outside range for market core field: " + definition.code());
                     }
@@ -412,7 +410,7 @@ public class MarketMonitoringService {
                 }
             }
             case "TEXT" -> {
-                if (value.length() > 500) throw invalid("Market core text value is too long: " + definition.code());
+                BoundedInput.requireText("INVALID_MARKET_RECORD", value);
                 yield value;
             }
             default -> throw invalid("Unsupported market core control type: " + definition.controlType());

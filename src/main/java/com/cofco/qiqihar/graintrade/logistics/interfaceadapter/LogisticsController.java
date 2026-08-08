@@ -4,6 +4,7 @@ import com.cofco.qiqihar.graintrade.logistics.application.LogisticsDefinitionVie
 import com.cofco.qiqihar.graintrade.logistics.application.LogisticsRecordView;
 import com.cofco.qiqihar.graintrade.logistics.application.LogisticsService;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
+import com.cofco.qiqihar.graintrade.shared.application.BoundedInput;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.StrictQueryParameters;
@@ -33,13 +34,13 @@ public class LogisticsController {
  @PutMapping("/api/v1/logistics-records/{id}") ApiResponse<RecordResponse> save(@PathVariable String id,@RequestBody DraftRequest request){return new ApiResponse<>(RecordResponse.from(service.save(id,request.requiredVersion(),request.toDraft())));}
  @PostMapping("/api/v1/logistics-records/{id}/submit") ApiResponse<RecordResponse> submit(@PathVariable String id,@RequestBody VersionRequest r){return new ApiResponse<>(RecordResponse.from(service.submit(id,r.requiredVersion())));}
  @PostMapping("/api/v1/logistics-records/{id}/approve") ApiResponse<RecordResponse> approve(@PathVariable String id,@RequestBody VersionRequest r){return new ApiResponse<>(RecordResponse.from(service.approve(id,r.requiredVersion())));}
- @PostMapping("/api/v1/logistics-records/{id}/return") ApiResponse<RecordResponse> returned(@PathVariable String id,@RequestBody ReturnRequest r){return new ApiResponse<>(RecordResponse.from(service.returned(id,r.requiredVersion(),r.reason())));}
+ @PostMapping("/api/v1/logistics-records/{id}/return") ApiResponse<RecordResponse> returned(@PathVariable String id,@RequestBody ReturnRequest r){return new ApiResponse<>(RecordResponse.from(service.returned(id,r.requiredVersion(),r.validatedReason())));}
  record DraftRequest(String productCode,Map<String,String> values,Long version){
   LogisticsDraft toDraft(){return new LogisticsDraft(productCode,values);}
   long requiredVersion(){if(version==null||version<0)throw invalid();return version;}
  }
  record VersionRequest(Long version){long requiredVersion(){if(version==null||version<0)throw invalid();return version;}}
- record ReturnRequest(Long version,String reason){long requiredVersion(){if(version==null||version<0)throw invalid();return version;}}
+ record ReturnRequest(Long version,String reason){long requiredVersion(){if(version==null||version<0)throw invalid();return version;}String validatedReason(){BoundedInput.requireText("INVALID_LOGISTICS_RECORD",reason);return reason;}}
  record RecordResponse(String id,String productCode,Map<String,String> values,Map<String,String> displayValues,String status,String returnReason,List<String> allowedActions,long version){static RecordResponse from(LogisticsRecordView v){return new RecordResponse(v.id(),v.productCode(),v.values(),v.displayValues(),v.status().name(),v.returnReason(),v.allowedActions(),v.version());}}
  record PageResponse(List<RecordResponse> items,int pageNumber,int pageSize,long totalElements,int totalPages){static PageResponse from(PagedResult<LogisticsRecordView> p){return new PageResponse(p.items().stream().map(RecordResponse::from).toList(),p.pageNumber(),p.pageSize(),p.totalElements(),p.totalPages());}}
  private static ClientRequestException invalid(){return new ClientRequestException("INVALID_LOGISTICS_RECORD","Logistics record or query is invalid");}

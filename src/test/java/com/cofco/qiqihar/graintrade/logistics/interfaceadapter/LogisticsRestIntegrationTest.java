@@ -60,6 +60,20 @@ class LogisticsRestIntegrationTest {
     }
 
     @Test
+    void rejectsPathologicalAndOverPrecisionDecimalsWithoutRouteWrites() throws Exception {
+        for (String value : new String[] {"1E999999999", "100000000000000.0000", "1.00000"}) {
+            mvc.perform(post("/api/v1/logistics-records").principal(() -> "logistics-tester")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body("CORN", "RAIL", "TEST_RAIL", "TEST_ROAD", value, true, null)))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error.code").value("INVALID_LOGISTICS_RECORD"));
+        }
+
+        org.assertj.core.api.Assertions.assertThat(
+                jdbc.sql("SELECT count(*) FROM logistics.route_event").query(Long.class).single()).isZero();
+    }
+
+    @Test
     void databaseDefinitionControlsCodeKeyedFieldsNodeCodesExtensionsWorkflowAndCas() throws Exception {
         mvc.perform(get("/api/v1/logistics-record-definitions").queryParam("productCode", "CORN"))
                 .andExpect(status().isOk())
