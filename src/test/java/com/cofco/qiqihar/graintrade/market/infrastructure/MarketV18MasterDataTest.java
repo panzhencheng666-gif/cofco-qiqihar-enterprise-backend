@@ -44,8 +44,10 @@ class MarketV18MasterDataTest {
                         "MKT_SOURCE_NOTE:来源说明:TEXT:105",
                         "MKT_ACTUAL_TRADE_PRICE:实际成交价:READONLY_DECIMAL:110",
                         "MKT_REPORTER_NAME:填报人:TEXT:120", "MKT_REPORTER_PHONE:填报人联系方式:TEXT:121",
-                        "MKT_SAMPLE_CONTACT:样本点联系方式:TEXT:122", "MKT_SAMPLE_LATITUDE:样本点纬度:DECIMAL:123",
-                        "MKT_SAMPLE_LONGITUDE:样本点经度:DECIMAL:124");
+                        "MKT_SAMPLE_CONTACT:填报对象/客户联系方式:TEXT:122",
+                        "MKT_SAMPLE_LATITUDE:样本点纬度:DECIMAL:123",
+                        "MKT_SAMPLE_LONGITUDE:样本点经度:DECIMAL:124",
+                        "MKT_SAMPLE_NAME:填报对象/客户名称:TEXT:125");
         assertThat(rows("""
                 SELECT field_code || ':' || value || ':' || label
                 FROM platform.market_core_field_option ORDER BY field_code, sort_order

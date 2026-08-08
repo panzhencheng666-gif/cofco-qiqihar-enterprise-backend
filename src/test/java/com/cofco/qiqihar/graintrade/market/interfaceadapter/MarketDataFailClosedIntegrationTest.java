@@ -7,6 +7,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
+import java.util.UUID;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,7 +36,7 @@ class MarketDataFailClosedIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON).content(validDraft()))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString()
-                .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+                .replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
         JdbcClient client = JdbcClient.create(dataSource);
         client.sql("""
                 ALTER TABLE market.market_record_core_value
@@ -69,7 +70,7 @@ class MarketDataFailClosedIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON).content(validDraft()))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString()
-                .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+                .replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
         JdbcClient client = JdbcClient.create(dataSource);
         client.sql("""
                 INSERT INTO market.market_record_fact(
@@ -107,7 +108,7 @@ class MarketDataFailClosedIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON).content(validDraft()))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString()
-                .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+                .replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
         JdbcClient client = JdbcClient.create(dataSource);
         client.sql("""
                 INSERT INTO platform.market_core_field_definition(
@@ -145,9 +146,22 @@ class MarketDataFailClosedIntegrationTest {
                  "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
                  "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",
                  "MKT_REPORTER_NAME":"数据故障测试员","MKT_REPORTER_PHONE":"13800000000",
-                 "MKT_SAMPLE_CONTACT":"13900000000","MKT_SAMPLE_LATITUDE":"47.2",
+                 "MKT_SAMPLE_NAME":"数据故障测试企业","MKT_SAMPLE_CONTACT":"13900000000","MKT_SAMPLE_LATITUDE":"47.2",
                  "MKT_SAMPLE_LONGITUDE":"124.1"},
-                 "facts":{"PURCHASE_VOLUME":"12","MOISTURE":"14.6"}}
-                """;
+                 "facts":{"PURCHASE_VOLUME":"12","MOISTURE":"14.6"},
+                 "evidencePhotoIds":["%s"]}
+                """.formatted(stageEvidencePhoto());
+    }
+
+    private UUID stageEvidencePhoto() {
+        UUID id = UUID.randomUUID();
+        JdbcClient.create(dataSource).sql("""
+                INSERT INTO evidence.evidence_photo(photo_id,state_code,original_filename,media_type,
+                  original_bytes,watermarked_bytes,byte_length,sha256,captured_at,capture_latitude,
+                  capture_longitude,watermark_text,uploaded_by,uploaded_at)
+                VALUES(:id,'STAGED','data-fault.png','image/png',decode('00','hex'),decode('01','hex'),
+                  1,repeat('a',64),now(),47.2,124.1,'数据故障测试水印','data-fault-test',now())
+                """).param("id", id).update();
+        return id;
     }
 }
