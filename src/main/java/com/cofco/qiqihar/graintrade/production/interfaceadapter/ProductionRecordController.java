@@ -9,8 +9,8 @@ import com.cofco.qiqihar.graintrade.production.application.ProductionRecordView;
 import com.cofco.qiqihar.graintrade.production.application.ProductionRecordService;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecord;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecordQuery;
-import com.cofco.qiqihar.graintrade.shared.application.BoundedInput;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
+import com.cofco.qiqihar.graintrade.shared.application.BoundedInput;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import com.cofco.qiqihar.graintrade.shared.application.PlainDecimal;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
@@ -110,15 +110,16 @@ public class ProductionRecordController {
     record DraftRequest(String productCode, String objectTypeCode, String regionCode, String cultivarCode,
                         LocalDate surveyDate, String cultivatedAreaMu, String yieldPerMuKilograms,
                         Map<String, String> quality, Map<String, String> costs, Map<String, String> insurance,
-                        Map<String, String> subsidies, Long version) {
+                        Map<String, String> subsidies, Map<String, String> submissionMetadata, Long version) {
         ProductionDraft toDraft() {
             String code = "INVALID_PRODUCTION_RECORD";
-            BoundedInput.requireAggregateSize(code, quality, costs, insurance, subsidies);
+            BoundedInput.requireAggregateSize(code, quality, costs, insurance, subsidies, submissionMetadata);
             BoundedInput.requireText(code, productCode, objectTypeCode, regionCode, cultivarCode);
-            BoundedInput.requireMapText(code, quality, costs, insurance, subsidies);
+            BoundedInput.requireMapText(code, quality, costs, insurance, subsidies, submissionMetadata);
+            validateCoordinates(submissionMetadata);
             return new ProductionDraft(productCode, objectTypeCode, regionCode, cultivarCode, surveyDate,
                     decimal(cultivatedAreaMu), decimal(yieldPerMuKilograms), values(quality), values(costs),
-                    values(insurance), values(subsidies));
+                    values(insurance), values(subsidies), submissionMetadata);
         }
         long requiredVersion() {
             if (version == null || version < 0) throw new ClientRequestException(
@@ -132,6 +133,13 @@ public class ProductionRecordController {
             Map<String, BigDecimal> parsed = new LinkedHashMap<>();
             if (values != null) values.forEach((code, value) -> parsed.put(code, decimal(value)));
             return parsed;
+        }
+        private static void validateCoordinates(Map<String, String> metadata) {
+            if (metadata == null) return;
+            String latitude = metadata.get("PROD_SAMPLE_LATITUDE");
+            String longitude = metadata.get("PROD_SAMPLE_LONGITUDE");
+            if (latitude != null) PlainDecimal.parse(latitude, 3, 7, "INVALID_PRODUCTION_RECORD");
+            if (longitude != null) PlainDecimal.parse(longitude, 3, 7, "INVALID_PRODUCTION_RECORD");
         }
     }
     record VersionRequest(Long version) {
@@ -153,6 +161,7 @@ public class ProductionRecordController {
                           String yieldPerMuKilograms, String estimatedOutputKilograms, String status,
                           String returnReason, Map<String, String> quality, Map<String, String> costs,
                           Map<String, String> insurance, Map<String, String> subsidies,
+                          Map<String, String> submissionMetadata,
                           List<String> allowedActions, long version) {
         static RecordResponse from(ProductionRecordView view) {
             ProductionRecord record = view.record();
@@ -160,7 +169,7 @@ public class ProductionRecordController {
                     record.cultivarCode(), record.surveyDate(), record.reportedAt(), decimal(record.cultivatedAreaMu()),
                     decimal(record.yieldPerMuKilograms()), decimal(record.estimatedOutputKilograms()),
                     record.status().name(), record.returnReason(), values(record.quality()), values(record.costs()),
-                    values(record.insurance()), values(record.subsidies()),
+                    values(record.insurance()), values(record.subsidies()), record.submissionMetadata(),
                     view.allowedActions(), record.version());
         }
         private static String decimal(BigDecimal value) { return value.toPlainString(); }

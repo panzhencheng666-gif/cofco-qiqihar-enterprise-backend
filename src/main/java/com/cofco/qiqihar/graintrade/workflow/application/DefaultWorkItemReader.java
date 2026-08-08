@@ -12,26 +12,30 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
-@Transactional(readOnly = true)
+@Transactional
 public class DefaultWorkItemReader implements WorkItemReader {
 
     private final WorkItemRepository repository;
     private final PageDefinitionQuery pageDefinitions;
+    private final WorkItemProjection projection;
     private final AccessControl accessControl;
 
     public DefaultWorkItemReader(
             WorkItemRepository repository,
-            PageDefinitionQuery pageDefinitions) {
-        this(repository, pageDefinitions, null);
+            PageDefinitionQuery pageDefinitions,
+            WorkItemProjection projection) {
+        this(repository, pageDefinitions, projection, null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public DefaultWorkItemReader(
             WorkItemRepository repository,
             PageDefinitionQuery pageDefinitions,
+            WorkItemProjection projection,
             AccessControl accessControl) {
         this.repository = repository;
         this.pageDefinitions = pageDefinitions;
+        this.projection = projection;
         this.accessControl = accessControl;
     }
 
@@ -47,6 +51,7 @@ public class DefaultWorkItemReader implements WorkItemReader {
             throw new ClientRequestException(
                     "INVALID_WORK_ITEM_QUERY", "Work item query is not allowed by the page definition");
         }
+        projection.refresh();
         return repository.findPage(authorizedQuery);
     }
 }

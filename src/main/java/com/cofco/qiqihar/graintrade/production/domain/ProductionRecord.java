@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -25,12 +26,14 @@ public record ProductionRecord(
         Map<String, BigDecimal> costs,
         Map<String, BigDecimal> insurance,
         Map<String, BigDecimal> subsidies,
+        Map<String, String> submissionMetadata,
         long version) {
 
     private static final int INPUT_PRECISION = 18;
     private static final int INPUT_SCALE = 4;
     private static final BigDecimal MAX_INPUT = new BigDecimal("99999999999999.9999");
     private static final BigDecimal MAX_OUTPUT = new BigDecimal("999999999999999999.9999");
+    private static final ZoneId REPORTING_ZONE = ZoneId.of("Asia/Shanghai");
 
     public ProductionRecord {
         requireText(id, "id");
@@ -40,7 +43,7 @@ public record ProductionRecord(
         if (surveyDate == null) throw invalid("survey date must not be null");
         if (reportedAt == null) throw invalid("reported at must not be null");
         if (status == null) throw invalid("status must not be null");
-        if (surveyDate.isAfter(reportedAt.toLocalDate())) {
+        if (surveyDate.isAfter(reportedAt.atZoneSameInstant(REPORTING_ZONE).toLocalDate())) {
             throw invalid("survey date cannot be after reported at date");
         }
         cultivatedAreaMu = input(cultivatedAreaMu, "cultivated area");
@@ -58,6 +61,7 @@ public record ProductionRecord(
         costs = facts(costs, "cost");
         insurance = facts(insurance, "insurance");
         subsidies = facts(subsidies, "subsidy");
+        submissionMetadata = Map.copyOf(submissionMetadata == null ? Map.of() : submissionMetadata);
         if (version < 0) throw invalid("version must not be negative");
     }
 
@@ -66,7 +70,7 @@ public record ProductionRecord(
             LocalDate surveyDate, OffsetDateTime reportedAt, BigDecimal cultivatedAreaMu,
             BigDecimal yieldPerMuKilograms, Map<String, BigDecimal> quality) {
         return draft(id, productCode, objectTypeCode, regionCode, cultivarCode, surveyDate, reportedAt,
-                cultivatedAreaMu, yieldPerMuKilograms, quality, Map.of(), Map.of(), Map.of());
+                cultivatedAreaMu, yieldPerMuKilograms, quality, Map.of(), Map.of(), Map.of(), Map.of());
     }
 
     public static ProductionRecord draft(
@@ -74,11 +78,21 @@ public record ProductionRecord(
             LocalDate surveyDate, OffsetDateTime reportedAt, BigDecimal cultivatedAreaMu,
             BigDecimal yieldPerMuKilograms, Map<String, BigDecimal> quality, Map<String, BigDecimal> costs,
             Map<String, BigDecimal> insurance, Map<String, BigDecimal> subsidies) {
+        return draft(id, productCode, objectTypeCode, regionCode, cultivarCode, surveyDate, reportedAt,
+                cultivatedAreaMu, yieldPerMuKilograms, quality, costs, insurance, subsidies, Map.of());
+    }
+
+    public static ProductionRecord draft(
+            String id, String productCode, String objectTypeCode, String regionCode, String cultivarCode,
+            LocalDate surveyDate, OffsetDateTime reportedAt, BigDecimal cultivatedAreaMu,
+            BigDecimal yieldPerMuKilograms, Map<String, BigDecimal> quality, Map<String, BigDecimal> costs,
+            Map<String, BigDecimal> insurance, Map<String, BigDecimal> subsidies,
+            Map<String, String> submissionMetadata) {
         BigDecimal area = input(cultivatedAreaMu, "cultivated area");
         BigDecimal yield = input(yieldPerMuKilograms, "yield per mu");
         return new ProductionRecord(id, productCode, objectTypeCode, regionCode, cultivarCode, surveyDate,
                 reportedAt, area, yield, area.multiply(yield).setScale(INPUT_SCALE, RoundingMode.HALF_UP),
-                ProductionStatus.DRAFT, null, quality, costs, insurance, subsidies, 0);
+                ProductionStatus.DRAFT, null, quality, costs, insurance, subsidies, submissionMetadata, 0);
     }
 
     public ProductionRecord revise(
@@ -86,6 +100,17 @@ public record ProductionRecord(
             LocalDate nextSurveyDate, OffsetDateTime nextReportedAt, BigDecimal nextArea, BigDecimal nextYield,
             Map<String, BigDecimal> nextQuality, Map<String, BigDecimal> nextCosts,
             Map<String, BigDecimal> nextInsurance, Map<String, BigDecimal> nextSubsidies) {
+        return revise(nextProductCode, nextObjectTypeCode, nextRegionCode, nextCultivarCode, nextSurveyDate,
+                nextReportedAt, nextArea, nextYield, nextQuality, nextCosts, nextInsurance, nextSubsidies,
+                submissionMetadata);
+    }
+
+    public ProductionRecord revise(
+            String nextProductCode, String nextObjectTypeCode, String nextRegionCode, String nextCultivarCode,
+            LocalDate nextSurveyDate, OffsetDateTime nextReportedAt, BigDecimal nextArea, BigDecimal nextYield,
+            Map<String, BigDecimal> nextQuality, Map<String, BigDecimal> nextCosts,
+            Map<String, BigDecimal> nextInsurance, Map<String, BigDecimal> nextSubsidies,
+            Map<String, String> nextSubmissionMetadata) {
         if (status != ProductionStatus.DRAFT && status != ProductionStatus.RETURNED) {
             throw new IllegalStateException("Only DRAFT or RETURNED records may be revised");
         }
@@ -94,7 +119,7 @@ public record ProductionRecord(
         return new ProductionRecord(id, nextProductCode, nextObjectTypeCode, nextRegionCode, nextCultivarCode,
                 nextSurveyDate, nextReportedAt, area, yield,
                 area.multiply(yield).setScale(INPUT_SCALE, RoundingMode.HALF_UP), ProductionStatus.DRAFT, null,
-                nextQuality, nextCosts, nextInsurance, nextSubsidies, version);
+                nextQuality, nextCosts, nextInsurance, nextSubsidies, nextSubmissionMetadata, version);
     }
 
     public ProductionRecord submit() {
@@ -127,7 +152,7 @@ public record ProductionRecord(
     private ProductionRecord copy(ProductionStatus next, String reason, long nextVersion) {
         return new ProductionRecord(id, productCode, objectTypeCode, regionCode, cultivarCode, surveyDate,
                 reportedAt, cultivatedAreaMu, yieldPerMuKilograms, estimatedOutputKilograms, next, reason,
-                quality, costs, insurance, subsidies, nextVersion);
+                quality, costs, insurance, subsidies, submissionMetadata, nextVersion);
     }
 
     private static BigDecimal input(BigDecimal value, String description) {

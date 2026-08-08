@@ -6,4 +6,7 @@ public record OverviewRegion(
         String parentCode,
         String level,
         long approvedRecordCount,
-        String boundaryGeoJson) {}
+        String boundaryGeoJson,
+        String locationGeoJson,
+        String locationReviewStatus,
+        boolean mapContextOnly) {}

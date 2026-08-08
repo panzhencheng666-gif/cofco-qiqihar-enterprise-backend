@@ -22,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.output.MigrateResult;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
@@ -29,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
@@ -53,6 +55,12 @@ class FlywayMigrationReplayTest {
             }
             statement.execute("DROP TABLE IF EXISTS public.flyway_schema_history");
         }
+    }
+
+    @AfterAll
+    static void restoreSharedTestFixtures() {
+        ProtectedTestDatabaseConfiguration.provisionSecurityTestSubjects(
+                JdbcClient.create(DATABASE.dataSource()));
     }
 
     @Test
@@ -138,8 +146,9 @@ class FlywayMigrationReplayTest {
         assertVersionTwentyCoreValuePreserved();
         restoreVersionTwentyTwoTypedDefinitionFixture();
 
+        int expectedVersionedMigrationCount = versionedMigrationFileCount();
         MigrateResult versionTwentyFourResult = flyway().migrate();
-        assertThat(versionTwentyFourResult.migrationsExecuted).isEqualTo(12);
+        assertThat(versionTwentyFourResult.migrationsExecuted).isEqualTo(expectedVersionedMigrationCount - 23);
         assertVersionTwentyFourDefinitionGraphGuards();
         assertThat(queryLong("SELECT count(*) FROM logistics.route_event")).isZero();
         assertThat(queryLong("SELECT count(*) FROM logistics.logistics_node")).isZero();
@@ -148,6 +157,10 @@ class FlywayMigrationReplayTest {
         assertThat(queryLong("SELECT count(*) FROM platform.page_definition WHERE business_domain IN ('LOGISTICS','SUPPLY')")).isEqualTo(6);
         assertThat(queryString("SELECT difference_expression FROM supply.formula_version WHERE active"))
                 .isEqualTo("SURVEYED_ENDING_INVENTORY - ADOPTED_ENDING_INVENTORY");
+        assertThat(queryLong("""
+                SELECT COALESCE(SUM(ST_NRings(geometry)-ST_NumGeometries(geometry)),0)
+                  FROM overview.monitoring_scope_boundary_render
+                """)).as("the overall map boundary must not contain unassigned holes").isZero();
         provisionMigrationReplaySecuritySubject();
         exerciseVersionTwentyFixtureThroughFormalService();
 
@@ -161,13 +174,13 @@ class FlywayMigrationReplayTest {
         MigrateResult secondResult = flyway().migrate();
 
         assertThat(secondResult.migrationsExecuted).isZero();
-        assertThat(migrationChecksums()).hasSize(35);
+        assertThat(migrationChecksums()).hasSize(expectedVersionedMigrationCount);
         assertThat(masterDataCounts()).isEqualTo(firstCounts);
         assertThat(firstCounts).containsEntry("region", 29L)
                 .containsEntry("product", 3L)
                 .containsEntry("cultivar", 2L)
                 .containsEntry("object_type", 12L)
-                .containsEntry("page_definition_field", 147L)
+                .containsEntry("page_definition_field", 177L)
                 .containsEntry("production_fact_category", 4L)
                 .containsEntry("production_fact_definition", 19L)
                 .containsEntry("production_fact_applicability", 102L);
@@ -521,6 +534,15 @@ class FlywayMigrationReplayTest {
         return DATABASE.flyway();
     }
 
+    private int versionedMigrationFileCount() throws java.io.IOException {
+        try (var files = Files.list(Path.of("src/main/resources/db/migration"))) {
+            return (int) files
+                    .map(path -> path.getFileName().toString())
+                    .filter(name -> name.matches("V\\d+__.+\\.sql"))
+                    .count();
+        }
+    }
+
     private long marketRecordCount() throws SQLException {
         try (Connection connection = DATABASE.openConnection();
                 Statement statement = connection.createStatement();
@@ -871,7 +893,9 @@ class FlywayMigrationReplayTest {
                     "v20-core-upgrade", 0, versionTwentyDraft("V23服务修改来源"));
             assertThat(modified.record().version()).isOne();
             assertThat(modified.coreValues())
-                    .containsEntry("MKT_SOURCE_NOTE", "V23服务修改来源");
+                    .containsEntry("MKT_SOURCE_NOTE", "V23服务修改来源")
+                    .containsEntry("MKT_REPORTER_NAME", "迁移回放填报员")
+                    .containsEntry("MKT_SAMPLE_LONGITUDE", "123.9182000");
 
             var cleared = service.save("v20-core-upgrade", 1, versionTwentyDraft(null));
             assertThat(cleared.record().version()).isEqualTo(2);
@@ -904,6 +928,11 @@ class FlywayMigrationReplayTest {
         coreValues.put("MKT_PACKAGING_FORM", "BULK");
         coreValues.put("MKT_PACKAGING_AMOUNT", "12");
         coreValues.put("MKT_FREIGHT_AMOUNT", "72");
+        coreValues.put("MKT_REPORTER_NAME", "迁移回放填报员");
+        coreValues.put("MKT_REPORTER_PHONE", "13800000000");
+        coreValues.put("MKT_SAMPLE_CONTACT", "13900000000");
+        coreValues.put("MKT_SAMPLE_LATITUDE", "47.3543");
+        coreValues.put("MKT_SAMPLE_LONGITUDE", "123.9182");
         if (sourceNote != null) coreValues.put("MKT_SOURCE_NOTE", sourceNote);
         return new MarketMonitoringDraft(
                 "CORN", coreValues, Map.of("PURCHASE_VOLUME", new BigDecimal("12")));

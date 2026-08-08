@@ -6,8 +6,8 @@ import com.cofco.qiqihar.graintrade.market.domain.MarketRecordQuery;
 import com.cofco.qiqihar.graintrade.market.domain.MarketTradeDirection;
 import com.cofco.qiqihar.graintrade.market.domain.MarketValidationException;
 import com.cofco.qiqihar.graintrade.shared.application.AuthenticationRequiredException;
-import com.cofco.qiqihar.graintrade.shared.application.BoundedInput;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
+import com.cofco.qiqihar.graintrade.shared.application.BoundedInput;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.PageDefinitionQuery;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
@@ -400,8 +400,13 @@ public class MarketMonitoringService {
                     BigDecimal parsed = PlainDecimal.parse(value,
                             definition.precision() - definition.scale(), definition.scale(),
                             "INVALID_MARKET_RECORD");
+                    BigDecimal coordinateLimit = coordinateLimit(definition.code());
+                    if ((coordinateLimit == null && parsed.signum() < 0)
+                            || (coordinateLimit != null && parsed.abs().compareTo(coordinateLimit) > 0)) {
+                        throw invalid("Decimal is outside range for market core field: " + definition.code());
+                    }
                     BigDecimal normalized = parsed.setScale(definition.scale(), RoundingMode.HALF_UP);
-                    if (normalized.signum() < 0 || normalized.precision() > definition.precision()) {
+                    if (normalized.precision() > definition.precision()) {
                         throw invalid("Decimal is outside range for market core field: " + definition.code());
                     }
                     yield normalized.toPlainString();
@@ -414,6 +419,14 @@ public class MarketMonitoringService {
                 yield value;
             }
             default -> throw invalid("Unsupported market core control type: " + definition.controlType());
+        };
+    }
+
+    private static BigDecimal coordinateLimit(String code) {
+        return switch (code) {
+            case "MKT_SAMPLE_LATITUDE" -> new BigDecimal("90");
+            case "MKT_SAMPLE_LONGITUDE" -> new BigDecimal("180");
+            default -> null;
         };
     }
 

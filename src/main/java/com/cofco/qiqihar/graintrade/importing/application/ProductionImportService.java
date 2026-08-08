@@ -5,13 +5,14 @@ import com.cofco.qiqihar.graintrade.importing.domain.ImportJob;
 import com.cofco.qiqihar.graintrade.importing.domain.ImportRowOutcome;
 import com.cofco.qiqihar.graintrade.production.application.ProductionDraft;
 import com.cofco.qiqihar.graintrade.production.application.ProductionImportPort;
-import com.cofco.qiqihar.graintrade.shared.application.BoundedInput;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
+import com.cofco.qiqihar.graintrade.shared.application.BoundedInput;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.PlainDecimal;
 import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder;
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -160,14 +161,22 @@ public class ProductionImportService {
         try {
             BoundedInput.requireMapText("IMPORT_ROW_VALUE_FORMAT", values);
             if (required(values, "productCode") || required(values, "objectTypeCode") || required(values, "regionCode")
-                    || required(values, "surveyDate") || required(values, "cultivatedAreaMu") || required(values, "yieldPerMuKilograms")) {
+                    || required(values, "surveyDate") || required(values, "cultivatedAreaMu")
+                    || required(values, "yieldPerMuKilograms")
+                    || ProductionImportTemplate.SUBMISSION_METADATA_HEADERS.stream()
+                            .anyMatch(header -> required(values, header))) {
                 return ParsedRow.error(number, values, "IMPORT_ROW_REQUIRED_VALUE", "Required production import value is blank");
             }
+            Map<String, String> submissionMetadata = new LinkedHashMap<>();
+            ProductionImportTemplate.SUBMISSION_METADATA_HEADERS.forEach(
+                    header -> submissionMetadata.put(header, values.get(header)));
+            PlainDecimal.parse(values.get("PROD_SAMPLE_LATITUDE"), 3, 7, "IMPORT_ROW_VALUE_FORMAT");
+            PlainDecimal.parse(values.get("PROD_SAMPLE_LONGITUDE"), 3, 7, "IMPORT_ROW_VALUE_FORMAT");
             return ParsedRow.valid(number, values, new ProductionDraft(values.get("productCode"), values.get("objectTypeCode"),
                     values.get("regionCode"), emptyToNull(values.get("cultivarCode")), LocalDate.parse(values.get("surveyDate")),
                     PlainDecimal.parse(values.get("cultivatedAreaMu"), 14, 4, "IMPORT_ROW_VALUE_FORMAT"),
                     PlainDecimal.parse(values.get("yieldPerMuKilograms"), 14, 4, "IMPORT_ROW_VALUE_FORMAT"),
-                    Map.of(), Map.of(), Map.of(), Map.of()));
+                    Map.of(), Map.of(), Map.of(), Map.of(), submissionMetadata));
         } catch (RuntimeException exception) {
             return ParsedRow.error(number, values, "IMPORT_ROW_VALUE_FORMAT", "Production date or decimal value is invalid");
         }

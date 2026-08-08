@@ -56,18 +56,22 @@ public class WorkItemController {
             String id,
             String task,
             String domain,
+            String regionCode,
             String region,
             String product,
             String businessPeriod,
             OffsetDateTime dueAt,
             String workflowNode,
+            String statusCode,
             String status,
+            String responsiblePartyCode,
             String responsibleParty) {
         static WorkItemResponse from(WorkItem item) {
             return new WorkItemResponse(
-                    item.id(), item.task(), item.domain(), item.region(), item.product(),
-                    item.businessPeriod(), item.dueAt(), item.workflowNode(), item.status(),
-                    item.responsibleParty());
+                item.id(), item.task(), item.domain(), item.regionCode(), item.region(),
+                item.product(),
+                item.businessPeriod(), item.dueAt(), item.workflowNode(), item.statusCode(),
+                item.status(), item.responsiblePartyCode(), item.responsibleParty());
         }
     }
 

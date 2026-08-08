@@ -63,10 +63,24 @@ class SupplyAccountRestIntegrationTest {
     void controlledSourcesDriveAllProductsAndTrialVersionsNeverAdvanceDecisions() throws Exception {
         mvc.perform(post("/api/v1/supply-accounts/runs").contentType(MediaType.APPLICATION_JSON).content("{"))
                 .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/v1/supply-input-sets").contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isUnauthorized());
         for (String product : List.of("CORN", "SOYBEAN", "RICE")) {
             if (product.equals("CORN")) controlledCornSources();
             else manualSources(product);
             String inputSet = inputSet(product, 0, Map.of());
+            mvc.perform(get("/api/v1/supply-input-workspaces")
+                            .queryParam("productCode", product)
+                            .queryParam("regionCode", "230200")
+                            .queryParam("marketingYear", "2026/27"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.inputSetVersion").value(1))
+                    .andExpect(jsonPath("$.data.latestInputSetId").value(inputSet))
+                    .andExpect(jsonPath("$.data.roles.length()").value(14))
+                    .andExpect(jsonPath("$.data.roles[?(@.code == 'LOCAL_PRODUCTION')].manualAllowed")
+                            .value(true))
+                    .andExpect(jsonPath("$.data.roles[?(@.code == 'LOCAL_PRODUCTION')].releases.length()")
+                            .value(1));
             mvc.perform(post("/api/v1/supply-accounts/runs").principal(() -> "supply-reviewer")
                             .contentType(MediaType.APPLICATION_JSON).content(runBody(product, inputSet, "1.000", 0)))
                     .andExpect(status().isOk()).andExpect(jsonPath("$.data.productCode").value(product))

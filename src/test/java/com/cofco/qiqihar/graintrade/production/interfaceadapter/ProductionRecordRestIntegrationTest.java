@@ -87,10 +87,13 @@ class ProductionRecordRestIntegrationTest {
                 .andExpect(jsonPath("$.data.version").value(2));
         mockMvc.perform(put("/api/v1/production-records/{id}", id)
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content(fullDraftBody(product, objectType, qualityCode, 2L)))
+                        .content(fullDraftBody(product, objectType, qualityCode, 2L)
+                                .replace("测试填报员", "修改填报员")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("DRAFT"))
-                .andExpect(jsonPath("$.data.costs.LAND_RENT").value("4.0000"));
+                .andExpect(jsonPath("$.data.costs.LAND_RENT").value("4.0000"))
+                .andExpect(jsonPath("$.data.submissionMetadata.PROD_REPORTER_NAME").value("修改填报员"))
+                .andExpect(jsonPath("$.data.submissionMetadata.PROD_SAMPLE_LATITUDE").value("47.3543"));
         assertThat(JdbcClient.create(dataSource).sql("""
                 SELECT count(*) FROM platform.business_audit_event
                 WHERE aggregate_type = 'PRODUCTION_RECORD' AND aggregate_id = :id
@@ -261,10 +264,34 @@ class ProductionRecordRestIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].values.PROD_REGION").value("龙沙区"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_OBJECT_TYPE").value("农户"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_STATUS").value("草稿"))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_REPORTER_NAME").value("测试填报员"))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_SAMPLE_LONGITUDE").value("123.9182"))
                 .andExpect(jsonPath("$.data.items[0].values.LAND_RENT").value("4.0000"))
                 .andExpect(jsonPath("$.data.items[0].allowedActions.length()").value(2))
                 .andExpect(jsonPath("$.data.items[0].allowedActions[0]").value("VIEW"))
                 .andExpect(jsonPath("$.data.items[0].allowedActions[1]").value("SUBMIT"));
+    }
+
+    @Test
+    void acceptsCoordinateBoundariesAndRejectsValuesOutsideThemWithoutWriting() throws Exception {
+        String valid = validDraftBody();
+        mockMvc.perform(post("/api/v1/production-records")
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content(valid.replace("\"47.3543\"", "\"-90\"")
+                                .replace("\"123.9182\"", "\"180\"")))
+                .andExpect(status().isCreated());
+
+        long before = actorBusinessRowCount();
+        for (String body : List.of(
+                valid.replace("\"47.3543\"", "\"90.0000000000000001\""),
+                valid.replace("\"123.9182\"", "\"-180.0000001\""))) {
+            mockMvc.perform(post("/api/v1/production-records")
+                            .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                            .content(body))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error.code").value("INVALID_PRODUCTION_RECORD"));
+        }
+        assertThat(actorBusinessRowCount()).isEqualTo(before);
     }
 
     private String create(String body) throws Exception {
@@ -300,6 +327,8 @@ class ProductionRecordRestIntegrationTest {
                 .andExpect(jsonPath("$.data.productCode").value(product))
                 .andExpect(jsonPath("$.data.objectTypeCode").value(objectType))
                 .andExpect(jsonPath("$.data.cultivatedAreaMu").value("1.2345"))
+                .andExpect(jsonPath("$.data.submissionMetadata.PROD_REPORTER_PHONE").value("13800000000"))
+                .andExpect(jsonPath("$.data.submissionMetadata.PROD_SAMPLE_CONTACT").value("13900000000"))
                 .andExpect(jsonPath("$.data.quality." + qualityCode).value("3.0000"))
                 .andExpect(jsonPath("$.data.costs.LAND_RENT").value("4.0000"))
                 .andExpect(jsonPath("$.data.insurance.INSURANCE_AMOUNT").value("5.0000"))
@@ -316,7 +345,9 @@ class ProductionRecordRestIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].values." + qualityCode).value("3.0000"))
                 .andExpect(jsonPath("$.data.items[0].values.LAND_RENT").value("4.0000"))
                 .andExpect(jsonPath("$.data.items[0].values.INSURANCE_AMOUNT").value("5.0000"))
-                .andExpect(jsonPath("$.data.items[0].values.SUBSIDY_AMOUNT").value("6.0000"));
+                .andExpect(jsonPath("$.data.items[0].values.SUBSIDY_AMOUNT").value("6.0000"))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_SAMPLE_CONTACT").value("13900000000"))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_SAMPLE_LATITUDE").value("47.3543"));
     }
 
     private void expectApprovedFullFactDetail(
@@ -374,8 +405,8 @@ class ProductionRecordRestIntegrationTest {
         return """
                 {"productCode":"SOYBEAN","objectTypeCode":"FARMER","regionCode":"230202",
                  "surveyDate":"2026-08-01","cultivatedAreaMu":"100","yieldPerMuKilograms":"180",
-                 "quality":{},"costs":{},"insurance":{},"subsidies":{}}
-                """;
+                 "quality":{},"costs":{},"insurance":{},"subsidies":{},%s}
+                """.formatted(submissionMetadataProperty());
     }
 
     private static String fullDraftBody(String product, String objectType, String qualityCode, Long version) {
@@ -384,16 +415,16 @@ class ProductionRecordRestIntegrationTest {
                 {"productCode":"%s","objectTypeCode":"%s","regionCode":"230202",
                  "surveyDate":"2026-08-01","cultivatedAreaMu":"1.2345","yieldPerMuKilograms":"2.3456",
                  "quality":{"%s":"3"},"costs":{"LAND_RENT":"4"},
-                 "insurance":{"INSURANCE_AMOUNT":"5"},"subsidies":{"SUBSIDY_AMOUNT":"6"}%s}
-                """.formatted(product, objectType, qualityCode, versionProperty);
+                 "insurance":{"INSURANCE_AMOUNT":"5"},"subsidies":{"SUBSIDY_AMOUNT":"6"},%s%s}
+                """.formatted(product, objectType, qualityCode, submissionMetadataProperty(), versionProperty);
     }
 
     private static String qualityOnlyDraftBody(String product, String objectType, String qualityCode) {
         return """
                 {"productCode":"%s","objectTypeCode":"%s","regionCode":"230202",
                  "surveyDate":"2026-08-01","cultivatedAreaMu":"1","yieldPerMuKilograms":"2",
-                 "quality":{"%s":"3"},"costs":{},"insurance":{},"subsidies":{}}
-                """.formatted(product, objectType, qualityCode);
+                 "quality":{"%s":"3"},"costs":{},"insurance":{},"subsidies":{},%s}
+                """.formatted(product, objectType, qualityCode, submissionMetadataProperty());
     }
 
     private static String unsupportedTechStationDraftBody(
@@ -404,8 +435,16 @@ class ProductionRecordRestIntegrationTest {
         return """
                 {"productCode":"%s","objectTypeCode":"AGRICULTURAL_TECH_STATION","regionCode":"230202",
                  "surveyDate":"2026-08-01","cultivatedAreaMu":"1","yieldPerMuKilograms":"2",
-                 "quality":{"%s":"3"},"costs":%s,"insurance":%s,"subsidies":%s}
-                """.formatted(product, qualityCode, costs, insurance, subsidies);
+                 "quality":{"%s":"3"},"costs":%s,"insurance":%s,"subsidies":%s,%s}
+                """.formatted(product, qualityCode, costs, insurance, subsidies, submissionMetadataProperty());
+    }
+
+    private static String submissionMetadataProperty() {
+        return """
+                "submissionMetadata":{"PROD_REPORTER_NAME":"测试填报员","PROD_REPORTER_PHONE":"13800000000",
+                 "PROD_SAMPLE_CONTACT":"13900000000","PROD_SAMPLE_LATITUDE":"47.3543",
+                 "PROD_SAMPLE_LONGITUDE":"123.9182"}
+                """.strip();
     }
 
     private static List<Arguments> farmerAndVillageContexts() {

@@ -62,12 +62,15 @@ public class JdbcWorkItemRepository implements WorkItemRepository {
                         SELECT item.work_item_id::text AS id,
                                item.task_name,
                                item.business_domain,
+                               item.region_code,
                                region.name AS region_name,
                                product.name AS product_name,
                                period.name AS business_period,
                                item.due_at,
                                node.label AS node_label,
+                               item.status_code,
                                status.label AS status_label,
+                               party.external_code AS responsible_party_code,
                                party.display_name AS responsible_party
                         """ + FROM + where + order + " LIMIT :pageSize OFFSET :offset"), query)
                 .param("pageSize", query.pageSize())
@@ -76,12 +79,15 @@ public class JdbcWorkItemRepository implements WorkItemRepository {
                         row.getString("id"),
                         row.getString("task_name"),
                         row.getString("business_domain"),
+                        row.getString("region_code"),
                         row.getString("region_name"),
                         row.getString("product_name"),
                         row.getString("business_period"),
                         row.getObject("due_at", java.time.OffsetDateTime.class),
                         row.getString("node_label"),
+                        row.getString("status_code"),
                         row.getString("status_label"),
+                        row.getString("responsible_party_code"),
                         row.getString("responsible_party")))
                 .list();
         return new PagedResult<>(items, query.pageNumber(), query.pageSize(), total);

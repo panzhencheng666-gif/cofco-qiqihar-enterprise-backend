@@ -3,12 +3,26 @@ package com.cofco.qiqihar.graintrade.market.domain;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.OffsetDateTime;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class MarketRecordTest {
+
+    @Test
+    void comparesTradeDateUsingReportingTimezoneAfterTimestampRoundTrip() {
+        MarketMonitoringRecord record = MarketMonitoringRecord.draft(
+                "record-1", "CORN", "TRADER", "230200", LocalDate.of(2026, 8, 7),
+                OffsetDateTime.parse("2026-08-06T23:30:00Z"), MarketTradeDirection.PURCHASE,
+                new BigDecimal("2100"), null, new BigDecimal("2200"), BigDecimal.ZERO,
+                new BigDecimal("100"), "BULK", Map.of());
+
+        assertThat(record.tradeDate()).isEqualTo(LocalDate.of(2026, 8, 7));
+    }
 
     @Test
     void acceptsOnlyStringNumberAndNullCellValues() {

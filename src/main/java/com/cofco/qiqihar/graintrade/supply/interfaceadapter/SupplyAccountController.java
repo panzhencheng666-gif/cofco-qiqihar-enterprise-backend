@@ -1,20 +1,189 @@
 package com.cofco.qiqihar.graintrade.supply.interfaceadapter;
-import com.cofco.qiqihar.graintrade.shared.application.BoundedInput;import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;import com.cofco.qiqihar.graintrade.shared.application.PlainDecimal;import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;import com.cofco.qiqihar.graintrade.shared.interfaceadapter.StrictQueryParameters;
-import com.cofco.qiqihar.graintrade.supply.application.*;import java.util.List;import java.util.Set;
-import org.springframework.util.MultiValueMap;import org.springframework.web.bind.annotation.*;
-@RestController public class SupplyAccountController{
- private final SupplyAccountService service;public SupplyAccountController(SupplyAccountService service){this.service=service;}
- @GetMapping("/api/v1/supply-accounts") ApiResponse<List<SupplyAccountView>> list(@RequestParam MultiValueMap<String,String> params){StrictQueryParameters p=StrictQueryParameters.parse(params,Set.of("productCode","regionCode","marketingYear","resultState","version")::contains,SupplyAccountController::invalid);Integer version=p.optional("version")==null?null:integer(p.optional("version"));return new ApiResponse<>(service.list(p.required("productCode"),p.required("regionCode"),p.required("marketingYear"),p.optional("resultState"),version));}
- @PostMapping("/api/v1/supply-accounts/runs") ApiResponse<SupplyAccountView> run(@RequestBody RunRequest r){return new ApiResponse<>(service.run(r.command()));}
- @PostMapping("/api/v1/supply-sources/releases") ApiResponse<SupplyReleaseView> release(@RequestBody ReleaseRequest r){return new ApiResponse<>(service.release(r.command()));}
- @PostMapping("/api/v1/supply-inputs/manual-decisions") ApiResponse<SupplyReleaseView> manual(@RequestBody ManualRequest r){return new ApiResponse<>(service.approveManual(r.command()));}
- @PostMapping("/api/v1/supply-input-sets") ApiResponse<SupplyInputSetView> inputSet(@RequestBody InputSetRequest r){return new ApiResponse<>(service.createInputSet(r.command()));}
- record RunRequest(String productCode,String regionCode,String marketingYear,String inputSetId,String adjustmentProposalValue,String adjustmentProposalReason,Long expectedDecisionVersion,Boolean publish){SupplyRunCommand command(){if(expectedDecisionVersion==null||expectedDecisionVersion<0||publish==null||adjustmentProposalValue==null)throw invalid();BoundedInput.requireText("INVALID_SUPPLY_ACCOUNT_REQUEST",productCode,regionCode,marketingYear,inputSetId,adjustmentProposalReason);return new SupplyRunCommand(productCode,regionCode,marketingYear,inputSetId,PlainDecimal.parse(adjustmentProposalValue,14,4,"INVALID_SUPPLY_ACCOUNT_REQUEST"),adjustmentProposalReason,expectedDecisionVersion,publish);}}
- record ReleaseRequest(String sourceDomain,String sourceRecordId,Long sourceVersion,String productCode,String regionCode,String marketingYear,
-   String roleCode,String sourceFieldCode,String qualityState){UpstreamSourceReleaseCommand command(){if(sourceVersion==null)throw invalid();BoundedInput.requireText("INVALID_SUPPLY_ACCOUNT_REQUEST",sourceDomain,sourceRecordId,productCode,regionCode,marketingYear,roleCode,sourceFieldCode,qualityState);return new UpstreamSourceReleaseCommand(sourceDomain,sourceRecordId,sourceVersion,productCode,regionCode,marketingYear,roleCode,sourceFieldCode,qualityState);}}
- record ManualRequest(String productCode,String regionCode,String marketingYear,String roleCode,String value,String reason,Long expectedVersion){ManualInputDecisionCommand command(){if(expectedVersion==null||value==null)throw invalid();BoundedInput.requireText("INVALID_SUPPLY_ACCOUNT_REQUEST",productCode,regionCode,marketingYear,roleCode,reason);return new ManualInputDecisionCommand(productCode,regionCode,marketingYear,roleCode,PlainDecimal.parse(value,14,4,"INVALID_SUPPLY_ACCOUNT_REQUEST"),reason,expectedVersion);}}
- record InputSetRequest(String productCode,String regionCode,String marketingYear,String reason,Long expectedVersion,List<InputSetItemRequest> items){SupplyInputSetCommand command(){if(expectedVersion==null)throw invalid();BoundedInput.requireAggregateSize("INVALID_SUPPLY_ACCOUNT_REQUEST",items);BoundedInput.requireText("INVALID_SUPPLY_ACCOUNT_REQUEST",productCode,regionCode,marketingYear,reason);if(items!=null)items.forEach(InputSetItemRequest::validate);return new SupplyInputSetCommand(productCode,regionCode,marketingYear,reason,expectedVersion,items==null?null:items.stream().map(InputSetItemRequest::item).toList());}}
- record InputSetItemRequest(String roleCode,String sourceReleaseId){void validate(){BoundedInput.requireText("INVALID_SUPPLY_ACCOUNT_REQUEST",roleCode,sourceReleaseId);}SupplyInputSetCommand.Item item(){return new SupplyInputSetCommand.Item(roleCode,sourceReleaseId);}}
- private static int integer(String v){try{return Integer.parseInt(v);}catch(NumberFormatException e){throw invalid();}}
- private static ClientRequestException invalid(){return new ClientRequestException("INVALID_SUPPLY_ACCOUNT_REQUEST","Supply account request is invalid");}
+
+import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
+import com.cofco.qiqihar.graintrade.shared.application.BoundedInput;
+import com.cofco.qiqihar.graintrade.shared.application.PlainDecimal;
+import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
+import com.cofco.qiqihar.graintrade.shared.interfaceadapter.StrictQueryParameters;
+import com.cofco.qiqihar.graintrade.supply.application.ManualInputDecisionCommand;
+import com.cofco.qiqihar.graintrade.supply.application.SupplyAccountService;
+import com.cofco.qiqihar.graintrade.supply.application.SupplyAccountView;
+import com.cofco.qiqihar.graintrade.supply.application.SupplyInputSetCommand;
+import com.cofco.qiqihar.graintrade.supply.application.SupplyInputSetView;
+import com.cofco.qiqihar.graintrade.supply.application.SupplyInputWorkspaceView;
+import com.cofco.qiqihar.graintrade.supply.application.SupplyReleaseView;
+import com.cofco.qiqihar.graintrade.supply.application.SupplyRunCommand;
+import com.cofco.qiqihar.graintrade.supply.application.UpstreamSourceReleaseCommand;
+import java.math.BigDecimal;
+import java.util.List;
+import java.util.Set;
+import org.springframework.util.MultiValueMap;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+public class SupplyAccountController {
+    private static final Set<String> ACCOUNT_QUERY_PARAMETERS =
+            Set.of("productCode", "regionCode", "marketingYear", "resultState", "version");
+    private static final Set<String> WORKSPACE_QUERY_PARAMETERS =
+            Set.of("productCode", "regionCode", "marketingYear");
+
+    private final SupplyAccountService service;
+
+    public SupplyAccountController(SupplyAccountService service) {
+        this.service = service;
+    }
+
+    @GetMapping("/api/v1/supply-accounts")
+    ApiResponse<List<SupplyAccountView>> list(@RequestParam MultiValueMap<String, String> parameters) {
+        StrictQueryParameters parsed = StrictQueryParameters.parse(
+                parameters, ACCOUNT_QUERY_PARAMETERS::contains, SupplyAccountController::invalid);
+        String rawVersion = parsed.optional("version");
+        Integer version = rawVersion == null ? null : integer(rawVersion);
+        return new ApiResponse<>(service.list(
+                parsed.required("productCode"),
+                parsed.required("regionCode"),
+                parsed.required("marketingYear"),
+                parsed.optional("resultState"),
+                version));
+    }
+
+    @GetMapping("/api/v1/supply-input-workspaces")
+    ApiResponse<SupplyInputWorkspaceView> inputWorkspace(
+            @RequestParam MultiValueMap<String, String> parameters) {
+        StrictQueryParameters parsed = StrictQueryParameters.parse(
+                parameters, WORKSPACE_QUERY_PARAMETERS::contains, SupplyAccountController::invalid);
+        return new ApiResponse<>(service.inputWorkspace(
+                parsed.required("productCode"),
+                parsed.required("regionCode"),
+                parsed.required("marketingYear")));
+    }
+
+    @PostMapping("/api/v1/supply-accounts/runs")
+    ApiResponse<SupplyAccountView> run(@RequestBody RunRequest request) {
+        return new ApiResponse<>(service.run(request.command()));
+    }
+
+    @PostMapping("/api/v1/supply-sources/releases")
+    ApiResponse<SupplyReleaseView> release(@RequestBody ReleaseRequest request) {
+        return new ApiResponse<>(service.release(request.command()));
+    }
+
+    @PostMapping("/api/v1/supply-inputs/manual-decisions")
+    ApiResponse<SupplyReleaseView> manual(@RequestBody ManualRequest request) {
+        return new ApiResponse<>(service.approveManual(request.command()));
+    }
+
+    @PostMapping("/api/v1/supply-input-sets")
+    ApiResponse<SupplyInputSetView> inputSet(@RequestBody InputSetRequest request) {
+        return new ApiResponse<>(service.createInputSet(request.command()));
+    }
+
+    record RunRequest(
+            String productCode,
+            String regionCode,
+            String marketingYear,
+            String inputSetId,
+            String adjustmentProposalValue,
+            String adjustmentProposalReason,
+            Long expectedDecisionVersion,
+            Boolean publish) {
+        SupplyRunCommand command() {
+            if (expectedDecisionVersion == null || expectedDecisionVersion < 0 || publish == null
+                    || adjustmentProposalValue == null) {
+                throw invalid();
+            }
+            BoundedInput.requireText("INVALID_SUPPLY_ACCOUNT_REQUEST", productCode, regionCode, marketingYear,
+                    inputSetId, adjustmentProposalReason);
+            return new SupplyRunCommand(
+                    productCode, regionCode, marketingYear, inputSetId,
+                    PlainDecimal.parse(adjustmentProposalValue, 14, 4, "INVALID_SUPPLY_ACCOUNT_REQUEST"),
+                    adjustmentProposalReason,
+                    expectedDecisionVersion, publish);
+        }
+    }
+
+    record ReleaseRequest(
+            String sourceDomain,
+            String sourceRecordId,
+            Long sourceVersion,
+            String productCode,
+            String regionCode,
+            String marketingYear,
+            String roleCode,
+            String sourceFieldCode,
+            String qualityState) {
+        UpstreamSourceReleaseCommand command() {
+            if (sourceVersion == null) throw invalid();
+            BoundedInput.requireText("INVALID_SUPPLY_ACCOUNT_REQUEST", sourceDomain, sourceRecordId,
+                    productCode, regionCode, marketingYear, roleCode, sourceFieldCode, qualityState);
+            return new UpstreamSourceReleaseCommand(
+                    sourceDomain, sourceRecordId, sourceVersion, productCode, regionCode,
+                    marketingYear, roleCode, sourceFieldCode, qualityState);
+        }
+    }
+
+    record ManualRequest(
+            String productCode,
+            String regionCode,
+            String marketingYear,
+            String roleCode,
+            String value,
+            String reason,
+            Long expectedVersion) {
+        ManualInputDecisionCommand command() {
+            if (expectedVersion == null || value == null) {
+                throw invalid();
+            }
+            BoundedInput.requireText("INVALID_SUPPLY_ACCOUNT_REQUEST", productCode, regionCode, marketingYear,
+                    roleCode, reason);
+            return new ManualInputDecisionCommand(
+                    productCode, regionCode, marketingYear, roleCode,
+                    PlainDecimal.parse(value, 14, 4, "INVALID_SUPPLY_ACCOUNT_REQUEST"), reason, expectedVersion);
+        }
+    }
+
+    record InputSetRequest(
+            String productCode,
+            String regionCode,
+            String marketingYear,
+            String reason,
+            Long expectedVersion,
+            List<InputSetItemRequest> items) {
+        SupplyInputSetCommand command() {
+            if (expectedVersion == null) throw invalid();
+            BoundedInput.requireAggregateSize("INVALID_SUPPLY_ACCOUNT_REQUEST", items);
+            BoundedInput.requireText("INVALID_SUPPLY_ACCOUNT_REQUEST", productCode, regionCode, marketingYear, reason);
+            if (items != null) items.forEach(InputSetItemRequest::validate);
+            return new SupplyInputSetCommand(
+                    productCode, regionCode, marketingYear, reason, expectedVersion,
+                    items == null ? null : items.stream().map(InputSetItemRequest::item).toList());
+        }
+    }
+
+    record InputSetItemRequest(String roleCode, String sourceReleaseId) {
+        void validate() {
+            BoundedInput.requireText("INVALID_SUPPLY_ACCOUNT_REQUEST", roleCode, sourceReleaseId);
+        }
+
+        SupplyInputSetCommand.Item item() {
+            return new SupplyInputSetCommand.Item(roleCode, sourceReleaseId);
+        }
+    }
+
+    private static int integer(String value) {
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException exception) {
+            throw invalid();
+        }
+    }
+
+    private static ClientRequestException invalid() {
+        return new ClientRequestException(
+                "INVALID_SUPPLY_ACCOUNT_REQUEST", "Supply account request is invalid");
+    }
 }

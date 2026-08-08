@@ -65,9 +65,9 @@ class ProductionImportRestIntegrationTest {
     @Test
     void rejectsPathologicalAndOverPrecisionImportDecimalsWithoutProductionWrites() throws Exception {
         String csv = """
-                productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms
-                CORN,FARMER,230200,,2026-07-31,1E999999999,20
-                CORN,FARMER,230200,,2026-07-31,100000000000000.0000,20
+                productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_REPORTER_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE
+                CORN,FARMER,230200,,2026-07-31,1E999999999,20,导入填报员,13800000000,13900000000,47.3543,123.9182
+                CORN,FARMER,230200,,2026-07-31,100000000000000.0000,20,导入填报员,13800000000,13900000000,47.3543,123.9182
                 """;
 
         mvc.perform(multipart("/api/v1/imports/production")
@@ -87,16 +87,16 @@ class ProductionImportRestIntegrationTest {
     void validatesRowsDownloadsErrorsAndRetriesWithoutDuplicatingTheOriginalImport() throws Exception {
         mvc.perform(get("/api/v1/imports/production/template").principal(() -> "production-tester"))
                 .andExpect(status().isOk()).andExpect(content().string(
-                        "productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms\n"));
+                        "productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_REPORTER_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE\n"));
 
         String csv = """
-                productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms
-                CORN,FARMER,230200,,2026-07-31,10.5,20
-                SOYBEAN,FARMER,230200,,bad-date,5,30
+                productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_REPORTER_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE
+                CORN,FARMER,230200,,2026-07-31,10.5,20,导入填报员,13800000000,13900000000,47.3543,123.9182
+                SOYBEAN,FARMER,230200,,bad-date,5,30,导入填报员,13800000000,13900000000,47.3543,123.9182
                 """;
         mvc.perform(multipart("/api/v1/imports/production").file(new MockMultipartFile("file", "outside.csv", "text/csv", """
-                        productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms
-                        CORN,FARMER,231100,,2026-07-31,10,20
+                        productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_REPORTER_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE
+                        CORN,FARMER,231100,,2026-07-31,10,20,导入填报员,13800000000,13900000000,47.3543,123.9182
                         """.getBytes(StandardCharsets.UTF_8)))
                         .header("Idempotency-Key", "outside-scope-import").principal(() -> "limited-importer"))
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
@@ -117,6 +117,17 @@ class ProductionImportRestIntegrationTest {
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.data.id").value(jobId.toString()))
                 .andExpect(jsonPath("$.data.importedRows").value(1));
         assertThat(jdbc.sql("SELECT count(*) FROM production.production_record").query(Long.class).single()).isEqualTo(1);
+        String importedId = jdbc.sql("SELECT record_id FROM production.production_record").query(String.class).single();
+        mvc.perform(get("/api/v1/production-records/{id}", importedId).principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.submissionMetadata.PROD_REPORTER_NAME").value("导入填报员"))
+                .andExpect(jsonPath("$.data.submissionMetadata.PROD_SAMPLE_LONGITUDE").value("123.9182"));
+        mvc.perform(get("/api/v1/production-records").principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].values.PROD_REPORTER_PHONE").value("13800000000"))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_SAMPLE_LATITUDE").value("47.3543"));
 
         mvc.perform(post("/api/v1/imports/production/{jobId}/retries", jobId).principal(() -> "production-tester"))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.data.retryOf").value(jobId.toString()))

@@ -3,6 +3,9 @@ package com.cofco.qiqihar.graintrade.masterdata.infrastructure;
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabase;
 import com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabaseConfiguration;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -34,18 +37,18 @@ class BootFlywayStartupTest {
     }
 
     @Test
-    void commandLineTestDatabaseWinsOverConflictingHigherPriorityDefaultsAcrossTwoStartups() throws SQLException {
+    void commandLineTestDatabaseWinsOverConflictingHigherPriorityDefaultsAcrossTwoStartups() throws Exception {
         String previousUrl = System.getProperty("spring.datasource.url");
         System.setProperty(
                 "spring.datasource.url",
                 "jdbc:postgresql://127.0.0.1:5432/qiqihar_enterprise_forbidden");
         try {
             startAndCloseApplication();
-            assertThat(installedMigrationCount()).isEqualTo(35);
+            assertThat(installedMigrationCount()).isEqualTo(versionedMigrationFileCount());
             assertThat(productCount()).isEqualTo(3);
 
             startAndCloseApplication();
-            assertThat(installedMigrationCount()).isEqualTo(35);
+            assertThat(installedMigrationCount()).isEqualTo(versionedMigrationFileCount());
             assertThat(productCount()).isEqualTo(3);
         } finally {
             if (previousUrl == null) {
@@ -77,6 +80,15 @@ class BootFlywayStartupTest {
 
     private long productCount() throws SQLException {
         return count("SELECT count(*) FROM platform.product");
+    }
+
+    private long versionedMigrationFileCount() throws IOException {
+        try (var files = Files.list(Path.of("src/main/resources/db/migration"))) {
+            return files
+                    .map(path -> path.getFileName().toString())
+                    .filter(name -> name.matches("V\\d+__.+\\.sql"))
+                    .count();
+        }
     }
 
     private long count(String sql) throws SQLException {

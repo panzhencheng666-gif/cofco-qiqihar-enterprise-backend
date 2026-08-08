@@ -21,16 +21,29 @@ public class OverviewService {
     public OverviewOptions options() { return repository.options(); }
 
     @Transactional(readOnly = true)
+    public OverviewMapScope mapScope() { return repository.mapScope(); }
+
+    @Transactional(readOnly = true)
     public List<OverviewRegion> regions(String parentCode, String productCode, String periodCode) {
         if (blank(productCode) || !repository.knownProduct(productCode)
                 || (!blank(periodCode) && !repository.knownPeriod(periodCode))
                 || (parentCode != null && !repository.knownRegion(parentCode))) throw invalid();
         AuthorizedReadScope scope=readScope();
-        if (scope.regionCodes().isEmpty()) return List.of();
-        if (!blank(parentCode) && !repository.canNavigateRegion(parentCode, scope.regionCodes())) {
-            scope.requireRegion(parentCode);
-        }
+        if(scope.regionCodes().isEmpty())return List.of();
+        if(!blank(parentCode)&&!repository.canNavigateRegion(parentCode,scope.regionCodes()))scope.requireRegion(parentCode);
         return repository.regions(parentCode, productCode, periodCode, scope.regionCodes());
+    }
+
+    @Transactional(readOnly = true)
+    public List<OverviewRegion> locations(String ancestorCode, String level, String productCode, String periodCode) {
+        if (blank(productCode) || !repository.knownProduct(productCode)
+                || (!blank(periodCode) && !repository.knownPeriod(periodCode))
+                || (!blank(ancestorCode) && !repository.knownRegion(ancestorCode))
+                || !("TOWNSHIP".equals(level) || "VILLAGE".equals(level))) throw invalid();
+        AuthorizedReadScope scope=readScope();
+        if(scope.regionCodes().isEmpty())return List.of();
+        if(!blank(ancestorCode)&&!repository.canNavigateRegion(ancestorCode,scope.regionCodes()))scope.requireRegion(ancestorCode);
+        return repository.locations(ancestorCode, level, productCode, periodCode, scope.regionCodes());
     }
 
     @Transactional(readOnly = true)
@@ -40,6 +53,18 @@ public class OverviewService {
                 || !repository.knownPeriod(periodCode)) throw invalid();
         AuthorizedReadScope scope=readScope(); scope.requireRegion(regionCode);
         return repository.indicators(productCode, regionCode, periodCode, marketingYear, scope.regionCodes());
+    }
+
+    @Transactional(readOnly = true)
+    public OverviewDashboard dashboard(
+            String productCode, String periodCode, String regionCode, String marketingYear) {
+        if (blank(productCode) || !repository.knownProduct(productCode)
+                || (!blank(periodCode) && !repository.knownPeriod(periodCode))
+                || (!blank(regionCode) && !repository.knownRegion(regionCode))) throw invalid();
+        AuthorizedReadScope scope=readScope();
+        if(scope.regionCodes().isEmpty())scope.requireRegion(regionCode);
+        if(!blank(regionCode))scope.requireRegion(regionCode);
+        return repository.dashboard(productCode, periodCode, regionCode, marketingYear, scope.regionCodes());
     }
 
     private AuthorizedReadScope readScope(){return accessControl==null?AuthorizedReadScope.unrestricted():accessControl.requireReadScope();}

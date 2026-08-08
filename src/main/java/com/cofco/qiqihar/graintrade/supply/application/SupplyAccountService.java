@@ -77,6 +77,15 @@ public class SupplyAccountService {
         return repository.find(product, region, year, state, version, scope.regionCodes());
     }
 
+    @Transactional(readOnly = true)
+    public SupplyInputWorkspaceView inputWorkspace(String product, String region, String year) {
+        if (!PRODUCTS.contains(product) || blank(region) || blank(year)) throw invalid();
+        AuthorizedReadScope scope=readScope(); scope.requireRegion(region);
+        SupplyInputWorkspaceView workspace = repository.loadInputWorkspace(product, region, year, scope.regionCodes());
+        if (workspace == null) throw invalid();
+        return workspace;
+    }
+
     @Transactional
     public SupplyAccountView run(SupplyRunCommand command) {
         if (command == null || !PRODUCTS.contains(command.productCode()) || blank(command.regionCode())

@@ -63,7 +63,9 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
                         row.getBigDecimal("yield_per_mu_kg"), row.getBigDecimal("estimated_output_kg"),
                         ProductionStatus.valueOf(row.getString("status_code")), row.getString("status_label"),
                         row.getLong("version"))).list();
-        Map<String, Map<String, BigDecimal>> facts = facts(rows.stream().map(ListRow::id).toList());
+        List<String> ids = rows.stream().map(ListRow::id).toList();
+        Map<String, Map<String, BigDecimal>> facts = facts(ids);
+        Map<String, Map<String, String>> submissionMetadata = submissionMetadata(ids);
         Set<String> configuredActions = new LinkedHashSet<>(jdbc.sql("""
                         SELECT code FROM platform.page_action
                         WHERE product_code = :productCode AND business_domain = 'PRODUCTION'
@@ -72,7 +74,8 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
                         """).param("productCode", query.productCode()).param("pageKind", query.pageKind())
                 .query(String.class).list());
         List<ProductionListRow> items = rows.stream()
-                .map(row -> item(row, facts.getOrDefault(row.id(), Map.of()), configuredActions)).toList();
+                .map(row -> item(row, facts.getOrDefault(row.id(), Map.of()),
+                        submissionMetadata.getOrDefault(row.id(), Map.of()), configuredActions)).toList();
         return new PagedResult<>(items, query.pageNumber(), query.pageSize(), total);
     }
 
@@ -102,7 +105,7 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
                             ProductionStatus.valueOf(row.getString("status_code")), row.getString("return_reason"),
                             values.getOrDefault("QUALITY", Map.of()), values.getOrDefault("COST", Map.of()),
                             values.getOrDefault("INSURANCE", Map.of()), values.getOrDefault("SUBSIDY", Map.of()),
-                            row.getLong("version"));
+                            submissionMetadata(id), row.getLong("version"));
                 }).optional();
     }
 
@@ -189,6 +192,7 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
                                 :reportedAt, :area, :yield, :status, :returnReason, :actorId, 0)
                         """).params(header(record, actorId)).update();
         replaceFacts(record);
+        replaceSubmissionMetadata(record);
         return record;
     }
 
@@ -204,6 +208,7 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
                         """).params(header(record, actorId)).param("expectedVersion", expectedVersion).update();
         requireUpdated(updated);
         replaceFacts(record);
+        replaceSubmissionMetadata(record);
         return record.savedAsVersion(expectedVersion + 1);
     }
 
@@ -219,7 +224,8 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         return record.savedAsVersion(expectedVersion + 1);
     }
 
-    private ProductionListRow item(ListRow row, Map<String, BigDecimal> facts, Set<String> configuredActions) {
+    private ProductionListRow item(ListRow row, Map<String, BigDecimal> facts,
+            Map<String, String> submissionMetadata, Set<String> configuredActions) {
         Map<String, String> values = new LinkedHashMap<>();
         values.put("PROD_REGION", row.regionName());
         values.put("PROD_OBJECT_TYPE", row.objectTypeName());
@@ -231,6 +237,7 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         values.put("PROD_ESTIMATED_OUTPUT", decimal(row.output()));
         values.put("PROD_STATUS", row.statusLabel() == null ? row.status().name() : row.statusLabel());
         facts.forEach((code, value) -> values.put(code, decimal(value)));
+        submissionMetadata.forEach(values::put);
         return new ProductionListRow(row.id(), values, row.status(), configuredActions, row.version());
     }
 
@@ -272,6 +279,43 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         replaceValues("production.production_record_cost", "cost_code", record.id(), record.costs());
         replaceValues("production.production_record_insurance", "insurance_code", record.id(), record.insurance());
         replaceValues("production.production_record_subsidy", "subsidy_code", record.id(), record.subsidies());
+    }
+
+    private Map<String, String> submissionMetadata(String recordId) {
+        return jdbc.sql("""
+                        SELECT field_code, value
+                        FROM production.production_record_submission_metadata
+                        WHERE record_id = :recordId
+                        ORDER BY field_code
+                        """).param("recordId", recordId)
+                .query((row, ignored) -> Map.entry(row.getString("field_code"), row.getString("value")))
+                .list().stream().collect(java.util.stream.Collectors.toMap(
+                        Map.Entry::getKey, Map.Entry::getValue, (left, right) -> right, LinkedHashMap::new));
+    }
+
+    private Map<String, Map<String, String>> submissionMetadata(List<String> recordIds) {
+        Map<String, Map<String, String>> result = new LinkedHashMap<>();
+        if (recordIds.isEmpty()) return result;
+        jdbc.sql("""
+                        SELECT record_id, field_code, value
+                        FROM production.production_record_submission_metadata
+                        WHERE record_id IN (:recordIds)
+                        ORDER BY record_id, field_code
+                        """).param("recordIds", recordIds)
+                .query((row, ignored) -> new SubmissionMetadataRow(
+                        row.getString("record_id"), row.getString("field_code"), row.getString("value")))
+                .list().forEach(value -> result.computeIfAbsent(
+                        value.recordId(), ignored -> new LinkedHashMap<>()).put(value.code(), value.value()));
+        return result;
+    }
+
+    private void replaceSubmissionMetadata(ProductionRecord record) {
+        jdbc.sql("DELETE FROM production.production_record_submission_metadata WHERE record_id = :id")
+                .param("id", record.id()).update();
+        record.submissionMetadata().forEach((code, value) -> jdbc.sql("""
+                        INSERT INTO production.production_record_submission_metadata(record_id, field_code, value)
+                        VALUES (:id, :code, :value)
+                        """).param("id", record.id()).param("code", code).param("value", value).update());
     }
 
     private void replaceValues(String table, String codeColumn, String recordId, Map<String, BigDecimal> values) {
@@ -328,6 +372,7 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
     private record SqlFilter(String sql, Map<String, Object> parameters) { }
     private record FactRow(String category, String code, BigDecimal value) { }
     private record PageFactRow(String recordId, String code, BigDecimal value) { }
+    private record SubmissionMetadataRow(String recordId, String code, String value) { }
     private record ListRow(String id, String productCode, String objectTypeName, String regionName,
             String cultivarName, LocalDate surveyDate, OffsetDateTime reportedAt, BigDecimal area, BigDecimal yield,
             BigDecimal output, ProductionStatus status, String statusLabel, long version) { }

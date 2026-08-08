@@ -3,6 +3,7 @@ package com.cofco.qiqihar.graintrade.market.domain;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -13,12 +14,15 @@ public record MarketMonitoringRecord(
         BigDecimal saleBasePrice, BigDecimal carriageBoardAmount, BigDecimal freightAmount,
         BigDecimal packagingAmount, String packagingForm, BigDecimal actualTradePrice, MarketStatus status, String returnReason,
         Map<String, BigDecimal> facts, long version) {
+    private static final ZoneId REPORTING_ZONE = ZoneId.of("Asia/Shanghai");
     public MarketMonitoringRecord {
         text(id, "id"); text(productCode, "product code"); text(objectTypeCode, "object type");
         text(regionCode, "region"); if (tradeDate == null || reportedAt == null || direction == null || status == null) {
             throw invalid("market record context must not be null");
         }
-        if (tradeDate.isAfter(reportedAt.toLocalDate())) throw invalid("trade date cannot be after reported date");
+        if (tradeDate.isAfter(reportedAt.atZoneSameInstant(REPORTING_ZONE).toLocalDate())) {
+            throw invalid("trade date cannot be after reported date");
+        }
         purchaseBasePrice = optional(purchaseBasePrice, "purchase base price");
         saleBasePrice = optional(saleBasePrice, "sale base price");
         carriageBoardAmount = MarketPricing.amount(carriageBoardAmount, "carriage-board amount");

@@ -81,6 +81,8 @@ class MarketDataFailClosedIntegrationTest {
                 ALTER TABLE market.market_record_fact
                 DROP CONSTRAINT market_record_fact_header_context_fk
                 """).update();
+        client.sql("DELETE FROM market.market_record_core_value WHERE record_id = :id")
+                .param("id", id).update();
         client.sql("""
                 UPDATE market.market_record
                 SET product_code = 'SOYBEAN', object_type_code = 'DEEP_PROCESSOR'
@@ -141,7 +143,10 @@ class MarketDataFailClosedIntegrationTest {
                  "MKT_TRADE_DATE":"2026-08-01","MKT_TRADE_DIRECTION":"PURCHASE",
                  "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":null,
                  "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
-                 "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK"},
+                 "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",
+                 "MKT_REPORTER_NAME":"数据故障测试员","MKT_REPORTER_PHONE":"13800000000",
+                 "MKT_SAMPLE_CONTACT":"13900000000","MKT_SAMPLE_LATITUDE":"47.2",
+                 "MKT_SAMPLE_LONGITUDE":"124.1"},
                  "facts":{"PURCHASE_VOLUME":"12","MOISTURE":"14.6"}}
                 """;
     }

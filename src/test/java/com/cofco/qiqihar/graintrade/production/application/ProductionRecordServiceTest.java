@@ -3,6 +3,8 @@ package com.cofco.qiqihar.graintrade.production.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.when;
 
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecord;
@@ -110,7 +112,7 @@ class ProductionRecordServiceTest {
                 actor, fixedClock());
         ProductionDraft draft = new ProductionDraft("SOYBEAN", "FARMER", "230202", null,
                 LocalDate.of(2026, 8, 1), new BigDecimal("1"), new BigDecimal("2"), Map.of(), Map.of(), Map.of(),
-                Map.of());
+                Map.of(), submissionMetadata());
 
         assertThatThrownBy(() -> service.create(draft))
                 .isExactlyInstanceOf(RuntimeException.class)
@@ -130,12 +132,56 @@ class ProductionRecordServiceTest {
                 actor, fixedClock());
         ProductionDraft draft = new ProductionDraft("SOYBEAN", "FARMER", "230202", null,
                 LocalDate.of(2026, 8, 1), new BigDecimal("-1"), new BigDecimal("2"), Map.of(), Map.of(), Map.of(),
-                Map.of());
+                Map.of(), submissionMetadata());
 
         assertThatThrownBy(() -> service.create(draft))
                 .isInstanceOf(ClientRequestException.class)
                 .extracting("code")
                 .isEqualTo("INVALID_PRODUCTION_RECORD");
+    }
+
+    @Test
+    void createCarriesRequiredSubmissionMetadataIntoThePersistedRecord() {
+        ProductionRecordRepository repository = mock(ProductionRecordRepository.class);
+        when(repository.isKnownRegion("230202")).thenReturn(true);
+        when(repository.isApplicableObjectType("SOYBEAN", "FARMER")).thenReturn(true);
+        when(repository.areApplicableFacts(eq("SOYBEAN"), eq("FARMER"), any())).thenReturn(true);
+        when(repository.insert(any(), eq("tester"))).thenAnswer(invocation -> invocation.getArgument(0));
+        ProductionRecordService service = service(repository, mock(PageDefinitionQuery.class));
+        ProductionDraft draft = new ProductionDraft("SOYBEAN", "FARMER", "230202", null,
+                LocalDate.of(2026, 8, 1), new BigDecimal("1"), new BigDecimal("2"), Map.of(), Map.of(), Map.of(),
+                Map.of(), submissionMetadata());
+
+        ProductionRecordView created = service.create(draft);
+
+        assertThat(created.record().submissionMetadata()).containsExactlyInAnyOrderEntriesOf(submissionMetadata());
+    }
+
+    @Test
+    void saveDraftReplacesThePersistedSubmissionMetadata() {
+        ProductionRecordRepository repository = mock(ProductionRecordRepository.class);
+        ProductionRecord existing = ProductionRecord.draft(
+                "record-1", "SOYBEAN", "FARMER", "230202", null,
+                LocalDate.of(2026, 8, 1), OffsetDateTime.parse("2026-08-02T08:00:00+08:00"),
+                new BigDecimal("1"), new BigDecimal("2"), Map.of(), Map.of(), Map.of(), Map.of(),
+                submissionMetadata());
+        Map<String, String> replacement = new java.util.LinkedHashMap<>(submissionMetadata());
+        replacement.put("PROD_REPORTER_NAME", "修改填报员");
+        when(repository.findById("record-1")).thenReturn(Optional.of(existing));
+        when(repository.isKnownRegion("230202")).thenReturn(true);
+        when(repository.isApplicableObjectType("SOYBEAN", "FARMER")).thenReturn(true);
+        when(repository.areApplicableFacts(eq("SOYBEAN"), eq("FARMER"), any())).thenReturn(true);
+        when(repository.updateFacts(any(), eq(0L), eq("tester"))).thenAnswer(invocation ->
+                ((ProductionRecord) invocation.getArgument(0)).savedAsVersion(1));
+        ProductionRecordService service = service(repository, mock(PageDefinitionQuery.class));
+        ProductionDraft draft = new ProductionDraft("SOYBEAN", "FARMER", "230202", null,
+                LocalDate.of(2026, 8, 1), new BigDecimal("1"), new BigDecimal("2"), Map.of(), Map.of(), Map.of(),
+                Map.of(), replacement);
+
+        ProductionRecordView saved = service.saveDraft("record-1", 0, draft);
+
+        assertThat(saved.record().version()).isOne();
+        assertThat(saved.record().submissionMetadata()).containsExactlyInAnyOrderEntriesOf(replacement);
     }
 
     private static ProductionRecordService service(ProductionRecordRepository repository,
@@ -150,6 +196,15 @@ class ProductionRecordServiceTest {
 
     private static ProductionFactDefinition definition(String code, String category, String label, int sortOrder) {
         return new ProductionFactDefinition(code, category, label, "DECIMAL", "%", "", 18, 1, sortOrder);
+    }
+
+    private static Map<String, String> submissionMetadata() {
+        return Map.of(
+                "PROD_REPORTER_NAME", "测试填报员",
+                "PROD_REPORTER_PHONE", "13800000000",
+                "PROD_SAMPLE_CONTACT", "13900000000",
+                "PROD_SAMPLE_LATITUDE", "47.3543",
+                "PROD_SAMPLE_LONGITUDE", "123.9182");
     }
 
     private static com.cofco.qiqihar.graintrade.production.domain.ProductionRecord record() {

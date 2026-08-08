@@ -3,6 +3,7 @@ package com.cofco.qiqihar.graintrade.production.application;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecord;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecordQuery;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionActionPolicy;
+import com.cofco.qiqihar.graintrade.production.domain.ProductionSubmissionMetadata;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionValidationException;
 import com.cofco.qiqihar.graintrade.shared.application.AuthenticationRequiredException;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
@@ -111,13 +112,14 @@ public class ProductionRecordService implements ProductionImportPort {
     @Transactional
     public ProductionRecordView create(ProductionDraft draft) {
         validateDraft(draft);
+        Map<String, String> submissionMetadata = canonicalSubmissionMetadata(draft);
         SecurityPrincipal principal = authorize("BUSINESS_CREATE", draft.regionCode());
         ProductionRecord record;
         try {
             record = ProductionRecord.draft(UUID.randomUUID().toString(), draft.productCode(),
                     draft.objectTypeCode(), draft.regionCode(), draft.cultivarCode(), draft.surveyDate(), now(),
                     draft.cultivatedAreaMu(), draft.yieldPerMuKilograms(), draft.quality(), draft.costs(),
-                    draft.insurance(), draft.subsidies());
+                    draft.insurance(), draft.subsidies(), submissionMetadata);
         } catch (ProductionValidationException exception) {
             throw invalidDraft(exception.getMessage());
         }
@@ -138,12 +140,14 @@ public class ProductionRecordService implements ProductionImportPort {
         if (expectedVersion != existing.version()) throw stale();
         if (!existing.productCode().equals(draft.productCode())) throw invalidDraft("Record product cannot be changed");
         validateDraft(draft);
+        Map<String, String> submissionMetadata = canonicalSubmissionMetadata(draft);
         authorize("BUSINESS_UPDATE", draft.regionCode());
         ProductionRecord revised;
         try {
             revised = existing.revise(draft.productCode(), draft.objectTypeCode(), draft.regionCode(),
                     draft.cultivarCode(), draft.surveyDate(), now(), draft.cultivatedAreaMu(),
-                    draft.yieldPerMuKilograms(), draft.quality(), draft.costs(), draft.insurance(), draft.subsidies());
+                    draft.yieldPerMuKilograms(), draft.quality(), draft.costs(), draft.insurance(), draft.subsidies(),
+                    submissionMetadata);
         } catch (ProductionValidationException exception) {
             throw invalidDraft(exception.getMessage());
         } catch (IllegalStateException exception) {
@@ -189,6 +193,11 @@ public class ProductionRecordService implements ProductionImportPort {
         if (draft.surveyDate() == null || draft.surveyDate().isAfter(LocalDate.now(clock.withZone(REPORTING_ZONE)))) {
             throw invalidDraft("Survey date cannot be in the future");
         }
+        try {
+            ProductionSubmissionMetadata.from(draft.submissionMetadata());
+        } catch (IllegalArgumentException exception) {
+            throw invalidDraft(exception.getMessage());
+        }
         if (!repository.isKnownRegion(draft.regionCode())) throw invalidDraft("Unknown region");
         if (!repository.isApplicableObjectType(draft.productCode(), draft.objectTypeCode())) {
             throw new ClientRequestException("INAPPLICABLE_PRODUCTION_OBJECT_TYPE",
@@ -207,6 +216,10 @@ public class ProductionRecordService implements ProductionImportPort {
             throw new ClientRequestException("INAPPLICABLE_PRODUCTION_FACT",
                     "One or more facts are not applicable to this production context");
         }
+    }
+
+    private Map<String, String> canonicalSubmissionMetadata(ProductionDraft draft) {
+        return ProductionSubmissionMetadata.from(draft.submissionMetadata()).asMap();
     }
 
     private ProductionRecord requiredRecord(String id) {

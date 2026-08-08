@@ -22,7 +22,7 @@ class MasterDataRestIntegrationTest {
     private MockMvc mockMvc;
 
     @Test
-    void exposesRegionsProductsCultivarsAndEmptyUninventedPeriods() throws Exception {
+    void exposesRegionsProductsCultivarsAndTheCurrentBusinessPeriod() throws Exception {
         mockMvc.perform(get("/api/v1/master-data/regions"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(29))
@@ -39,7 +39,12 @@ class MasterDataRestIntegrationTest {
 
         mockMvc.perform(get("/api/v1/master-data/business-periods"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data").isEmpty());
+                .andExpect(jsonPath("$.data[?(@.code == '2026-W32')].code")
+                        .value(contains("2026-W32")))
+                .andExpect(jsonPath("$.data[?(@.code == '2026-W32')].startsOn")
+                        .value(contains("2026-08-03")))
+                .andExpect(jsonPath("$.data[?(@.code == '2026-W32')].endsOn")
+                        .value(contains("2026-08-09")));
     }
 
     @Test

@@ -14,6 +14,7 @@ import com.cofco.qiqihar.graintrade.supply.application.SupplyInputSetCommand;
 import com.cofco.qiqihar.graintrade.supply.application.SupplyInputSetMaterial;
 import com.cofco.qiqihar.graintrade.supply.application.SupplyInputSetPersistence;
 import com.cofco.qiqihar.graintrade.supply.application.SupplyInputSetView;
+import com.cofco.qiqihar.graintrade.supply.application.SupplyInputWorkspaceView;
 import com.cofco.qiqihar.graintrade.supply.application.SupplyManualDecisionMaterial;
 import com.cofco.qiqihar.graintrade.supply.application.SupplyManualDecisionPersistence;
 import com.cofco.qiqihar.graintrade.supply.application.SupplyReleaseView;
@@ -50,12 +51,6 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
 
     public JdbcSupplyAccountRepository(JdbcClient jdbc) {
         this.jdbc = jdbc;
-    }
-
-    @Override
-    public List<SupplyAccountView> find(
-            String product, String region, String year, String state, Integer resultVersion) {
-        return find(product, region, year, state, resultVersion, Set.of("*"));
     }
 
     @Override
@@ -119,6 +114,83 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                         row.getString("formula_name"), row.getInt("formula_precision"), row.getInt("formula_scale"),
                         row.getString("rounding_mode"), row.getString("tolerance")))).list();
         return assemble(headers);
+    }
+
+    @Override
+    public SupplyInputWorkspaceView loadInputWorkspace(
+            String product, String region, String year, Set<String> authorizedRegionCodes) {
+        if (!authorizedRegionCodes.contains("*") && !authorizedRegionCodes.contains(region)) return null;
+        if (!contextExists(product, region)) return null;
+
+        InputWorkspaceState state = jdbc.sql("""
+                SELECT COALESCE(max(adoption_set.version_no),0) input_set_version,
+                  (array_agg(adoption_set.input_set_id::text ORDER BY adoption_set.version_no DESC)
+                    FILTER (WHERE adoption_set.input_set_id IS NOT NULL))[1] latest_input_set_id,
+                  COALESCE((SELECT adjustment.version FROM supply.approved_adjustment adjustment
+                    WHERE adjustment.product_code=:product AND adjustment.region_code=:region
+                      AND adjustment.marketing_year=:year),0) decision_version
+                FROM supply.source_adoption_set adoption_set
+                WHERE adoption_set.product_code=:product AND adoption_set.region_code=:region
+                  AND adoption_set.marketing_year=:year AND NOT adoption_set.legacy
+                """).param("product", product).param("region", region).param("year", year)
+                .query((row, index) -> new InputWorkspaceState(
+                        row.getLong("input_set_version"), row.getString("latest_input_set_id"),
+                        row.getLong("decision_version"))).single();
+
+        Map<String, List<SupplyInputWorkspaceView.Release>> releases = new LinkedHashMap<>();
+        jdbc.sql("""
+                SELECT binding.role_code,release.source_release_id::text,release.source_domain,
+                  release.source_record_id,release.source_version,binding.source_field_code,
+                  binding.source_value,binding.unit_code,release.quality_state,release.approved_at
+                FROM supply.source_release release
+                JOIN supply.source_release_binding binding
+                  ON binding.source_release_id=release.source_release_id
+                JOIN supply.account_input_role role ON role.role_code=binding.role_code
+                WHERE release.product_code=:product AND release.region_code=:region
+                  AND release.marketing_year=:year AND release.approval_state='APPROVED'
+                  AND binding.mapping_id IS NOT NULL
+                ORDER BY role.sort_order,release.approved_at DESC,release.source_release_id
+                """).param("product", product).param("region", region).param("year", year)
+                .query((row, index) -> new WorkspaceReleaseRow(
+                        row.getString("role_code"),
+                        new SupplyInputWorkspaceView.Release(
+                                row.getString("source_release_id"), row.getString("source_domain"),
+                                row.getString("source_record_id"), row.getLong("source_version"),
+                                row.getString("source_field_code"), plain(row.getBigDecimal("source_value")),
+                                row.getString("unit_code"), row.getString("quality_state"),
+                                timestamp(row.getObject("approved_at", OffsetDateTime.class)))))
+                .list().forEach(row -> releases.computeIfAbsent(row.roleCode(), ignored -> new ArrayList<>())
+                        .add(row.release()));
+
+        List<SupplyInputWorkspaceView.Role> roles = jdbc.sql("""
+                SELECT role.role_code,role.label,role.group_code,role.required,role.sort_order,
+                  EXISTS(SELECT 1 FROM supply.role_source_applicability mapping
+                    WHERE mapping.product_code=:product AND mapping.role_code=role.role_code
+                      AND mapping.source_domain='MANUAL' AND mapping.active) manual_allowed,
+                  COALESCE((SELECT max(decision.version) FROM supply.manual_input_decision decision
+                    WHERE decision.product_code=:product AND decision.region_code=:region
+                      AND decision.marketing_year=:year AND decision.role_code=role.role_code),0)
+                    manual_decision_version,
+                  (SELECT item.source_release_id::text
+                    FROM supply.source_adoption_set adoption_set
+                    JOIN supply.source_adoption_set_item item
+                      ON item.input_set_id=adoption_set.input_set_id AND item.role_code=role.role_code
+                    WHERE adoption_set.product_code=:product AND adoption_set.region_code=:region
+                      AND adoption_set.marketing_year=:year AND NOT adoption_set.legacy
+                    ORDER BY adoption_set.version_no DESC LIMIT 1) selected_release_id
+                FROM supply.account_input_role role
+                ORDER BY role.sort_order
+                """).param("product", product).param("region", region).param("year", year)
+                .query((row, index) -> new SupplyInputWorkspaceView.Role(
+                        row.getString("role_code"), row.getString("label"), row.getString("group_code"),
+                        row.getBoolean("required"), row.getInt("sort_order"), row.getBoolean("manual_allowed"),
+                        row.getLong("manual_decision_version"),
+                        row.getString("selected_release_id"),
+                        List.copyOf(releases.getOrDefault(row.getString("role_code"), List.of()))))
+                .list();
+
+        return new SupplyInputWorkspaceView(product, region, year, state.inputSetVersion(),
+                state.latestInputSetId(), state.decisionVersion(), roles);
     }
 
     @Override
@@ -705,6 +777,8 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
     private record ResultMetadata(String role, String label, boolean required, int order) {}
     private record DecisionState(boolean exists, long version) {}
     private record ManualState(boolean exists, long version) {}
+    private record InputWorkspaceState(long inputSetVersion, String latestInputSetId, long decisionVersion) {}
+    private record WorkspaceReleaseRow(String roleCode, SupplyInputWorkspaceView.Release release) {}
     private record InputSetHeader(String id, long version, String product, String region,
                                   String year, String reason) {}
     private record FormulaHeader(String code, int version, String name, int precision, int scale,

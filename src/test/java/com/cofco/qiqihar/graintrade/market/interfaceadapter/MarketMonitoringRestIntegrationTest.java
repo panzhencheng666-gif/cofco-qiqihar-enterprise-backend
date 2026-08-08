@@ -49,6 +49,8 @@ class MarketMonitoringRestIntegrationTest {
         String id = mockMvc.perform(post("/api/v1/market-records").principal(() -> "market-tester")
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.data.coreValues.MKT_ACTUAL_TRADE_PRICE").value("2420.0000"))
+                .andExpect(jsonPath("$.data.coreValues.MKT_REPORTER_NAME").value("测试填报员"))
+                .andExpect(jsonPath("$.data.coreValues.MKT_SAMPLE_LATITUDE").value("47.3543000"))
                 .andExpect(jsonPath("$.data.facts.PURCHASE_VOLUME").value("12.0000"))
                 .andReturn().getResponse().getContentAsString().replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
         mockMvc.perform(post("/api/v1/market-records/{id}/submit", id).principal(() -> "market-tester")
@@ -84,9 +86,9 @@ class MarketMonitoringRestIntegrationTest {
                  "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":null,
                  "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
                  "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",
-                 "MKT_SOURCE_NOTE":"产地直采"},
+                 "MKT_SOURCE_NOTE":"产地直采",%s},
                  "facts":{"PURCHASE_VOLUME":"12","MOISTURE":"14.6"}}
-                """;
+                """.formatted(submissionMetadata());
 
         String id = mockMvc.perform(post("/api/v1/market-records")
                         .principal(() -> "market-tester")
@@ -115,7 +117,9 @@ class MarketMonitoringRestIntegrationTest {
                         .content(versioned(modified, 0)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.version").value(1))
-                .andExpect(jsonPath("$.data.coreValues.MKT_SOURCE_NOTE").value("铁路到库"));
+                .andExpect(jsonPath("$.data.coreValues.MKT_SOURCE_NOTE").value("铁路到库"))
+                .andExpect(jsonPath("$.data.coreValues.MKT_SAMPLE_CONTACT").value("13900000000"))
+                .andExpect(jsonPath("$.data.coreValues.MKT_SAMPLE_LONGITUDE").value("123.9182000"));
 
         String cleared = body.replaceAll(
                 ",\\s*\"MKT_SOURCE_NOTE\":\"产地直采\"", "");
@@ -127,7 +131,7 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(jsonPath("$.data.version").value(2))
                 .andExpect(jsonPath("$.data.coreValues.MKT_SOURCE_NOTE")
                         .value(org.hamcrest.Matchers.nullValue()));
-        org.assertj.core.api.Assertions.assertThat(extensionValueCount(id)).isZero();
+        org.assertj.core.api.Assertions.assertThat(extensionValueCount(id)).isEqualTo(5);
 
         mockMvc.perform(put("/api/v1/market-records/{id}", id)
                         .principal(() -> "market-tester")
@@ -141,7 +145,7 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(jsonPath("$.data.coreValues.MKT_SOURCE_NOTE")
                         .value(org.hamcrest.Matchers.nullValue()))
                 .andExpect(jsonPath("$.data.facts.MOISTURE").value("14.6000"));
-        org.assertj.core.api.Assertions.assertThat(extensionValueCount(id)).isZero();
+        org.assertj.core.api.Assertions.assertThat(extensionValueCount(id)).isEqualTo(5);
 
         mockMvc.perform(get("/api/v1/market-record-definitions")
                         .queryParam("productCode", "CORN").queryParam("objectTypeCode", "FEED_MILL"))
@@ -259,19 +263,27 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
-    void rejectsPathologicalAndOverPrecisionCoreDecimalsWithoutWrites() throws Exception {
+    void acceptsCoordinateBoundariesAndRejectsOutOfRangeCoordinatesWithoutWriting() throws Exception {
         String valid = draftBody("CORN", "FEED_MILL", "MOISTURE", null);
-        for (String invalid : List.of("1E999999999", "2300.00000")) {
+        mockMvc.perform(post("/api/v1/market-records")
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content(valid.replace("\"47.3543\"", "\"-90\"")
+                                .replace("\"123.9182\"", "\"180\"")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.coreValues.MKT_SAMPLE_LATITUDE").value("-90.0000000"))
+                .andExpect(jsonPath("$.data.coreValues.MKT_SAMPLE_LONGITUDE").value("180.0000000"));
+
+        long before = recordCount();
+        for (String body : List.of(
+                valid.replace("\"47.3543\"", "\"90.0000001\""),
+                valid.replace("\"123.9182\"", "\"-180.0000001\""))) {
             mockMvc.perform(post("/api/v1/market-records")
-                            .principal(() -> "market-tester")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(valid.replace("\"MKT_PURCHASE_BASE_PRICE\":\"2300\"",
-                                    "\"MKT_PURCHASE_BASE_PRICE\":\"" + invalid + "\"")))
+                            .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                            .content(body))
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.error.code").value("INVALID_MARKET_RECORD"));
         }
-
-        assertThat(recordCount()).isZero();
+        assertThat(recordCount()).isEqualTo(before);
     }
 
     @ParameterizedTest(name = "{0} fact uses the shared plain-decimal parser")
@@ -382,6 +394,7 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].values.PURCHASE_VOLUME").value("12.0000"))
                 .andExpect(jsonPath("$.data.items[0].values.MKT_REPORTED_AT").isNotEmpty())
                 .andExpect(jsonPath("$.data.items[0].values.MKT_ACTUAL_TRADE_PRICE").value("2420.0000"))
+                .andExpect(jsonPath("$.data.items[0].values.MKT_REPORTER_PHONE").value("13800000000"))
                 .andExpect(jsonPath("$.data.items[0].allowedActions[0]").value("VIEW"));
     }
 
@@ -532,6 +545,23 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    void rejectsPathologicalAndMetadataOverPrecisionCoreDecimalsWithoutWrites() throws Exception {
+        for (String latitude : List.of("1E999999999", "47.12345678")) {
+            String body = draftBody("CORN", "FEED_MILL", "MOISTURE", null)
+                    .replace("\"MKT_SAMPLE_LATITUDE\":\"47.3543\"",
+                            "\"MKT_SAMPLE_LATITUDE\":\"" + latitude + "\"");
+            mockMvc.perform(post("/api/v1/market-records")
+                            .principal(() -> "market-tester")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error.code").value("INVALID_MARKET_RECORD"));
+        }
+
+        assertThat(recordCount()).isZero();
+    }
+
+    @Test
     void definitionRejectsUnknownCaseVariantBlankAndRepeatedProductContexts() throws Exception {
         for (String product : List.of("UNKNOWN", "corn", " ")) {
             mockMvc.perform(get("/api/v1/market-record-definitions").queryParam("productCode", product))
@@ -561,9 +591,9 @@ class MarketMonitoringRestIntegrationTest {
                  "MKT_TRADE_DATE":"2026-08-01","MKT_TRADE_DIRECTION":"PURCHASE",
                  "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":null,
                  "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
-                 "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK"},
+                 "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",%s},
                  "facts":{"PURCHASE_VOLUME":"12","%s":"14.6"}%s}
-                """.formatted(product, objectType, qualityCode, versionValue);
+                """.formatted(product, objectType, submissionMetadata(), qualityCode, versionValue);
     }
 
     private String singleFactDraft(
@@ -574,9 +604,17 @@ class MarketMonitoringRestIntegrationTest {
                  "MKT_TRADE_DATE":"2026-08-01","MKT_TRADE_DIRECTION":"PURCHASE",
                  "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":null,
                  "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
-                 "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK"},
+                 "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",%s},
                  "facts":{"%s":"%s"}}
-                """.formatted(product, objectType, factCode, value);
+                """.formatted(product, objectType, submissionMetadata(), factCode, value);
+    }
+
+    private static String submissionMetadata() {
+        return """
+                "MKT_REPORTER_NAME":"测试填报员","MKT_REPORTER_PHONE":"13800000000",
+                "MKT_SAMPLE_CONTACT":"13900000000","MKT_SAMPLE_LATITUDE":"47.3543",
+                "MKT_SAMPLE_LONGITUDE":"123.9182"
+                """.strip();
     }
 
     private long recordCount() {

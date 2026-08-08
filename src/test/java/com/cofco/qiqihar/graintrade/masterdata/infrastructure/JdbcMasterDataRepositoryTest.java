@@ -96,7 +96,8 @@ class JdbcMasterDataRepositoryTest {
         assertThat(soybeanFields).extracting(FieldDefinition::name)
                 .containsExactly("蛋白", "出油率", "不完善粒", "水分", "杂质");
         assertThat(repository.findPageDefinition("CORN", "MARKET", "QUALITY")).isEmpty();
-        assertThat(repository.findBusinessPeriods()).isEmpty();
+        assertThat(repository.findBusinessPeriods()).extracting(period -> period.code())
+                .contains("2026-W32");
     }
 
     @Test
