@@ -118,6 +118,16 @@ class AnnualComparisonRestIntegrationTest {
     }
 
     @Test
+    void aggregatesAllCultivarsWhenTheProductionCultivarFilterIsOmitted() throws Exception {
+        mvc.perform(get("/api/v1/overview/annual-comparisons").principal(() -> READER)
+                        .queryParam("productCode", "SOYBEAN").queryParam("regionCode", REGION)
+                        .queryParam("periodCode", PERIOD)
+                        .queryParam("indicatorCode", "PRODUCTION_CULTIVATED_AREA"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.points[0].value").value(1011.0));
+    }
+
+    @Test
     void failsClosedForAnUnassignedRegion() throws Exception {
         mvc.perform(get("/api/v1/overview/annual-comparisons").principal(() -> READER)
                         .queryParam("productCode", "SOYBEAN").queryParam("regionCode", OTHER_REGION)

@@ -314,7 +314,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 case "PRODUCTION_ESTIMATED_OUTPUT" -> "SUM(record.estimated_output_kg)";
                 default -> throw new IllegalArgumentException("Unsupported production indicator");
             };
-            cultivarFilter = "AND (:cultivar IS NULL OR record.cultivar_code=:cultivar)";
+            cultivarFilter = "AND (CAST(:cultivar AS varchar) IS NULL OR record.cultivar_code=CAST(:cultivar AS varchar))";
             publication = "APPROVED_PRODUCTION_RECORD:v";
         } else if ("MARKET".equals(definition.sourceDomain())
                 && "MARKET_AVERAGE_TRADE_PRICE".equals(definition.code())) {
