@@ -13,6 +13,8 @@ import com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabaseConfigurati
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import java.util.UUID;
+import java.io.ByteArrayInputStream;
+import java.util.zip.ZipInputStream;
 import org.junit.jupiter.api.AfterEach;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
@@ -117,5 +119,118 @@ class ReportingRestIntegrationTest {
                         "PRODUCTION_DAILY", "MARKET_DAILY", "LOGISTICS_WEEKLY", "SUPPLY_MONTHLY")))
                 .andExpect(jsonPath("$.data.definitions[*].businessDomain", org.hamcrest.Matchers.not(
                         org.hamcrest.Matchers.hasItems("COMPREHENSIVE", "SUBMISSION"))));
+    }
+
+    @Test void evaluatesEveryActiveReportDomainAgainstItsDatabaseSource() throws Exception {
+        for (String definition : java.util.List.of("MARKET_DAILY", "LOGISTICS_WEEKLY", "SUPPLY_MONTHLY")) {
+            String request = "{\"definitionCode\":\"" + definition + "\",\"productCode\":\"CORN\","
+                    + "\"regionLevel\":\"PREFECTURE\",\"regionCode\":\"230200\",\"periodCode\":\"2026-Q3\"}";
+            mvc.perform(post("/api/v1/reports/previews").principal(() -> "reporter")
+                            .contentType(MediaType.APPLICATION_JSON).content(request))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error.code").value("REPORT_APPROVED_DATA_REQUIRED"));
+        }
+    }
+
+    @Test void exportsTheServerOwnedScopedPreviewAsAnXlsxWorkbook() throws Exception {
+        jdbc.sql("""
+                INSERT INTO production.production_record(record_id,product_code,object_type_code,region_code,
+                    survey_date,reported_at,cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by)
+                VALUES(:id,'CORN','FARMER','230200',DATE '2026-08-09',now(),100,20,'APPROVED','report-test')
+                """).param("id", UUID.randomUUID().toString()).update();
+        String request = "{\"definitionCode\":\"PRODUCTION_DAILY\",\"productCode\":\"CORN\","
+                + "\"regionLevel\":\"PREFECTURE\",\"regionCode\":\"230200\",\"periodCode\":\"2026-Q3\"}";
+        String preview = mvc.perform(post("/api/v1/reports/previews").principal(() -> "reporter")
+                        .contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()
+                .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+        String export = mvc.perform(post("/api/v1/reports/previews/{id}/exports", preview)
+                        .principal(() -> "reporter").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"formatCode\":\"XLSX\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.formatCode").value("XLSX"))
+                .andReturn().getResponse().getContentAsString()
+                .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+
+        byte[] workbook = mvc.perform(get("/api/v1/reports/exports/{id}/content", export)
+                        .principal(() -> "reporter"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                .andExpect(header().string("Content-Disposition", org.hamcrest.Matchers.containsString(".xlsx")))
+                .andReturn().getResponse().getContentAsByteArray();
+
+        assertThat(workbook).startsWith(80, 75, 3, 4);
+        StringBuilder xml = new StringBuilder();
+        try (var zip = new ZipInputStream(new ByteArrayInputStream(workbook))) {
+            for (var entry = zip.getNextEntry(); entry != null; entry = zip.getNextEntry()) {
+                if (entry.getName().endsWith(".xml")) {
+                    xml.append(new String(zip.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
+                }
+            }
+        }
+        assertThat(xml).contains("齐齐哈尔市玉米产情日报", "核定数据条数", "2026年第三季度");
+    }
+
+    @Test void exportsTheServerOwnedScopedPreviewAsAPdfDocument() throws Exception {
+        jdbc.sql("""
+                INSERT INTO production.production_record(record_id,product_code,object_type_code,region_code,
+                    survey_date,reported_at,cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by)
+                VALUES(:id,'CORN','FARMER','230200',DATE '2026-08-09',now(),100,20,'APPROVED','report-test')
+                """).param("id", UUID.randomUUID().toString()).update();
+        String request = "{\"definitionCode\":\"PRODUCTION_DAILY\",\"productCode\":\"CORN\","
+                + "\"regionLevel\":\"PREFECTURE\",\"regionCode\":\"230200\",\"periodCode\":\"2026-Q3\"}";
+        String preview = mvc.perform(post("/api/v1/reports/previews").principal(() -> "reporter")
+                        .contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()
+                .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+        String export = mvc.perform(post("/api/v1/reports/previews/{id}/exports", preview)
+                        .principal(() -> "reporter").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"formatCode\":\"PDF\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.formatCode").value("PDF"))
+                .andReturn().getResponse().getContentAsString()
+                .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+
+        byte[] pdf = mvc.perform(get("/api/v1/reports/exports/{id}/content", export)
+                        .principal(() -> "reporter"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith("application/pdf"))
+                .andExpect(header().string("Content-Disposition", org.hamcrest.Matchers.containsString(".pdf")))
+                .andReturn().getResponse().getContentAsByteArray();
+
+        assertThat(new String(pdf, 0, 8, java.nio.charset.StandardCharsets.US_ASCII)).startsWith("%PDF-1.4");
+        assertThat(pdf.length).isGreaterThan(1_000);
+    }
+
+    @Test void scopesProductionReportsToDescendantRegionsAndTheRequestedCultivar() throws Exception {
+        String requested = UUID.randomUUID().toString();
+        String other = UUID.randomUUID().toString();
+        jdbc.sql("""
+                INSERT INTO production.production_record(record_id,product_code,object_type_code,region_code,
+                    survey_date,reported_at,cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by)
+                VALUES(:requested,'CORN','FARMER','230202',DATE '2026-08-09',now(),100,20,'APPROVED','report-test'),
+                      (:other,'CORN','FARMER','230202',DATE '2026-08-09',now(),100,20,'APPROVED','report-test')
+                """).param("requested", requested).param("other", other).update();
+        jdbc.sql("""
+                INSERT INTO production.production_record_submission_metadata(record_id,field_code,value)
+                VALUES(:requested,'PROD_CULTIVAR_NAME','龙单86'),
+                      (:other,'PROD_CULTIVAR_NAME','德美亚3号')
+                """).param("requested", requested).param("other", other).update();
+
+        String broadRequest = "{\"definitionCode\":\"PRODUCTION_DAILY\",\"productCode\":\"CORN\","
+                + "\"regionLevel\":\"PREFECTURE\",\"regionCode\":\"230200\",\"periodCode\":\"2026-Q3\"}";
+        mvc.perform(post("/api/v1/reports/previews").principal(() -> "reporter")
+                        .contentType(MediaType.APPLICATION_JSON).content(broadRequest))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.lines[0].value").value("2"));
+
+        String cultivarRequest = "{\"definitionCode\":\"PRODUCTION_DAILY\",\"productCode\":\"CORN\","
+                + "\"cultivarCode\":\"龙单86\",\"regionLevel\":\"PREFECTURE\","
+                + "\"regionCode\":\"230200\",\"periodCode\":\"2026-Q3\"}";
+        mvc.perform(post("/api/v1/reports/previews").principal(() -> "reporter")
+                        .contentType(MediaType.APPLICATION_JSON).content(cultivarRequest))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.lines[0].value").value("1"));
     }
 }

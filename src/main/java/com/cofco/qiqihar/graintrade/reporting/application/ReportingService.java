@@ -4,6 +4,8 @@ import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
 import com.cofco.qiqihar.graintrade.reporting.domain.ReportExportContent;
+import com.cofco.qiqihar.graintrade.reporting.infrastructure.ReportPdf;
+import com.cofco.qiqihar.graintrade.reporting.infrastructure.ReportWorkbook;
 import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder;
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
@@ -73,13 +75,27 @@ public class ReportingService {
             throw new ClientRequestException("REPORT_PREVIEW_EXPIRED", "Report preview has expired");
         }
         String format = formatCode.trim().toUpperCase();
-        if (!format.equals("CSV")) {
+        if (!format.equals("CSV") && !format.equals("XLSX") && !format.equals("PDF")) {
             throw new ClientRequestException("REPORT_EXPORT_FORMAT_UNAVAILABLE", "Requested report export format is unavailable");
         }
-        byte[] content = csv(preview).getBytes(StandardCharsets.UTF_8);
+        byte[] content = switch (format) {
+            case "XLSX" -> ReportWorkbook.create(preview);
+            case "PDF" -> ReportPdf.create(preview);
+            default -> csv(preview).getBytes(StandardCharsets.UTF_8);
+        };
+        String extension = switch (format) {
+            case "XLSX" -> ".xlsx";
+            case "PDF" -> ".pdf";
+            default -> ".csv";
+        };
+        String contentType = switch (format) {
+            case "XLSX" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+            case "PDF" -> "application/pdf";
+            default -> "text/csv;charset=utf-8";
+        };
         Instant now = clock.instant();
         ReportExportView export = repository.persistExport(new ReportingRepository.ReportExportPersistence(
-                previewId, format, principal.subjectId(), now, safeFilename(preview) + ".csv", "text/csv;charset=utf-8",
+                previewId, format, principal.subjectId(), now, safeFilename(preview) + extension, contentType,
                 digest(content), content));
         audit.record(principal, "REPORT_EXPORT", export.id(), "REPORT_EXPORT_CREATED", now,
                 "{\"previewId\":\"" + previewId + "\"}");
