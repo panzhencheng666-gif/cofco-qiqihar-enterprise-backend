@@ -115,8 +115,8 @@ class MarketImportRestIntegrationTest {
         java.util.Map<String, String> fields = new java.util.HashMap<>();
         fields.put("MKT_REGION", "230200");
         fields.put("MKT_TRADE_DATE", "2026-08-01");
-        fields.put("MKT_TRADE_DIRECTION", "PURCHASE");
         fields.put("MKT_PURCHASE_BASE_PRICE", "2300");
+        fields.put("MKT_SALE_BASE_PRICE", "2380");
         fields.put("MKT_CARRIAGE_BOARD_AMOUNT", "36");
         fields.put("MKT_PACKAGING_AMOUNT", "12");
         fields.put("MKT_FREIGHT_AMOUNT", "72");
@@ -198,9 +198,10 @@ class MarketImportRestIntegrationTest {
                 .containsExactly(template.labels(), template.headers());
         assertThat(template.headers())
                 .contains("MKT_REGION", "MKT_TRADE_DATE", "MKT_SAMPLE_NAME", "MKT_CULTIVAR_NAME",
+                        "MKT_PURCHASE_BASE_PRICE", "MKT_SALE_BASE_PRICE",
                         "OPENING_INVENTORY", "STOCK_OUTFLOW", "ENDING_INVENTORY",
                         MarketImportTemplate.EVIDENCE_PHOTO_ID)
-                .doesNotContain("MKT_REPORTER_NAME", "MKT_ACTUAL_TRADE_PRICE",
+                .doesNotContain("MKT_REPORTER_NAME", "MKT_TRADE_DIRECTION", "MKT_ACTUAL_TRADE_PRICE",
                         "STOCK_INFLOW", "STORAGE_LOSS");
     }
 
@@ -282,7 +283,7 @@ class MarketImportRestIntegrationTest {
     }
 
     private static String row(String photoId, String moisture) {
-        return String.join(",", "CORN", "FEED_MILL", "230200", "2026-08-01", "PURCHASE", "2300", "", "36", "12", "72", "BULK",
+        return String.join(",", "CORN", "FEED_MILL", "230200", "2026-08-01", "2300", "2380", "36", "12", "72", "BULK",
                 "客户端伪造姓名", "13800000000", "齐齐哈尔第一粮店", "13900000000", "47.3543", "123.9182",
                 "12", moisture, photoId) + "\n";
     }

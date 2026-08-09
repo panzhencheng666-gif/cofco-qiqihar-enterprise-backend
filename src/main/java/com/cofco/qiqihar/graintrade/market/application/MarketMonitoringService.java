@@ -45,9 +45,9 @@ public class MarketMonitoringService {
     private static final String PAGE_KIND = "MONITORING";
     private static final ZoneId REPORTING_ZONE = ZoneId.of("Asia/Shanghai");
     private static final Set<String> REQUIRED_TYPED_BINDINGS = Set.of(
-            "OBJECT_TYPE", "REGION", "TRADE_DATE", "REPORTED_AT", "TRADE_DIRECTION",
+            "OBJECT_TYPE", "REGION", "TRADE_DATE", "REPORTED_AT",
             "PURCHASE_BASE_PRICE", "SALE_BASE_PRICE", "CARRIAGE_BOARD_AMOUNT",
-            "PACKAGING_FORM", "PACKAGING_AMOUNT", "FREIGHT_AMOUNT", "ACTUAL_TRADE_PRICE");
+            "PACKAGING_FORM", "PACKAGING_AMOUNT", "FREIGHT_AMOUNT");
     private final MarketMonitoringRepository repository;
     private final PageDefinitionQuery pageDefinitions;
     private final CurrentActor currentActor;
@@ -312,18 +312,14 @@ public class MarketMonitoringService {
                 case "TRADE_DATE" -> matches(definition, "DATE", "GENERIC", true);
                 case "REPORTED_AT" -> matches(
                         definition, "READONLY_DATETIME", "GENERIC", false);
-                case "TRADE_DIRECTION" -> matches(
-                        definition, "SELECT", "PRICE_DIRECTION", true);
                 case "PURCHASE_BASE_PRICE" -> matches(
-                        definition, "DECIMAL", "PURCHASE_BASE_PRICE", false);
+                        definition, "DECIMAL", "PURCHASE_BASE_PRICE", true);
                 case "SALE_BASE_PRICE" -> matches(
-                        definition, "DECIMAL", "SALE_BASE_PRICE", false);
+                        definition, "DECIMAL", "SALE_BASE_PRICE", true);
                 case "CARRIAGE_BOARD_AMOUNT", "PACKAGING_AMOUNT", "FREIGHT_AMOUNT" ->
                         matches(definition, "DECIMAL", "PRICE_COMPONENT", true);
                 case "PACKAGING_FORM" -> matches(
                         definition, "SELECT", "GENERIC", true);
-                case "ACTUAL_TRADE_PRICE" -> matches(
-                        definition, "READONLY_DECIMAL", "ACTUAL_TRADE_PRICE", false);
                 case "EXTENSION" -> "GENERIC".equals(definition.capability())
                         && ("TEXT".equals(definition.controlType())
                             || "DECIMAL".equals(definition.controlType()));
@@ -401,9 +397,9 @@ public class MarketMonitoringService {
                     draft.productCode(), requiredBinding(byBinding, "OBJECT_TYPE"),
                     requiredBinding(byBinding, "REGION"),
                     LocalDate.parse(requiredBinding(byBinding, "TRADE_DATE")),
-                    MarketTradeDirection.valueOf(requiredBinding(byBinding, "TRADE_DIRECTION")),
-                    optionalDecimal(byBinding.get("PURCHASE_BASE_PRICE")),
-                    optionalDecimal(byBinding.get("SALE_BASE_PRICE")),
+                    MarketTradeDirection.BOTH,
+                    requiredDecimal(byBinding, "PURCHASE_BASE_PRICE"),
+                    requiredDecimal(byBinding, "SALE_BASE_PRICE"),
                     requiredDecimal(byBinding, "CARRIAGE_BOARD_AMOUNT"),
                     requiredDecimal(byBinding, "PACKAGING_AMOUNT"),
                     requiredDecimal(byBinding, "FREIGHT_AMOUNT"),

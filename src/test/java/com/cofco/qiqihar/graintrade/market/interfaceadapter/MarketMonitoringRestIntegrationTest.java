@@ -53,11 +53,13 @@ class MarketMonitoringRestIntegrationTest {
         JdbcClient.create(dataSource).sql("TRUNCATE platform.business_audit_event").update();
     }
 
-    @Test void createsAndTransitionsCornFeedMillUsingServerCalculatedActualPrice() throws Exception {
+    @Test void createsAndTransitionsCornFeedMillWithBothObjectPrices() throws Exception {
         String body = draftBody("CORN", "FEED_MILL", "MOISTURE", null);
         String id = mockMvc.perform(post("/api/v1/market-records").principal(() -> "market-tester")
                         .contentType(MediaType.APPLICATION_JSON).content(body))
-                .andExpect(status().isCreated()).andExpect(jsonPath("$.data.coreValues.MKT_ACTUAL_TRADE_PRICE").value("2420.0000"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.coreValues.MKT_PURCHASE_BASE_PRICE").value("2300.0000"))
+                .andExpect(jsonPath("$.data.coreValues.MKT_SALE_BASE_PRICE").value("2300.0000"))
                 .andExpect(jsonPath("$.data.coreValues.MKT_REPORTER_NAME").value("市场测试员"))
                 .andExpect(jsonPath("$.data.coreValues.MKT_SAMPLE_LATITUDE").value("47.3543000"))
                 .andExpect(jsonPath("$.data.facts.PURCHASE_VOLUME").value("12.0000"))
@@ -74,6 +76,46 @@ class MarketMonitoringRestIntegrationTest {
                 SELECT count(*) FROM platform.business_audit_event
                 WHERE aggregate_type = 'MARKET_RECORD' AND aggregate_id = :id
                 """).param("id", id).query(Long.class).single()).isEqualTo(3L);
+    }
+
+    @Test
+    void capturesBothObjectPricesWithoutExposingATradeDirection() throws Exception {
+        mockMvc.perform(get("/api/v1/market-record-definitions")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("objectTypeCode", "FEED_MILL"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_TRADE_DIRECTION')]").isEmpty())
+                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_ACTUAL_TRADE_PRICE')]").isEmpty())
+                .andExpect(jsonPath(
+                        "$.data.coreFields[?(@.code == 'MKT_PURCHASE_BASE_PRICE' && @.required == true)]").exists())
+                .andExpect(jsonPath(
+                        "$.data.coreFields[?(@.code == 'MKT_SALE_BASE_PRICE' && @.required == true)]").exists());
+
+        String body = """
+                {"productCode":"CORN","coreValues":{
+                 "MKT_OBJECT_TYPE":"FEED_MILL","MKT_REGION":"230200",
+                 "MKT_TRADE_DATE":"2026-08-01",
+                 "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":"2380",
+                 "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
+                 "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",%s},
+                 "facts":{"PURCHASE_VOLUME":"12","MOISTURE":"14.6"},
+                 "evidencePhotoIds":["%s"]}
+                """.formatted(submissionMetadata(), stageEvidencePhoto());
+
+        String id = mockMvc.perform(post("/api/v1/market-records")
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.coreValues.MKT_TRADE_DIRECTION").doesNotExist())
+                .andExpect(jsonPath("$.data.coreValues.MKT_ACTUAL_TRADE_PRICE").doesNotExist())
+                .andExpect(jsonPath("$.data.coreValues.MKT_PURCHASE_BASE_PRICE").value("2300.0000"))
+                .andExpect(jsonPath("$.data.coreValues.MKT_SALE_BASE_PRICE").value("2380.0000"))
+                .andReturn().getResponse().getContentAsString()
+                .replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+
+        assertThat(JdbcClient.create(dataSource).sql("""
+                SELECT trade_direction FROM market.market_record WHERE record_id = :id
+                """).param("id", id).query(String.class).single()).isEqualTo("BOTH");
     }
 
     @Test void exposesOnlyApplicableFeedMillDefinitionsAndRejectsUnauthenticatedWrites() throws Exception {
@@ -124,8 +166,8 @@ class MarketMonitoringRestIntegrationTest {
         String body = """
                 {"productCode":"CORN","coreValues":{
                  "MKT_OBJECT_TYPE":"FEED_MILL","MKT_REGION":"230200",
-                 "MKT_TRADE_DATE":"2026-08-01","MKT_TRADE_DIRECTION":"PURCHASE",
-                 "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":null,
+                 "MKT_TRADE_DATE":"2026-08-01",
+                 "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":"2300",
                  "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
                  "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",
                  "MKT_SOURCE_NOTE":"产地直采",%s},
@@ -138,7 +180,8 @@ class MarketMonitoringRestIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.coreValues.MKT_SOURCE_NOTE").value("产地直采"))
-                .andExpect(jsonPath("$.data.coreValues.MKT_ACTUAL_TRADE_PRICE").value("2420.0000"))
+                .andExpect(jsonPath("$.data.coreValues.MKT_PURCHASE_BASE_PRICE").value("2300.0000"))
+                .andExpect(jsonPath("$.data.coreValues.MKT_SALE_BASE_PRICE").value("2300.0000"))
                 .andExpect(jsonPath("$.data.objectTypeCode").doesNotExist())
                 .andReturn().getResponse().getContentAsString()
                 .replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
@@ -368,7 +411,7 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
-    void rejectsUnknownReadonlyPseudocodeAndInvalidDirectionCoreValues() throws Exception {
+    void rejectsUnknownReadonlyPseudocodeAndRetiredDirectionCoreValues() throws Exception {
         String valid = draftBody("CORN", "FEED_MILL", "MOISTURE", null);
         for (String body : List.of(
                 valid.replace("\"MKT_PACKAGING_FORM\":\"BULK\"",
@@ -376,8 +419,8 @@ class MarketMonitoringRestIntegrationTest {
                 valid.replace("\"MKT_PACKAGING_FORM\":\"BULK\"",
                         "\"MKT_PACKAGING_FORM\":\"BULK\",\"MKT_ACTUAL_TRADE_PRICE\":\"1\""),
                 valid.replace("\"MOISTURE\":\"14.6\"", "\"CORN_MOISTURE\":\"14.6\""),
-                valid.replace("\"MKT_TRADE_DIRECTION\":\"PURCHASE\"",
-                        "\"MKT_TRADE_DIRECTION\":\"SIDEWAYS\""))) {
+                valid.replace("\"MKT_PACKAGING_FORM\":\"BULK\"",
+                        "\"MKT_PACKAGING_FORM\":\"BULK\",\"MKT_TRADE_DIRECTION\":\"PURCHASE\""))) {
             mockMvc.perform(post("/api/v1/market-records")
                             .principal(() -> "market-tester")
                             .contentType(MediaType.APPLICATION_JSON).content(body))
@@ -399,11 +442,11 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(jsonPath("$.data.coreFields[0].options[?(@.value == '" + objectType + "')]").exists())
                 .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_REPORTED_AT' && @.controlType == 'READONLY_DATETIME')]").exists())
                 .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_PURCHASE_BASE_PRICE')].description")
-                        .value("选择采购成交时填写；不包含车板、包装和运费组成"))
+                        .value("被调查对象当前对外采购报价"))
                 .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_SALE_BASE_PRICE')].description")
-                        .value("选择销售成交时填写；不包含车板、包装和运费组成"))
-                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_ACTUAL_TRADE_PRICE')].description")
-                        .value("实际成交价已包含车板、包装和运费组成"))
+                        .value("被调查对象当前对外销售报价"))
+                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_TRADE_DIRECTION')]").isEmpty())
+                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_ACTUAL_TRADE_PRICE')]").isEmpty())
                 .andExpect(jsonPath("$.data.groups.length()").value(5))
                 .andExpect(jsonPath("$.data.groups[0].label").value("质量指标"))
                 .andExpect(jsonPath("$.data.groups[?(@.category == 'QUALITY')].fields[?(@.code == '" + qualityCode + "')]").exists());
@@ -416,7 +459,8 @@ class MarketMonitoringRestIntegrationTest {
         String id = create(product, objectType, qualityCode);
         mockMvc.perform(get("/api/v1/market-records/{id}", id))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.coreValues.MKT_ACTUAL_TRADE_PRICE").value("2420.0000"))
+                .andExpect(jsonPath("$.data.coreValues.MKT_PURCHASE_BASE_PRICE").value("2300.0000"))
+                .andExpect(jsonPath("$.data.coreValues.MKT_SALE_BASE_PRICE").value("2300.0000"))
                 .andExpect(jsonPath("$.data.facts.PURCHASE_VOLUME").value("12.0000"))
                 .andExpect(jsonPath("$.data.facts." + qualityCode).value("14.6000"));
         mockMvc.perform(post("/api/v1/market-records/{id}/submit", id)
@@ -436,7 +480,8 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items[0].values.PURCHASE_VOLUME").value("12.0000"))
                 .andExpect(jsonPath("$.data.items[0].values.MKT_REPORTED_AT").isNotEmpty())
-                .andExpect(jsonPath("$.data.items[0].values.MKT_ACTUAL_TRADE_PRICE").value("2420.0000"))
+                .andExpect(jsonPath("$.data.items[0].values.MKT_PURCHASE_BASE_PRICE").value("2300.0000"))
+                .andExpect(jsonPath("$.data.items[0].values.MKT_SALE_BASE_PRICE").value("2300.0000"))
                 .andExpect(jsonPath("$.data.items[0].values.MKT_REPORTER_PHONE").value("13800000000"))
                 .andExpect(jsonPath("$.data.items[0].allowedActions[0]").value("VIEW"));
     }
@@ -643,8 +688,8 @@ class MarketMonitoringRestIntegrationTest {
         return """
                 {"productCode":"%s","coreValues":{
                  "MKT_OBJECT_TYPE":"%s","MKT_REGION":"230200",
-                 "MKT_TRADE_DATE":"2026-08-01","MKT_TRADE_DIRECTION":"PURCHASE",
-                 "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":null,
+                 "MKT_TRADE_DATE":"2026-08-01",
+                 "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":"2300",
                  "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
                  "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",%s},
                  "facts":{"PURCHASE_VOLUME":"12","%s":"14.6"},
@@ -659,8 +704,8 @@ class MarketMonitoringRestIntegrationTest {
         return """
                 {"productCode":"%s","coreValues":{
                  "MKT_OBJECT_TYPE":"%s","MKT_REGION":"230200",
-                 "MKT_TRADE_DATE":"2026-08-01","MKT_TRADE_DIRECTION":"PURCHASE",
-                 "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":null,
+                 "MKT_TRADE_DATE":"2026-08-01",
+                 "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":"2300",
                  "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
                  "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",%s},
                  "facts":{"%s":"%s"},"evidencePhotoIds":["%s"]}

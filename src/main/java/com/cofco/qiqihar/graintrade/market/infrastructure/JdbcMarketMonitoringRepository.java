@@ -45,15 +45,13 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
         long offset = Math.multiplyExact((long) query.pageNumber(), query.pageSize());
         List<ListHeader> headers = jdbc.sql("""
                         SELECT r.record_id, region.name region_name, object_type.name object_type_name,
-                               r.trade_date, r.reported_at, direction.label direction_label,
+                               r.trade_date, r.reported_at,
                                r.purchase_base_price, r.sale_base_price, r.carriage_board_amount,
                                packaging.label packaging_label, r.packaging_amount, r.freight_amount,
-                               r.actual_trade_price, r.status_code, status.label status_label, r.version
+                               r.status_code, status.label status_label, r.version
                         FROM market.market_record r
                         JOIN platform.region region ON region.code = r.region_code
                         JOIN platform.object_type object_type ON object_type.code = r.object_type_code
-                        LEFT JOIN platform.market_core_field_option direction
-                          ON direction.field_code = 'MKT_TRADE_DIRECTION' AND direction.value = r.trade_direction
                         LEFT JOIN platform.market_core_field_option packaging
                           ON packaging.field_code = 'MKT_PACKAGING_FORM' AND packaging.value = r.packaging_form
                         LEFT JOIN platform.page_filter_option status
@@ -65,12 +63,12 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                 .query((row, ignored) -> new ListHeader(
                         row.getString("record_id"), row.getString("region_name"),
                         row.getString("object_type_name"), row.getObject("trade_date", LocalDate.class),
-                        row.getObject("reported_at", OffsetDateTime.class), row.getString("direction_label"),
+                        row.getObject("reported_at", OffsetDateTime.class),
                         row.getBigDecimal("purchase_base_price"), row.getBigDecimal("sale_base_price"),
                         row.getBigDecimal("carriage_board_amount"), row.getString("packaging_label"),
                         row.getBigDecimal("packaging_amount"), row.getBigDecimal("freight_amount"),
-                        row.getBigDecimal("actual_trade_price"), MarketStatus.valueOf(row.getString("status_code")),
-                        row.getString("status_label"), row.getLong("version"))).list();
+                        MarketStatus.valueOf(row.getString("status_code")), row.getString("status_label"),
+                        row.getLong("version"))).list();
         List<String> ids = headers.stream().map(ListHeader::id).toList();
         Map<String, Map<String, BigDecimal>> facts = facts(ids);
         Map<String, Map<String, String>> extensions = extensionCoreValues(ids);
@@ -318,14 +316,12 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
         values.put("MKT_OBJECT_TYPE", row.objectTypeName());
         values.put("MKT_TRADE_DATE", row.tradeDate().toString());
         values.put("MKT_REPORTED_AT", row.reportedAt().toString());
-        values.put("MKT_TRADE_DIRECTION", row.directionLabel());
         values.put("MKT_PURCHASE_BASE_PRICE", decimal(row.purchaseBasePrice()));
         values.put("MKT_SALE_BASE_PRICE", decimal(row.saleBasePrice()));
         values.put("MKT_CARRIAGE_BOARD_AMOUNT", decimal(row.carriageBoardAmount()));
         values.put("MKT_PACKAGING_FORM", row.packagingLabel());
         values.put("MKT_PACKAGING_AMOUNT", decimal(row.packagingAmount()));
         values.put("MKT_FREIGHT_AMOUNT", decimal(row.freightAmount()));
-        values.put("MKT_ACTUAL_TRADE_PRICE", decimal(row.actualTradePrice()));
         values.put("MKT_STATUS", row.statusLabel() == null ? row.status().name() : row.statusLabel());
         extensions.forEach((code, value) -> putDistinct(values, code, value));
         facts.forEach((code, value) -> putDistinct(values, code, decimal(value)));
@@ -531,8 +527,8 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                           String packagingForm, BigDecimal actualTradePrice, MarketStatus status,
                           String returnReason, long version) { }
     private record ListHeader(String id, String regionName, String objectTypeName, LocalDate tradeDate,
-                              OffsetDateTime reportedAt, String directionLabel, BigDecimal purchaseBasePrice,
+                              OffsetDateTime reportedAt, BigDecimal purchaseBasePrice,
                               BigDecimal saleBasePrice, BigDecimal carriageBoardAmount, String packagingLabel,
-                              BigDecimal packagingAmount, BigDecimal freightAmount, BigDecimal actualTradePrice,
-                              MarketStatus status, String statusLabel, long version) { }
+                              BigDecimal packagingAmount, BigDecimal freightAmount, MarketStatus status,
+                              String statusLabel, long version) { }
 }

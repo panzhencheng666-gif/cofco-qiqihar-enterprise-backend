@@ -282,8 +282,8 @@ public class MarketImportService {
         try {
             Map<String, String> core = new LinkedHashMap<>();
             core.put("MKT_OBJECT_TYPE", value.get("objectTypeCode")); core.put("MKT_REGION", value.get("regionCode"));
-            core.put("MKT_TRADE_DATE", value.get("tradeDate")); core.put("MKT_TRADE_DIRECTION", value.get("tradeDirection"));
-            core.put("MKT_PURCHASE_BASE_PRICE", value.get("purchaseBasePrice")); core.put("MKT_SALE_BASE_PRICE", blankToNull(value.get("saleBasePrice")));
+            core.put("MKT_TRADE_DATE", value.get("tradeDate"));
+            core.put("MKT_PURCHASE_BASE_PRICE", value.get("purchaseBasePrice")); core.put("MKT_SALE_BASE_PRICE", value.get("saleBasePrice"));
             core.put("MKT_CARRIAGE_BOARD_AMOUNT", value.get("carriageBoardAmount")); core.put("MKT_PACKAGING_AMOUNT", value.get("packagingAmount"));
             core.put("MKT_FREIGHT_AMOUNT", value.get("freightAmount")); core.put("MKT_PACKAGING_FORM", value.get("packagingForm"));
             core.put("MKT_REPORTER_NAME", value.get("reporterName")); core.put("MKT_REPORTER_PHONE", value.get("reporterPhone"));

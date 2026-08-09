@@ -181,7 +181,7 @@ class FlywayMigrationReplayTest {
                 .containsEntry("product", 3L)
                 .containsEntry("cultivar", 2L)
                 .containsEntry("object_type", 12L)
-                .containsEntry("page_definition_field", 216L)
+                .containsEntry("page_definition_field", 210L)
                 .containsEntry("production_fact_category", 5L)
                 .containsEntry("production_fact_definition", 31L)
                 .containsEntry("production_fact_applicability", 204L);
@@ -923,8 +923,8 @@ class FlywayMigrationReplayTest {
         coreValues.put("MKT_OBJECT_TYPE", "FEED_MILL");
         coreValues.put("MKT_REGION", "230200");
         coreValues.put("MKT_TRADE_DATE", "2026-08-01");
-        coreValues.put("MKT_TRADE_DIRECTION", "PURCHASE");
         coreValues.put("MKT_PURCHASE_BASE_PRICE", "2300");
+        coreValues.put("MKT_SALE_BASE_PRICE", "2380");
         coreValues.put("MKT_CARRIAGE_BOARD_AMOUNT", "36");
         coreValues.put("MKT_PACKAGING_FORM", "BULK");
         coreValues.put("MKT_PACKAGING_AMOUNT", "12");

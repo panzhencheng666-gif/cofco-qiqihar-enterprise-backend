@@ -32,6 +32,10 @@ public record MarketMonitoringRecord(
         if (!packagingForm.equals("BULK") && !packagingForm.equals("BAGGED")) throw invalid("packaging form is invalid");
         if (direction == MarketTradeDirection.PURCHASE && purchaseBasePrice == null) throw invalid("purchase base price is required");
         if (direction == MarketTradeDirection.SALE && saleBasePrice == null) throw invalid("sale base price is required");
+        if (direction == MarketTradeDirection.BOTH
+                && (purchaseBasePrice == null || saleBasePrice == null)) {
+            throw invalid("purchase and sale prices are required");
+        }
         BigDecimal calculated = MarketPricing.actualPrice(direction, purchaseBasePrice, saleBasePrice,
                 carriageBoardAmount, packagingAmount, freightAmount);
         actualTradePrice = MarketPricing.amount(actualTradePrice, "actual trade price");

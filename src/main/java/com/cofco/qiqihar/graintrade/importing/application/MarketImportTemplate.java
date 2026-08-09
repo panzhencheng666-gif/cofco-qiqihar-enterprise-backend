@@ -8,7 +8,7 @@ import com.cofco.qiqihar.graintrade.market.importing.MarketImportDefinition;
 public final class MarketImportTemplate {
     public static final String DOMAIN = "MARKET";
     public static final List<String> HEADERS = List.of(
-            "productCode", "objectTypeCode", "regionCode", "tradeDate", "tradeDirection",
+            "productCode", "objectTypeCode", "regionCode", "tradeDate",
             "purchaseBasePrice", "saleBasePrice", "carriageBoardAmount", "packagingAmount",
             "freightAmount", "packagingForm", "reporterName", "reporterPhone", "sampleName",
             "sampleContact", "latitude", "longitude", "purchaseVolume", "moisture", "evidencePhotoId");

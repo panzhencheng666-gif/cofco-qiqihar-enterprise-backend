@@ -37,12 +37,10 @@ class MarketV18MasterDataTest {
                 """)).containsExactly(
                         "MKT_OBJECT_TYPE:对象类型:SELECT:10", "MKT_REGION:地区:REGION_HIERARCHY:20",
                         "MKT_TRADE_DATE:交易日期:DATE:30", "MKT_REPORTED_AT:填报时间:READONLY_DATETIME:35",
-                        "MKT_TRADE_DIRECTION:本次成交价格方向:SELECT:40",
-                        "MKT_PURCHASE_BASE_PRICE:采购基础价:DECIMAL:50", "MKT_SALE_BASE_PRICE:销售基础价:DECIMAL:60",
+                        "MKT_PURCHASE_BASE_PRICE:对象采购价格:DECIMAL:50", "MKT_SALE_BASE_PRICE:对象销售价格:DECIMAL:60",
                         "MKT_CARRIAGE_BOARD_AMOUNT:车板组成:DECIMAL:70", "MKT_PACKAGING_FORM:包装形态:SELECT:80",
                         "MKT_PACKAGING_AMOUNT:包装组成:DECIMAL:90", "MKT_FREIGHT_AMOUNT:运费组成:DECIMAL:100",
                         "MKT_SOURCE_NOTE:来源说明:TEXT:105",
-                        "MKT_ACTUAL_TRADE_PRICE:实际成交价:READONLY_DECIMAL:110",
                         "MKT_REPORTER_NAME:填报人:TEXT:120", "MKT_REPORTER_PHONE:填报人联系方式:TEXT:121",
                         "MKT_SAMPLE_CONTACT:填报对象/客户联系方式:TEXT:122",
                         "MKT_SAMPLE_LATITUDE:样本点纬度:DECIMAL:123",
@@ -53,8 +51,7 @@ class MarketV18MasterDataTest {
                 SELECT field_code || ':' || value || ':' || label
                 FROM platform.market_core_field_option ORDER BY field_code, sort_order
                 """)).containsExactly(
-                        "MKT_PACKAGING_FORM:BAGGED:包粮", "MKT_PACKAGING_FORM:BULK:散粮",
-                        "MKT_TRADE_DIRECTION:PURCHASE:采购成交", "MKT_TRADE_DIRECTION:SALE:销售成交");
+                        "MKT_PACKAGING_FORM:BAGGED:包粮", "MKT_PACKAGING_FORM:BULK:散粮");
     }
 
     @Test
@@ -92,9 +89,8 @@ class MarketV18MasterDataTest {
                 ORDER BY sort_order
                 """)).containsExactly(
                         "MKT_REPORTED_AT:null",
-                        "MKT_PURCHASE_BASE_PRICE:选择采购成交时填写；不包含车板、包装和运费组成",
-                        "MKT_SALE_BASE_PRICE:选择销售成交时填写；不包含车板、包装和运费组成",
-                        "MKT_ACTUAL_TRADE_PRICE:实际成交价已包含车板、包装和运费组成");
+                        "MKT_PURCHASE_BASE_PRICE:被调查对象当前对外采购报价",
+                        "MKT_SALE_BASE_PRICE:被调查对象当前对外销售报价");
         assertThat(singleLong("""
                 SELECT count(*) FROM platform.page_definition_field
                 WHERE business_domain = 'MARKET' AND page_kind = 'MONITORING'
@@ -107,8 +103,7 @@ class MarketV18MasterDataTest {
                 ORDER BY sort_order
                 """)).containsExactly(
                         "MKT_OBJECT_TYPE:OBJECT_TYPE:OBJECT_TYPE_CONTEXT:true",
-                        "MKT_SOURCE_NOTE:EXTENSION:GENERIC:false",
-                        "MKT_ACTUAL_TRADE_PRICE:ACTUAL_TRADE_PRICE:ACTUAL_TRADE_PRICE:false");
+                        "MKT_SOURCE_NOTE:EXTENSION:GENERIC:false");
     }
 
     @Test

@@ -19,8 +19,14 @@ public final class MarketPricing {
             BigDecimal packagingAmount,
             BigDecimal freightAmount) {
         if (direction == null) throw invalid("trade direction must not be null");
-        BigDecimal base = direction == MarketTradeDirection.PURCHASE ? purchaseBasePrice : saleBasePrice;
-        return amount(base, "base price")
+        BigDecimal base = switch (direction) {
+            case PURCHASE -> amount(purchaseBasePrice, "purchase price");
+            case SALE -> amount(saleBasePrice, "sale price");
+            case BOTH -> amount(purchaseBasePrice, "purchase price")
+                    .add(amount(saleBasePrice, "sale price"))
+                    .divide(BigDecimal.valueOf(2), SCALE, RoundingMode.HALF_UP);
+        };
+        return base
                 .add(amount(carriageBoardAmount, "carriage-board amount"))
                 .add(amount(packagingAmount, "packaging amount"))
                 .add(amount(freightAmount, "freight amount"))

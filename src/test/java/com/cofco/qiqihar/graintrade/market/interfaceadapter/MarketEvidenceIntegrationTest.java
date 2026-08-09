@@ -106,8 +106,8 @@ class MarketEvidenceIntegrationTest {
         return """
                 {"productCode":"CORN","coreValues":{
                  "MKT_OBJECT_TYPE":"FEED_MILL","MKT_REGION":"230200",
-                 "MKT_TRADE_DATE":"2026-08-01","MKT_TRADE_DIRECTION":"PURCHASE",
-                 "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":null,
+                 "MKT_TRADE_DATE":"2026-08-01",
+                 "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":"2300",
                  "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
                  "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",
                  "MKT_REPORTER_NAME":"测试填报员","MKT_REPORTER_PHONE":"13800000000",

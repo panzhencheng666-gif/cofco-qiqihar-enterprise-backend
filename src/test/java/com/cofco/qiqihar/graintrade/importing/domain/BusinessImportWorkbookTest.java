@@ -67,15 +67,23 @@ class BusinessImportWorkbookTest {
                 "MKT_REPORTER_NAME", "填报人", "TEXT");
         MarketImportDefinition.Field sample = marketField(
                 "MKT_SAMPLE_NAME", "填报对象", "TEXT");
+        MarketImportDefinition.Field purchasePrice = marketField(
+                "MKT_PURCHASE_BASE_PRICE", "对象采购价格", "DECIMAL");
+        MarketImportDefinition.Field salePrice = marketField(
+                "MKT_SALE_BASE_PRICE", "对象销售价格", "DECIMAL");
         MarketImportDefinition.Field calculated = marketField(
                 "MKT_ACTUAL_TRADE_PRICE", "实际成交价", "READONLY_DECIMAL");
         MarketImportDefinition.Field fact = marketField(
                 "ENDING_INVENTORY", "期末库存", "DECIMAL");
         MarketImportDefinition definition = new MarketImportDefinition(
-                "CORN", "TRADER", List.of(objectType, reporter, sample, calculated), List.of(fact));
+                "CORN", "TRADER",
+                List.of(objectType, reporter, sample, purchasePrice, salePrice, calculated),
+                List.of(fact));
 
         assertThat(MarketImportTemplate.workbook(definition).headers())
-                .containsExactly("MKT_SAMPLE_NAME", "ENDING_INVENTORY", "evidencePhotoId");
+                .containsExactly("MKT_SAMPLE_NAME", "MKT_PURCHASE_BASE_PRICE",
+                        "MKT_SALE_BASE_PRICE", "ENDING_INVENTORY", "evidencePhotoId")
+                .doesNotContain("MKT_TRADE_DIRECTION", "MKT_ACTUAL_TRADE_PRICE");
     }
 
     @Test
