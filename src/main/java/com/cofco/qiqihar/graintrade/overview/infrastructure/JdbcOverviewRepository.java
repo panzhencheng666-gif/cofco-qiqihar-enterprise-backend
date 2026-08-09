@@ -76,12 +76,45 @@ public class JdbcOverviewRepository implements OverviewRepository {
     }
 
     @Override
+    public List<AnnualComparisonDefinition> annualComparisonDefinitions(String sourceDomain, String productCode) {
+        return jdbc.sql("""
+                SELECT definition.code,definition.name,definition.unit_code,
+                       definition.source_domain,definition.aggregation_code
+                FROM overview.indicator_definition definition
+                JOIN overview.annual_comparison_metric_binding binding
+                  ON binding.metric_code=definition.code
+                WHERE definition.annual_comparison_enabled
+                  AND definition.source_domain=:domain
+                  AND (
+                    binding.storage_code IN ('PRODUCTION_CORE','MARKET_CORE')
+                    OR binding.storage_code LIKE 'PRODUCTION_%' AND EXISTS (
+                      SELECT 1 FROM platform.production_fact_applicability applicability
+                      WHERE applicability.product_code=:product
+                        AND applicability.fact_code=binding.field_code
+                    )
+                    OR binding.storage_code='MARKET_FACT' AND EXISTS (
+                      SELECT 1 FROM platform.market_fact_applicability applicability
+                      WHERE applicability.product_code=:product
+                        AND applicability.fact_code=binding.field_code
+                    )
+                  )
+                ORDER BY definition.sort_order
+                """).param("domain", sourceDomain).param("product", productCode)
+                .query((row, index) -> new AnnualComparisonDefinition(
+                        row.getString("code"), row.getString("name"), row.getString("unit_code"),
+                        row.getString("source_domain"), row.getString("aggregation_code")))
+                .list();
+    }
+
+    @Override
     public Optional<AnnualComparisonDefinition> annualComparisonDefinition(String indicatorCode) {
         return jdbc.sql("""
-                SELECT code,name,unit_code,source_domain FROM overview.indicator_definition
-                 WHERE code=:code AND code IN ('PRODUCTION_CULTIVATED_AREA','PRODUCTION_ESTIMATED_OUTPUT','MARKET_AVERAGE_TRADE_PRICE')
+                SELECT code,name,unit_code,source_domain,aggregation_code
+                FROM overview.indicator_definition
+                WHERE code=:code AND annual_comparison_enabled
                 """).param("code", indicatorCode).query((row, index) -> new AnnualComparisonDefinition(
-                        row.getString("code"), row.getString("name"), row.getString("unit_code"), row.getString("source_domain")))
+                        row.getString("code"), row.getString("name"), row.getString("unit_code"),
+                        row.getString("source_domain"), row.getString("aggregation_code")))
                 .optional();
     }
 
@@ -301,31 +334,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
     @Override
     public List<AnnualComparisonPoint> annualComparison(String productCode, String cultivarCode, String regionCode,
             String periodCode, AnnualComparisonDefinition definition, Set<String> authorizedRegionCodes) {
-        String sourceTable;
-        String occurredOn;
-        String value;
-        String cultivarFilter;
-        String publication;
-        if ("PRODUCTION".equals(definition.sourceDomain())) {
-            sourceTable = "production.production_record";
-            occurredOn = "record.survey_date";
-            value = switch (definition.code()) {
-                case "PRODUCTION_CULTIVATED_AREA" -> "SUM(record.cultivated_area_mu)";
-                case "PRODUCTION_ESTIMATED_OUTPUT" -> "SUM(record.estimated_output_kg)";
-                default -> throw new IllegalArgumentException("Unsupported production indicator");
-            };
-            cultivarFilter = "AND (CAST(:cultivar AS varchar) IS NULL OR record.cultivar_code=CAST(:cultivar AS varchar))";
-            publication = "APPROVED_PRODUCTION_RECORD:v";
-        } else if ("MARKET".equals(definition.sourceDomain())
-                && "MARKET_AVERAGE_TRADE_PRICE".equals(definition.code())) {
-            sourceTable = "market.market_record";
-            occurredOn = "record.trade_date";
-            value = "AVG(record.actual_trade_price)";
-            cultivarFilter = "";
-            publication = "APPROVED_MARKET_RECORD:v";
-        } else {
-            throw new IllegalArgumentException("Unsupported annual comparison indicator");
-        }
+        String publication = "APPROVED_" + definition.sourceDomain() + "_RECORD:v";
         return jdbc.sql("""
                 WITH RECURSIVE monitoring_scope AS (
                   SELECT region_code FROM platform.monitoring_scope_region
@@ -346,20 +355,24 @@ public class JdbcOverviewRepository implements OverviewRepository {
                     (period.ends_on-make_interval(years=>year_offset))::date ends_on
                   FROM period CROSS JOIN generate_series(0,3) year_offset
                 ), approved AS (
-                  SELECT record.* FROM %s record,period
-                  WHERE record.product_code=:product AND record.status_code='APPROVED'
+                  SELECT record.* FROM overview.approved_annual_metric_fact record,period
+                  WHERE record.metric_code=:metric AND record.product_code=:product
                     AND record.region_code IN (SELECT code FROM scope)
-                    AND %s BETWEEN (period.starts_on-INTERVAL '3 years')::date AND period.ends_on
-                    %s
+                    AND record.occurred_on BETWEEN (period.starts_on-INTERVAL '3 years')::date AND period.ends_on
+                    AND (CAST(:cultivar AS varchar) IS NULL
+                      OR record.cultivar_code=CAST(:cultivar AS varchar))
                 )
-                SELECT comparison_year.business_year,%s value,COUNT(record.record_id) source_count,
+                SELECT comparison_year.business_year,
+                  CASE WHEN :aggregation='AVERAGE' THEN AVG(record.value) ELSE SUM(record.value) END value,
+                  COUNT(record.record_id) source_count,
                   MAX(record.version) source_version,MAX(record.reported_at) data_cutoff
                 FROM comparison_year LEFT JOIN approved record
-                  ON %s BETWEEN comparison_year.starts_on AND comparison_year.ends_on
+                  ON record.occurred_on BETWEEN comparison_year.starts_on AND comparison_year.ends_on
                 GROUP BY comparison_year.business_year,comparison_year.ends_on
                 ORDER BY comparison_year.ends_on DESC
-                """.formatted(sourceTable, occurredOn, cultivarFilter, value, occurredOn))
+                """)
                 .param("region", regionCode).param("period", periodCode).param("product", productCode)
+                .param("metric", definition.code()).param("aggregation", definition.aggregationCode())
                 .param("cultivar", cultivarCode).param("unrestricted", authorizedRegionCodes.contains("*"))
                 .param("authorizedRegions", authorizedRegionCodes)
                 .query((row, index) -> {

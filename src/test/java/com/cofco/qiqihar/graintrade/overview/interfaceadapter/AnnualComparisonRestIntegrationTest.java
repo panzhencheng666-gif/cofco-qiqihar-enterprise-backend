@@ -64,6 +64,18 @@ class AnnualComparisonRestIntegrationTest {
                     .param("date", year + "-08-10").param("reportedAt", year + "-08-11T08:00:00+08:00")
                     .param("area", area).param("reader", READER).update();
             jdbc.sql("""
+                    INSERT INTO production.production_record_submission_metadata(record_id,field_code,value)
+                    VALUES (:id,'PROD_HARVEST_AREA_MU',:harvest),
+                           (:id,'PROD_OPENING_INVENTORY',:opening)
+                    """).param("id", "annual-production-" + year)
+                    .param("harvest", Integer.toString(area - 1))
+                    .param("opening", Integer.toString(year - 2020)).update();
+            jdbc.sql("""
+                    INSERT INTO production.production_record_quality(record_id,quality_code,value)
+                    VALUES (:id,'MOISTURE',:moisture)
+                    """).param("id", "annual-production-" + year)
+                    .param("moisture", year - 2010).update();
+            jdbc.sql("""
                     INSERT INTO market.market_record(record_id,product_code,object_type_code,region_code,trade_date,reported_at,
                       purchase_base_price,trade_direction,carriage_board_amount,packaging_amount,freight_amount,packaging_form,status_code,last_modified_by)
                     VALUES (:id,'SOYBEAN','TRADER',:region,CAST(:date AS date),CAST(:reportedAt AS timestamptz),
@@ -71,6 +83,11 @@ class AnnualComparisonRestIntegrationTest {
                     """).param("id", "annual-market-" + year).param("region", REGION)
                     .param("date", year + "-08-10").param("reportedAt", year + "-08-11T08:00:00+08:00")
                     .param("price", year - 2000).param("reader", READER).update();
+            jdbc.sql("""
+                    INSERT INTO market.market_record_fact(record_id,fact_code,value,product_code,object_type_code)
+                    VALUES (:id,'PURCHASE_VOLUME',:volume,'SOYBEAN','TRADER')
+                    """).param("id", "annual-market-" + year)
+                    .param("volume", year - 2015).update();
         }
         jdbc.sql("""
                 INSERT INTO production.production_record(record_id,product_code,object_type_code,region_code,cultivar_code,
@@ -78,6 +95,48 @@ class AnnualComparisonRestIntegrationTest {
                 VALUES ('annual-production-draft','SOYBEAN','FARMER',:region,'HEINONG_84',DATE '2026-08-10','2026-08-11T08:00:00+08:00',999,999,'DRAFT',:reader),
                        ('annual-production-other-cultivar','SOYBEAN','FARMER',:region,'DONGSHENG_22',DATE '2026-08-10','2026-08-11T08:00:00+08:00',999,999,'APPROVED',:reader)
                 """).param("region", REGION).param("reader", READER).update();
+    }
+
+    @Test
+    void exposesDatabaseOwnedImportantIndicatorsAndAggregatesTheirApprovedFacts() throws Exception {
+        mvc.perform(get("/api/v1/overview/annual-comparison-definitions").principal(() -> READER)
+                        .queryParam("sourceDomain", "PRODUCTION").queryParam("productCode", "SOYBEAN"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].name")
+                        .value("核定播种面积"))
+                .andExpect(jsonPath("$.data[?(@.code == 'PRODUCTION_PROD_HARVEST_AREA_MU')].name")
+                        .value("产情核定预计收获面积"))
+                .andExpect(jsonPath("$.data[?(@.code == 'PRODUCTION_PROD_OPENING_INVENTORY')].name")
+                        .value("产情核定期初库存"))
+                .andExpect(jsonPath("$.data[?(@.code == 'PRODUCTION_MOISTURE')].name")
+                        .value("产情核定水分"));
+
+        mvc.perform(get("/api/v1/overview/annual-comparison-definitions").principal(() -> READER)
+                        .queryParam("sourceDomain", "MARKET").queryParam("productCode", "SOYBEAN"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.code == 'MARKET_AVERAGE_PURCHASE_PRICE')].name")
+                        .value("核定平均采购价格"))
+                .andExpect(jsonPath("$.data[?(@.code == 'MARKET_AVERAGE_SALE_PRICE')].name")
+                        .value("核定平均销售价格"))
+                .andExpect(jsonPath("$.data[?(@.code == 'MARKET_PURCHASE_VOLUME')].name")
+                        .value("市场核定采购量"))
+                .andExpect(jsonPath("$.data[?(@.code == 'MARKET_STOCK_INFLOW')]").isEmpty())
+                .andExpect(jsonPath("$.data[?(@.code == 'MARKET_STORAGE_LOSS')]").isEmpty());
+
+        mvc.perform(get("/api/v1/overview/annual-comparisons").principal(() -> READER)
+                        .queryParam("productCode", "SOYBEAN").queryParam("cultivarCode", "HEINONG_84")
+                        .queryParam("regionCode", REGION).queryParam("periodCode", PERIOD)
+                        .queryParam("indicatorCode", "PRODUCTION_PROD_HARVEST_AREA_MU"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.points[0].value").value(11.0))
+                .andExpect(jsonPath("$.data.points[3].value").value(8.0));
+
+        mvc.perform(get("/api/v1/overview/annual-comparisons").principal(() -> READER)
+                        .queryParam("productCode", "SOYBEAN").queryParam("regionCode", REGION)
+                        .queryParam("periodCode", PERIOD).queryParam("indicatorCode", "MARKET_PURCHASE_VOLUME"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.points[0].value").value(11.0))
+                .andExpect(jsonPath("$.data.points[3].value").value(8.0));
     }
 
     @AfterEach void tearDown() { clean(); }
@@ -90,7 +149,7 @@ class AnnualComparisonRestIntegrationTest {
                         .queryParam("indicatorCode", "PRODUCTION_CULTIVATED_AREA"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.unitCode").value("亩"))
-                .andExpect(jsonPath("$.data.methodologyVersion").value("OVERVIEW_APPROVED_FACTS_V1"))
+                .andExpect(jsonPath("$.data.methodologyVersion").value("OVERVIEW_APPROVED_FACTS_V2"))
                 .andExpect(jsonPath("$.data.points.length()").value(4))
                 .andExpect(jsonPath("$.data.points[0].businessYear").value("2026"))
                 .andExpect(jsonPath("$.data.points[0].value").value(12.0))

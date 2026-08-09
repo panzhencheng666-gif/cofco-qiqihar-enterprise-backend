@@ -111,12 +111,15 @@ class ReportingRestIntegrationTest {
                 .hasMessageContaining("business audit events are immutable");
     }
 
-    @Test void listsOnlyTheFourScopedBusinessReportTypes() throws Exception {
+    @Test void listsDailyWeeklyAndMonthlyReportsForEveryScopedBusinessDomain() throws Exception {
         mvc.perform(get("/api/v1/reports/parameter-options").principal(() -> "reporter"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.definitions.length()").value(4))
+                .andExpect(jsonPath("$.data.definitions.length()").value(12))
                 .andExpect(jsonPath("$.data.definitions[*].code").value(org.hamcrest.Matchers.containsInAnyOrder(
-                        "PRODUCTION_DAILY", "MARKET_DAILY", "LOGISTICS_WEEKLY", "SUPPLY_MONTHLY")))
+                        "PRODUCTION_DAILY", "PRODUCTION_WEEKLY", "PRODUCTION_MONTHLY",
+                        "MARKET_DAILY", "MARKET_WEEKLY", "MARKET_MONTHLY",
+                        "LOGISTICS_DAILY", "LOGISTICS_WEEKLY", "LOGISTICS_MONTHLY",
+                        "SUPPLY_DAILY", "SUPPLY_WEEKLY", "SUPPLY_MONTHLY")))
                 .andExpect(jsonPath("$.data.definitions[*].businessDomain", org.hamcrest.Matchers.not(
                         org.hamcrest.Matchers.hasItems("COMPREHENSIVE", "SUBMISSION"))));
     }

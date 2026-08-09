@@ -3,6 +3,24 @@ info:
   title: Grain Trade Overview Annual Comparison API
   version: v1
 paths:
+  /api/v1/overview/annual-comparison-definitions:
+    get:
+      summary: List database-owned annual comparison indicators applicable to a business domain and product
+      parameters:
+        - {name: sourceDomain, in: query, required: true, schema: {type: string, enum: [PRODUCTION, MARKET]}}
+        - {name: productCode, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Applicable approved-fact indicators ordered by enterprise metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AnnualComparisonDefinition'
   /api/v1/overview/annual-comparisons:
     get:
       summary: Read four comparable annual approved-fact values
@@ -11,7 +29,7 @@ paths:
         - {name: cultivarCode, in: query, required: false, schema: {type: string}, description: Production-only cultivar filter.}
         - {name: regionCode, in: query, required: true, schema: {type: string}}
         - {name: periodCode, in: query, required: true, schema: {type: string}, description: Cutoff business period; its dates are shifted by zero through three years.}
-        - {name: indicatorCode, in: query, required: true, schema: {type: string, enum: [PRODUCTION_CULTIVATED_AREA, PRODUCTION_ESTIMATED_OUTPUT, MARKET_AVERAGE_TRADE_PRICE]}}
+        - {name: indicatorCode, in: query, required: true, schema: {type: string}, description: Code returned by annual-comparison-definitions; never a browser-owned metric.}
       responses:
         '200':
           description: Four current/prior-year values from approved database records only.
@@ -25,6 +43,15 @@ paths:
         '403': {description: Requested region is outside the caller read scope.}
 components:
   schemas:
+    AnnualComparisonDefinition:
+      type: object
+      required: [code, name, unitCode, sourceDomain, aggregationCode]
+      properties:
+        code: {type: string}
+        name: {type: string}
+        unitCode: {type: string}
+        sourceDomain: {type: string, enum: [PRODUCTION, MARKET]}
+        aggregationCode: {type: string, enum: [SUM, AVERAGE]}
     AnnualComparison:
       type: object
       required: [indicatorCode, indicatorName, sourceDomain, productCode, regionCode, cutoffPeriodCode, unitCode, methodologyVersion, points]
@@ -37,7 +64,7 @@ components:
         regionCode: {type: string}
         cutoffPeriodCode: {type: string}
         unitCode: {type: string}
-        methodologyVersion: {type: string, example: OVERVIEW_APPROVED_FACTS_V1}
+        methodologyVersion: {type: string, example: OVERVIEW_APPROVED_FACTS_V2}
         points:
           type: array
           minItems: 4

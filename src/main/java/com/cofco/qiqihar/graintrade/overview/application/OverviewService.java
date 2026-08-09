@@ -68,6 +68,14 @@ public class OverviewService {
     }
 
     @Transactional(readOnly = true)
+    public List<AnnualComparisonDefinition> annualComparisonDefinitions(String sourceDomain, String productCode) {
+        if (!("PRODUCTION".equals(sourceDomain) || "MARKET".equals(sourceDomain))
+                || blank(productCode) || !repository.knownProduct(productCode)) throw invalid();
+        if (readScope().regionCodes().isEmpty()) return List.of();
+        return repository.annualComparisonDefinitions(sourceDomain, productCode);
+    }
+
+    @Transactional(readOnly = true)
     public AnnualComparisonView annualComparison(String productCode, String cultivarCode, String regionCode,
             String periodCode, String indicatorCode) {
         if (blank(productCode) || blank(regionCode) || blank(periodCode) || blank(indicatorCode)
@@ -81,7 +89,7 @@ public class OverviewService {
         AuthorizedReadScope scope = readScope();
         scope.requireRegion(regionCode);
         return new AnnualComparisonView(definition.code(), definition.name(), definition.sourceDomain(), productCode,
-                cultivarCode, regionCode, periodCode, definition.unitCode(), "OVERVIEW_APPROVED_FACTS_V1",
+                cultivarCode, regionCode, periodCode, definition.unitCode(), "OVERVIEW_APPROVED_FACTS_V2",
                 repository.annualComparison(productCode, cultivarCode, regionCode, periodCode, definition,
                         scope.regionCodes()));
     }

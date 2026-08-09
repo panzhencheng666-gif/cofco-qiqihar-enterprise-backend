@@ -11,6 +11,7 @@ public interface OverviewRepository {
     boolean knownRegion(String regionCode);
     boolean knownPeriod(String periodCode);
     boolean knownCultivar(String productCode, String cultivarCode);
+    List<AnnualComparisonDefinition> annualComparisonDefinitions(String sourceDomain, String productCode);
     Optional<AnnualComparisonDefinition> annualComparisonDefinition(String indicatorCode);
     boolean canNavigateRegion(String regionCode, Set<String> authorizedRegionCodes);
     List<OverviewRegion> regions(String parentCode, String productCode, String periodCode, Set<String> authorizedRegionCodes);
