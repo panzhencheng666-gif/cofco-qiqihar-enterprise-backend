@@ -125,21 +125,21 @@ public class JdbcImportJobRepository implements ImportJobRepository {
         if (updated != 1) throw new IllegalStateException("Import reservation no longer exists");
         job.rows().forEach(row -> jdbc.sql("""
                 INSERT INTO platform.import_row_result(import_job_id,row_number,outcome_code,error_code,error_message,
-                  production_record_id,row_data)
+                  business_record_id,row_data)
                 VALUES(CAST(:job AS uuid),:rowNumber,:outcome,:errorCode,:errorMessage,:recordId,CAST(:data AS jsonb))
                 """).param("job", job.id().toString()).param("rowNumber", row.rowNumber()).param("outcome", row.outcomeCode())
                 .param("errorCode", row.errorCode()).param("errorMessage", row.errorMessage())
-                .param("recordId", row.productionRecordId()).param("data", json(row.values())).update());
+                .param("recordId", row.businessRecordId()).param("data", json(row.values())).update());
         return job;
     }
 
     private List<ImportRowOutcome> rows(UUID jobId) {
         return jdbc.sql("""
-                SELECT row_number,outcome_code,error_code,error_message,production_record_id,row_data::text
+                SELECT row_number,outcome_code,error_code,error_message,business_record_id,row_data::text
                 FROM platform.import_row_result WHERE import_job_id=CAST(:id AS uuid) ORDER BY row_number
                 """).param("id", jobId.toString()).query((row, index) -> new ImportRowOutcome(row.getInt("row_number"),
                         row.getString("outcome_code"), row.getString("error_code"), row.getString("error_message"),
-                        row.getString("production_record_id"), values(row.getString("row_data")))).list();
+                        row.getString("business_record_id"), values(row.getString("row_data")))).list();
     }
 
     @SuppressWarnings("unchecked")

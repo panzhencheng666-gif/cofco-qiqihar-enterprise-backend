@@ -176,6 +176,23 @@ public class MarketMonitoringService {
         }
     }
 
+    /** Validates one import row before the import transaction writes any market record. */
+    @Transactional(readOnly = true)
+    public void validateImportDraft(MarketMonitoringDraft draft) {
+        SecurityPrincipal principal = authorize("BUSINESS_IMPORT", null);
+        MarketMonitoringDraft securedDraft = withReporter(draft, principal.displayName());
+        List<MarketCoreFieldDefinition> definitions = coreDefinitions(securedDraft);
+        ParsedDraft parsed = parseDraft(securedDraft, definitions);
+        validate(parsed);
+        principal = authorize("BUSINESS_IMPORT", parsed.regionCode());
+        validateEvidence(securedDraft, principal);
+    }
+
+    @Transactional
+    public String importDraft(MarketMonitoringDraft draft) {
+        return create(draft).record().id();
+    }
+
     @Transactional
     public MarketRecordView save(String id, long expectedVersion, MarketMonitoringDraft draft) {
         MarketMonitoringRecord existing = required(id);
