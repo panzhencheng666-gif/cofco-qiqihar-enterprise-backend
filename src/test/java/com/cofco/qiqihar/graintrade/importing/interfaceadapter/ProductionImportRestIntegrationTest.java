@@ -131,6 +131,8 @@ class ProductionImportRestIntegrationTest {
         mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "corn-production.xlsx",
                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
+                        .param("productCode", "CORN")
+                        .param("objectTypeCode", "FARMER")
                         .header("Idempotency-Key", "corn-production-xlsx")
                         .principal(() -> "production-tester"))
                 .andExpect(status().isCreated())
@@ -147,6 +149,34 @@ class ProductionImportRestIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].values.PROD_GROWTH_STAGE").value("灌浆期"))
                 .andExpect(jsonPath("$.data.items[0].values.MOISTURE").value("14.2000"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_REPORTER_NAME").value("产情测试员"));
+    }
+
+    @Test
+    void rejectsASoybeanWorkbookFromTheCornMenuBeforeAnyDurableEffect() throws Exception {
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
+                        .param("format", "xlsx")
+                        .param("productCode", "SOYBEAN")
+                        .param("objectTypeCode", "FARMER")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        var soybean = template(downloaded, "产情", "SOYBEAN", "FARMER");
+        byte[] workbook = BusinessImportWorkbook.create(soybean, java.util.List.of(
+                java.util.Collections.nCopies(soybean.headers().size(), "")));
+
+        mvc.perform(multipart("/api/v1/imports/production")
+                        .file(new MockMultipartFile("file", "soybean-production.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
+                        .param("productCode", "CORN")
+                        .param("objectTypeCode", "FARMER")
+                        .header("Idempotency-Key", "production-context-mismatch")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("IMPORT_CONTEXT_MISMATCH"));
+
+        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record").query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.import_job").query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.import_row_result").query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.business_audit_event").query(Long.class).single()).isZero();
     }
 
     private static void put(java.util.List<String> row, java.util.List<String> headers,
@@ -181,6 +211,8 @@ class ProductionImportRestIntegrationTest {
         mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "hostile-decimals.csv", "text/csv",
                                 csv.getBytes(StandardCharsets.UTF_8)))
+                        .param("productCode", "CORN")
+                        .param("objectTypeCode", "FARMER")
                         .header("Idempotency-Key", "hostile-decimals")
                         .principal(() -> "production-tester"))
                 .andExpect(status().isCreated())
@@ -200,17 +232,19 @@ class ProductionImportRestIntegrationTest {
         String csv = """
                 productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_REPORTER_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId
                 CORN,FARMER,230200,,2026-07-31,10.5,20,导入填报员,13800000000,13900000000,47.3543,123.9182,%s
-                SOYBEAN,FARMER,230200,,bad-date,5,30,导入填报员,13800000000,13900000000,47.3543,123.9182,00000000-0000-0000-0000-000000000023
+                CORN,FARMER,230200,,bad-date,5,30,导入填报员,13800000000,13900000000,47.3543,123.9182,00000000-0000-0000-0000-000000000023
                 """.formatted(PHOTO_ID);
         mvc.perform(multipart("/api/v1/imports/production").file(new MockMultipartFile("file", "outside.csv", "text/csv", """
                         productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_REPORTER_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId
                         CORN,FARMER,231100,,2026-07-31,10,20,导入填报员,13800000000,13900000000,47.3543,123.9182,00000000-0000-0000-0000-000000000024
                         """.getBytes(StandardCharsets.UTF_8)))
+                        .param("productCode", "CORN").param("objectTypeCode", "FARMER")
                         .header("Idempotency-Key", "outside-scope-import").principal(() -> "limited-importer"))
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
         MockMultipartFile file = new MockMultipartFile("file", "production.csv", "text/csv",
                 csv.getBytes(StandardCharsets.UTF_8));
         String response = mvc.perform(multipart("/api/v1/imports/production").file(file)
+                        .param("productCode", "CORN").param("objectTypeCode", "FARMER")
                         .header("Idempotency-Key", "production-import-1").principal(() -> "production-tester"))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.data.statusCode").value("COMPLETED_WITH_ERRORS"))
                 .andExpect(jsonPath("$.data.importedRows").value(0)).andExpect(jsonPath("$.data.failedRows").value(2))
@@ -221,6 +255,7 @@ class ProductionImportRestIntegrationTest {
                 .andExpect(status().isOk()).andExpect(content().string(org.hamcrest.Matchers.containsString("IMPORT_ROW_VALUE_FORMAT")));
 
         mvc.perform(multipart("/api/v1/imports/production").file(file)
+                        .param("productCode", "CORN").param("objectTypeCode", "FARMER")
                         .header("Idempotency-Key", "production-import-1").principal(() -> "production-tester"))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.data.id").value(jobId.toString()))
                 .andExpect(jsonPath("$.data.importedRows").value(0));

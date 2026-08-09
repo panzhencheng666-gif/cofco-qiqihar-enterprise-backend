@@ -127,6 +127,7 @@ class CsvTableLimitTest {
     private void assertRejected(String key, byte[] bytes, String code) throws Exception {
         mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "production.csv", "text/csv", bytes))
+                        .param("productCode", "CORN").param("objectTypeCode", "FARMER")
                         .header("Idempotency-Key", key).principal(() -> "production-tester"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value(code));

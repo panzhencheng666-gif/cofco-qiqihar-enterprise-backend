@@ -61,16 +61,18 @@ public class ProductionImportService {
     }
 
     @Transactional
-    public ImportJobView importFile(String idempotencyKey, String filename, String mediaType, byte[] bytes) {
+    public ImportJobView importFile(String idempotencyKey, String productCode, String objectTypeCode,
+            String filename, String mediaType, byte[] bytes) {
         if (idempotencyKey == null || idempotencyKey.isBlank() || idempotencyKey.length() > 128
                 || filename == null || filename.isBlank() || filename.length() > 255
                 || bytes == null || bytes.length == 0 || bytes.length > MAX_BYTES) throw invalid();
+        ImportMenuContext expectedContext = new ImportMenuContext(productCode, objectTypeCode);
         SecurityPrincipal principal = accessControl.require("BUSINESS_IMPORT", null);
+        String content = canonicalContent(table(filename, mediaType, bytes, expectedContext));
         String digest = digest(bytes);
         var reservation = repository.reserve(principal.subjectId(), ProductionImportTemplate.DOMAIN, idempotencyKey,
                 digest, principal.workUnitCode(), clock.instant());
         if (!reservation.owner()) return ImportJobView.from(reservation.stored().job());
-        String content = canonicalContent(table(filename, mediaType, bytes));
         return ImportJobView.from(process(reservation.stored().job(), idempotencyKey,
                 content, digest, null, null, principal));
     }
@@ -158,12 +160,16 @@ public class ProductionImportService {
         }
     }
 
-    private List<List<String>> table(String filename, String mediaType, byte[] bytes) {
+    private List<List<String>> table(String filename, String mediaType, byte[] bytes,
+            ImportMenuContext expectedContext) {
         String lower = filename.toLowerCase(java.util.Locale.ROOT);
         if (lower.endsWith(".csv") && (mediaType == null || mediaType.equals("text/csv")
                 || mediaType.equals("application/csv") || mediaType.equals("application/vnd.ms-excel"))) {
             try {
-                return CsvTable.parse(new String(bytes, StandardCharsets.UTF_8), ProductionImportTemplate.HEADERS.size());
+                List<List<String>> table = CsvTable.parse(
+                        new String(bytes, StandardCharsets.UTF_8), ProductionImportTemplate.HEADERS.size());
+                requireCsvContext(table, expectedContext);
+                return table;
             } catch (CsvTable.LimitExceededException exception) {
                 throw new ClientRequestException(exception.code(), exception.getMessage());
             } catch (IllegalArgumentException exception) {
@@ -175,17 +181,31 @@ public class ProductionImportService {
             try {
                 var context = com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook
                         .context(bytes, ProductionImportTemplate.DOMAIN);
+                expectedContext.requireMatches(context.productCode(), context.objectTypeCode());
                 return ProductionImportTemplate.canonicalXlsx(bytes,
-                        production.importDefinition(context.productCode(), context.objectTypeCode()));
+                        production.importDefinition(expectedContext.productCode(), expectedContext.objectTypeCode()));
+            } catch (ClientRequestException exception) {
+                throw exception;
             } catch (IllegalArgumentException exception) {
                 try {
-                    return XlsxTable.parse(bytes, ProductionImportTemplate.HEADERS.size());
+                    List<List<String>> table = XlsxTable.parse(bytes, ProductionImportTemplate.HEADERS.size());
+                    requireCsvContext(table, expectedContext);
+                    return table;
                 } catch (IllegalArgumentException legacyException) {
                     throw new ClientRequestException("INVALID_IMPORT_FORMAT", "XLSX import file is invalid");
                 }
             }
         }
         throw new ClientRequestException("INVALID_IMPORT_FORMAT", "Import file format is not supported");
+    }
+
+    private static void requireCsvContext(List<List<String>> table, ImportMenuContext expectedContext) {
+        if (table.size() < 2 || table.getFirst().size() < 2
+                || !"productCode".equals(table.getFirst().get(0))
+                || !"objectTypeCode".equals(table.getFirst().get(1))) return;
+        table.stream().skip(1)
+                .filter(row -> row.stream().anyMatch(value -> !value.isBlank()))
+                .forEach(row -> expectedContext.requireMatches(row.get(0), row.get(1)));
     }
 
     private static String canonicalContent(List<List<String>> table) {

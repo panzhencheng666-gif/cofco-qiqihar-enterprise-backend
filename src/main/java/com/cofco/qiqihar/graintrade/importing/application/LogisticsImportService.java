@@ -63,14 +63,17 @@ public class LogisticsImportService {
     }
 
     @Transactional
-    public ImportJobView importFile(String key, String filename, String mediaType, byte[] bytes) {
+    public ImportJobView importFile(String key, String productCode,
+            String filename, String mediaType, byte[] bytes) {
         validateRequest(key, filename, mediaType, bytes);
+        ImportMenuContext expectedContext = new ImportMenuContext(
+                productCode, LogisticsImportTemplate.OBJECT_TYPE);
         SecurityPrincipal principal = access.require("BUSINESS_IMPORT", null);
+        Parsed parsed = parse(bytes, expectedContext);
         String digest = digest(bytes);
         var reservation = jobs.reserve(principal.subjectId(), LogisticsImportTemplate.DOMAIN, key, digest,
                 principal.workUnitCode(), clock.instant());
         if (!reservation.owner()) return ImportJobView.from(reservation.stored().job());
-        Parsed parsed = parse(bytes);
         return process(reservation.stored().job(), key, parsed, digest, null, principal);
     }
 
@@ -86,7 +89,7 @@ public class LogisticsImportService {
             throw new ConflictException("IMPORT_RETRY_NOT_AVAILABLE", "Import job has no failed rows to retry");
         Parsed parsed;
         try {
-            parsed = parse(java.util.Base64.getDecoder().decode(stored.sourceContent()));
+            parsed = parse(java.util.Base64.getDecoder().decode(stored.sourceContent()), null);
         } catch (IllegalArgumentException exception) {
             throw invalidFormat();
         }
@@ -121,9 +124,12 @@ public class LogisticsImportService {
         return ImportJobView.from(job);
     }
 
-    private Parsed parse(byte[] bytes) {
+    private Parsed parse(byte[] bytes, ImportMenuContext expectedContext) {
         try {
             BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(bytes, LogisticsImportTemplate.DOMAIN);
+            if (expectedContext != null) {
+                expectedContext.requireMatches(context.productCode(), context.objectTypeCode());
+            }
             if (!LogisticsImportTemplate.OBJECT_TYPE.equals(context.objectTypeCode())) throw invalidFormat();
             LogisticsImportDefinition definition = definition(context.productCode());
             List<String> headers = LogisticsImportTemplate.headers(definition);

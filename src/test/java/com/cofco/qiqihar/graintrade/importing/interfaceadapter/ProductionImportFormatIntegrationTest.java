@@ -61,6 +61,7 @@ class ProductionImportFormatIntegrationTest {
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", xlsx);
 
         String first = mvc.perform(multipart("/api/v1/imports/production").file(file)
+                        .param("productCode", "CORN").param("objectTypeCode", "FARMER")
                         .header("Idempotency-Key", "xlsx-import-1").principal(() -> "production-tester"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.statusCode").value("COMPLETED"))
@@ -69,6 +70,7 @@ class ProductionImportFormatIntegrationTest {
         String jobId = first.replaceFirst("(?s).*?\"id\":\"([^\"]+)\".*", "$1");
 
         mvc.perform(multipart("/api/v1/imports/production").file(file)
+                        .param("productCode", "CORN").param("objectTypeCode", "FARMER")
                         .header("Idempotency-Key", "xlsx-import-1").principal(() -> "production-tester"))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.data.id").value(jobId))
                 .andExpect(jsonPath("$.data.importedRows").value(2));
@@ -89,6 +91,7 @@ class ProductionImportFormatIntegrationTest {
         mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "production.csv", "text/csv",
                                 csv.getBytes(StandardCharsets.UTF_8)))
+                        .param("productCode", "CORN").param("objectTypeCode", "FARMER")
                         .header("Idempotency-Key", "atomic-csv-1").principal(() -> "production-tester"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.statusCode").value("COMPLETED_WITH_ERRORS"))

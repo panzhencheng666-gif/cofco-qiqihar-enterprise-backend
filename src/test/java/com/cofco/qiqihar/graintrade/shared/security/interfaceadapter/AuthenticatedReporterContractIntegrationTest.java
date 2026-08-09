@@ -150,6 +150,7 @@ class AuthenticatedReporterContractIntegrationTest {
         mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "identity.csv", "text/csv",
                                 csv.getBytes(StandardCharsets.UTF_8)))
+                        .param("productCode", "CORN").param("objectTypeCode", "FARMER")
                         .header("Idempotency-Key", "identity-contract-import")
                         .principal(() -> AUTHOR))
                 .andExpect(status().isCreated())

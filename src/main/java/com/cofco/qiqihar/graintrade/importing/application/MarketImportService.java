@@ -75,15 +75,17 @@ public class MarketImportService {
     }
 
     @Transactional
-    public ImportJobView importFile(String key, String filename, String mediaType, byte[] bytes) {
+    public ImportJobView importFile(String key, String productCode, String objectTypeCode,
+            String filename, String mediaType, byte[] bytes) {
         if (key == null || key.isBlank() || key.length() > 128 || filename == null || filename.isBlank()
                 || filename.length() > 255 || bytes == null || bytes.length == 0 || bytes.length > MAX_BYTES) throw invalid();
+        ImportMenuContext expectedContext = new ImportMenuContext(productCode, objectTypeCode);
         SecurityPrincipal principal = access.require("BUSINESS_IMPORT", null);
+        String content = canonical(table(filename, mediaType, bytes, expectedContext));
         String digest = digest(bytes);
         var reservation = jobs.reserve(principal.subjectId(), MarketImportTemplate.DOMAIN, key, digest,
                 principal.workUnitCode(), clock.instant());
         if (!reservation.owner()) return ImportJobView.from(reservation.stored().job());
-        String content = canonical(table(filename, mediaType, bytes));
         return process(reservation.stored().job(), key, content, digest, null, principal);
     }
 
@@ -132,25 +134,42 @@ public class MarketImportService {
         return ImportJobView.from(job);
     }
 
-    private List<List<String>> table(String filename, String mediaType, byte[] bytes) {
+    private List<List<String>> table(String filename, String mediaType, byte[] bytes,
+            ImportMenuContext expectedContext) {
         String lower = filename.toLowerCase(java.util.Locale.ROOT);
         try {
             if (lower.endsWith(".csv") && (mediaType == null || mediaType.equals("text/csv")
-                    || mediaType.equals("application/csv") || mediaType.equals("application/vnd.ms-excel")))
-                return CsvTable.parse(new String(bytes, StandardCharsets.UTF_8), MarketImportTemplate.HEADERS.size());
+                    || mediaType.equals("application/csv") || mediaType.equals("application/vnd.ms-excel"))) {
+                List<List<String>> table = CsvTable.parse(
+                        new String(bytes, StandardCharsets.UTF_8), MarketImportTemplate.HEADERS.size());
+                requireCsvContext(table, expectedContext);
+                return table;
+            }
             if (lower.endsWith(".xlsx") && (mediaType == null || mediaType.equals(
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))) {
                 var context = com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook
                         .context(bytes, MarketImportTemplate.DOMAIN);
+                expectedContext.requireMatches(context.productCode(), context.objectTypeCode());
                 return MarketImportTemplate.canonicalXlsx(bytes,
-                        market.definition(context.productCode(), context.objectTypeCode()));
+                        market.definition(expectedContext.productCode(), expectedContext.objectTypeCode()));
             }
         } catch (CsvTable.LimitExceededException exception) {
             throw new ClientRequestException(exception.code(), exception.getMessage());
+        } catch (ClientRequestException exception) {
+            throw exception;
         } catch (IllegalArgumentException exception) {
             throw new ClientRequestException("INVALID_IMPORT_FORMAT", "Import file is invalid");
         }
         throw new ClientRequestException("INVALID_IMPORT_FORMAT", "Import file format is not supported");
+    }
+
+    private static void requireCsvContext(List<List<String>> table, ImportMenuContext expectedContext) {
+        if (table.size() < 2 || table.getFirst().size() < 2
+                || !"productCode".equals(table.getFirst().get(0))
+                || !"objectTypeCode".equals(table.getFirst().get(1))) return;
+        table.stream().skip(1)
+                .filter(row -> row.stream().anyMatch(value -> !value.isBlank()))
+                .forEach(row -> expectedContext.requireMatches(row.get(0), row.get(1)));
     }
 
     private static String canonical(List<List<String>> table) {

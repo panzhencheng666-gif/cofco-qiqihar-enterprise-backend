@@ -170,6 +170,8 @@ class ProductionImportConcurrencyIntegrationTest {
     private MvcResult submit(String key, byte[] csv) throws Exception {
         return mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "production.csv", "text/csv", csv))
+                        .param("productCode", "CORN")
+                        .param("objectTypeCode", "FARMER")
                         .header("Idempotency-Key", key)
                         .principal(() -> "production-tester"))
                 .andReturn();

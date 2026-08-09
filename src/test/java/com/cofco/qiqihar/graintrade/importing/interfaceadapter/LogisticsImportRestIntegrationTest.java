@@ -64,6 +64,7 @@ class LogisticsImportRestIntegrationTest {
         mvc.perform(multipart("/api/v1/imports/logistics")
                         .file(new MockMultipartFile("file", "logistics.xlsx",
                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
+                        .param("productCode", "CORN")
                         .header("Idempotency-Key", "logistics-xlsx-1")
                         .principal(() -> "logistics-tester"))
                 .andExpect(status().isCreated())
@@ -80,6 +81,29 @@ class LogisticsImportRestIntegrationTest {
     }
 
     @Test
+    void rejectsASoybeanWorkbookFromTheCornMenuBeforeAnyDurableEffect() throws Exception {
+        var soybeanDefinition = logistics.definition("SOYBEAN");
+        byte[] workbook = BusinessImportWorkbook.create(
+                LogisticsImportTemplate.workbook(soybeanDefinition),
+                List.of(java.util.Collections.nCopies(
+                        LogisticsImportTemplate.headers(soybeanDefinition).size(), "")));
+
+        mvc.perform(multipart("/api/v1/imports/logistics")
+                        .file(new MockMultipartFile("file", "soybean-logistics.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", "logistics-context-mismatch")
+                        .principal(() -> "logistics-tester"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("IMPORT_CONTEXT_MISMATCH"));
+
+        assertThat(jdbc.sql("SELECT count(*) FROM logistics.route_event").query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.import_job").query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.import_row_result").query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.business_audit_event").query(Long.class).single()).isZero();
+    }
+
+    @Test
     void rejectsOneInvalidRowWithoutWritingTheOtherwiseValidRow() throws Exception {
         var definition = logisticsDefinition();
         List<String> valid = LogisticsImportTemplate.headers(definition).stream().map(this::value).toList();
@@ -91,6 +115,7 @@ class LogisticsImportRestIntegrationTest {
         mvc.perform(multipart("/api/v1/imports/logistics")
                         .file(new MockMultipartFile("file", "logistics.xlsx",
                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
+                        .param("productCode", "CORN")
                         .header("Idempotency-Key", "logistics-xlsx-invalid")
                         .principal(() -> "logistics-tester"))
                 .andExpect(status().isCreated())

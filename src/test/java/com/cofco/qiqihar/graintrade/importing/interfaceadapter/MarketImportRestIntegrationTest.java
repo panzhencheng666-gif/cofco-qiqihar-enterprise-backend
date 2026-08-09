@@ -60,6 +60,7 @@ class MarketImportRestIntegrationTest {
 
         mvc.perform(multipart("/api/v1/imports/market")
                         .file(new MockMultipartFile("file", "market.csv", "text/csv", csv.getBytes(StandardCharsets.UTF_8)))
+                        .param("productCode", "CORN").param("objectTypeCode", "FEED_MILL")
                         .header("Idempotency-Key", "market-import-1").principal(() -> "market-tester"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.domainCode").value("MARKET"))
@@ -87,10 +88,12 @@ class MarketImportRestIntegrationTest {
                 .getBytes(StandardCharsets.UTF_8);
         String first = mvc.perform(multipart("/api/v1/imports/market")
                         .file(new MockMultipartFile("file", "market.csv", "text/csv", csv))
+                        .param("productCode", "CORN").param("objectTypeCode", "FEED_MILL")
                         .header("Idempotency-Key", "market-import-idempotent").principal(() -> "market-tester"))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
         String second = mvc.perform(multipart("/api/v1/imports/market")
                         .file(new MockMultipartFile("file", "market.csv", "text/csv", csv))
+                        .param("productCode", "CORN").param("objectTypeCode", "FEED_MILL")
                         .header("Idempotency-Key", "market-import-idempotent").principal(() -> "market-tester"))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
 
@@ -136,6 +139,7 @@ class MarketImportRestIntegrationTest {
                         .file(new MockMultipartFile("file", "market.xlsx",
                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                 workbook))
+                        .param("productCode", "CORN").param("objectTypeCode", "FEED_MILL")
                         .header("Idempotency-Key", "market-xlsx-1").principal(() -> "market-tester"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.importedRows").value(1));
@@ -148,6 +152,34 @@ class MarketImportRestIntegrationTest {
                         .principal(() -> "market-tester"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items[0].values.MKT_CULTIVAR_NAME").value("龙单86"));
+    }
+
+    @Test
+    void rejectsASoybeanWorkbookFromTheCornMenuBeforeAnyDurableEffect() throws Exception {
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/market/template")
+                        .param("format", "xlsx")
+                        .param("productCode", "SOYBEAN")
+                        .param("objectTypeCode", "TRADER")
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        var soybean = template(downloaded, "SOYBEAN", "TRADER");
+        byte[] workbook = BusinessImportWorkbook.create(soybean, List.of(
+                java.util.Collections.nCopies(soybean.headers().size(), "")));
+
+        mvc.perform(multipart("/api/v1/imports/market")
+                        .file(new MockMultipartFile("file", "soybean-market.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
+                        .param("productCode", "CORN")
+                        .param("objectTypeCode", "TRADER")
+                        .header("Idempotency-Key", "market-context-mismatch")
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("IMPORT_CONTEXT_MISMATCH"));
+
+        assertThat(jdbc.sql("SELECT count(*) FROM market.market_record").query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.import_job").query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.import_row_result").query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.business_audit_event").query(Long.class).single()).isZero();
     }
 
     @Test
@@ -198,6 +230,7 @@ class MarketImportRestIntegrationTest {
         mvc.perform(multipart("/api/v1/imports/market")
                         .file(new MockMultipartFile("file", "market.csv", "text/csv",
                                 csv.getBytes(StandardCharsets.UTF_8)))
+                        .param("productCode", "CORN").param("objectTypeCode", "FEED_MILL")
                         .header("Idempotency-Key", "market-hostile-decimal")
                         .principal(() -> "market-tester"))
                 .andExpect(status().isCreated())
@@ -216,6 +249,7 @@ class MarketImportRestIntegrationTest {
 
         String response = mvc.perform(multipart("/api/v1/imports/market")
                         .file(new MockMultipartFile("file", "market.csv", "text/csv", csv.getBytes(StandardCharsets.UTF_8)))
+                        .param("productCode", "CORN").param("objectTypeCode", "FEED_MILL")
                         .header("Idempotency-Key", "market-import-invalid-row").principal(() -> "market-tester"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.importedRows").value(0))

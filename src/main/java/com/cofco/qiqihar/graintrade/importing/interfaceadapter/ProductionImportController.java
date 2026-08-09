@@ -40,8 +40,11 @@ public class ProductionImportController {
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @org.springframework.web.bind.annotation.ResponseStatus(org.springframework.http.HttpStatus.CREATED)
     ApiResponse<ImportJobView> upload(@RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestParam String productCode,
+            @RequestParam String objectTypeCode,
             @RequestParam("file") MultipartFile file) throws java.io.IOException {
         return new ApiResponse<>(service.importFile(idempotencyKey,
+                productCode, objectTypeCode,
                 file == null ? null : file.getOriginalFilename(), file == null ? null : file.getContentType(),
                 file == null ? null : file.getBytes()));
     }

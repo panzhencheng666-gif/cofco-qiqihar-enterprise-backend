@@ -49,8 +49,11 @@ public class MarketImportController {
     @ResponseStatus(HttpStatus.CREATED)
     ApiResponse<ImportJobView> importFile(
             @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestParam String productCode,
+            @RequestParam String objectTypeCode,
             @RequestParam("file") MultipartFile file) throws java.io.IOException {
-        return new ApiResponse<>(service.importFile(idempotencyKey, file.getOriginalFilename(),
+        return new ApiResponse<>(service.importFile(idempotencyKey, productCode, objectTypeCode,
+                file.getOriginalFilename(),
                 file.getContentType(), file.getBytes()));
     }
 
