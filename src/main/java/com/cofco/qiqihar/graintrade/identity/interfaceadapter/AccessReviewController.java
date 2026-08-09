@@ -31,6 +31,11 @@ public class AccessReviewController {
         return new ApiResponse<>(service.create(request.name(),request.workUnitCode(),request.dueAt()));
     }
 
+    @GetMapping
+    ApiResponse<List<AccessReviewCampaign>> reviews(@org.springframework.web.bind.annotation.RequestParam String workUnitCode) {
+        return new ApiResponse<>(service.reviews(workUnitCode));
+    }
+
     @GetMapping("/{reviewId}")
     ApiResponse<AccessReviewCampaign> review(@PathVariable UUID reviewId) {
         return new ApiResponse<>(service.review(reviewId));

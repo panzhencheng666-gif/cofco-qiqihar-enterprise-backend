@@ -56,7 +56,7 @@ public class IdentityGovernanceService {
                 "INVITED","ACTIVE",requested.roleCodes(),requested.positionCodes(),requested.regionCodes());
         validate(assignment);
         EmployeeProfile created=repository.create(subjectId,assignment,actor.subjectId());
-        audit.record(actor,"SECURITY_USER",subjectId,"SECURITY_USER_INVITED",clock.instant(),
+        audit.record(actor,assignment.workUnitCode(),"SECURITY_USER",subjectId,"SECURITY_USER_INVITED",clock.instant(),
                 "{\"accountStatus\":\"INVITED\"}");
         return created;
     }
@@ -72,7 +72,7 @@ public class IdentityGovernanceService {
                         "IDENTITY_VERSION_CONFLICT","Employee identity has changed"));
         String action=assignment.employmentStatus().equals("TERMINATED")
                 ? "SECURITY_USER_TERMINATED" : "SECURITY_USER_UPDATED";
-        audit.record(actor,"SECURITY_USER",subjectId,action,clock.instant(),
+        audit.record(actor,assignment.workUnitCode(),"SECURITY_USER",subjectId,action,clock.instant(),
                 "{\"accountStatus\":\""+assignment.accountStatus()
                         +"\",\"employmentStatus\":\""+assignment.employmentStatus()+"\"}");
         return updated;

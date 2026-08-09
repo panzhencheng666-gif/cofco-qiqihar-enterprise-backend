@@ -9,6 +9,7 @@ public interface AccessReviewRepository {
     boolean workUnitExists(String code);
     AccessReviewCampaign create(UUID reviewId, String name, String workUnitCode,
             Instant dueAt, String actor, Instant now);
+    List<AccessReviewCampaign> findByWorkUnit(String workUnitCode);
     Optional<AccessReviewCampaign> find(UUID reviewId);
     boolean decide(UUID reviewId, List<AccessReviewDecision> decisions, String actor, Instant now);
 }

@@ -16,7 +16,13 @@ public class BusinessAuditRecorder {
 
     public void record(SecurityPrincipal principal, String aggregateType, String aggregateId,
             String actionCode, Instant occurredAt, String detailJson) {
+        record(principal, principal.workUnitCode(), aggregateType, aggregateId, actionCode, occurredAt, detailJson);
+    }
+
+    public void record(SecurityPrincipal principal, String governedWorkUnitCode,
+            String aggregateType, String aggregateId,
+            String actionCode, Instant occurredAt, String detailJson) {
         writer.append(new BusinessAuditEvent(UUID.randomUUID(), aggregateType, aggregateId, actionCode,
-                principal.subjectId(), principal.workUnitCode(), occurredAt, detailJson));
+                principal.subjectId(), governedWorkUnitCode, occurredAt, detailJson));
     }
 }

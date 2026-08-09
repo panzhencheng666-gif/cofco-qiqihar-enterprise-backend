@@ -37,10 +37,25 @@ class IdentityGovernanceRestIntegrationTest {
         employee="identity-governance-"+UUID.randomUUID();
         deleteAssignments("identity-governance-employee");
         jdbc.sql("DELETE FROM platform.security_user WHERE subject_id='identity-governance-employee'").update();
+        deleteAssignments("identity-governance-outside-reviewer");
+        jdbc.sql("DELETE FROM platform.security_user WHERE subject_id='identity-governance-outside-reviewer'").update();
         jdbc.sql("""
                 INSERT INTO platform.work_unit(code,name,sort_order)
                 VALUES('IDENTITY_GOV_TEST','身份治理自动化测试单位',9981)
                 ON CONFLICT(code) DO NOTHING
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.work_unit(code,name,sort_order)
+                VALUES('IDENTITY_GOV_OUTSIDE','身份治理外单位测试',9982)
+                ON CONFLICT(code) DO NOTHING
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user(subject_id,display_name,work_unit_code,enabled)
+                VALUES('identity-governance-outside-reviewer','外单位复核员','IDENTITY_GOV_OUTSIDE',true)
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_role(subject_id,role_code)
+                VALUES('identity-governance-outside-reviewer','ACCESS_REVIEWER')
                 """).update();
         jdbc.sql("""
                 INSERT INTO platform.work_unit_region_scope(work_unit_code,region_code)
@@ -63,10 +78,14 @@ class IdentityGovernanceRestIntegrationTest {
             jdbc.sql("DELETE FROM platform.security_user WHERE subject_id=:employee")
                     .param("employee",employee).update();
         }
+        deleteAssignments("identity-governance-outside-reviewer");
+        jdbc.sql("DELETE FROM platform.security_user WHERE subject_id='identity-governance-outside-reviewer'").update();
+        jdbc.sql("DELETE FROM platform.work_unit WHERE code='IDENTITY_GOV_OUTSIDE'").update();
         jdbc.sql("DELETE FROM platform.position WHERE code='GOVERNANCE_REPORTER'").update();
         jdbc.sql("DELETE FROM platform.work_unit_region_scope WHERE work_unit_code=:unit")
                 .param("unit",WORK_UNIT).update();
-        jdbc.sql("DELETE FROM platform.work_unit WHERE code=:unit").param("unit",WORK_UNIT).update();
+        // Immutable audit events retain their governed work-unit foreign key. Keep the stable
+        // test fixture and recreate its mutable scope in prepare() instead of deleting history.
     }
 
     private void deleteAssignments(String subjectId) {
@@ -161,6 +180,45 @@ class IdentityGovernanceRestIntegrationTest {
     }
 
     @Test
+    void authorizedAdministratorsCanTraceImmutableUnitAuditEventsButOperatorsCannot() throws Exception {
+        String governedUnit=WORK_UNIT;
+        mvc.perform(post("/api/v1/identity/employees")
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"subjectId":"%s","displayName":"审计权限测试员工",
+                                 "workUnitCode":"IDENTITY_GOV_TEST","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["230202"]}
+                                """.formatted(employee)))
+                .andExpect(status().isCreated());
+        mvc.perform(put("/api/v1/identity/employees/{subjectId}",employee)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"version":0,"displayName":"审计权限测试员工","workUnitCode":"IDENTITY_GOV_TEST",
+                                 "accountStatus":"ACTIVE","employmentStatus":"ACTIVE",
+                                 "positionCodes":["GOVERNANCE_REPORTER"],
+                                 "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["230202"]}
+                                """))
+                .andExpect(status().isOk());
+
+        mvc.perform(get("/api/v1/audit-events")
+                        .param("workUnitCode",governedUnit).principal(() -> employee))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_PERMISSION_DENIED"));
+
+        mvc.perform(get("/api/v1/audit-events")
+                        .param("workUnitCode",governedUnit)
+                        .param("aggregateType","SECURITY_USER")
+                        .param("page","0").param("pageSize","20")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.aggregateId == '%s')].actionCode"
+                        .formatted(employee)).isArray())
+                .andExpect(jsonPath("$.data.items[0].actorDisplayName").isNotEmpty())
+                .andExpect(jsonPath("$.data.pageNumber").value(0))
+                .andExpect(jsonPath("$.data.pageSize").value(20));
+    }
+
+    @Test
     void reviewersCertifyEffectiveAccessAndRevocationsTakeEffectImmediately() throws Exception {
         mvc.perform(post("/api/v1/identity/employees")
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
@@ -183,6 +241,18 @@ class IdentityGovernanceRestIntegrationTest {
                         .formatted(employee)).exists())
                 .andReturn().getResponse().getContentAsString();
         reviewId=UUID.fromString(com.jayway.jsonpath.JsonPath.read(created,"$.data.reviewId"));
+
+        mvc.perform(get("/api/v1/identity/access-reviews/{reviewId}",reviewId)
+                        .principal(() -> "identity-governance-outside-reviewer"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_WORK_UNIT_DENIED"));
+
+        mvc.perform(get("/api/v1/identity/access-reviews")
+                        .param("workUnitCode",WORK_UNIT).principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].reviewId").value(reviewId.toString()))
+                .andExpect(jsonPath("$.data[0].name").value("区域权限季度复核"))
+                .andExpect(jsonPath("$.data[0].items.length()").value(3));
 
         mvc.perform(post("/api/v1/identity/access-reviews/{reviewId}/decisions",reviewId)
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)

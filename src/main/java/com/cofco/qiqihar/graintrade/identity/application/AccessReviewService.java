@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade.identity.application;
 
+import com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
@@ -34,31 +35,43 @@ public class AccessReviewService {
         SecurityPrincipal actor=access.require("ACCESS_REVIEW",null);
         Instant now=clock.instant();
         if(blank(name)||name.codePointCount(0,name.length())>160||blank(workUnitCode)
-                ||dueAt==null||!dueAt.isAfter(now)||!repository.workUnitExists(workUnitCode))throw invalid();
+                ||dueAt==null||!dueAt.isAfter(now)||!repository.workUnitExists(workUnitCode)
+                ||!mayReview(actor,workUnitCode))throw invalid();
         UUID id=UUID.randomUUID();
         AccessReviewCampaign campaign=repository.create(id,name.strip(),workUnitCode,dueAt,actor.subjectId(),now);
-        audit.record(actor,"ACCESS_REVIEW",id.toString(),"ACCESS_REVIEW_OPENED",now,
+        audit.record(actor,workUnitCode,"ACCESS_REVIEW",id.toString(),"ACCESS_REVIEW_OPENED",now,
                 "{\"workUnitCode\":\""+workUnitCode+"\"}");
         return campaign;
     }
 
     @Transactional(readOnly=true)
+    public List<AccessReviewCampaign> reviews(String workUnitCode) {
+        SecurityPrincipal actor=access.require("ACCESS_REVIEW",null);
+        if(blank(workUnitCode)||!repository.workUnitExists(workUnitCode)
+                ||!mayReview(actor,workUnitCode))throw invalid();
+        return repository.findByWorkUnit(workUnitCode);
+    }
+
+    @Transactional(readOnly=true)
     public AccessReviewCampaign review(UUID reviewId) {
-        access.require("ACCESS_REVIEW",null);
-        return required(reviewId);
+        SecurityPrincipal actor=access.require("ACCESS_REVIEW",null);
+        AccessReviewCampaign campaign=required(reviewId);
+        requireReviewScope(actor,campaign.workUnitCode());
+        return campaign;
     }
 
     @Transactional
     public AccessReviewCampaign decide(UUID reviewId,List<AccessReviewDecision> decisions) {
         SecurityPrincipal actor=access.require("ACCESS_REVIEW",null);
         AccessReviewCampaign campaign=required(reviewId);
+        requireReviewScope(actor,campaign.workUnitCode());
         if(!"OPEN".equals(campaign.statusCode())||decisions==null||decisions.isEmpty()
                 ||decisions.size()>500||hasDuplicates(decisions)||decisions.stream().anyMatch(this::invalid))throw invalid();
         Instant now=clock.instant();
         if(!repository.decide(reviewId,decisions,actor.subjectId(),now))throw new ConflictException(
                 "ACCESS_REVIEW_CONFLICT","Access review has already changed");
         AccessReviewCampaign updated=required(reviewId);
-        audit.record(actor,"ACCESS_REVIEW",reviewId.toString(),"ACCESS_REVIEW_DECIDED",now,
+        audit.record(actor,campaign.workUnitCode(),"ACCESS_REVIEW",reviewId.toString(),"ACCESS_REVIEW_DECIDED",now,
                 "{\"decisionCount\":"+decisions.size()+",\"status\":\""+updated.statusCode()+"\"}");
         return updated;
     }
@@ -77,6 +90,13 @@ public class AccessReviewService {
         Set<String> keys=new HashSet<>();
         return values.stream().anyMatch(value -> value!=null&&!keys.add(
                 value.subjectId()+"\u0000"+value.grantType()+"\u0000"+value.grantKey()));
+    }
+    private static boolean mayReview(SecurityPrincipal actor,String workUnitCode) {
+        return actor.roleCodes().contains("SYSTEM_ADMIN")||actor.workUnitCode().equals(workUnitCode);
+    }
+    private static void requireReviewScope(SecurityPrincipal actor,String workUnitCode) {
+        if(!mayReview(actor,workUnitCode))throw new AccessDeniedException(
+                "ACCESS_WORK_UNIT_DENIED","Access review is outside the assigned work unit");
     }
     private static boolean blank(String value){return value==null||value.isBlank();}
     private static ClientRequestException invalid(){return new ClientRequestException(

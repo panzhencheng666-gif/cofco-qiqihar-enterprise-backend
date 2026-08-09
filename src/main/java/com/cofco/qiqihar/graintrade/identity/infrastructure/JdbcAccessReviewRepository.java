@@ -75,6 +75,22 @@ public class JdbcAccessReviewRepository implements AccessReviewRepository {
     }
 
     @Override
+    public List<AccessReviewCampaign> findByWorkUnit(String workUnitCode) {
+        return jdbc.sql("""
+                SELECT review_id,name,scope_work_unit_code,status_code,due_at,created_by,created_at
+                FROM platform.access_review_campaign
+                WHERE scope_work_unit_code=:unit
+                ORDER BY created_at DESC,review_id
+                """).param("unit",workUnitCode).query((row,index)->{
+                    UUID reviewId=row.getObject("review_id",UUID.class);
+                    return new AccessReviewCampaign(reviewId,row.getString("name"),
+                            row.getString("scope_work_unit_code"),row.getString("status_code"),
+                            instant(row.getObject("due_at",OffsetDateTime.class)),row.getString("created_by"),
+                            instant(row.getObject("created_at",OffsetDateTime.class)),items(reviewId));
+                }).list();
+    }
+
+    @Override
     public boolean decide(UUID reviewId,List<AccessReviewDecision> decisions,String actor,Instant now) {
         for(AccessReviewDecision decision:decisions) {
             int updated=jdbc.sql("""
