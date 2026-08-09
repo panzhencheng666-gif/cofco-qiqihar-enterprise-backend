@@ -89,7 +89,9 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(jsonPath(
                         "$.data.coreFields[?(@.code == 'MKT_PURCHASE_BASE_PRICE' && @.required == true)]").exists())
                 .andExpect(jsonPath(
-                        "$.data.coreFields[?(@.code == 'MKT_SALE_BASE_PRICE' && @.required == true)]").exists());
+                        "$.data.coreFields[?(@.code == 'MKT_SALE_BASE_PRICE' && @.required == true)]").exists())
+                .andExpect(jsonPath("$.data.groups[?(@.category == 'PURCHASE')].label").value("采购业务"))
+                .andExpect(jsonPath("$.data.groups[?(@.label =~ /.*成交.*/)]").isEmpty());
 
         String body = """
                 {"productCode":"CORN","coreValues":{
