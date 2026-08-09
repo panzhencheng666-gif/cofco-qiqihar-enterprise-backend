@@ -569,7 +569,8 @@ public class MarketMonitoringService {
     private void audit(SecurityPrincipal principal, MarketMonitoringRecord record, String actionCode) {
         if (audit != null) {
             audit.record(principal, "MARKET_RECORD", record.id(), actionCode, clock.instant(),
-                    "{\"regionCode\":\"" + record.regionCode() + "\"}");
+                    "{\"regionCode\":\"" + record.regionCode() + "\",\"productCode\":\""
+                            + record.productCode() + "\"}");
         }
     }
 

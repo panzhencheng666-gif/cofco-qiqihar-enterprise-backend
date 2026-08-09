@@ -103,7 +103,13 @@ public class LogisticsService {
         return principal;
     }
     private AuthorizedReadScope readScope(){return accessControl==null?AuthorizedReadScope.unrestricted():accessControl.requireReadScope();}
-    private void audit(SecurityPrincipal principal,LogisticsRecordView record,String action){if(audit!=null)audit.record(principal,"LOGISTICS_RECORD",record.id(),action,clock.instant(),"{}");}
+    private void audit(SecurityPrincipal principal,LogisticsRecordView record,String action){
+        if(audit==null)return;
+        String regions=repository.regionsForRecord(record.id()).stream().sorted()
+                .map(region->"\""+region+"\"").collect(java.util.stream.Collectors.joining(","));
+        audit.record(principal,"LOGISTICS_RECORD",record.id(),action,clock.instant(),
+                "{\"regionCodes\":["+regions+"],\"productCode\":\""+record.productCode()+"\"}");
+    }
     private LogisticsRecordView required(String id){LogisticsRecordView value=repository.find(id); if(value==null) throw new ResourceNotFoundException("LOGISTICS_RECORD_NOT_FOUND","Logistics record was not found"); return value;}
     private LogisticsDraft securedImportDraft(LogisticsDraft draft) {
         Set<String> regions=repository.regionsForDraft(draft);

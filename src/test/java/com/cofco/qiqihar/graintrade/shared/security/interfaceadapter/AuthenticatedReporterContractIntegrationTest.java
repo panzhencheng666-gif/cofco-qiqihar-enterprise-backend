@@ -140,6 +140,46 @@ class AuthenticatedReporterContractIntegrationTest {
     }
 
     @Test
+    void committedBusinessChangeCreatesRegionScopedPersistentNotification() throws Exception {
+        UUID photoId = stagePhoto(AUTHOR, "notification.png");
+        String created = mvc.perform(post("/api/v1/production-records")
+                        .principal(() -> AUTHOR).contentType(MediaType.APPLICATION_JSON)
+                        .content(productionDraft("伪造创建人", photoId, null)))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String recordId = id(created);
+
+        String notificationId = mvc.perform(get("/api/v1/notifications")
+                        .principal(() -> COLLEAGUE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.unreadCount").value(1))
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].aggregateType").value("PRODUCTION_RECORD"))
+                .andExpect(jsonPath("$.data.items[0].aggregateId").value(recordId))
+                .andExpect(jsonPath("$.data.items[0].actionCode").value("PRODUCTION_RECORD_CREATED"))
+                .andExpect(jsonPath("$.data.items[0].productCode").value("CORN"))
+                .andExpect(jsonPath("$.data.items[0].regionCodes[0]").value(REGION))
+                .andExpect(jsonPath("$.data.items[0].read").value(false))
+                .andReturn().getResponse().getContentAsString()
+                .replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+
+        mvc.perform(get("/api/v1/notifications").principal(() -> OUTSIDER))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.unreadCount").value(0))
+                .andExpect(jsonPath("$.data.items").isEmpty());
+
+        mvc.perform(post("/api/v1/notifications/{id}/read", notificationId)
+                        .principal(() -> COLLEAGUE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(notificationId))
+                .andExpect(jsonPath("$.data.read").value(true));
+        mvc.perform(get("/api/v1/notifications").principal(() -> COLLEAGUE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.unreadCount").value(0))
+                .andExpect(jsonPath("$.data.items[0].read").value(true));
+    }
+
+    @Test
     void productionImportOverwritesForgedReporterWithAuthenticatedEmployee() throws Exception {
         UUID photoId = stagePhoto(AUTHOR, "import.png");
         String csv = """
@@ -213,6 +253,7 @@ class AuthenticatedReporterContractIntegrationTest {
 
     private void cleanup() {
         if (jdbc == null) return;
+        jdbc.sql("TRUNCATE platform.notification_read_receipt, platform.business_event_outbox").update();
         jdbc.sql("TRUNCATE platform.business_audit_event").update();
         jdbc.sql("DELETE FROM platform.import_row_result WHERE import_job_id IN (SELECT import_job_id FROM platform.import_job WHERE requested_by IN (:author,:colleague,:outsider))")
                 .param("author", AUTHOR).param("colleague", COLLEAGUE).param("outsider", OUTSIDER).update();

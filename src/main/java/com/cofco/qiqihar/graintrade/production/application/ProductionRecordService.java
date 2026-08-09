@@ -292,7 +292,8 @@ public class ProductionRecordService implements ProductionImportPort {
     private void audit(SecurityPrincipal principal, ProductionRecord record, String actionCode) {
         if (audit != null) {
             audit.record(principal, "PRODUCTION_RECORD", record.id(), actionCode, clock.instant(),
-                    "{\"regionCode\":\"" + record.regionCode() + "\"}");
+                    "{\"regionCode\":\"" + record.regionCode() + "\",\"productCode\":\""
+                            + record.productCode() + "\"}");
         }
     }
 
