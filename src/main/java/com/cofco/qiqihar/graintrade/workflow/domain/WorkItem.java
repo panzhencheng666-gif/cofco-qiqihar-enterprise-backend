@@ -15,5 +15,7 @@ public record WorkItem(
         String statusCode,
         String status,
         String responsiblePartyCode,
-        String responsibleParty) {
+        String responsibleParty,
+        String sourceType,
+        String sourceId) {
 }

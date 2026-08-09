@@ -65,13 +65,16 @@ public class WorkItemController {
             String statusCode,
             String status,
             String responsiblePartyCode,
-            String responsibleParty) {
+            String responsibleParty,
+            String sourceType,
+            String sourceId) {
         static WorkItemResponse from(WorkItem item) {
             return new WorkItemResponse(
                 item.id(), item.task(), item.domain(), item.regionCode(), item.region(),
                 item.product(),
                 item.businessPeriod(), item.dueAt(), item.workflowNode(), item.statusCode(),
-                item.status(), item.responsiblePartyCode(), item.responsibleParty());
+                item.status(), item.responsiblePartyCode(), item.responsibleParty(),
+                item.sourceType(), item.sourceId());
         }
     }
 

@@ -36,10 +36,10 @@ class JdbcWorkItemRepositoryTest {
                 INSERT INTO workflow.work_item
                     (task_name, business_domain, region_code, product_code,
                      business_period_code, due_at, workflow_node_id, status_code,
-                     responsible_party_id, completed_at)
+                     responsible_party_id, completed_at, source_type, source_id)
                 SELECT '待审核任务', 'MARKET', '230202', 'SOYBEAN', 'WORK_TEST_PERIOD',
                        TIMESTAMPTZ '2026-08-10 09:00:00+08', node_id, 'TO_REVIEW',
-                       responsible_party_id, NULL
+                       responsible_party_id, NULL, 'MARKET', 'market-source-record-1'
                 FROM workflow.workflow_node CROSS JOIN workflow.responsible_party
                 WHERE code = 'WORK_TEST_NODE' AND external_code = 'WORK_TEST_USER'
                 """).update();
@@ -79,6 +79,8 @@ class JdbcWorkItemRepositoryTest {
             assertThat(item.workflowNode()).isEqualTo("经营部复核");
             assertThat(item.status()).isEqualTo("待审核");
             assertThat(item.responsibleParty()).isEqualTo("李明");
+            assertThat(item.sourceType()).isEqualTo("MARKET");
+            assertThat(item.sourceId()).isEqualTo("market-source-record-1");
         });
     }
 

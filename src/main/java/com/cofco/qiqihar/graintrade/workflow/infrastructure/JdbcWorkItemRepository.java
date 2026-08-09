@@ -71,7 +71,9 @@ public class JdbcWorkItemRepository implements WorkItemRepository {
                                item.status_code,
                                status.label AS status_label,
                                party.external_code AS responsible_party_code,
-                               party.display_name AS responsible_party
+                               party.display_name AS responsible_party,
+                               item.source_type,
+                               item.source_id
                         """ + FROM + where + order + " LIMIT :pageSize OFFSET :offset"), query)
                 .param("pageSize", query.pageSize())
                 .param("offset", (long) query.pageNumber() * query.pageSize())
@@ -88,7 +90,9 @@ public class JdbcWorkItemRepository implements WorkItemRepository {
                         row.getString("status_code"),
                         row.getString("status_label"),
                         row.getString("responsible_party_code"),
-                        row.getString("responsible_party")))
+                        row.getString("responsible_party"),
+                        row.getString("source_type"),
+                        row.getString("source_id")))
                 .list();
         return new PagedResult<>(items, query.pageNumber(), query.pageSize(), total);
     }
