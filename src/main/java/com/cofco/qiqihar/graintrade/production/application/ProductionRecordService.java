@@ -15,6 +15,7 @@ import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException
 import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder;
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
 import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
+import com.cofco.qiqihar.graintrade.shared.security.application.SeparationOfDutiesPolicy;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
 import java.time.Clock;
 import java.time.LocalDate;
@@ -40,23 +41,25 @@ public class ProductionRecordService implements ProductionImportPort {
     private final AccessControl accessControl;
     private final BusinessAuditRecorder audit;
     private final EvidencePhotoService evidencePhotos;
+    private final SeparationOfDutiesPolicy separationOfDuties;
     private final Clock clock;
 
     public ProductionRecordService(ProductionRecordRepository repository, PageDefinitionQuery pageDefinitions,
             CurrentActor currentActor, Clock clock) {
-        this(repository, pageDefinitions, currentActor, null, null, null, clock);
+        this(repository, pageDefinitions, currentActor, null, null, null, null, clock);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public ProductionRecordService(ProductionRecordRepository repository, PageDefinitionQuery pageDefinitions,
             CurrentActor currentActor, AccessControl accessControl, BusinessAuditRecorder audit,
-            EvidencePhotoService evidencePhotos, Clock clock) {
+            EvidencePhotoService evidencePhotos, SeparationOfDutiesPolicy separationOfDuties, Clock clock) {
         this.repository = repository;
         this.pageDefinitions = pageDefinitions;
         this.currentActor = currentActor;
         this.accessControl = accessControl;
         this.audit = audit;
         this.evidencePhotos = evidencePhotos;
+        this.separationOfDuties = separationOfDuties;
         this.clock = clock;
     }
 
@@ -71,7 +74,10 @@ public class ProductionRecordService implements ProductionImportPort {
         PagedResult<ProductionListRow> page = repository.findPage(query.authorizedFor(scope.regionCodes()));
         List<ProductionListItem> items = page.items().stream().map(row -> new ProductionListItem(
                 row.id(), row.values(), ProductionActionPolicy.allowedActions(row.status()).stream()
-                        .filter(row.configuredActions()::contains).toList(), row.version())).toList();
+                        .filter(row.configuredActions()::contains)
+                        .filter(action -> actionAllowed(action, "PRODUCTION_RECORD", row.id(),
+                                "PRODUCTION_RECORD_SUBMITTED"))
+                        .toList(), row.version())).toList();
         return new PagedResult<>(items, page.pageNumber(), page.pageSize(), page.totalElements());
     }
 
@@ -211,7 +217,16 @@ public class ProductionRecordService implements ProductionImportPort {
         SecurityPrincipal principal = authorize(permission, existing.regionCode());
         if (expectedVersion != existing.version()) throw stale();
         try {
-            ProductionRecord persisted = repository.updateState(command.apply(existing), expectedVersion, principal.subjectId());
+            ProductionRecord transitioned = command.apply(existing);
+            if (separationOfDuties != null && permission.equals("BUSINESS_APPROVE")) {
+                separationOfDuties.requireIndependentApprover(
+                        "PRODUCTION_RECORD", id, "PRODUCTION_RECORD_SUBMITTED", principal);
+            }
+            if (separationOfDuties != null && permission.equals("BUSINESS_RETURN")) {
+                separationOfDuties.requireIndependentReturner(
+                        "PRODUCTION_RECORD", id, "PRODUCTION_RECORD_SUBMITTED", principal);
+            }
+            ProductionRecord persisted = repository.updateState(transitioned, expectedVersion, principal.subjectId());
             audit(principal, persisted, auditAction);
             return view(persisted);
         } catch (ProductionValidationException exception) {
@@ -268,8 +283,29 @@ public class ProductionRecordService implements ProductionImportPort {
     }
 
     private ProductionRecordView view(ProductionRecord record) {
-        return new ProductionRecordView(record, ProductionActionPolicy.allowedActions(record.status()),
+        return new ProductionRecordView(record, ProductionActionPolicy.allowedActions(record.status()).stream()
+                .filter(action -> actionAllowed(action, "PRODUCTION_RECORD", record.id(),
+                        "PRODUCTION_RECORD_SUBMITTED"))
+                .toList(),
                 evidencePhotos == null ? List.of() : evidencePhotos.productionPhotos(record.id()));
+    }
+
+    private boolean actionAllowed(String action, String aggregateType, String aggregateId, String submittedAction) {
+        if (accessControl == null) return true;
+        SecurityPrincipal principal = accessControl.authenticated().orElse(null);
+        if (principal == null) return true; // Explicit unrestricted read identity exists only in test support.
+        String permission = switch (action) {
+            case "VIEW" -> "BUSINESS_READ";
+            case "SAVE" -> "BUSINESS_UPDATE";
+            case "SUBMIT" -> "BUSINESS_SUBMIT";
+            case "APPROVE" -> "BUSINESS_APPROVE";
+            case "RETURN" -> "BUSINESS_RETURN";
+            default -> null;
+        };
+        if (permission == null || !principal.permits(permission)) return false;
+        return !Set.of("APPROVE", "RETURN").contains(action) || separationOfDuties == null
+                || separationOfDuties.isIndependentReviewer(
+                        aggregateType, aggregateId, submittedAction, principal);
     }
 
     private void validateEvidence(ProductionDraft draft, SecurityPrincipal principal) {

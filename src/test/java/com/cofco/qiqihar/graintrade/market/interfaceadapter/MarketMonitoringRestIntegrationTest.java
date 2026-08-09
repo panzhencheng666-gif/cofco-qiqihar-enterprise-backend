@@ -68,7 +68,7 @@ class MarketMonitoringRestIntegrationTest {
         mockMvc.perform(post("/api/v1/market-records/{id}/submit", id).principal(() -> "market-tester")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"version\":0}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"));
-        mockMvc.perform(post("/api/v1/market-records/{id}/approve", id).principal(() -> "market-tester")
+        mockMvc.perform(post("/api/v1/market-records/{id}/approve", id).principal(() -> "production-tester")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"version\":1}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("APPROVED"))
                 .andExpect(jsonPath("$.data.facts.MOISTURE").value("14.6000"));
@@ -76,6 +76,34 @@ class MarketMonitoringRestIntegrationTest {
                 SELECT count(*) FROM platform.business_audit_event
                 WHERE aggregate_type = 'MARKET_RECORD' AND aggregate_id = :id
                 """).param("id", id).query(Long.class).single()).isEqualTo(3L);
+    }
+
+    @Test
+    void onlyAnIndependentAuthorizedReviewerCanApproveOrReturnAMarketRecord() throws Exception {
+        String id = create("CORN", "FEED_MILL", "MOISTURE");
+        mockMvc.perform(post("/api/v1/market-records/{id}/submit", id)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.allowedActions.length()").value(1))
+                .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"));
+
+        mockMvc.perform(post("/api/v1/market-records/{id}/approve", id)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("SELF_APPROVAL_FORBIDDEN"));
+        mockMvc.perform(post("/api/v1/market-records/{id}/return", id)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1,\"reason\":\"补充依据\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("SELF_RETURN_FORBIDDEN"));
+
+        mockMvc.perform(post("/api/v1/market-records/{id}/approve", id)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("APPROVED"));
     }
 
     @Test
@@ -470,7 +498,7 @@ class MarketMonitoringRestIntegrationTest {
                         .content("{\"version\":0}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.version").value(1));
         mockMvc.perform(post("/api/v1/market-records/{id}/approve", id)
-                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"version\":1}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("APPROVED"))
@@ -517,7 +545,7 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code").value("MARKET_RECORD_VERSION_CONFLICT"));
         mockMvc.perform(post("/api/v1/market-records/{id}/return", id)
-                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"version\":1,\"reason\":\"请补充凭证\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("RETURNED"))
@@ -599,7 +627,7 @@ class MarketMonitoringRestIntegrationTest {
 
         resetTransitionTimes(approvedId);
         mockMvc.perform(post("/api/v1/market-records/{id}/approve", approvedId)
-                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"version\":1}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.coreValues.MKT_REPORTED_AT").value("2026-08-02T00:00:00Z"));
@@ -612,7 +640,7 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(status().isOk());
         resetTransitionTimes(returnedId);
         mockMvc.perform(post("/api/v1/market-records/{id}/return", returnedId)
-                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"version\":1,\"reason\":\"请补充凭证\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.coreValues.MKT_REPORTED_AT").value("2026-08-02T00:00:00Z"));

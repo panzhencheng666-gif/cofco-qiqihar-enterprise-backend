@@ -18,6 +18,7 @@ import com.cofco.qiqihar.graintrade.shared.application.ServerContractException;
 import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder;
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
 import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
+import com.cofco.qiqihar.graintrade.shared.security.application.SeparationOfDutiesPolicy;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
 import com.cofco.qiqihar.graintrade.shared.domain.BusinessPageKey;
 import java.math.BigDecimal;
@@ -54,28 +55,30 @@ public class MarketMonitoringService {
     private final AccessControl accessControl;
     private final BusinessAuditRecorder audit;
     private final EvidencePhotoService evidencePhotos;
+    private final SeparationOfDutiesPolicy separationOfDuties;
     private final Clock clock;
 
     public MarketMonitoringService(MarketMonitoringRepository repository, PageDefinitionQuery pageDefinitions,
             CurrentActor currentActor, Clock clock) {
-        this(repository, pageDefinitions, currentActor, null, null, null, clock);
+        this(repository, pageDefinitions, currentActor, null, null, null, null, clock);
     }
 
     public MarketMonitoringService(MarketMonitoringRepository repository, PageDefinitionQuery pageDefinitions,
             CurrentActor currentActor, AccessControl accessControl, BusinessAuditRecorder audit, Clock clock) {
-        this(repository, pageDefinitions, currentActor, accessControl, audit, null, clock);
+        this(repository, pageDefinitions, currentActor, accessControl, audit, null, null, clock);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public MarketMonitoringService(MarketMonitoringRepository repository, PageDefinitionQuery pageDefinitions,
             CurrentActor currentActor, AccessControl accessControl, BusinessAuditRecorder audit,
-            EvidencePhotoService evidencePhotos, Clock clock) {
+            EvidencePhotoService evidencePhotos, SeparationOfDutiesPolicy separationOfDuties, Clock clock) {
         this.repository = repository;
         this.pageDefinitions = pageDefinitions;
         this.currentActor = currentActor;
         this.accessControl = accessControl;
         this.audit = audit;
         this.evidencePhotos = evidencePhotos;
+        this.separationOfDuties = separationOfDuties;
         this.clock = clock;
     }
 
@@ -97,7 +100,9 @@ public class MarketMonitoringService {
         PagedResult<MarketListRow> page = repository.findPage(query.authorizedFor(scope.regionCodes()));
         List<MarketListItem> items = page.items().stream().map(row -> new MarketListItem(
                 row.id(), row.values(), MarketActionPolicy.allowedActions(row.status()).stream()
-                        .filter(row.configuredActions()::contains).toList(), row.version())).toList();
+                        .filter(row.configuredActions()::contains)
+                        .filter(action -> actionAllowed(action, row.id()))
+                        .toList(), row.version())).toList();
         return new PagedResult<>(items, page.pageNumber(), page.pageSize(), page.totalElements());
     }
 
@@ -248,8 +253,17 @@ public class MarketMonitoringService {
         SecurityPrincipal principal = authorize(permissionCode, existing.regionCode());
         if (expectedVersion != existing.version()) throw stale();
         try {
+            MarketMonitoringRecord transitioned = command.apply(existing);
+            if (separationOfDuties != null && permissionCode.equals("BUSINESS_APPROVE")) {
+                separationOfDuties.requireIndependentApprover(
+                        "MARKET_RECORD", id, "MARKET_RECORD_SUBMITTED", principal);
+            }
+            if (separationOfDuties != null && permissionCode.equals("BUSINESS_RETURN")) {
+                separationOfDuties.requireIndependentReturner(
+                        "MARKET_RECORD", id, "MARKET_RECORD_SUBMITTED", principal);
+            }
             MarketMonitoringRecord updated = repository.updateState(
-                    command.apply(existing), expectedVersion, principal.subjectId(), clock.instant());
+                    transitioned, expectedVersion, principal.subjectId(), clock.instant());
             audit(principal, updated, auditAction);
             return view(updated, coreFields(updated.productCode()),
                     repository.findExtensionCoreValues(updated.id()));
@@ -516,7 +530,26 @@ public class MarketMonitoringService {
                 }));
         return new MarketRecordView(record, values,
                 evidencePhotos == null ? List.of() : evidencePhotos.marketPhotos(record.id()),
-                MarketActionPolicy.allowedActions(record.status()));
+                MarketActionPolicy.allowedActions(record.status()).stream()
+                        .filter(action -> actionAllowed(action, record.id())).toList());
+    }
+
+    private boolean actionAllowed(String action, String recordId) {
+        if (accessControl == null) return true;
+        SecurityPrincipal principal = accessControl.authenticated().orElse(null);
+        if (principal == null) return true;
+        String permission = switch (action) {
+            case "VIEW" -> "BUSINESS_READ";
+            case "SAVE" -> "BUSINESS_UPDATE";
+            case "SUBMIT" -> "BUSINESS_SUBMIT";
+            case "APPROVE" -> "BUSINESS_APPROVE";
+            case "RETURN" -> "BUSINESS_RETURN";
+            default -> null;
+        };
+        if (permission == null || !principal.permits(permission)) return false;
+        return !Set.of("APPROVE", "RETURN").contains(action) || separationOfDuties == null
+                || separationOfDuties.isIndependentReviewer(
+                        "MARKET_RECORD", recordId, "MARKET_RECORD_SUBMITTED", principal);
     }
 
     private void validateEvidence(MarketMonitoringDraft draft, SecurityPrincipal principal) {

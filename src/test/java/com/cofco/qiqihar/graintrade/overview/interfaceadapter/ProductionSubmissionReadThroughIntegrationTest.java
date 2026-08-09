@@ -60,7 +60,7 @@ class ProductionSubmissionReadThroughIntegrationTest {
                         .content("{\"version\":0}"))
                 .andExpect(status().isOk());
         mvc.perform(post("/api/v1/production-records/{id}/approve", recordId)
-                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"version\":1}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("APPROVED"));
 

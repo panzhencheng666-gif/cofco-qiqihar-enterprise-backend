@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
+import java.util.Set;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
@@ -26,6 +27,25 @@ class LogisticsRestIntegrationTest {
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
     JdbcClient jdbc;
+
+    @Test
+    void onlyAnIndependentAuthorizedReviewerCanApproveOrReturnALogisticsRecord() throws Exception {
+        String id=create("CORN","RAIL","TEST_RAIL","TEST_ROAD",true);
+        transition(id,"submit",0,null)
+                .andExpect(jsonPath("$.data.allowedActions.length()").value(1))
+                .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"));
+        mvc.perform(post("/api/v1/logistics-records/{id}/approve",id)
+                        .principal(() -> "logistics-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("SELF_APPROVAL_FORBIDDEN"));
+        mvc.perform(post("/api/v1/logistics-records/{id}/return",id)
+                        .principal(() -> "logistics-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1,\"reason\":\"补充依据\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("SELF_RETURN_FORBIDDEN"));
+        transition(id,"approve",1,null).andExpect(jsonPath("$.data.status").value("APPROVED"));
+    }
 
     @BeforeEach
     void fixture() {
@@ -186,7 +206,9 @@ class LogisticsRestIntegrationTest {
         String body = reason == null ? "{\"version\":" + version + "}"
                 : "{\"version\":" + version + ",\"reason\":\"" + reason + "\"}";
         return mvc.perform(post("/api/v1/logistics-records/{id}/" + action, id)
-                        .principal(() -> "logistics-tester").contentType(MediaType.APPLICATION_JSON).content(body))
+                        .principal(() -> Set.of("approve", "return").contains(action)
+                                ? "production-tester" : "logistics-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk());
     }
 

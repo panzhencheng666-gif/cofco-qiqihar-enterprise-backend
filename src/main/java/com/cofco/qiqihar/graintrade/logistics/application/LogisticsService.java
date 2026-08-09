@@ -10,6 +10,7 @@ import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException
 import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder;
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
 import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
+import com.cofco.qiqihar.graintrade.shared.security.application.SeparationOfDutiesPolicy;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
 import java.time.Clock;
 import java.time.ZoneId;
@@ -28,14 +29,21 @@ public class LogisticsService {
     private final CurrentActor currentActor;
     private final AccessControl accessControl;
     private final BusinessAuditRecorder audit;
+    private final SeparationOfDutiesPolicy separationOfDuties;
     private final Clock clock;
     public LogisticsService(LogisticsRepository repository, PageDefinitionQuery pages, CurrentActor currentActor, Clock clock) {
-        this(repository, pages, currentActor, null, null, clock);
+        this(repository, pages, currentActor, null, null, null, clock);
+    }
+    public LogisticsService(LogisticsRepository repository, PageDefinitionQuery pages, CurrentActor currentActor,
+            AccessControl accessControl, BusinessAuditRecorder audit, Clock clock) {
+        this(repository, pages, currentActor, accessControl, audit, null, clock);
     }
     @org.springframework.beans.factory.annotation.Autowired
     public LogisticsService(LogisticsRepository repository, PageDefinitionQuery pages, CurrentActor currentActor,
-            AccessControl accessControl, BusinessAuditRecorder audit, Clock clock) {
-        this.repository=repository; this.pages=pages; this.currentActor=currentActor; this.accessControl=accessControl; this.audit=audit; this.clock=clock;
+            AccessControl accessControl, BusinessAuditRecorder audit,
+            SeparationOfDutiesPolicy separationOfDuties, Clock clock) {
+        this.repository=repository; this.pages=pages; this.currentActor=currentActor; this.accessControl=accessControl;
+        this.audit=audit; this.separationOfDuties=separationOfDuties; this.clock=clock;
     }
     @Transactional(readOnly=true)
     public PagedResult<LogisticsRecordView> list(String productCode, int pageNumber, int pageSize, Map<String,String> filters) {
@@ -43,11 +51,13 @@ public class LogisticsService {
                 || !pages.allowsListQueryValues("LOGISTICS","MONITORING",productCode,pageSize,filters)) throw invalid();
         AuthorizedReadScope scope=readScope();
         if(filters.get("regionCode")!=null)scope.requireRegion(filters.get("regionCode"));
-        return repository.findPage(productCode,pageNumber,pageSize,filters,scope.regionCodes());
+        PagedResult<LogisticsRecordView> page=repository.findPage(productCode,pageNumber,pageSize,filters,scope.regionCodes());
+        return new PagedResult<>(page.items().stream().map(this::authorizedView).toList(),
+                page.pageNumber(),page.pageSize(),page.totalElements());
     }
     @Transactional(readOnly=true,isolation=Isolation.REPEATABLE_READ) public LogisticsRecordView detail(String id) {
         LogisticsRecordView record=required(id); AuthorizedReadScope scope=readScope();
-        repository.regionsForRecord(id).forEach(scope::requireRegion); return record;
+        repository.regionsForRecord(id).forEach(scope::requireRegion); return authorizedView(record);
     }
     @Transactional(readOnly=true) public LogisticsDefinitionView definition(String productCode) {
         LogisticsDefinitionView definition=repository.definition(productCode);if(definition==null)throw invalid();return definition;
@@ -57,7 +67,7 @@ public class LogisticsService {
         LogisticsDraft securedDraft=withReporter(draft,principal.displayName());
         validate(securedDraft);
         if(!repository.actionAllowed(securedDraft.productCode(),LogisticsStatus.DRAFT,"NEW"))throw invalid();
-        LogisticsRecordView created=repository.insert(UUID.randomUUID().toString(),securedDraft,principal.subjectId(),clock.instant()); audit(principal,created,"LOGISTICS_RECORD_CREATED"); return created;
+        LogisticsRecordView created=repository.insert(UUID.randomUUID().toString(),securedDraft,principal.subjectId(),clock.instant()); audit(principal,created,"LOGISTICS_RECORD_CREATED"); return authorizedView(created);
     }
     public void validateImportDraft(LogisticsDraft draft) {
         securedImportDraft(draft);
@@ -76,7 +86,7 @@ public class LogisticsService {
         if(!repository.actionAllowed(existing.productCode(),existing.status(),"SAVE"))throw invalid();
         String reporter=existing.values().get("LOG_REPORTER");
         LogisticsDraft securedDraft=withReporter(draft,blank(reporter)?principal.displayName():reporter);
-        validate(securedDraft); authorize("BUSINESS_UPDATE",repository.regionsForDraft(securedDraft)); LogisticsRecordView updated=repository.update(id,version,securedDraft,existing.status(),existing.returnReason(),principal.subjectId(),clock.instant()); audit(principal,updated,"LOGISTICS_RECORD_UPDATED"); return updated;
+        validate(securedDraft); authorize("BUSINESS_UPDATE",repository.regionsForDraft(securedDraft)); LogisticsRecordView updated=repository.update(id,version,securedDraft,existing.status(),existing.returnReason(),principal.subjectId(),clock.instant()); audit(principal,updated,"LOGISTICS_RECORD_UPDATED"); return authorizedView(updated);
     }
     @Transactional public LogisticsRecordView submit(String id,long version) { return transition(id,version,LogisticsStatus.PENDING_REVIEW,null,"BUSINESS_SUBMIT","LOGISTICS_RECORD_SUBMITTED"); }
     @Transactional public LogisticsRecordView approve(String id,long version) { return transition(id,version,LogisticsStatus.APPROVED,null,"BUSINESS_APPROVE","LOGISTICS_RECORD_APPROVED"); }
@@ -90,7 +100,15 @@ public class LogisticsService {
                 || ((target==LogisticsStatus.APPROVED || target==LogisticsStatus.RETURNED) && existing.status()==LogisticsStatus.PENDING_REVIEW);
         String action=target==LogisticsStatus.PENDING_REVIEW?"SUBMIT":target==LogisticsStatus.APPROVED?"APPROVE":"RETURN";
         if(!allowed||!repository.actionAllowed(existing.productCode(),existing.status(),action)) throw invalid();
-        LogisticsRecordView updated=repository.transition(id,version,target,reason,principal.subjectId(),clock.instant()); audit(principal,updated,auditAction); return updated;
+        if(separationOfDuties!=null && permission.equals("BUSINESS_APPROVE")) {
+            separationOfDuties.requireIndependentApprover(
+                    "LOGISTICS_RECORD",id,"LOGISTICS_RECORD_SUBMITTED",principal);
+        }
+        if(separationOfDuties!=null && permission.equals("BUSINESS_RETURN")) {
+            separationOfDuties.requireIndependentReturner(
+                    "LOGISTICS_RECORD",id,"LOGISTICS_RECORD_SUBMITTED",principal);
+        }
+        LogisticsRecordView updated=repository.transition(id,version,target,reason,principal.subjectId(),clock.instant()); audit(principal,updated,auditAction); return authorizedView(updated);
     }
     private void validate(LogisticsDraft draft) {
         if (draft==null || blank(draft.productCode())
@@ -125,6 +143,27 @@ public class LogisticsService {
         Map<String,String> values=new java.util.LinkedHashMap<>(draft.values());
         values.put("LOG_REPORTER",reporter);
         return new LogisticsDraft(draft.productCode(),values);
+    }
+    private LogisticsRecordView authorizedView(LogisticsRecordView record) {
+        if(accessControl==null)return record;
+        SecurityPrincipal principal=accessControl.authenticated().orElse(null);
+        if(principal==null)return record;
+        java.util.List<String> actions=record.allowedActions().stream().filter(action -> {
+            String permission=switch(action){
+                case "VIEW" -> "BUSINESS_READ";
+                case "SAVE" -> "BUSINESS_UPDATE";
+                case "SUBMIT" -> "BUSINESS_SUBMIT";
+                case "APPROVE" -> "BUSINESS_APPROVE";
+                case "RETURN" -> "BUSINESS_RETURN";
+                default -> null;
+            };
+            if(permission==null||!principal.permits(permission))return false;
+            return !Set.of("APPROVE","RETURN").contains(action)||separationOfDuties==null
+                    ||separationOfDuties.isIndependentReviewer(
+                            "LOGISTICS_RECORD",record.id(),"LOGISTICS_RECORD_SUBMITTED",principal);
+        }).toList();
+        return new LogisticsRecordView(record.id(),record.productCode(),record.values(),record.displayValues(),
+                record.status(),record.returnReason(),actions,record.version());
     }
     private static boolean blank(String value){return value==null||value.isBlank();}
     private static ClientRequestException invalid(){return new ClientRequestException("INVALID_LOGISTICS_RECORD","Logistics record or query is invalid");}

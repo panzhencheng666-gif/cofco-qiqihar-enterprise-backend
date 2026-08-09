@@ -54,6 +54,13 @@ class ProductionRecordRestIntegrationTest {
     @AfterEach
     void removeTestRecords() {
         JdbcClient jdbc = JdbcClient.create(dataSource);
+        jdbc.sql("""
+                DELETE FROM production.production_record
+                WHERE record_id::text IN (
+                    SELECT aggregate_id FROM platform.business_audit_event
+                    WHERE aggregate_type = 'PRODUCTION_RECORD'
+                      AND actor_subject_id IN ('production-tester', 'market-tester'))
+                """).update();
         jdbc.sql("TRUNCATE platform.business_audit_event").update();
         jdbc.sql(
                 "DELETE FROM production.production_record WHERE last_modified_by = 'production-tester'").update();
@@ -130,9 +137,10 @@ class ProductionRecordRestIntegrationTest {
                         .content("{\"version\":0}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"))
-                .andExpect(jsonPath("$.data.allowedActions[1]").value("APPROVE"));
+                .andExpect(jsonPath("$.data.allowedActions.length()").value(1))
+                .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"));
         mockMvc.perform(post("/api/v1/production-records/{id}/return", id)
-                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"version\":1,\"reason\":\"补充依据\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.version").value(2));
@@ -171,7 +179,7 @@ class ProductionRecordRestIntegrationTest {
                 .andExpect(jsonPath("$.data.subsidies.SUBSIDY_AMOUNT").value("6.0000"));
 
         mockMvc.perform(post("/api/v1/production-records/{id}/approve", id)
-                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"version\":1}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("APPROVED"))
@@ -189,6 +197,27 @@ class ProductionRecordRestIntegrationTest {
                 SELECT count(*) FROM platform.business_audit_event
                 WHERE aggregate_type = 'PRODUCTION_RECORD' AND aggregate_id = :id
                 """).param("id", id).query(Long.class).single()).isEqualTo(3L);
+    }
+
+    @Test
+    void forbidsTheSubmittingEmployeeFromApprovingTheSameRecord() throws Exception {
+        String id = create(validDraftBody());
+        mockMvc.perform(post("/api/v1/production-records/{id}/submit", id)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0}"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/v1/production-records/{id}/approve", id)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("SELF_APPROVAL_FORBIDDEN"));
+
+        mockMvc.perform(post("/api/v1/production-records/{id}/approve", id)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("APPROVED"));
     }
 
     @ParameterizedTest(name = "{0} / AGRICULTURAL_TECH_STATION round-trips quality only")

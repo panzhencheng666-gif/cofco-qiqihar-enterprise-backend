@@ -21,11 +21,15 @@ public class SessionController {
     }
 
     record SessionResponse(
-            String subjectId, String displayName, String workUnitCode,
-            List<String> permissions, List<String> regionCodes) {
+            String subjectId,String displayName,String workUnitCode,String workUnitName,
+            String accountStatus,String employmentStatus,List<String> roleCodes,
+            List<SecurityPrincipal.PositionAssignment> positions,
+            List<String> permissions,List<String> regionCodes) {
         static SessionResponse from(SecurityPrincipal principal) {
             return new SessionResponse(
-                    principal.subjectId(), principal.displayName(), principal.workUnitCode(),
+                    principal.subjectId(),principal.displayName(),principal.workUnitCode(),principal.workUnitName(),
+                    principal.accountStatus(),principal.employmentStatus(),
+                    principal.roleCodes().stream().sorted().toList(),principal.positions(),
                     principal.permissionCodes().stream().sorted().toList(),
                     principal.regionCodes().stream().sorted().toList());
         }

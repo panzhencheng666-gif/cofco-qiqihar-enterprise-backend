@@ -2,6 +2,7 @@ package com.cofco.qiqihar.graintrade.shared.security.infrastructure;
 
 import com.cofco.qiqihar.graintrade.shared.security.application.SecurityPrincipalRepository;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
+import java.util.List;
 import java.util.LinkedHashSet;
 import java.util.Optional;
 import java.util.Set;
@@ -19,13 +20,23 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
     @Override
     public Optional<SecurityPrincipal> findEnabled(String subjectId) {
         return jdbc.sql("""
-                SELECT subject_id, display_name, work_unit_code
-                FROM platform.security_user
-                WHERE subject_id = :subjectId AND enabled
+                SELECT security_user.subject_id,security_user.display_name,security_user.work_unit_code,
+                       work_unit.name,security_user.account_status,security_user.employment_status
+                FROM platform.security_user security_user
+                JOIN platform.work_unit work_unit
+                  ON work_unit.code=security_user.work_unit_code AND work_unit.active
+                WHERE security_user.subject_id = :subjectId
+                  AND security_user.enabled
+                  AND security_user.account_status='ACTIVE'
+                  AND security_user.employment_status='ACTIVE'
+                  AND (security_user.termination_effective_at IS NULL
+                       OR security_user.termination_effective_at > CURRENT_TIMESTAMP)
                 """).param("subjectId", subjectId).query((row, index) -> new SecuritySubject(
-                row.getString(1), row.getString(2), row.getString(3))).optional().map(subject -> new SecurityPrincipal(
-                subject.id(), subject.displayName(), subject.workUnitCode(),
-                permissions(subject.id()), regions(subject.id(), subject.workUnitCode())));
+                row.getString(1),row.getString(2),row.getString(3),row.getString(4),row.getString(5),row.getString(6)))
+                .optional().map(subject -> new SecurityPrincipal(
+                        subject.id(),subject.displayName(),subject.workUnitCode(),subject.workUnitName(),
+                        subject.accountStatus(),subject.employmentStatus(),roles(subject.id()),positions(subject.id()),
+                        permissions(subject.id()),regions(subject.id(),subject.workUnitCode())));
     }
 
     private Set<String> permissions(String subjectId) {
@@ -36,6 +47,8 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
                 JOIN platform.access_role_permission role_permission ON role_permission.role_code = access_role.code
                 JOIN platform.access_permission permission ON permission.code = role_permission.permission_code AND permission.active
                 WHERE user_role.subject_id = :subjectId
+                  AND CURRENT_TIMESTAMP >= user_role.valid_from
+                  AND (user_role.valid_until IS NULL OR CURRENT_TIMESTAMP < user_role.valid_until)
                 """).param("subjectId", subjectId).query(String.class).list());
     }
 
@@ -47,8 +60,37 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
                   ON unit_scope.work_unit_code = :workUnitCode
                  AND unit_scope.region_code = scope.region_code
                 WHERE scope.subject_id = :subjectId
+                  AND CURRENT_TIMESTAMP >= scope.valid_from
+                  AND (scope.valid_until IS NULL OR CURRENT_TIMESTAMP < scope.valid_until)
                 """).param("subjectId", subjectId).param("workUnitCode", workUnitCode).query(String.class).list());
     }
 
-    private record SecuritySubject(String id, String displayName, String workUnitCode) {}
+    private Set<String> roles(String subjectId) {
+        return new LinkedHashSet<>(jdbc.sql("""
+                SELECT role.code
+                FROM platform.security_user_role user_role
+                JOIN platform.access_role role ON role.code=user_role.role_code AND role.active
+                WHERE user_role.subject_id=:subjectId
+                  AND CURRENT_TIMESTAMP >= user_role.valid_from
+                  AND (user_role.valid_until IS NULL OR CURRENT_TIMESTAMP < user_role.valid_until)
+                ORDER BY role.sort_order,role.code
+                """).param("subjectId",subjectId).query(String.class).list());
+    }
+
+    private List<SecurityPrincipal.PositionAssignment> positions(String subjectId) {
+        return jdbc.sql("""
+                SELECT position.code,position.name,assignment.primary_position
+                FROM platform.security_user_position assignment
+                JOIN platform.position position ON position.code=assignment.position_code AND position.active
+                WHERE assignment.subject_id=:subjectId
+                  AND CURRENT_TIMESTAMP >= assignment.valid_from
+                  AND (assignment.valid_until IS NULL OR CURRENT_TIMESTAMP < assignment.valid_until)
+                ORDER BY assignment.primary_position DESC,position.sort_order,position.code
+                """).param("subjectId",subjectId).query((row,index) ->
+                        new SecurityPrincipal.PositionAssignment(
+                                row.getString(1),row.getString(2),row.getBoolean(3))).list();
+    }
+
+    private record SecuritySubject(String id,String displayName,String workUnitCode,String workUnitName,
+            String accountStatus,String employmentStatus) {}
 }

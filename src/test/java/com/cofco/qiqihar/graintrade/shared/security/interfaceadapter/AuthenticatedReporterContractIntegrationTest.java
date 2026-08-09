@@ -73,6 +73,16 @@ class AuthenticatedReporterContractIntegrationTest {
                 """).param("author", AUTHOR).param("colleague", COLLEAGUE)
                 .param("outsider", OUTSIDER).param("region", REGION)
                 .param("outsideRegion", OUTSIDE_REGION).update();
+        jdbc.sql("""
+                INSERT INTO platform.position(code,name,active,sort_order)
+                VALUES ('IDENTITY_CONTRACT_REPORTER','区域业务专员',true,9970)
+                ON CONFLICT(code) DO NOTHING
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_position(subject_id,position_code,valid_from,primary_position)
+                VALUES (:author,'IDENTITY_CONTRACT_REPORTER',now(),true),
+                       (:colleague,'IDENTITY_CONTRACT_REPORTER',now(),true)
+                """).param("author", AUTHOR).param("colleague", COLLEAGUE).update();
     }
 
     @AfterEach
@@ -87,6 +97,13 @@ class AuthenticatedReporterContractIntegrationTest {
                 .andExpect(jsonPath("$.data.subjectId").value(AUTHOR))
                 .andExpect(jsonPath("$.data.displayName").value("王洋"))
                 .andExpect(jsonPath("$.data.workUnitCode").value("IDENTITY_CONTRACT_HOME"))
+                .andExpect(jsonPath("$.data.workUnitName").value("身份契约测试单位"))
+                .andExpect(jsonPath("$.data.accountStatus").value("ACTIVE"))
+                .andExpect(jsonPath("$.data.employmentStatus").value("ACTIVE"))
+                .andExpect(jsonPath("$.data.roleCodes[0]").value("SYSTEM_ADMIN"))
+                .andExpect(jsonPath("$.data.positions[0].code").value("IDENTITY_CONTRACT_REPORTER"))
+                .andExpect(jsonPath("$.data.positions[0].name").value("区域业务专员"))
+                .andExpect(jsonPath("$.data.positions[0].primaryPosition").value(true))
                 .andExpect(jsonPath("$.data.permissions", hasItem("BUSINESS_CREATE")))
                 .andExpect(jsonPath("$.data.regionCodes.length()").value(1))
                 .andExpect(jsonPath("$.data.regionCodes[0]").value(REGION))
@@ -94,6 +111,82 @@ class AuthenticatedReporterContractIntegrationTest {
 
         mvc.perform(get("/api/v1/session/me"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void accountLifecycleAndEffectiveDatedGrantsTakeEffectOnTheNextRequest() throws Exception {
+        jdbc.sql("UPDATE platform.security_user SET account_status='SUSPENDED' WHERE subject_id=:author")
+                .param("author", AUTHOR).update();
+        mvc.perform(get("/api/v1/session/me").principal(() -> AUTHOR))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_SUBJECT_UNKNOWN"));
+
+        jdbc.sql("UPDATE platform.security_user SET account_status='ACTIVE',employment_status='TERMINATED' WHERE subject_id=:author")
+                .param("author", AUTHOR).update();
+        mvc.perform(get("/api/v1/session/me").principal(() -> AUTHOR))
+                .andExpect(status().isForbidden());
+
+        jdbc.sql("UPDATE platform.security_user SET employment_status='ACTIVE' WHERE subject_id=:author")
+                .param("author", AUTHOR).update();
+        jdbc.sql("UPDATE platform.security_user_role SET valid_until=now()-interval '1 second' WHERE subject_id=:author")
+                .param("author", AUTHOR).update();
+        mvc.perform(get("/api/v1/session/me").principal(() -> AUTHOR))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.permissions").isEmpty());
+
+        jdbc.sql("UPDATE platform.security_user_role SET valid_until=NULL WHERE subject_id=:author")
+                .param("author", AUTHOR).update();
+        jdbc.sql("UPDATE platform.security_user_region_scope SET valid_until=now()-interval '1 second' WHERE subject_id=:author")
+                .param("author", AUTHOR).update();
+        mvc.perform(get("/api/v1/session/me").principal(() -> AUTHOR))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.regionCodes").isEmpty());
+    }
+
+    @Test
+    void roleActionStateAndRegionJointlyControlTheReviewWorkflow() throws Exception {
+        jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id IN (:author,:colleague)")
+                .param("author",AUTHOR).param("colleague",COLLEAGUE).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_role(subject_id,role_code)
+                VALUES (:author,'BUSINESS_OPERATOR'),(:colleague,'BUSINESS_REVIEWER')
+                """).param("author",AUTHOR).param("colleague",COLLEAGUE).update();
+
+        UUID photoId=stagePhoto(AUTHOR,"permission-matrix.png");
+        String created=mvc.perform(post("/api/v1/production-records")
+                        .principal(() -> AUTHOR).contentType(MediaType.APPLICATION_JSON)
+                        .content(productionDraft("伪造创建人",photoId,null)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"))
+                .andExpect(jsonPath("$.data.allowedActions[1]").value("SAVE"))
+                .andExpect(jsonPath("$.data.allowedActions[2]").value("SUBMIT"))
+                .andReturn().getResponse().getContentAsString();
+        String id=id(created);
+        mvc.perform(post("/api/v1/production-records/{id}/submit",id)
+                        .principal(() -> AUTHOR).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.allowedActions.length()").value(1))
+                .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"));
+
+        mvc.perform(post("/api/v1/production-records/{id}/approve",id)
+                        .principal(() -> AUTHOR).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_PERMISSION_DENIED"));
+        mvc.perform(get("/api/v1/production-records/{id}",id).principal(() -> OUTSIDER))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+        mvc.perform(get("/api/v1/production-records/{id}",id).principal(() -> COLLEAGUE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"))
+                .andExpect(jsonPath("$.data.allowedActions[1]").value("APPROVE"))
+                .andExpect(jsonPath("$.data.allowedActions[2]").value("RETURN"));
+        mvc.perform(post("/api/v1/production-records/{id}/approve",id)
+                        .principal(() -> COLLEAGUE).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("APPROVED"));
     }
 
     @Test
@@ -267,11 +360,14 @@ class AuthenticatedReporterContractIntegrationTest {
                 .param("author", AUTHOR).param("colleague", COLLEAGUE).param("outsider", OUTSIDER).update();
         jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id IN (:author,:colleague,:outsider)")
                 .param("author", AUTHOR).param("colleague", COLLEAGUE).param("outsider", OUTSIDER).update();
+        jdbc.sql("DELETE FROM platform.security_user_position WHERE subject_id IN (:author,:colleague,:outsider)")
+                .param("author", AUTHOR).param("colleague", COLLEAGUE).param("outsider", OUTSIDER).update();
         jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id IN (:author,:colleague,:outsider)")
                 .param("author", AUTHOR).param("colleague", COLLEAGUE).param("outsider", OUTSIDER).update();
         jdbc.sql("DELETE FROM platform.security_user WHERE subject_id IN (:author,:colleague,:outsider)")
                 .param("author", AUTHOR).param("colleague", COLLEAGUE).param("outsider", OUTSIDER).update();
         jdbc.sql("DELETE FROM platform.work_unit_region_scope WHERE work_unit_code IN ('IDENTITY_CONTRACT_HOME','IDENTITY_CONTRACT_OUTSIDE')").update();
         jdbc.sql("DELETE FROM platform.work_unit WHERE code IN ('IDENTITY_CONTRACT_HOME','IDENTITY_CONTRACT_OUTSIDE')").update();
+        jdbc.sql("DELETE FROM platform.position WHERE code='IDENTITY_CONTRACT_REPORTER'").update();
     }
 }

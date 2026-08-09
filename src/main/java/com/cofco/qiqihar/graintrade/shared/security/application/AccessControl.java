@@ -3,6 +3,7 @@ package com.cofco.qiqihar.graintrade.shared.security.application;
 import com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException;
 import com.cofco.qiqihar.graintrade.shared.application.AuthenticationRequiredException;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
+import java.util.Optional;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -29,6 +30,11 @@ public class AccessControl {
         String subjectId = currentSubject.subjectId().orElseThrow(AuthenticationRequiredException::new);
         return principals.findEnabled(subjectId)
                 .orElseThrow(() -> new AccessDeniedException("ACCESS_SUBJECT_UNKNOWN", "Access subject is not authorized"));
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<SecurityPrincipal> authenticated() {
+        return currentSubject.subjectId().flatMap(principals::findEnabled);
     }
 
     @Transactional(readOnly = true)
