@@ -181,10 +181,10 @@ class FlywayMigrationReplayTest {
                 .containsEntry("product", 3L)
                 .containsEntry("cultivar", 2L)
                 .containsEntry("object_type", 12L)
-                .containsEntry("page_definition_field", 180L)
-                .containsEntry("production_fact_category", 4L)
-                .containsEntry("production_fact_definition", 19L)
-                .containsEntry("production_fact_applicability", 102L);
+                .containsEntry("page_definition_field", 213L)
+                .containsEntry("production_fact_category", 5L)
+                .containsEntry("production_fact_definition", 31L)
+                .containsEntry("production_fact_applicability", 204L);
     }
 
     private void assertFrozenMarketMigrationChecksums() {

@@ -4,7 +4,6 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -16,21 +15,25 @@ import org.w3c.dom.Element;
 /** Bounded OOXML worksheet reader. It intentionally never evaluates formulas. */
 public final class XlsxTable {
     private static final int MAX_EXPANDED_BYTES = 8 * 1024 * 1024;
-    private static final int MAX_ROWS = 5_001;
+    private static final int MAX_ROWS = 5_002;
     private static final int MAX_CELL_CODE_POINTS = 500;
 
     private XlsxTable() {}
 
     public static List<List<String>> parse(byte[] bytes, int expectedColumns) {
+        return parseWorksheet(bytes, 1, expectedColumns);
+    }
+
+    public static List<List<String>> parseWorksheet(byte[] bytes, int worksheetNumber, int expectedColumns) {
         if (bytes == null || bytes.length == 0 || expectedColumns < 1) throw invalid();
+        if (worksheetNumber < 1) throw invalid();
         Map<String, byte[]> entries = unzip(bytes);
         if (entries.keySet().stream().anyMatch(name -> name.contains("vbaProject")
                 || name.startsWith("xl/externalLinks/"))) throw invalid();
         List<String> sharedStrings = entries.containsKey("xl/sharedStrings.xml")
                 ? sharedStrings(entries.get("xl/sharedStrings.xml")) : List.of();
-        byte[] sheet = entries.entrySet().stream()
-                .filter(entry -> entry.getKey().matches("xl/worksheets/sheet[0-9]+\\.xml"))
-                .min(Comparator.comparing(Map.Entry::getKey)).map(Map.Entry::getValue).orElseThrow(XlsxTable::invalid);
+        byte[] sheet = entries.get("xl/worksheets/sheet" + worksheetNumber + ".xml");
+        if (sheet == null) throw invalid();
         return rows(sheet, sharedStrings, expectedColumns);
     }
 

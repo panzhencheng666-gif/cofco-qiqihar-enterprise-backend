@@ -61,6 +61,43 @@ class ProductionRecordRestIntegrationTest {
     }
 
     @Test
+    void usesTheSameSurveyDetailFieldsForDefinitionCreateDetailAndLedgerList() throws Exception {
+        mockMvc.perform(get("/api/v1/production-record-definitions")
+                        .queryParam("productCode", "CORN").queryParam("objectTypeCode", "FARMER"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.groups[0].category").value("DETAIL"))
+                .andExpect(jsonPath("$.data.groups[0].fields[*].code").value(hasItem("PROD_SAMPLE_NAME")))
+                .andExpect(jsonPath("$.data.groups[0].fields[*].code").value(hasItem("PROD_ENDING_INVENTORY")));
+
+        String body = fullDraftBody("CORN", "FARMER", "MOISTURE", null)
+                .replace("\"PROD_SAMPLE_LONGITUDE\":\"123.9182\"",
+                        "\"PROD_SAMPLE_LONGITUDE\":\"123.9182\","
+                                + "\"PROD_SAMPLE_NAME\":\"龙江县第一调查户\","
+                                + "\"PROD_HARVEST_AREA_MU\":\"96.5\","
+                                + "\"PROD_GROWTH_STATUS\":\"长势良好\","
+                                + "\"PROD_GROWTH_STAGE\":\"灌浆期\","
+                                + "\"PROD_OPENING_INVENTORY\":\"12\","
+                                + "\"PROD_SALES_VOLUME\":\"3\","
+                                + "\"PROD_SELF_USE\":\"1\","
+                                + "\"PROD_ENDING_INVENTORY\":\"8\","
+                                + "\"PROD_INTENDED_AREA_MU\":\"110\","
+                                + "\"PROD_INTENTION_REASON\":\"订单增加\"");
+        String id = create(body);
+
+        mockMvc.perform(get("/api/v1/production-records/{id}", id))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.submissionMetadata.PROD_SAMPLE_NAME").value("龙江县第一调查户"))
+                .andExpect(jsonPath("$.data.submissionMetadata.PROD_ENDING_INVENTORY").value("8"));
+        mockMvc.perform(get("/api/v1/production-records")
+                        .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0").queryParam("pageSize", "100"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].values.PROD_SAMPLE_NAME").value("龙江县第一调查户"))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_HARVEST_AREA_MU").value("96.5"))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_GROWTH_STAGE").value("灌浆期"));
+    }
+
+    @Test
     void rejectsUnknownQueryParametersAndRequiresAnAuthenticatedPrincipalForWrites() throws Exception {
         mockMvc.perform(get("/api/v1/production-records")
                         .queryParam("productCode", "SOYBEAN")
@@ -206,25 +243,28 @@ class ProductionRecordRestIntegrationTest {
                         .andExpect(status().isOk())
                         .andExpect(jsonPath("$.data.productCode").value(product))
                         .andExpect(jsonPath("$.data.objectTypeCode").value(objectType))
-                        .andExpect(jsonPath("$.data.groups.length()").value(4))
-                        .andExpect(jsonPath("$.data.groups[0].category").value("QUALITY"))
-                        .andExpect(jsonPath("$.data.groups[0].label").value("质量指标"))
-                        .andExpect(jsonPath("$.data.groups[0].sortOrder").value(10))
+                        .andExpect(jsonPath("$.data.groups.length()").value(5))
+                        .andExpect(jsonPath("$.data.groups[0].category").value("DETAIL"))
+                        .andExpect(jsonPath("$.data.groups[0].label").value("业务调查明细"))
                         .andExpect(jsonPath("$.data.groups[0].fields.length()").isNotEmpty())
-                        .andExpect(jsonPath("$.data.groups[1].category").value("COST"))
-                        .andExpect(jsonPath("$.data.groups[1].label").value("生产成本"))
-                        .andExpect(jsonPath("$.data.groups[2].category").value("INSURANCE"))
-                        .andExpect(jsonPath("$.data.groups[2].label").value("农业保险"))
-                        .andExpect(jsonPath("$.data.groups[3].category").value("SUBSIDY"))
-                        .andExpect(jsonPath("$.data.groups[3].label").value("农业补贴"));
+                        .andExpect(jsonPath("$.data.groups[1].category").value("QUALITY"))
+                        .andExpect(jsonPath("$.data.groups[1].label").value("质量指标"))
+                        .andExpect(jsonPath("$.data.groups[1].sortOrder").value(10))
+                        .andExpect(jsonPath("$.data.groups[1].fields.length()").isNotEmpty())
+                        .andExpect(jsonPath("$.data.groups[2].category").value("COST"))
+                        .andExpect(jsonPath("$.data.groups[2].label").value("生产成本"))
+                        .andExpect(jsonPath("$.data.groups[3].category").value("INSURANCE"))
+                        .andExpect(jsonPath("$.data.groups[3].label").value("农业保险"))
+                        .andExpect(jsonPath("$.data.groups[4].category").value("SUBSIDY"))
+                        .andExpect(jsonPath("$.data.groups[4].label").value("农业补贴"));
                 if (objectType.equals("AGRICULTURAL_TECH_STATION")) {
-                    result.andExpect(jsonPath("$.data.groups[1].fields").isEmpty())
-                            .andExpect(jsonPath("$.data.groups[2].fields").isEmpty())
-                            .andExpect(jsonPath("$.data.groups[3].fields").isEmpty());
+                    result.andExpect(jsonPath("$.data.groups[2].fields").isEmpty())
+                            .andExpect(jsonPath("$.data.groups[3].fields").isEmpty())
+                            .andExpect(jsonPath("$.data.groups[4].fields").isEmpty());
                 } else {
-                    result.andExpect(jsonPath("$.data.groups[1].fields").isNotEmpty())
-                            .andExpect(jsonPath("$.data.groups[2].fields").isNotEmpty())
-                            .andExpect(jsonPath("$.data.groups[3].fields").isNotEmpty());
+                    result.andExpect(jsonPath("$.data.groups[2].fields").isNotEmpty())
+                            .andExpect(jsonPath("$.data.groups[3].fields").isNotEmpty())
+                            .andExpect(jsonPath("$.data.groups[4].fields").isNotEmpty());
                 }
             }
         }
@@ -322,15 +362,17 @@ class ProductionRecordRestIntegrationTest {
         var result = mockMvc.perform(get("/api/v1/production-record-definitions")
                         .queryParam("productCode", product).queryParam("objectTypeCode", objectType))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.groups[0].fields[*].code").value(hasItem(qualityCode)));
+                .andExpect(jsonPath("$.data.groups[0].category").value("DETAIL"))
+                .andExpect(jsonPath("$.data.groups[0].fields[*].code").value(hasItem("PROD_SAMPLE_NAME")))
+                .andExpect(jsonPath("$.data.groups[1].fields[*].code").value(hasItem(qualityCode)));
         if (supportsAllCategories) {
-            result.andExpect(jsonPath("$.data.groups[1].fields[*].code").value(hasItem("LAND_RENT")))
-                    .andExpect(jsonPath("$.data.groups[2].fields[*].code").value(hasItem("INSURANCE_AMOUNT")))
-                    .andExpect(jsonPath("$.data.groups[3].fields[*].code").value(hasItem("SUBSIDY_AMOUNT")));
+            result.andExpect(jsonPath("$.data.groups[2].fields[*].code").value(hasItem("LAND_RENT")))
+                    .andExpect(jsonPath("$.data.groups[3].fields[*].code").value(hasItem("INSURANCE_AMOUNT")))
+                    .andExpect(jsonPath("$.data.groups[4].fields[*].code").value(hasItem("SUBSIDY_AMOUNT")));
         } else {
-            result.andExpect(jsonPath("$.data.groups[1].fields").isEmpty())
-                    .andExpect(jsonPath("$.data.groups[2].fields").isEmpty())
-                    .andExpect(jsonPath("$.data.groups[3].fields").isEmpty());
+            result.andExpect(jsonPath("$.data.groups[2].fields").isEmpty())
+                    .andExpect(jsonPath("$.data.groups[3].fields").isEmpty())
+                    .andExpect(jsonPath("$.data.groups[4].fields").isEmpty());
         }
     }
 

@@ -3,6 +3,8 @@ package com.cofco.qiqihar.graintrade.importing.interfaceadapter;
 import com.cofco.qiqihar.graintrade.importing.application.ImportErrorFile;
 import com.cofco.qiqihar.graintrade.importing.application.ImportJobView;
 import com.cofco.qiqihar.graintrade.importing.application.ProductionImportService;
+import com.cofco.qiqihar.graintrade.importing.application.ProductionImportTemplate;
+import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
@@ -26,7 +28,15 @@ public class ProductionImportController {
     public ProductionImportController(ProductionImportService service) { this.service = service; }
 
     @GetMapping("/template")
-    ResponseEntity<byte[]> template() { return csv("production-import-template.csv", service.template().getBytes(StandardCharsets.UTF_8)); }
+    ResponseEntity<byte[]> template(@RequestParam(defaultValue = "csv") String format,
+                                    @RequestParam(required = false) String productCode,
+                                    @RequestParam(required = false) String objectTypeCode) {
+        if ("xlsx".equalsIgnoreCase(format)) {
+            byte[] bytes = BusinessImportWorkbook.create(ProductionImportTemplate.workbook(productCode, objectTypeCode));
+            return xlsx("产情-" + productCode + "-" + objectTypeCode + "-批量导入模板.xlsx", bytes);
+        }
+        return csv("production-import-template.csv", service.template().getBytes(StandardCharsets.UTF_8));
+    }
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @org.springframework.web.bind.annotation.ResponseStatus(org.springframework.http.HttpStatus.CREATED)
@@ -49,6 +59,12 @@ public class ProductionImportController {
 
     private static ResponseEntity<byte[]> csv(String name, byte[] bytes) {
         return ResponseEntity.ok().contentType(MediaType.parseMediaType("text/csv;charset=UTF-8"))
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                        .filename(name, StandardCharsets.UTF_8).build().toString()).body(bytes);
+    }
+    private static ResponseEntity<byte[]> xlsx(String name, byte[] bytes) {
+        return ResponseEntity.ok().contentType(MediaType.parseMediaType(
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                 .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
                         .filename(name, StandardCharsets.UTF_8).build().toString()).body(bytes);
     }

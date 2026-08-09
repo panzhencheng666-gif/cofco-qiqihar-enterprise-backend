@@ -162,9 +162,13 @@ public class ProductionImportService {
         if (lower.endsWith(".xlsx") && (mediaType == null || mediaType.equals(
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))) {
             try {
-                return XlsxTable.parse(bytes, ProductionImportTemplate.HEADERS.size());
+                return ProductionImportTemplate.canonicalXlsx(bytes);
             } catch (IllegalArgumentException exception) {
-                throw new ClientRequestException("INVALID_IMPORT_FORMAT", "XLSX import file is invalid");
+                try {
+                    return XlsxTable.parse(bytes, ProductionImportTemplate.HEADERS.size());
+                } catch (IllegalArgumentException legacyException) {
+                    throw new ClientRequestException("INVALID_IMPORT_FORMAT", "XLSX import file is invalid");
+                }
             }
         }
         throw new ClientRequestException("INVALID_IMPORT_FORMAT", "Import file format is not supported");
@@ -184,20 +188,22 @@ public class ProductionImportService {
 
     private List<ParsedRow> parse(String content) {
         List<List<String>> table;
-        try { table = CsvTable.parse(content, ProductionImportTemplate.HEADERS.size()); }
+        List<String> headers = content.startsWith(String.join(",", ProductionImportTemplate.XLSX_CANONICAL_HEADERS))
+                ? ProductionImportTemplate.XLSX_CANONICAL_HEADERS : ProductionImportTemplate.HEADERS;
+        try { table = CsvTable.parse(content, headers.size()); }
         catch (CsvTable.LimitExceededException exception) {
             throw new ClientRequestException(exception.code(), exception.getMessage());
         }
         catch (IllegalArgumentException exception) { throw new ClientRequestException("INVALID_IMPORT_CSV", "CSV syntax is invalid"); }
-        if (table.isEmpty() || !table.getFirst().equals(ProductionImportTemplate.HEADERS)) {
+        if (table.isEmpty() || !table.getFirst().equals(headers)) {
             throw new ClientRequestException("INVALID_IMPORT_TEMPLATE", "CSV header does not match the current production template");
         }
         List<ParsedRow> rows = new ArrayList<>();
         for (int index = 1; index < table.size(); index++) {
             List<String> cells = table.get(index);
             Map<String, String> values = new LinkedHashMap<>();
-            for (int column = 0; column < ProductionImportTemplate.HEADERS.size(); column++) {
-                values.put(ProductionImportTemplate.HEADERS.get(column), column < cells.size() ? cells.get(column).trim() : "");
+            for (int column = 0; column < headers.size(); column++) {
+                values.put(headers.get(column), column < cells.size() ? cells.get(column).trim() : "");
             }
             if (values.values().stream().allMatch(String::isBlank)) {
                 rows.add(ParsedRow.error(index + 1, values, "IMPORT_ROW_EMPTY", "Import row is empty"));
@@ -216,19 +222,24 @@ public class ProductionImportService {
                     || required(values, "surveyDate") || required(values, "cultivatedAreaMu")
                     || required(values, "yieldPerMuKilograms") || required(values, "evidencePhotoId")
                     || ProductionImportTemplate.SUBMISSION_METADATA_HEADERS.stream()
+                            .filter(header -> !header.equals("PROD_REPORTER_NAME"))
                             .anyMatch(header -> required(values, header))) {
                 return ParsedRow.error(number, values, "IMPORT_ROW_REQUIRED_VALUE", "Required production import value is blank");
             }
             Map<String, String> submissionMetadata = new LinkedHashMap<>();
             ProductionImportTemplate.SUBMISSION_METADATA_HEADERS.forEach(
                     header -> submissionMetadata.put(header, values.get(header)));
+            ProductionImportTemplate.DETAIL_HEADERS.forEach(header -> putIfPresent(submissionMetadata, header, values));
             PlainDecimal.parse(values.get("PROD_SAMPLE_LATITUDE"), 3, 7, "IMPORT_ROW_VALUE_FORMAT");
             PlainDecimal.parse(values.get("PROD_SAMPLE_LONGITUDE"), 3, 7, "IMPORT_ROW_VALUE_FORMAT");
             return ParsedRow.valid(number, values, new ProductionDraft(values.get("productCode"), values.get("objectTypeCode"),
                     values.get("regionCode"), emptyToNull(values.get("cultivarCode")), LocalDate.parse(values.get("surveyDate")),
                     PlainDecimal.parse(values.get("cultivatedAreaMu"), 14, 4, "IMPORT_ROW_VALUE_FORMAT"),
                     PlainDecimal.parse(values.get("yieldPerMuKilograms"), 14, 4, "IMPORT_ROW_VALUE_FORMAT"),
-                    Map.of(), Map.of(), Map.of(), Map.of(), submissionMetadata,
+                    decimalValues(values, ProductionImportTemplate.QUALITY_HEADERS),
+                    decimalValues(values, ProductionImportTemplate.COST_HEADERS),
+                    decimalValues(values, List.of("INSURANCE_AMOUNT")),
+                    decimalValues(values, List.of("SUBSIDY_AMOUNT")), submissionMetadata,
                     List.of(UUID.fromString(values.get("evidencePhotoId")))));
         } catch (RuntimeException exception) {
             return ParsedRow.error(number, values, "IMPORT_ROW_VALUE_FORMAT", "Production date or decimal value is invalid");
@@ -236,6 +247,20 @@ public class ProductionImportService {
     }
 
     private static boolean required(Map<String, String> values, String name) { return values.get(name).isBlank(); }
+    private static void putIfPresent(Map<String, String> target, String code, Map<String, String> values) {
+        String value = values.get(code);
+        if (value != null && !value.isBlank()) target.put(code, value);
+    }
+    private static Map<String, BigDecimal> decimalValues(Map<String, String> values, List<String> headers) {
+        Map<String, BigDecimal> result = new LinkedHashMap<>();
+        headers.forEach(header -> {
+            String value = values.get(header);
+            if (value != null && !value.isBlank()) {
+                result.put(header, PlainDecimal.parse(value, 14, 4, "IMPORT_ROW_VALUE_FORMAT"));
+            }
+        });
+        return Map.copyOf(result);
+    }
     private static String emptyToNull(String value) { return value.isBlank() ? null : value; }
     private static ClientRequestException invalid() { return new ClientRequestException("INVALID_IMPORT_REQUEST", "Import request is invalid"); }
     private static String detail(int imported, int failed) { return "{\"importedRows\":" + imported + ",\"failedRows\":" + failed + "}"; }

@@ -22,6 +22,9 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
+import com.cofco.qiqihar.graintrade.importing.application.ProductionImportTemplate;
+import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
+import com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable;
 
 @SpringBootTest(classes = GrainTradeApplication.class)
 @AutoConfigureMockMvc
@@ -74,6 +77,65 @@ class ProductionImportRestIntegrationTest {
                 TRUNCATE platform.import_row_result,platform.import_job,platform.business_audit_event,
                   production.production_record,evidence.evidence_photo RESTART IDENTITY CASCADE
                 """).update();
+    }
+
+    @Test
+    void downloadsAProductSpecificXlsxTemplateWithoutAReporterInput() throws Exception {
+        byte[] workbook = mvc.perform(get("/api/v1/imports/production/template")
+                        .param("format", "xlsx")
+                        .param("productCode", "CORN")
+                        .param("objectTypeCode", "FARMER")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                .andReturn().getResponse().getContentAsByteArray();
+
+        assertThat(XlsxTable.parseWorksheet(workbook, 1, ProductionImportTemplate.XLSX_HEADERS.size()))
+                .containsExactly(ProductionImportTemplate.XLSX_LABELS, ProductionImportTemplate.XLSX_HEADERS);
+    }
+
+    @Test
+    void importsTheDownloadedXlsxProtocolWithSurveyDetailsAndServerOwnedReporter() throws Exception {
+        java.util.ArrayList<String> row = new java.util.ArrayList<>(
+                java.util.Collections.nCopies(ProductionImportTemplate.XLSX_HEADERS.size(), ""));
+        put(row, "regionCode", "230200");
+        put(row, "surveyDate", "2026-08-09");
+        put(row, "cultivatedAreaMu", "100");
+        put(row, "yieldPerMuKilograms", "500");
+        put(row, "PROD_REPORTER_PHONE", "13800000000");
+        put(row, "PROD_SAMPLE_CONTACT", "13900000000");
+        put(row, "PROD_SAMPLE_LATITUDE", "47.3543");
+        put(row, "PROD_SAMPLE_LONGITUDE", "123.9182");
+        put(row, "PROD_SAMPLE_NAME", "龙江县第一调查户");
+        put(row, "PROD_HARVEST_AREA_MU", "96.5");
+        put(row, "PROD_GROWTH_STAGE", "灌浆期");
+        put(row, "MOISTURE", "14.2");
+        put(row, "evidencePhotoId", PHOTO_ID);
+        byte[] workbook = BusinessImportWorkbook.create(
+                ProductionImportTemplate.workbook("CORN", "FARMER"), java.util.List.of(row));
+
+        mvc.perform(multipart("/api/v1/imports/production")
+                        .file(new MockMultipartFile("file", "corn-production.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
+                        .header("Idempotency-Key", "corn-production-xlsx")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.statusCode").value("COMPLETED"))
+                .andExpect(jsonPath("$.data.importedRows").value(1));
+
+        mvc.perform(get("/api/v1/production-records")
+                        .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].values.PROD_SAMPLE_NAME").value("龙江县第一调查户"))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_HARVEST_AREA_MU").value("96.5"))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_GROWTH_STAGE").value("灌浆期"))
+                .andExpect(jsonPath("$.data.items[0].values.MOISTURE").value("14.2000"))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_REPORTER_NAME").value("产情测试员"));
+    }
+
+    private static void put(java.util.List<String> row, String header, String value) {
+        row.set(ProductionImportTemplate.XLSX_HEADERS.indexOf(header), value);
     }
 
     @Test

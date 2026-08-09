@@ -12,12 +12,20 @@ public record ProductionSubmissionMetadata(
         String reporterPhone,
         String sampleContact,
         String sampleLatitude,
-        String sampleLongitude) {
+        String sampleLongitude,
+        Map<String, String> surveyDetails) {
 
     private static final Pattern PHONE = Pattern.compile("^[0-9+()\\- ]{6,32}$");
     private static final Set<String> ALLOWED_KEYS = Set.of(
             "PROD_REPORTER_NAME", "PROD_REPORTER_PHONE", "PROD_SAMPLE_CONTACT",
-            "PROD_SAMPLE_LATITUDE", "PROD_SAMPLE_LONGITUDE");
+            "PROD_SAMPLE_LATITUDE", "PROD_SAMPLE_LONGITUDE", "PROD_SAMPLE_NAME",
+            "PROD_HARVEST_AREA_MU", "PROD_AFFECTED_AREA_MU", "PROD_GROWTH_STATUS",
+            "PROD_GROWTH_STAGE", "PROD_OPENING_INVENTORY", "PROD_SALES_VOLUME",
+            "PROD_SELF_USE", "PROD_ENDING_INVENTORY", "PROD_INTENDED_AREA_MU",
+            "PROD_INTENTION_REASON");
+    private static final Set<String> DECIMAL_DETAILS = Set.of(
+            "PROD_HARVEST_AREA_MU", "PROD_AFFECTED_AREA_MU", "PROD_OPENING_INVENTORY",
+            "PROD_SALES_VOLUME", "PROD_SELF_USE", "PROD_ENDING_INVENTORY", "PROD_INTENDED_AREA_MU");
 
     public ProductionSubmissionMetadata {
         reporterName = required(reporterName, "reporter name");
@@ -28,6 +36,24 @@ public record ProductionSubmissionMetadata(
         }
         sampleLatitude = coordinate(sampleLatitude, new BigDecimal("-90"), new BigDecimal("90"), "latitude");
         sampleLongitude = coordinate(sampleLongitude, new BigDecimal("-180"), new BigDecimal("180"), "longitude");
+        Map<String, String> normalized = new LinkedHashMap<>();
+        if (surveyDetails != null) surveyDetails.forEach((code, value) -> {
+            if (value == null || value.isBlank()) return;
+            String text = required(value, code);
+            if (DECIMAL_DETAILS.contains(code)) {
+                try {
+                    BigDecimal decimal = new BigDecimal(text);
+                    if (decimal.signum() < 0 || decimal.precision() > 18 || decimal.scale() > 4) {
+                        throw new IllegalArgumentException(code + " is outside range");
+                    }
+                    text = decimal.stripTrailingZeros().toPlainString();
+                } catch (NumberFormatException exception) {
+                    throw new IllegalArgumentException(code + " is invalid", exception);
+                }
+            }
+            normalized.put(code, text);
+        });
+        surveyDetails = Map.copyOf(normalized);
     }
 
     public static ProductionSubmissionMetadata from(Map<String, String> values) {
@@ -35,10 +61,13 @@ public record ProductionSubmissionMetadata(
         if (!ALLOWED_KEYS.containsAll(values.keySet())) {
             throw new IllegalArgumentException("submission metadata contains unknown field");
         }
+        Map<String, String> surveyDetails = new LinkedHashMap<>(values);
+        surveyDetails.keySet().removeAll(Set.of("PROD_REPORTER_NAME", "PROD_REPORTER_PHONE",
+                "PROD_SAMPLE_CONTACT", "PROD_SAMPLE_LATITUDE", "PROD_SAMPLE_LONGITUDE"));
         return new ProductionSubmissionMetadata(
                 values.get("PROD_REPORTER_NAME"), values.get("PROD_REPORTER_PHONE"),
                 values.get("PROD_SAMPLE_CONTACT"), values.get("PROD_SAMPLE_LATITUDE"),
-                values.get("PROD_SAMPLE_LONGITUDE"));
+                values.get("PROD_SAMPLE_LONGITUDE"), surveyDetails);
     }
 
     public Map<String, String> asMap() {
@@ -48,6 +77,7 @@ public record ProductionSubmissionMetadata(
         values.put("PROD_SAMPLE_CONTACT", sampleContact);
         values.put("PROD_SAMPLE_LATITUDE", sampleLatitude);
         values.put("PROD_SAMPLE_LONGITUDE", sampleLongitude);
+        values.putAll(surveyDetails);
         return Map.copyOf(values);
     }
 

@@ -3,6 +3,8 @@ package com.cofco.qiqihar.graintrade.importing.interfaceadapter;
 import com.cofco.qiqihar.graintrade.importing.application.ImportJobView;
 import com.cofco.qiqihar.graintrade.importing.application.ImportErrorFile;
 import com.cofco.qiqihar.graintrade.importing.application.MarketImportService;
+import com.cofco.qiqihar.graintrade.importing.application.MarketImportTemplate;
+import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
@@ -29,7 +31,18 @@ public class MarketImportController {
     public MarketImportController(MarketImportService service) { this.service = service; }
 
     @GetMapping("/template")
-    ResponseEntity<byte[]> template() {
+    ResponseEntity<byte[]> template(@RequestParam(defaultValue = "csv") String format,
+                                    @RequestParam(required = false) String productCode,
+                                    @RequestParam(required = false) String objectTypeCode) {
+        if ("xlsx".equalsIgnoreCase(format)) {
+            byte[] bytes = BusinessImportWorkbook.create(MarketImportTemplate.workbook(productCode, objectTypeCode));
+            return ResponseEntity.ok().contentType(MediaType.parseMediaType(
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                    .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                            .filename("市场-" + productCode + "-" + objectTypeCode + "-批量导入模板.xlsx",
+                                    StandardCharsets.UTF_8).build().toString())
+                    .body(bytes);
+        }
         return csv("market-import-template.csv", service.template().getBytes(StandardCharsets.UTF_8));
     }
 

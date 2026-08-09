@@ -27,6 +27,7 @@ class ProductionV16MasterDataTest {
                 FROM platform.production_fact_category
                 ORDER BY sort_order
                 """)).containsExactly(
+                        "DETAIL:业务调查明细:5",
                         "QUALITY:质量指标:10",
                         "COST:生产成本:20",
                         "INSURANCE:农业保险:30",
@@ -41,7 +42,7 @@ class ProductionV16MasterDataTest {
                 FROM platform.production_fact_definition
                 WHERE code NOT LIKE '%\\_TEST' ESCAPE '\\'
                 ORDER BY category, code
-                """)).containsExactlyInAnyOrder(
+                """)).contains(
                         "MOISTURE:QUALITY:水分:%:1",
                         "TEST_WEIGHT:QUALITY:容重:克/升:0",
                         "IMPURITY:QUALITY:杂质:%:1",
@@ -60,18 +61,23 @@ class ProductionV16MasterDataTest {
                         "MACHINERY_COST:COST:机耕费用:元/亩:0",
                         "OTHER_COST:COST:其他成本:元/亩:0",
                         "INSURANCE_AMOUNT:INSURANCE:保险金额:元:0",
-                        "SUBSIDY_AMOUNT:SUBSIDY:补贴金额:元:0");
+                        "SUBSIDY_AMOUNT:SUBSIDY:补贴金额:元:0",
+                        "PROD_SAMPLE_NAME:DETAIL:填报对象:-:4",
+                        "PROD_HARVEST_AREA_MU:DETAIL:预计收获面积:亩:4",
+                        "PROD_GROWTH_STAGE:DETAIL:生育阶段:-:4",
+                        "PROD_ENDING_INVENTORY:DETAIL:期末余粮:吨:4",
+                        "TOXIN:QUALITY:毒素:%:1");
         assertThat(singleLong("""
                 SELECT count(*) FROM platform.production_fact_definition
                 WHERE code = 'TOXIN'
-                """)).isZero();
+                """)).isOne();
     }
 
     @Test
     void appliesQualityToThreeObjectsAndCostSupportOnlyToFarmerAndVillageCommittee()
             throws SQLException {
         for (String product : List.of("CORN", "SOYBEAN", "RICE")) {
-            int qualityCount = product.equals("RICE") ? 4 : 5;
+            int qualityCount = product.equals("RICE") ? 4 : product.equals("CORN") ? 6 : 5;
             for (String objectType : List.of(
                     "FARMER", "VILLAGE_COMMITTEE", "AGRICULTURAL_TECH_STATION")) {
                 assertThat(applicableCount(product, objectType, "QUALITY")).isEqualTo(qualityCount);

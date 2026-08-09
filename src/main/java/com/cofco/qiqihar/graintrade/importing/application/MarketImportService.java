@@ -3,7 +3,6 @@ package com.cofco.qiqihar.graintrade.importing.application;
 import com.cofco.qiqihar.graintrade.importing.domain.CsvTable;
 import com.cofco.qiqihar.graintrade.importing.domain.ImportJob;
 import com.cofco.qiqihar.graintrade.importing.domain.ImportRowOutcome;
-import com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable;
 import com.cofco.qiqihar.graintrade.market.importing.MarketImportPort;
 import com.cofco.qiqihar.graintrade.market.importing.MarketImportRow;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
@@ -131,7 +130,7 @@ public class MarketImportService {
                 return CsvTable.parse(new String(bytes, StandardCharsets.UTF_8), MarketImportTemplate.HEADERS.size());
             if (lower.endsWith(".xlsx") && (mediaType == null || mediaType.equals(
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")))
-                return XlsxTable.parse(bytes, MarketImportTemplate.HEADERS.size());
+                return MarketImportTemplate.canonicalXlsx(bytes);
         } catch (CsvTable.LimitExceededException exception) {
             throw new ClientRequestException(exception.code(), exception.getMessage());
         } catch (IllegalArgumentException exception) {

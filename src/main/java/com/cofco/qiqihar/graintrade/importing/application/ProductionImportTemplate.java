@@ -1,16 +1,66 @@
 package com.cofco.qiqihar.graintrade.importing.application;
 
 import java.util.List;
+import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
 
 public final class ProductionImportTemplate {
     public static final String DOMAIN = "PRODUCTION";
     public static final List<String> SUBMISSION_METADATA_HEADERS = List.of(
             "PROD_REPORTER_NAME", "PROD_REPORTER_PHONE", "PROD_SAMPLE_CONTACT",
             "PROD_SAMPLE_LATITUDE", "PROD_SAMPLE_LONGITUDE");
+    public static final List<String> DETAIL_HEADERS = List.of("PROD_SAMPLE_NAME", "PROD_HARVEST_AREA_MU",
+            "PROD_AFFECTED_AREA_MU", "PROD_GROWTH_STATUS", "PROD_GROWTH_STAGE", "PROD_OPENING_INVENTORY",
+            "PROD_SALES_VOLUME", "PROD_SELF_USE", "PROD_ENDING_INVENTORY", "PROD_INTENDED_AREA_MU",
+            "PROD_INTENTION_REASON");
+    public static final List<String> QUALITY_HEADERS = List.of("MOISTURE", "TEST_WEIGHT", "TOXIN", "IMPURITY",
+            "IMPERFECT_GRAIN", "MILDEW", "PROTEIN", "OIL_YIELD", "MILLING_YIELD", "BROWN_RICE_YIELD");
+    public static final List<String> COST_HEADERS = List.of("LAND_RENT", "SEED_COST", "PESTICIDE_COST",
+            "FERTILIZER_COST", "IRRIGATION_COST", "LABOR_COST", "MACHINERY_COST", "OTHER_COST");
     public static final List<String> HEADERS = List.of("productCode", "objectTypeCode", "regionCode", "cultivarCode",
             "surveyDate", "cultivatedAreaMu", "yieldPerMuKilograms",
             "PROD_REPORTER_NAME", "PROD_REPORTER_PHONE", "PROD_SAMPLE_CONTACT",
             "PROD_SAMPLE_LATITUDE", "PROD_SAMPLE_LONGITUDE", "evidencePhotoId");
+    public static final List<String> XLSX_HEADERS = List.of("regionCode", "cultivarCode", "surveyDate",
+            "cultivatedAreaMu", "yieldPerMuKilograms", "PROD_REPORTER_PHONE", "PROD_SAMPLE_CONTACT",
+            "PROD_SAMPLE_LATITUDE", "PROD_SAMPLE_LONGITUDE", "PROD_SAMPLE_NAME", "PROD_HARVEST_AREA_MU",
+            "PROD_AFFECTED_AREA_MU", "PROD_GROWTH_STATUS", "PROD_GROWTH_STAGE", "PROD_OPENING_INVENTORY",
+            "PROD_SALES_VOLUME", "PROD_SELF_USE", "PROD_ENDING_INVENTORY", "PROD_INTENDED_AREA_MU",
+            "PROD_INTENTION_REASON", "MOISTURE", "TEST_WEIGHT", "TOXIN", "IMPURITY", "IMPERFECT_GRAIN",
+            "MILDEW", "PROTEIN", "OIL_YIELD", "MILLING_YIELD", "BROWN_RICE_YIELD", "LAND_RENT", "SEED_COST",
+            "PESTICIDE_COST", "FERTILIZER_COST", "IRRIGATION_COST", "LABOR_COST", "MACHINERY_COST", "OTHER_COST",
+            "INSURANCE_AMOUNT", "SUBSIDY_AMOUNT", "evidencePhotoId");
+    public static final List<String> XLSX_CANONICAL_HEADERS = java.util.stream.Stream.of(
+            List.of("productCode", "objectTypeCode", "PROD_REPORTER_NAME"), XLSX_HEADERS)
+            .flatMap(List::stream).toList();
+    public static final List<String> XLSX_LABELS = List.of("所在地区代码", "具体品种代码", "调查日期",
+            "种植面积（亩）", "权威采用单产（公斤/亩）", "填报人联系方式", "填报对象联系方式",
+            "纬度（度）", "经度（度）", "填报对象", "预计收获面积（亩）", "灾损面积（亩）",
+            "当前长势", "生育阶段", "期初库存（吨）", "销售数量（吨）", "自用数量（吨）", "期末余粮（吨）",
+            "下年度意向面积（亩）", "调整原因", "水分（%）", "容重（克/升）", "毒素（%）", "杂质（%）",
+            "不完善粒（%）", "霉变（%）", "蛋白（%）", "出油率（%）", "出米率（%）", "糙米率（%）",
+            "地租（元/亩）", "种子费用（元/亩）", "农药费用（元/亩）", "化肥费用（元/亩）", "灌溉费用（元/亩）",
+            "人工费用（元/亩）", "机耕费用（元/亩）", "其他成本（元/亩）", "保险金额（元）", "补贴金额（元）", "现场水印照片编号");
     private ProductionImportTemplate() {}
     public static String csv() { return String.join(",", HEADERS) + "\n"; }
+    public static BusinessImportWorkbook.Template workbook(String productCode, String objectTypeCode) {
+        return new BusinessImportWorkbook.Template(DOMAIN, "产情", productCode, objectTypeCode,
+                XLSX_HEADERS, XLSX_LABELS);
+    }
+
+    public static List<List<String>> canonicalXlsx(byte[] bytes) {
+        var sheet = BusinessImportWorkbook.read(bytes, DOMAIN, XLSX_HEADERS, XLSX_LABELS);
+        java.util.ArrayList<List<String>> table = new java.util.ArrayList<>();
+        table.add(XLSX_CANONICAL_HEADERS);
+        for (List<String> row : sheet.rows()) {
+            java.util.Map<String, String> values = new java.util.LinkedHashMap<>();
+            values.put("productCode", sheet.productCode());
+            values.put("objectTypeCode", sheet.objectTypeCode());
+            values.put("PROD_REPORTER_NAME", "");
+            for (int index = 0; index < XLSX_HEADERS.size(); index++) {
+                values.put(XLSX_HEADERS.get(index), row.get(index));
+            }
+            table.add(XLSX_CANONICAL_HEADERS.stream().map(header -> values.getOrDefault(header, "")).toList());
+        }
+        return List.copyOf(table);
+    }
 }

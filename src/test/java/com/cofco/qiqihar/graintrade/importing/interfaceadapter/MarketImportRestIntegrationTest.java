@@ -10,6 +10,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.importing.application.MarketImportTemplate;
+import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.awt.Color;
 import java.awt.image.BufferedImage;
@@ -17,8 +18,6 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.UUID;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
 import javax.imageio.ImageIO;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
@@ -103,14 +102,16 @@ class MarketImportRestIntegrationTest {
     @Test
     void importsTheSameServerOwnedTemplateFromXlsx() throws Exception {
         String photoId = uploadEvidence();
-        List<String> values = List.of("CORN", "FEED_MILL", "230200", "2026-08-01", "PURCHASE", "2300", "", "36", "12", "72", "BULK",
-                "客户端伪造姓名", "13800000000", "齐齐哈尔第一粮店", "13900000000", "47.3543", "123.9182",
+        List<String> values = List.of("230200", "2026-08-01", "PURCHASE", "2300", "", "36", "12", "72",
+                "BULK", "13800000000", "齐齐哈尔第一粮店", "13900000000", "47.3543", "123.9182",
                 "12", "14.6", photoId);
+        byte[] workbook = BusinessImportWorkbook.create(
+                MarketImportTemplate.workbook("CORN", "FEED_MILL"), List.of(values));
 
         mvc.perform(multipart("/api/v1/imports/market")
                         .file(new MockMultipartFile("file", "market.xlsx",
                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                xlsx(List.of(MarketImportTemplate.HEADERS, values))))
+                                workbook))
                         .header("Idempotency-Key", "market-xlsx-1").principal(() -> "market-tester"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.importedRows").value(1));
@@ -201,57 +202,4 @@ class MarketImportRestIntegrationTest {
         return output.toByteArray();
     }
 
-    private static byte[] xlsx(List<List<String>> rows) throws Exception {
-        StringBuilder sheet = new StringBuilder("<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
-                .append("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>");
-        for (int row = 0; row < rows.size(); row++) {
-            sheet.append("<row r=\"").append(row + 1).append("\">");
-            for (int column = 0; column < rows.get(row).size(); column++) {
-                sheet.append("<c r=\"").append(columnName(column)).append(row + 1)
-                        .append("\" t=\"inlineStr\"><is><t>").append(xml(rows.get(row).get(column)))
-                        .append("</t></is></c>");
-            }
-            sheet.append("</row>");
-        }
-        sheet.append("</sheetData></worksheet>");
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        try (ZipOutputStream zip = new ZipOutputStream(output)) {
-            entry(zip, "[Content_Types].xml", """
-                    <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
-                      <Default Extension="xml" ContentType="application/xml"/>
-                      <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
-                      <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
-                    </Types>
-                    """);
-            entry(zip, "xl/workbook.xml", """
-                    <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
-                      xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-                      <sheets><sheet name="market" sheetId="1" r:id="rId1"/></sheets>
-                    </workbook>
-                    """);
-            entry(zip, "xl/worksheets/sheet1.xml", sheet.toString());
-        }
-        return output.toByteArray();
-    }
-
-    private static void entry(ZipOutputStream zip, String name, String content) throws Exception {
-        zip.putNextEntry(new ZipEntry(name));
-        zip.write(content.getBytes(StandardCharsets.UTF_8));
-        zip.closeEntry();
-    }
-
-    private static String columnName(int index) {
-        StringBuilder result = new StringBuilder();
-        int value = index + 1;
-        while (value > 0) {
-            value--;
-            result.insert(0, (char) ('A' + value % 26));
-            value /= 26;
-        }
-        return result.toString();
-    }
-
-    private static String xml(String value) {
-        return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
-    }
 }
