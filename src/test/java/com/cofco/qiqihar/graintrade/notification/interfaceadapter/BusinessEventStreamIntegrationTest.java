@@ -2,11 +2,17 @@ package com.cofco.qiqihar.graintrade.notification.interfaceadapter;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.classic.spi.ThrowableProxyUtil;
+import ch.qos.logback.core.read.ListAppender;
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.URI;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -18,6 +24,7 @@ import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -36,6 +43,7 @@ class BusinessEventStreamIntegrationTest {
     private static final UUID FIRST_VISIBLE = UUID.fromString("00000000-0000-0000-0000-000000000073");
     private static final UUID HIDDEN = UUID.fromString("00000000-0000-0000-0000-000000000074");
     private static final UUID SECOND_VISIBLE = UUID.fromString("00000000-0000-0000-0000-000000000075");
+    private static final UUID DISCONNECT_TRIGGER = UUID.fromString("00000000-0000-0000-0000-000000000076");
 
     @LocalServerPort int port;
     @Autowired DataSource dataSource;
@@ -138,10 +146,62 @@ class BusinessEventStreamIntegrationTest {
         assertThat(response.body()).contains("\"code\":\"INVALID_EVENT_CURSOR\"");
     }
 
+    @Test
+    void clientDisconnectDoesNotFailAuthorizationDuringAsyncCompletion() throws Exception {
+        Logger rootLogger = (Logger) LoggerFactory.getLogger(Logger.ROOT_LOGGER_NAME);
+        ListAppender<ILoggingEvent> captured = new ListAppender<>();
+        captured.start();
+        rootLogger.addAppender(captured);
+        try {
+            long firstSequence = jdbc.sql("""
+                    SELECT event_sequence FROM platform.business_event_outbox WHERE event_id=:id
+                    """).param("id", FIRST_VISIBLE).query(Long.class).single();
+            Socket socket = new Socket();
+            socket.connect(new InetSocketAddress("127.0.0.1", port), 3_000);
+            socket.setSoTimeout(3_000);
+            socket.getOutputStream().write(("GET /api/v1/business-events/stream?after="
+                    + firstSequence + " HTTP/1.1\r\nHost: 127.0.0.1:" + port
+                    + "\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n")
+                    .getBytes(StandardCharsets.US_ASCII));
+            socket.getOutputStream().flush();
+            StringBuilder received = new StringBuilder();
+            while (!received.toString().contains("stream-market-second")) {
+                int next = socket.getInputStream().read();
+                if (next < 0) break;
+                received.append((char) next);
+            }
+            assertThat(received).contains("HTTP/1.1 200").contains("stream-market-second");
+            socket.setSoLinger(true, 0);
+            socket.close();
+
+            insertEvent(DISCONNECT_TRIGGER, "stream-disconnect-trigger", VISIBLE_REGION);
+            long deadline = System.nanoTime() + Duration.ofSeconds(4).toNanos();
+            while (System.nanoTime() < deadline && !containsAuthorizationDenied(captured)) {
+                Thread.sleep(50);
+            }
+
+            assertThat(captured.list)
+                    .noneMatch(BusinessEventStreamIntegrationTest::isAuthorizationDenied);
+        } finally {
+            rootLogger.detachAppender(captured);
+            captured.stop();
+        }
+    }
+
+    private static boolean containsAuthorizationDenied(ListAppender<ILoggingEvent> captured) {
+        return captured.list.stream().anyMatch(BusinessEventStreamIntegrationTest::isAuthorizationDenied);
+    }
+
+    private static boolean isAuthorizationDenied(ILoggingEvent event) {
+        return event.getThrowableProxy() != null
+                && ThrowableProxyUtil.asString(event.getThrowableProxy())
+                        .contains("AuthorizationDeniedException");
+    }
+
     private void cleanup() {
         if (jdbc != null) {
             jdbc.sql("DELETE FROM platform.business_event_outbox WHERE event_id IN (:ids)")
-                    .param("ids", List.of(FIRST_VISIBLE, HIDDEN, SECOND_VISIBLE)).update();
+                    .param("ids", List.of(FIRST_VISIBLE, HIDDEN, SECOND_VISIBLE, DISCONNECT_TRIGGER)).update();
             jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id=:reader")
                     .param("reader", READER).update();
             jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:reader")

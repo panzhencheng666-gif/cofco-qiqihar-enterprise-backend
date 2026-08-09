@@ -1,7 +1,9 @@
 package com.cofco.qiqihar.graintrade.shared.security.interfaceadapter;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
@@ -12,6 +14,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -44,11 +47,28 @@ class LocalSecurityConfigurationTest {
                 .andExpect(status().isUnauthorized());
     }
 
+    @Test
+    void authenticatedLocalAsyncDispatchCompletesWithoutReauthorizationFailure() throws Exception {
+        MvcResult initial = mockMvc.perform(get("/api/v1/whoami-async")
+                        .header("X-Actor", "local-subject"))
+                .andExpect(request().asyncStarted())
+                .andReturn();
+
+        mockMvc.perform(asyncDispatch(initial))
+                .andExpect(status().isOk())
+                .andExpect(content().string("local-subject"));
+    }
+
     @RestController
     static class ProbeController {
         @GetMapping("/api/v1/whoami")
         String whoami(java.security.Principal principal) {
             return principal.getName();
+        }
+
+        @GetMapping("/api/v1/whoami-async")
+        java.util.concurrent.Callable<String> whoamiAsync(java.security.Principal principal) {
+            return principal::getName;
         }
     }
 }

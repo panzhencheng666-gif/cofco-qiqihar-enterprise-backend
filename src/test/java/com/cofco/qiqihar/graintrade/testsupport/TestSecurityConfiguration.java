@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.testsupport;
 
 import jakarta.servlet.FilterChain;
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -48,6 +49,7 @@ public class TestSecurityConfiguration {
                                     + "\"message\":\"Authentication is required\"}}");
                         }))
                 .authorizeHttpRequests(authorize -> authorize
+                        .dispatcherTypeMatchers(DispatcherType.ASYNC).permitAll()
                         .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
                         .anyRequest().authenticated());
         return http.build();
