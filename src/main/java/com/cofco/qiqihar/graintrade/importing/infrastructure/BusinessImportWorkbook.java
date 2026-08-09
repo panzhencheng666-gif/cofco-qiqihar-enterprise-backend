@@ -73,8 +73,13 @@ public final class BusinessImportWorkbook {
     }
 
     public static ImportSheet read(byte[] bytes, String domainCode, List<String> headers, List<String> labels) {
+        return read(bytes, domainCode, headers, labels, 5_000);
+    }
+
+    public static ImportSheet read(byte[] bytes, String domainCode, List<String> headers, List<String> labels,
+            int maxDataRows) {
         Context context = context(bytes, domainCode);
-        List<List<String>> sheet = XlsxTable.parseWorksheet(bytes, 1, headers.size());
+        List<List<String>> sheet = XlsxTable.parseWorksheet(bytes, 1, headers.size(), maxDataRows + 2);
         if (sheet.size() < 2 || !sheet.get(0).equals(labels) || !sheet.get(1).equals(headers)) {
             throw new IllegalArgumentException("INVALID_XLSX_TEMPLATE");
         }
@@ -119,7 +124,7 @@ public final class BusinessImportWorkbook {
         List<List<String>> instructions = List.of(
                 List.of("填报说明", "请按字段名称填写，不得修改表头或隐藏的模板校验信息"),
                 List.of("填报人", "由登录账号自动记录，不得在模板中填写"),
-                List.of("单批数量", "每次最多导入 5000 条；更多记录请分批导入"));
+                List.of("处理方式", "5000 条以内即时处理；5001 至 50000 条转入后台任务处理"));
         for (int index = 0; index < instructions.size(); index++) {
             xml.append(row(index + 5, instructions.get(index), index == 0 ? 1 : 0, false));
         }

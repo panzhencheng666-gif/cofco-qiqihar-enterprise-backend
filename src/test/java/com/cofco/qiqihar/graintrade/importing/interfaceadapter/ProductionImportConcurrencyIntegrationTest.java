@@ -298,6 +298,13 @@ class ProductionImportConcurrencyIntegrationTest {
         }
 
         @Override
+        public ImportReservation queue(String subjectId, String domainCode, String idempotencyKey,
+                String digest, String workUnitCode, UUID retryOf, String sourceContent, Instant now) {
+            return delegate.queue(subjectId, domainCode, idempotencyKey, digest, workUnitCode, retryOf,
+                    sourceContent, now);
+        }
+
+        @Override
         public Optional<StoredImportJob> findByIdempotency(String subjectId, String domainCode, String idempotencyKey) {
             return delegate.findByIdempotency(subjectId, domainCode, idempotencyKey);
         }
@@ -305,6 +312,18 @@ class ProductionImportConcurrencyIntegrationTest {
         @Override
         public Optional<StoredImportJob> findById(UUID jobId) {
             return delegate.findById(jobId);
+        }
+
+        @Override public Optional<StoredImportJob> claimNext(Instant now, Instant leaseUntil) {
+            return delegate.claimNext(now, leaseUntil);
+        }
+        @Override public int requeueExpired(Instant now) { return delegate.requeueExpired(now); }
+        @Override public boolean heartbeat(UUID jobId, UUID leaseToken, Instant leaseUntil) {
+            return delegate.heartbeat(jobId, leaseToken, leaseUntil);
+        }
+        @Override public void fail(UUID jobId, UUID leaseToken, String failureCode, String failureMessage,
+                Instant completedAt) {
+            delegate.fail(jobId, leaseToken, failureCode, failureMessage, completedAt);
         }
 
         @Override

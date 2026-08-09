@@ -25,21 +25,22 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
-public class LogisticsImportService {
-    private static final int MAX_BYTES = 2 * 1024 * 1024;
+public class LogisticsImportService implements QueuedImportProcessor {
     private final ImportJobRepository jobs;
     private final LogisticsImportPort logistics;
     private final AccessControl access;
     private final BusinessAuditRecorder audit;
     private final Clock clock;
+    private final BusinessImportLimits limits;
 
     public LogisticsImportService(ImportJobRepository jobs, LogisticsImportPort logistics,
-            AccessControl access, BusinessAuditRecorder audit, Clock clock) {
+            AccessControl access, BusinessAuditRecorder audit, Clock clock, BusinessImportLimits limits) {
         this.jobs = jobs;
         this.logistics = logistics;
         this.access = access;
         this.audit = audit;
         this.clock = clock;
+        this.limits = limits;
     }
 
     public BusinessImportWorkbook.Template template(String productCode) {
@@ -71,6 +72,11 @@ public class LogisticsImportService {
         SecurityPrincipal principal = access.require("BUSINESS_IMPORT", null);
         Parsed parsed = parse(bytes, expectedContext);
         String digest = digest(bytes);
+        String sourceContent = java.util.Base64.getEncoder().encodeToString(parsed.sourceBytes());
+        if (limits.queued(parsed.rows().size())) {
+            return ImportJobView.from(jobs.queue(principal.subjectId(), LogisticsImportTemplate.DOMAIN, key, digest,
+                    principal.workUnitCode(), null, sourceContent, clock.instant()).stored().job());
+        }
         var reservation = jobs.reserve(principal.subjectId(), LogisticsImportTemplate.DOMAIN, key, digest,
                 principal.workUnitCode(), clock.instant());
         if (!reservation.owner()) return ImportJobView.from(reservation.stored().job());
@@ -85,6 +91,12 @@ public class LogisticsImportService {
                 .orElseThrow(() -> new ClientRequestException("IMPORT_JOB_NOT_FOUND", "Import job does not exist"));
         if (!stored.job().requestedBy().equals(principal.subjectId()))
             throw new ConflictException("IMPORT_RETRY_NOT_ALLOWED", "Import job belongs to a different subject");
+        if ("FAILED".equals(stored.job().statusCode())) {
+            String retryKey = "retry-" + UUID.randomUUID();
+            return ImportJobView.from(jobs.queue(principal.subjectId(), LogisticsImportTemplate.DOMAIN, retryKey,
+                    stored.job().contentSha256(), principal.workUnitCode(), stored.job().id(),
+                    stored.sourceContent(), clock.instant()).stored().job());
+        }
         if (stored.job().failedRows() == 0)
             throw new ConflictException("IMPORT_RETRY_NOT_AVAILABLE", "Import job has no failed rows to retry");
         Parsed parsed;
@@ -98,6 +110,28 @@ public class LogisticsImportService {
                 stored.job().contentSha256(), principal.workUnitCode(), clock.instant());
         return process(reservation.stored().job(), key, parsed, stored.job().contentSha256(),
                 stored.job().id(), principal);
+    }
+
+    @Transactional(readOnly = true)
+    public ImportJobView status(UUID importJobId) {
+        SecurityPrincipal principal = access.require("BUSINESS_IMPORT", null);
+        return ImportJobView.from(ownedStored(importJobId, principal).job());
+    }
+
+    @Override public String domainCode() { return LogisticsImportTemplate.DOMAIN; }
+
+    @Override
+    @Transactional
+    public void processQueued(UUID jobId, SecurityPrincipal principal) {
+        var stored = ownedStored(jobId, principal);
+        if (!"PROCESSING".equals(stored.job().statusCode())) {
+            throw new ConflictException("IMPORT_JOB_NOT_PROCESSING", "Import job is not processing");
+        }
+        Parsed parsed;
+        try { parsed = parse(java.util.Base64.getDecoder().decode(stored.sourceContent()), null); }
+        catch (IllegalArgumentException exception) { throw invalidFormat(); }
+        process(stored.job(), stored.job().idempotencyKey(), parsed, stored.job().contentSha256(),
+                stored.job().retryOf(), principal);
     }
 
     private ImportJobView process(ImportJob reserved, String key, Parsed parsed, String digest,
@@ -117,7 +151,9 @@ public class LogisticsImportService {
         var now = clock.instant();
         ImportJob job = jobs.complete(new ImportJob(reserved.id(), LogisticsImportTemplate.DOMAIN,
                 key, digest, principal.subjectId(), principal.workUnitCode(), retryOf,
-                hasErrors ? "COMPLETED_WITH_ERRORS" : "COMPLETED", reserved.createdAt(), now, outcomes),
+                hasErrors ? "COMPLETED_WITH_ERRORS" : "COMPLETED", reserved.createdAt(), now, outcomes,
+                reserved.startedAt(), reserved.attemptCount(), null, null,
+                reserved.leaseToken(), reserved.leaseUntil()),
                 java.util.Base64.getEncoder().encodeToString(parsed.sourceBytes()));
         audit.record(principal, "IMPORT_JOB", job.id().toString(), "IMPORT_JOB_COMPLETED", now,
                 "{\"importedRows\":" + job.importedRows() + ",\"failedRows\":" + job.failedRows() + "}");
@@ -134,7 +170,7 @@ public class LogisticsImportService {
             LogisticsImportDefinition definition = definition(context.productCode());
             List<String> headers = LogisticsImportTemplate.headers(definition);
             var sheet = BusinessImportWorkbook.read(bytes, LogisticsImportTemplate.DOMAIN,
-                    headers, LogisticsImportTemplate.labels(definition));
+                    headers, LogisticsImportTemplate.labels(definition), limits.maximumRows());
             if (sheet.rows().isEmpty()) throw invalidFormat();
             List<SourceRow> rows = new ArrayList<>();
             for (int index = 0; index < sheet.rows().size(); index++) {
@@ -174,21 +210,26 @@ public class LogisticsImportService {
     }
 
     private ImportJob ownedJob(UUID id, SecurityPrincipal principal) {
-        ImportJob job = jobs.findById(id)
-                .filter(stored -> stored.job().domainCode().equals(LogisticsImportTemplate.DOMAIN))
-                .orElseThrow(() -> new ClientRequestException("IMPORT_JOB_NOT_FOUND", "Import job does not exist"))
-                .job();
-        if (!job.requestedBy().equals(principal.subjectId()))
-            throw new ConflictException("IMPORT_ERROR_FILE_NOT_ALLOWED", "Import job belongs to a different subject");
+        ImportJob job = ownedStored(id, principal).job();
         return job;
     }
 
-    private static void validateRequest(String key, String filename, String mediaType, byte[] bytes) {
+    private ImportJobRepository.StoredImportJob ownedStored(UUID id, SecurityPrincipal principal) {
+        var stored = jobs.findById(id)
+                .filter(value -> value.job().domainCode().equals(LogisticsImportTemplate.DOMAIN))
+                .orElseThrow(() -> new ClientRequestException("IMPORT_JOB_NOT_FOUND", "Import job does not exist"));
+        ImportJob job = stored.job();
+        if (!job.requestedBy().equals(principal.subjectId()))
+            throw new ConflictException("IMPORT_ERROR_FILE_NOT_ALLOWED", "Import job belongs to a different subject");
+        return stored;
+    }
+
+    private void validateRequest(String key, String filename, String mediaType, byte[] bytes) {
         if (key == null || key.isBlank() || key.length() > 128 || filename == null || filename.isBlank()
                 || !filename.toLowerCase(java.util.Locale.ROOT).endsWith(".xlsx")
                 || (mediaType != null && !mediaType.equals(
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
-                || bytes == null || bytes.length == 0 || bytes.length > MAX_BYTES) throw invalidRequest();
+                || bytes == null || bytes.length == 0 || bytes.length > limits.maximumBytes()) throw invalidRequest();
     }
 
     private static ClientRequestException invalidRequest() {

@@ -88,8 +88,13 @@ public final class ProductionImportTemplate {
 
     public static List<List<String>> canonicalXlsx(
             byte[] bytes, ProductionImportDefinition definition) {
+        return canonicalXlsx(bytes, definition, 5_000);
+    }
+
+    public static List<List<String>> canonicalXlsx(
+            byte[] bytes, ProductionImportDefinition definition, int maxDataRows) {
         BusinessImportWorkbook.Template template = workbook(definition);
-        var sheet = BusinessImportWorkbook.read(bytes, DOMAIN, template.headers(), template.labels());
+        var sheet = BusinessImportWorkbook.read(bytes, DOMAIN, template.headers(), template.labels(), maxDataRows);
         List<String> canonicalHeaders = java.util.stream.Stream.concat(
                 java.util.stream.Stream.of("productCode", "objectTypeCode", "PROD_REPORTER_NAME"),
                 template.headers().stream()).toList();

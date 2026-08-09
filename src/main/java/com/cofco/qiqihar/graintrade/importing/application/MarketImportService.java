@@ -26,21 +26,22 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
-public class MarketImportService {
-    private static final int MAX_BYTES = 2 * 1024 * 1024;
+public class MarketImportService implements QueuedImportProcessor {
     private final ImportJobRepository jobs;
     private final MarketImportPort market;
     private final AccessControl access;
     private final BusinessAuditRecorder audit;
     private final Clock clock;
+    private final BusinessImportLimits limits;
 
     public MarketImportService(ImportJobRepository jobs, MarketImportPort market,
-            AccessControl access, BusinessAuditRecorder audit, Clock clock) {
+            AccessControl access, BusinessAuditRecorder audit, Clock clock, BusinessImportLimits limits) {
         this.jobs = jobs;
         this.market = market;
         this.access = access;
         this.audit = audit;
         this.clock = clock;
+        this.limits = limits;
     }
 
     public String template() { return MarketImportTemplate.csv(); }
@@ -78,11 +79,17 @@ public class MarketImportService {
     public ImportJobView importFile(String key, String productCode, String objectTypeCode,
             String filename, String mediaType, byte[] bytes) {
         if (key == null || key.isBlank() || key.length() > 128 || filename == null || filename.isBlank()
-                || filename.length() > 255 || bytes == null || bytes.length == 0 || bytes.length > MAX_BYTES) throw invalid();
+                || filename.length() > 255 || bytes == null || bytes.length == 0
+                || bytes.length > limits.maximumBytes()) throw invalid();
         ImportMenuContext expectedContext = new ImportMenuContext(productCode, objectTypeCode);
         SecurityPrincipal principal = access.require("BUSINESS_IMPORT", null);
-        String content = canonical(table(filename, mediaType, bytes, expectedContext));
+        List<List<String>> table = table(filename, mediaType, bytes, expectedContext, limits.maximumRows());
+        String content = canonical(table);
         String digest = digest(bytes);
+        if (limits.queued(table.size() - 1)) {
+            return ImportJobView.from(jobs.queue(principal.subjectId(), MarketImportTemplate.DOMAIN, key, digest,
+                    principal.workUnitCode(), null, content, clock.instant()).stored().job());
+        }
         var reservation = jobs.reserve(principal.subjectId(), MarketImportTemplate.DOMAIN, key, digest,
                 principal.workUnitCode(), clock.instant());
         if (!reservation.owner()) return ImportJobView.from(reservation.stored().job());
@@ -98,6 +105,12 @@ public class MarketImportService {
         if (!prior.job().requestedBy().equals(principal.subjectId())) {
             throw new ConflictException("IMPORT_RETRY_NOT_ALLOWED", "Import job belongs to a different subject");
         }
+        if ("FAILED".equals(prior.job().statusCode())) {
+            String retryKey = "retry-" + UUID.randomUUID();
+            return ImportJobView.from(jobs.queue(principal.subjectId(), MarketImportTemplate.DOMAIN, retryKey,
+                    prior.job().contentSha256(), principal.workUnitCode(), prior.job().id(),
+                    prior.sourceContent(), clock.instant()).stored().job());
+        }
         if (prior.job().failedRows() == 0) {
             throw new ConflictException("IMPORT_RETRY_NOT_AVAILABLE", "Import job has no failed rows to retry");
         }
@@ -106,6 +119,35 @@ public class MarketImportService {
                 prior.job().contentSha256(), principal.workUnitCode(), clock.instant());
         return process(reservation.stored().job(), key, prior.sourceContent(),
                 prior.job().contentSha256(), prior.job().id(), principal);
+    }
+
+    @Transactional(readOnly = true)
+    public ImportJobView status(UUID importJobId) {
+        SecurityPrincipal principal = access.require("BUSINESS_IMPORT", null);
+        return ImportJobView.from(owned(importJobId, principal).job());
+    }
+
+    @Override public String domainCode() { return MarketImportTemplate.DOMAIN; }
+
+    @Override
+    @Transactional
+    public void processQueued(UUID jobId, SecurityPrincipal principal) {
+        var stored = owned(jobId, principal);
+        if (!"PROCESSING".equals(stored.job().statusCode())) {
+            throw new ConflictException("IMPORT_JOB_NOT_PROCESSING", "Import job is not processing");
+        }
+        process(stored.job(), stored.job().idempotencyKey(), stored.sourceContent(),
+                stored.job().contentSha256(), stored.job().retryOf(), principal);
+    }
+
+    private ImportJobRepository.StoredImportJob owned(UUID jobId, SecurityPrincipal principal) {
+        var stored = jobs.findById(jobId)
+                .filter(value -> value.job().domainCode().equals(MarketImportTemplate.DOMAIN))
+                .orElseThrow(() -> new ClientRequestException("IMPORT_JOB_NOT_FOUND", "Import job does not exist"));
+        if (!stored.job().requestedBy().equals(principal.subjectId())) {
+            throw new ConflictException("IMPORT_JOB_NOT_ALLOWED", "Import job belongs to a different subject");
+        }
+        return stored;
     }
 
     private ImportJobView process(ImportJob reserved, String key, String content, String digest,
@@ -128,20 +170,21 @@ public class MarketImportService {
         ImportJob job = jobs.complete(new ImportJob(reserved.id(), MarketImportTemplate.DOMAIN,
                 key, digest, principal.subjectId(), principal.workUnitCode(), retryOf,
                 hasErrors ? "COMPLETED_WITH_ERRORS" : "COMPLETED",
-                reserved.createdAt(), now, outcomes), content);
+                reserved.createdAt(), now, outcomes, reserved.startedAt(), reserved.attemptCount(), null, null,
+                reserved.leaseToken(), reserved.leaseUntil()), content);
         audit.record(principal, "IMPORT_JOB", job.id().toString(), "IMPORT_JOB_COMPLETED", now,
                 "{\"importedRows\":" + job.importedRows() + ",\"failedRows\":" + job.failedRows() + "}");
         return ImportJobView.from(job);
     }
 
     private List<List<String>> table(String filename, String mediaType, byte[] bytes,
-            ImportMenuContext expectedContext) {
+            ImportMenuContext expectedContext, int maxDataRows) {
         String lower = filename.toLowerCase(java.util.Locale.ROOT);
         try {
             if (lower.endsWith(".csv") && (mediaType == null || mediaType.equals("text/csv")
                     || mediaType.equals("application/csv") || mediaType.equals("application/vnd.ms-excel"))) {
                 List<List<String>> table = CsvTable.parse(
-                        new String(bytes, StandardCharsets.UTF_8), MarketImportTemplate.HEADERS.size());
+                        new String(bytes, StandardCharsets.UTF_8), MarketImportTemplate.HEADERS.size(), maxDataRows);
                 requireCsvContext(table, expectedContext);
                 return table;
             }
@@ -151,7 +194,8 @@ public class MarketImportService {
                         .context(bytes, MarketImportTemplate.DOMAIN);
                 expectedContext.requireMatches(context.productCode(), context.objectTypeCode());
                 return MarketImportTemplate.canonicalXlsx(bytes,
-                        market.definition(expectedContext.productCode(), expectedContext.objectTypeCode()));
+                        market.definition(expectedContext.productCode(), expectedContext.objectTypeCode()),
+                        maxDataRows);
             }
         } catch (CsvTable.LimitExceededException exception) {
             throw new ClientRequestException(exception.code(), exception.getMessage());
@@ -183,7 +227,7 @@ public class MarketImportService {
         if (lineEnd < 0) throw new ClientRequestException(
                 "INVALID_IMPORT_TEMPLATE", "Import file does not contain a header row");
         int columns = content.substring(0, lineEnd).split(",", -1).length;
-        List<List<String>> table = CsvTable.parse(content, columns);
+        List<List<String>> table = CsvTable.parse(content, columns, limits.maximumRows());
         if (table.isEmpty()) throw new ClientRequestException(
                 "INVALID_IMPORT_TEMPLATE", "Import file does not contain a header row");
         if (!table.getFirst().equals(MarketImportTemplate.HEADERS)) {

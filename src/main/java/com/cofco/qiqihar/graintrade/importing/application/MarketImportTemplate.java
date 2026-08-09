@@ -30,8 +30,13 @@ public final class MarketImportTemplate {
     }
 
     public static List<List<String>> canonicalXlsx(byte[] bytes, MarketImportDefinition definition) {
+        return canonicalXlsx(bytes, definition, 5_000);
+    }
+
+    public static List<List<String>> canonicalXlsx(
+            byte[] bytes, MarketImportDefinition definition, int maxDataRows) {
         BusinessImportWorkbook.Template template = workbook(definition);
-        var sheet = BusinessImportWorkbook.read(bytes, DOMAIN, template.headers(), template.labels());
+        var sheet = BusinessImportWorkbook.read(bytes, DOMAIN, template.headers(), template.labels(), maxDataRows);
         java.util.ArrayList<List<String>> table = new java.util.ArrayList<>();
         List<String> headers = java.util.stream.Stream.concat(
                 java.util.stream.Stream.of("productCode", "objectTypeCode"),

@@ -38,20 +38,25 @@ public class ProductionImportController {
     }
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @org.springframework.web.bind.annotation.ResponseStatus(org.springframework.http.HttpStatus.CREATED)
-    ApiResponse<ImportJobView> upload(@RequestHeader("Idempotency-Key") String idempotencyKey,
+    ResponseEntity<ApiResponse<ImportJobView>> upload(@RequestHeader("Idempotency-Key") String idempotencyKey,
             @RequestParam String productCode,
             @RequestParam String objectTypeCode,
             @RequestParam("file") MultipartFile file) throws java.io.IOException {
-        return new ApiResponse<>(service.importFile(idempotencyKey,
+        return acceptedOrCreated(service.importFile(idempotencyKey,
                 productCode, objectTypeCode,
                 file == null ? null : file.getOriginalFilename(), file == null ? null : file.getContentType(),
                 file == null ? null : file.getBytes()));
     }
 
+    @GetMapping("/{importJobId}")
+    ApiResponse<ImportJobView> status(@PathVariable UUID importJobId) {
+        return new ApiResponse<>(service.status(importJobId));
+    }
+
     @PostMapping("/{importJobId}/retries")
-    @org.springframework.web.bind.annotation.ResponseStatus(org.springframework.http.HttpStatus.CREATED)
-    ApiResponse<ImportJobView> retry(@PathVariable UUID importJobId) { return new ApiResponse<>(service.retry(importJobId)); }
+    ResponseEntity<ApiResponse<ImportJobView>> retry(@PathVariable UUID importJobId) {
+        return acceptedOrCreated(service.retry(importJobId));
+    }
 
     @GetMapping("/{importJobId}/errors")
     ResponseEntity<byte[]> errors(@PathVariable UUID importJobId) {
@@ -69,5 +74,9 @@ public class ProductionImportController {
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                 .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
                         .filename(name, StandardCharsets.UTF_8).build().toString()).body(bytes);
+    }
+    private static ResponseEntity<ApiResponse<ImportJobView>> acceptedOrCreated(ImportJobView job) {
+        boolean pending = job.statusCode().equals("QUEUED") || job.statusCode().equals("PROCESSING");
+        return ResponseEntity.status(pending ? 202 : 201).body(new ApiResponse<>(job));
     }
 }

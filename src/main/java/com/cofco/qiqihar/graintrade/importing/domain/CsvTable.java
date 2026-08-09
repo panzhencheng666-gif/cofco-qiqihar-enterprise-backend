@@ -15,14 +15,21 @@ public final class CsvTable {
     }
 
     public static List<List<String>> parse(String content, int expectedColumns) {
+        return parse(content, expectedColumns, MAX_ROWS);
+    }
+
+    public static List<List<String>> parse(String content, int expectedColumns, int maxDataRows) {
+        if (content == null || maxDataRows < 1 || maxDataRows > 50_000) {
+            throw new IllegalArgumentException("INVALID_CSV_LIMIT");
+        }
         List<List<String>> rows = new ArrayList<>();
         List<String> row = new ArrayList<>();
         StringBuilder cell = new StringBuilder();
         int cellCharacters = 0;
         boolean quoted = false;
         for (int index = 0; index < content.length(); index++) {
-            if (!quoted && row.isEmpty() && cell.isEmpty() && rows.size() >= MAX_ROWS + 1) {
-                throw rowLimit();
+            if (!quoted && row.isEmpty() && cell.isEmpty() && rows.size() >= maxDataRows + 1) {
+                throw rowLimit(maxDataRows);
             }
             char current = content.charAt(index);
             if (current == '"') {
@@ -37,7 +44,7 @@ public final class CsvTable {
                 if (current == '\r' && index + 1 < content.length() && content.charAt(index + 1) == '\n') index++;
                 addCell(row, cell);
                 cellCharacters = 0;
-                addRow(rows, row, expectedColumns);
+                addRow(rows, row, expectedColumns, maxDataRows);
             } else {
                 int codePoint = content.codePointAt(index);
                 cellCharacters = append(cell, codePoint, cellCharacters);
@@ -47,7 +54,7 @@ public final class CsvTable {
         if (quoted) throw new IllegalArgumentException("CSV_UNTERMINATED_QUOTE");
         if (!row.isEmpty() || !cell.isEmpty()) {
             addCell(row, cell);
-            addRow(rows, row, expectedColumns);
+            addRow(rows, row, expectedColumns, maxDataRows);
         }
         return List.copyOf(rows);
     }
@@ -65,15 +72,16 @@ public final class CsvTable {
         cell.setLength(0);
     }
 
-    private static void addRow(List<List<String>> rows, List<String> row, int expectedColumns) {
+    private static void addRow(List<List<String>> rows, List<String> row, int expectedColumns, int maxDataRows) {
         if (expectedColumns > 0 && row.size() != expectedColumns) throw columnLimit();
-        if (rows.size() >= MAX_ROWS + 1) throw rowLimit();
+        if (rows.size() >= maxDataRows + 1) throw rowLimit(maxDataRows);
         rows.add(List.copyOf(row));
         row.clear();
     }
 
-    private static LimitExceededException rowLimit() {
-        return new LimitExceededException("IMPORT_ROW_LIMIT_EXCEEDED", "CSV exceeds 5000 data rows");
+    private static LimitExceededException rowLimit(int maxDataRows) {
+        return new LimitExceededException("IMPORT_ROW_LIMIT_EXCEEDED",
+                "CSV exceeds " + maxDataRows + " data rows");
     }
 
     private static LimitExceededException columnLimit() {

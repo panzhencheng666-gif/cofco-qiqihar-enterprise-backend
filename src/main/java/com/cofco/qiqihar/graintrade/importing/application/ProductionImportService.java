@@ -32,23 +32,25 @@ import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 
 @Service
-public class ProductionImportService {
-    private static final int MAX_BYTES = 2 * 1024 * 1024;
+public class ProductionImportService implements QueuedImportProcessor {
     private final ImportJobRepository repository;
     private final ProductionImportPort production;
     private final AccessControl accessControl;
     private final BusinessAuditRecorder audit;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final BusinessImportLimits limits;
 
     public ProductionImportService(ImportJobRepository repository, ProductionImportPort production,
-            AccessControl accessControl, BusinessAuditRecorder audit, ObjectMapper objectMapper, Clock clock) {
+            AccessControl accessControl, BusinessAuditRecorder audit, ObjectMapper objectMapper, Clock clock,
+            BusinessImportLimits limits) {
         this.repository = repository;
         this.production = production;
         this.accessControl = accessControl;
         this.audit = audit;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.limits = limits;
     }
 
     public String template() { return ProductionImportTemplate.csv(); }
@@ -65,11 +67,16 @@ public class ProductionImportService {
             String filename, String mediaType, byte[] bytes) {
         if (idempotencyKey == null || idempotencyKey.isBlank() || idempotencyKey.length() > 128
                 || filename == null || filename.isBlank() || filename.length() > 255
-                || bytes == null || bytes.length == 0 || bytes.length > MAX_BYTES) throw invalid();
+                || bytes == null || bytes.length == 0 || bytes.length > limits.maximumBytes()) throw invalid();
         ImportMenuContext expectedContext = new ImportMenuContext(productCode, objectTypeCode);
         SecurityPrincipal principal = accessControl.require("BUSINESS_IMPORT", null);
-        String content = canonicalContent(table(filename, mediaType, bytes, expectedContext));
+        List<List<String>> table = table(filename, mediaType, bytes, expectedContext, limits.maximumRows());
+        String content = canonicalContent(table);
         String digest = digest(bytes);
+        if (limits.queued(table.size() - 1)) {
+            return ImportJobView.from(repository.queue(principal.subjectId(), ProductionImportTemplate.DOMAIN,
+                    idempotencyKey, digest, principal.workUnitCode(), null, content, clock.instant()).stored().job());
+        }
         var reservation = repository.reserve(principal.subjectId(), ProductionImportTemplate.DOMAIN, idempotencyKey,
                 digest, principal.workUnitCode(), clock.instant());
         if (!reservation.owner()) return ImportJobView.from(reservation.stored().job());
@@ -84,6 +91,12 @@ public class ProductionImportService {
                 "IMPORT_JOB_NOT_FOUND", "Import job does not exist"));
         if (!prior.job().requestedBy().equals(principal.subjectId())) {
             throw new ConflictException("IMPORT_RETRY_NOT_ALLOWED", "Import job belongs to a different subject");
+        }
+        if ("FAILED".equals(prior.job().statusCode())) {
+            String retryKey = "retry-" + UUID.randomUUID();
+            return ImportJobView.from(repository.queue(principal.subjectId(), ProductionImportTemplate.DOMAIN,
+                    retryKey, prior.job().contentSha256(), principal.workUnitCode(), prior.job().id(),
+                    prior.sourceContent(), clock.instant()).stored().job());
         }
         Set<Integer> failedRows = prior.job().rows().stream().filter(row -> row.outcomeCode().equals("ERROR"))
                 .map(com.cofco.qiqihar.graintrade.importing.domain.ImportRowOutcome::rowNumber).collect(java.util.stream.Collectors.toSet());
@@ -116,6 +129,35 @@ public class ProductionImportService {
         return new ImportErrorFile("production-import-errors-" + job.id() + ".csv", csv.toString().getBytes(StandardCharsets.UTF_8));
     }
 
+    @Transactional(readOnly = true)
+    public ImportJobView status(UUID importJobId) {
+        SecurityPrincipal principal = accessControl.require("BUSINESS_IMPORT", null);
+        return ImportJobView.from(owned(importJobId, principal).job());
+    }
+
+    @Override public String domainCode() { return ProductionImportTemplate.DOMAIN; }
+
+    @Override
+    @Transactional
+    public void processQueued(UUID jobId, SecurityPrincipal principal) {
+        var stored = owned(jobId, principal);
+        if (!"PROCESSING".equals(stored.job().statusCode())) {
+            throw new ConflictException("IMPORT_JOB_NOT_PROCESSING", "Import job is not processing");
+        }
+        process(stored.job(), stored.job().idempotencyKey(), stored.sourceContent(),
+                stored.job().contentSha256(), stored.job().retryOf(), null, principal);
+    }
+
+    private ImportJobRepository.StoredImportJob owned(UUID jobId, SecurityPrincipal principal) {
+        var stored = repository.findById(jobId)
+                .filter(value -> value.job().domainCode().equals(ProductionImportTemplate.DOMAIN))
+                .orElseThrow(() -> new ClientRequestException("IMPORT_JOB_NOT_FOUND", "Import job does not exist"));
+        if (!stored.job().requestedBy().equals(principal.subjectId())) {
+            throw new ConflictException("IMPORT_JOB_NOT_ALLOWED", "Import job belongs to a different subject");
+        }
+        return stored;
+    }
+
     private ImportJob process(ImportJob reserved, String idempotencyKey, String content, String digest, UUID retryOf,
             Set<Integer> retryRows, SecurityPrincipal principal) {
         List<ParsedRow> rows = parse(content);
@@ -140,7 +182,8 @@ public class ProductionImportService {
         String status = hasErrors ? "COMPLETED_WITH_ERRORS" : "COMPLETED";
         ImportJob job = repository.complete(new ImportJob(reserved.id(), ProductionImportTemplate.DOMAIN, idempotencyKey,
                 digest, principal.subjectId(), principal.workUnitCode(), retryOf, status,
-                reserved.createdAt(), now, outcomes), content);
+                reserved.createdAt(), now, outcomes, reserved.startedAt(), reserved.attemptCount(), null, null,
+                reserved.leaseToken(), reserved.leaseUntil()), content);
         audit.record(principal, "IMPORT_JOB", job.id().toString(), "IMPORT_JOB_COMPLETED", now,
                 detail(job.importedRows(), job.failedRows()));
         return job;
@@ -161,13 +204,14 @@ public class ProductionImportService {
     }
 
     private List<List<String>> table(String filename, String mediaType, byte[] bytes,
-            ImportMenuContext expectedContext) {
+            ImportMenuContext expectedContext, int maxDataRows) {
         String lower = filename.toLowerCase(java.util.Locale.ROOT);
         if (lower.endsWith(".csv") && (mediaType == null || mediaType.equals("text/csv")
                 || mediaType.equals("application/csv") || mediaType.equals("application/vnd.ms-excel"))) {
             try {
                 List<List<String>> table = CsvTable.parse(
-                        new String(bytes, StandardCharsets.UTF_8), ProductionImportTemplate.HEADERS.size());
+                        new String(bytes, StandardCharsets.UTF_8), ProductionImportTemplate.HEADERS.size(),
+                        maxDataRows);
                 requireCsvContext(table, expectedContext);
                 return table;
             } catch (CsvTable.LimitExceededException exception) {
@@ -183,12 +227,14 @@ public class ProductionImportService {
                         .context(bytes, ProductionImportTemplate.DOMAIN);
                 expectedContext.requireMatches(context.productCode(), context.objectTypeCode());
                 return ProductionImportTemplate.canonicalXlsx(bytes,
-                        production.importDefinition(expectedContext.productCode(), expectedContext.objectTypeCode()));
+                        production.importDefinition(expectedContext.productCode(), expectedContext.objectTypeCode()),
+                        maxDataRows);
             } catch (ClientRequestException exception) {
                 throw exception;
             } catch (IllegalArgumentException exception) {
                 try {
-                    List<List<String>> table = XlsxTable.parse(bytes, ProductionImportTemplate.HEADERS.size());
+                    List<List<String>> table = XlsxTable.parseWorksheet(
+                            bytes, 1, ProductionImportTemplate.HEADERS.size(), maxDataRows + 1);
                     requireCsvContext(table, expectedContext);
                     return table;
                 } catch (IllegalArgumentException legacyException) {
@@ -226,7 +272,7 @@ public class ProductionImportService {
         if (lineEnd < 0) throw new ClientRequestException(
                 "INVALID_IMPORT_TEMPLATE", "Import file does not contain a header row");
         List<String> headers = List.of(content.substring(0, lineEnd).split(",", -1));
-        try { table = CsvTable.parse(content, headers.size()); }
+        try { table = CsvTable.parse(content, headers.size(), limits.maximumRows()); }
         catch (CsvTable.LimitExceededException exception) {
             throw new ClientRequestException(exception.code(), exception.getMessage());
         }

@@ -14,7 +14,7 @@ import org.w3c.dom.Element;
 
 /** Bounded OOXML worksheet reader. It intentionally never evaluates formulas. */
 public final class XlsxTable {
-    private static final int MAX_EXPANDED_BYTES = 8 * 1024 * 1024;
+    private static final int MAX_EXPANDED_BYTES = 80 * 1024 * 1024;
     private static final int MAX_ROWS = 5_002;
     private static final int MAX_CELL_CODE_POINTS = 500;
 
@@ -25,8 +25,13 @@ public final class XlsxTable {
     }
 
     public static List<List<String>> parseWorksheet(byte[] bytes, int worksheetNumber, int expectedColumns) {
+        return parseWorksheet(bytes, worksheetNumber, expectedColumns, MAX_ROWS);
+    }
+
+    public static List<List<String>> parseWorksheet(
+            byte[] bytes, int worksheetNumber, int expectedColumns, int maxRows) {
         if (bytes == null || bytes.length == 0 || expectedColumns < 1) throw invalid();
-        if (worksheetNumber < 1) throw invalid();
+        if (worksheetNumber < 1 || maxRows < 1 || maxRows > 50_002) throw invalid();
         Map<String, byte[]> entries = unzip(bytes);
         if (entries.keySet().stream().anyMatch(name -> name.contains("vbaProject")
                 || name.startsWith("xl/externalLinks/"))) throw invalid();
@@ -34,7 +39,7 @@ public final class XlsxTable {
                 ? sharedStrings(entries.get("xl/sharedStrings.xml")) : List.of();
         byte[] sheet = entries.get("xl/worksheets/sheet" + worksheetNumber + ".xml");
         if (sheet == null) throw invalid();
-        return rows(sheet, sharedStrings, expectedColumns);
+        return rows(sheet, sharedStrings, expectedColumns, maxRows);
     }
 
     private static Map<String, byte[]> unzip(byte[] bytes) {
@@ -71,11 +76,12 @@ public final class XlsxTable {
         return List.copyOf(values);
     }
 
-    private static List<List<String>> rows(byte[] xml, List<String> sharedStrings, int expectedColumns) {
+    private static List<List<String>> rows(
+            byte[] xml, List<String> sharedStrings, int expectedColumns, int maxRows) {
         var document = document(xml);
         if (document.getElementsByTagNameNS("*", "f").getLength() > 0) throw invalid();
         var rowNodes = document.getElementsByTagNameNS("*", "row");
-        if (rowNodes.getLength() > MAX_ROWS) throw invalid();
+        if (rowNodes.getLength() > maxRows) throw invalid();
         List<List<String>> rows = new ArrayList<>(rowNodes.getLength());
         for (int rowIndex = 0; rowIndex < rowNodes.getLength(); rowIndex++) {
             List<String> values = new ArrayList<>(java.util.Collections.nCopies(expectedColumns, ""));

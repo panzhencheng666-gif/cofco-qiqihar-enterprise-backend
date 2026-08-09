@@ -42,14 +42,22 @@ class CsvTableLimitTest {
     }
 
     @Test
-    void rejectsFiveThousandAndOneRowsBeforeAnyProductionInsert() throws Exception {
+    void queuesFiveThousandAndOneRowsWithoutWritingThemInTheRequestThread() throws Exception {
         StringBuilder csv = new StringBuilder(String.join(",", ProductionImportTemplate.HEADERS)).append('\n');
         csv.append(validRow()).append('\n');
         for (int index = 1; index <= 5_000; index++) {
             csv.append(row(Map.of("surveyDate", "bad-date"))).append('\n');
         }
 
-        assertRejected("row-limit", csv.toString().getBytes(StandardCharsets.UTF_8), "IMPORT_ROW_LIMIT_EXCEEDED");
+        mvc.perform(multipart("/api/v1/imports/production")
+                        .file(new MockMultipartFile("file", "production.csv", "text/csv",
+                                csv.toString().getBytes(StandardCharsets.UTF_8)))
+                        .param("productCode", "CORN").param("objectTypeCode", "FARMER")
+                        .header("Idempotency-Key", "row-limit").principal(() -> "production-tester"))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.data.statusCode").value("QUEUED"));
+        assertThat(count("platform.import_job")).isEqualTo(1);
+        assertThat(count("production.production_record")).isZero();
     }
 
     @Test
@@ -68,8 +76,8 @@ class CsvTableLimitTest {
     }
 
     @Test
-    void rejectsFilesLargerThanTwoMebibytesBeforeParsing() throws Exception {
-        byte[] bytes = new byte[2 * 1024 * 1024 + 1];
+    void rejectsFilesLargerThanTwentyMebibytesBeforeParsing() throws Exception {
+        byte[] bytes = new byte[20 * 1024 * 1024 + 1];
 
         assertRejected("byte-limit", bytes, "INVALID_IMPORT_REQUEST");
     }

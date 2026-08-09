@@ -29,7 +29,7 @@ class BusinessImportWorkbookTest {
                         java.util.List.of("产品品种", "CORN"),
                         java.util.List.of("对象类型", "FARMER"),
                         java.util.List.of("填报人", "由登录账号自动记录，不得在模板中填写"),
-                        java.util.List.of("单批数量", "每次最多导入 5000 条；更多记录请分批导入"));
+                        java.util.List.of("处理方式", "5000 条以内即时处理；5001 至 50000 条转入后台任务处理"));
         assertThat(ProductionImportTemplate.XLSX_HEADERS)
                 .doesNotContain("productCode", "objectTypeCode", "PROD_REPORTER_NAME");
 

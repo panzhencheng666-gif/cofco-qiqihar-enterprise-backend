@@ -40,12 +40,16 @@ public class LogisticsImportController {
     }
 
     @PostMapping
-    @ResponseStatus(HttpStatus.CREATED)
-    ApiResponse<ImportJobView> importFile(@RequestHeader("Idempotency-Key") String idempotencyKey,
+    ResponseEntity<ApiResponse<ImportJobView>> importFile(@RequestHeader("Idempotency-Key") String idempotencyKey,
             @RequestParam String productCode,
             @RequestParam("file") MultipartFile file) throws java.io.IOException {
-        return new ApiResponse<>(service.importFile(idempotencyKey, productCode, file.getOriginalFilename(),
+        return acceptedOrCreated(service.importFile(idempotencyKey, productCode, file.getOriginalFilename(),
                 file.getContentType(), file.getBytes()));
+    }
+
+    @GetMapping("/{importJobId}")
+    ApiResponse<ImportJobView> status(@PathVariable UUID importJobId) {
+        return new ApiResponse<>(service.status(importJobId));
     }
 
     @GetMapping("/{importJobId}/errors")
@@ -58,7 +62,14 @@ public class LogisticsImportController {
     }
 
     @PostMapping("/{importJobId}/retries")
-    ApiResponse<ImportJobView> retry(@PathVariable UUID importJobId) {
-        return new ApiResponse<>(service.retry(importJobId));
+    ResponseEntity<ApiResponse<ImportJobView>> retry(@PathVariable UUID importJobId) {
+        ImportJobView job = service.retry(importJobId);
+        boolean pending = job.statusCode().equals("QUEUED") || job.statusCode().equals("PROCESSING");
+        return ResponseEntity.status(pending ? 202 : 200).body(new ApiResponse<>(job));
+    }
+
+    private static ResponseEntity<ApiResponse<ImportJobView>> acceptedOrCreated(ImportJobView job) {
+        boolean pending = job.statusCode().equals("QUEUED") || job.statusCode().equals("PROCESSING");
+        return ResponseEntity.status(pending ? 202 : 201).body(new ApiResponse<>(job));
     }
 }
