@@ -90,29 +90,43 @@ class ProductionImportRestIntegrationTest {
                 .andExpect(content().contentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                 .andReturn().getResponse().getContentAsByteArray();
 
-        assertThat(XlsxTable.parseWorksheet(workbook, 1, ProductionImportTemplate.XLSX_HEADERS.size()))
-                .containsExactly(ProductionImportTemplate.XLSX_LABELS, ProductionImportTemplate.XLSX_HEADERS);
+        var template = template(workbook, "产情", "CORN", "FARMER");
+        assertThat(XlsxTable.parseWorksheet(workbook, 1, template.headers().size()))
+                .containsExactly(template.labels(), template.headers());
+        assertThat(template.headers())
+                .contains("PROD_CULTIVAR_NAME", "PROD_OPENING_INVENTORY", "PROD_ENDING_INVENTORY", "MOISTURE", "TOXIN")
+                .doesNotContain("cultivarCode")
+                .doesNotContain("PROD_REPORTER_NAME", "PROTEIN", "OIL_YIELD",
+                        "MILLING_YIELD", "BROWN_RICE_YIELD");
     }
 
     @Test
     void importsTheDownloadedXlsxProtocolWithSurveyDetailsAndServerOwnedReporter() throws Exception {
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
+                        .param("format", "xlsx")
+                        .param("productCode", "CORN")
+                        .param("objectTypeCode", "FARMER")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        var template = template(downloaded, "产情", "CORN", "FARMER");
         java.util.ArrayList<String> row = new java.util.ArrayList<>(
-                java.util.Collections.nCopies(ProductionImportTemplate.XLSX_HEADERS.size(), ""));
-        put(row, "regionCode", "230200");
-        put(row, "surveyDate", "2026-08-09");
-        put(row, "cultivatedAreaMu", "100");
-        put(row, "yieldPerMuKilograms", "500");
-        put(row, "PROD_REPORTER_PHONE", "13800000000");
-        put(row, "PROD_SAMPLE_CONTACT", "13900000000");
-        put(row, "PROD_SAMPLE_LATITUDE", "47.3543");
-        put(row, "PROD_SAMPLE_LONGITUDE", "123.9182");
-        put(row, "PROD_SAMPLE_NAME", "龙江县第一调查户");
-        put(row, "PROD_HARVEST_AREA_MU", "96.5");
-        put(row, "PROD_GROWTH_STAGE", "灌浆期");
-        put(row, "MOISTURE", "14.2");
-        put(row, "evidencePhotoId", PHOTO_ID);
+                java.util.Collections.nCopies(template.headers().size(), ""));
+        put(row, template.headers(), "regionCode", "230200");
+        put(row, template.headers(), "PROD_CULTIVAR_NAME", "龙单86");
+        put(row, template.headers(), "surveyDate", "2026-08-09");
+        put(row, template.headers(), "cultivatedAreaMu", "100");
+        put(row, template.headers(), "yieldPerMuKilograms", "500");
+        put(row, template.headers(), "PROD_REPORTER_PHONE", "13800000000");
+        put(row, template.headers(), "PROD_SAMPLE_CONTACT", "13900000000");
+        put(row, template.headers(), "PROD_SAMPLE_LATITUDE", "47.3543");
+        put(row, template.headers(), "PROD_SAMPLE_LONGITUDE", "123.9182");
+        put(row, template.headers(), "PROD_SAMPLE_NAME", "龙江县第一调查户");
+        put(row, template.headers(), "PROD_HARVEST_AREA_MU", "96.5");
+        put(row, template.headers(), "PROD_GROWTH_STAGE", "灌浆期");
+        put(row, template.headers(), "MOISTURE", "14.2");
+        put(row, template.headers(), "evidencePhotoId", PHOTO_ID);
         byte[] workbook = BusinessImportWorkbook.create(
-                ProductionImportTemplate.workbook("CORN", "FARMER"), java.util.List.of(row));
+                template, java.util.List.of(row));
 
         mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "corn-production.xlsx",
@@ -127,6 +141,7 @@ class ProductionImportRestIntegrationTest {
                         .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
                         .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].values.PROD_CULTIVAR").value("龙单86"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_SAMPLE_NAME").value("龙江县第一调查户"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_HARVEST_AREA_MU").value("96.5"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_GROWTH_STAGE").value("灌浆期"))
@@ -134,8 +149,25 @@ class ProductionImportRestIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].values.PROD_REPORTER_NAME").value("产情测试员"));
     }
 
-    private static void put(java.util.List<String> row, String header, String value) {
-        row.set(ProductionImportTemplate.XLSX_HEADERS.indexOf(header), value);
+    private static void put(java.util.List<String> row, java.util.List<String> headers,
+            String header, String value) {
+        row.set(headers.indexOf(header), value);
+    }
+
+    private static BusinessImportWorkbook.Template template(byte[] workbook, String label,
+            String productCode, String objectTypeCode) {
+        var rows = XlsxTable.parseWorksheet(workbook, 1, 256);
+        java.util.List<String> labels = withoutTrailingBlanks(rows.get(0));
+        java.util.List<String> headers = withoutTrailingBlanks(rows.get(1));
+        assertThat(headers).hasSameSizeAs(labels);
+        return new BusinessImportWorkbook.Template("PRODUCTION", label, productCode, objectTypeCode,
+                headers, labels);
+    }
+
+    private static java.util.List<String> withoutTrailingBlanks(java.util.List<String> values) {
+        int size = values.size();
+        while (size > 0 && values.get(size - 1).isBlank()) size--;
+        return java.util.List.copyOf(values.subList(0, size));
     }
 
     @Test

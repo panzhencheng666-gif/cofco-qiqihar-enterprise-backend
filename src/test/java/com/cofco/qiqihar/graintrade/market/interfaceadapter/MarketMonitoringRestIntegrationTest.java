@@ -617,6 +617,18 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(jsonPath("$.error.code").value("INVALID_MARKET_RECORD"));
     }
 
+    @Test
+    void activeMarketDefinitionsDoNotExposeRetiredInflowOrStorageLossInputs() throws Exception {
+        mockMvc.perform(get("/api/v1/market-record-definitions")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("objectTypeCode", "RESERVE_ENTERPRISE"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.groups[*].fields[?(@.code == 'STOCK_INFLOW')]").isEmpty())
+                .andExpect(jsonPath("$.data.groups[*].fields[?(@.code == 'STORAGE_LOSS')]").isEmpty())
+                .andExpect(jsonPath("$.data.groups[*].fields[?(@.code == 'STOCK_OUTFLOW')]").exists())
+                .andExpect(jsonPath("$.data.groups[*].fields[?(@.code == 'ENDING_INVENTORY')]").exists());
+    }
+
     private String create(String product, String objectType, String qualityCode) throws Exception {
         return mockMvc.perform(post("/api/v1/market-records")
                         .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)

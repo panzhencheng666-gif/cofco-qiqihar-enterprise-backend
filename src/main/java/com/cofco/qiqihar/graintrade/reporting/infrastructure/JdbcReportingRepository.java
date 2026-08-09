@@ -49,7 +49,8 @@ public class JdbcReportingRepository implements ReportingRepository {
         long count = approvedCount(definition.businessDomain(), command);
         String summary = "{\"approvedRecordCount\":" + count + ",\"businessDomain\":\"" + definition.businessDomain() + "\"}";
         return new ReportPreviewMaterial(new ReportDefinitionView(definition.code(),definition.name(),definition.businessDomain(),definition.businessSubtype(),definition.frequencyCode(),definition.versionNo(), sections(definition.id())),
-                label("SELECT name FROM platform.product WHERE code=:code",command.productCode()), label("SELECT name FROM platform.region WHERE code=:code",command.regionCode()),summary,count);
+                label("SELECT name FROM platform.product WHERE code=:code",command.productCode()), label("SELECT name FROM platform.region WHERE code=:code",command.regionCode()),
+                label("SELECT name FROM platform.business_period WHERE code=:code",command.periodCode()),summary,count);
     }
 
     @Override public ReportPreviewView persistPreview(ReportPreviewPersistence value) {

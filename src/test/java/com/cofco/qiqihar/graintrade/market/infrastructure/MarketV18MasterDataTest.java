@@ -47,7 +47,8 @@ class MarketV18MasterDataTest {
                         "MKT_SAMPLE_CONTACT:填报对象/客户联系方式:TEXT:122",
                         "MKT_SAMPLE_LATITUDE:样本点纬度:DECIMAL:123",
                         "MKT_SAMPLE_LONGITUDE:样本点经度:DECIMAL:124",
-                        "MKT_SAMPLE_NAME:填报对象/客户名称:TEXT:125");
+                        "MKT_SAMPLE_NAME:填报对象/客户名称:TEXT:125",
+                        "MKT_CULTIVAR_NAME:具体品种:TEXT:126");
         assertThat(rows("""
                 SELECT field_code || ':' || value || ':' || label
                 FROM platform.market_core_field_option ORDER BY field_code, sort_order

@@ -6,6 +6,7 @@ import com.cofco.qiqihar.graintrade.importing.domain.ImportRowOutcome;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable;
 import com.cofco.qiqihar.graintrade.production.application.ProductionDraft;
 import com.cofco.qiqihar.graintrade.production.application.ProductionImportPort;
+import com.cofco.qiqihar.graintrade.production.application.ProductionImportDefinition;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.BoundedInput;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
@@ -52,6 +53,13 @@ public class ProductionImportService {
 
     public String template() { return ProductionImportTemplate.csv(); }
 
+    public com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook.Template workbook(
+            String productCode, String objectTypeCode) {
+        accessControl.require("BUSINESS_IMPORT", null);
+        return ProductionImportTemplate.workbook(
+                production.importDefinition(productCode, objectTypeCode));
+    }
+
     @Transactional
     public ImportJobView importFile(String idempotencyKey, String filename, String mediaType, byte[] bytes) {
         if (idempotencyKey == null || idempotencyKey.isBlank() || idempotencyKey.length() > 128
@@ -94,10 +102,13 @@ public class ProductionImportService {
         if (!job.requestedBy().equals(principal.subjectId())) {
             throw new ConflictException("IMPORT_ERROR_FILE_NOT_ALLOWED", "Import job belongs to a different subject");
         }
-        StringBuilder csv = new StringBuilder(String.join(",", ProductionImportTemplate.HEADERS))
+        List<String> headers = job.rows().isEmpty()
+                ? ProductionImportTemplate.HEADERS
+                : job.rows().getFirst().values().keySet().stream().sorted().toList();
+        StringBuilder csv = new StringBuilder(String.join(",", headers))
                 .append(",errorCode,errorMessage\n");
         job.rows().stream().filter(row -> row.outcomeCode().equals("ERROR")).forEach(row -> {
-            ProductionImportTemplate.HEADERS.forEach(header -> csv.append(CsvTable.escape(row.values().get(header))).append(','));
+            headers.forEach(header -> csv.append(CsvTable.escape(row.values().get(header))).append(','));
             csv.append(CsvTable.escape(row.errorCode())).append(',').append(CsvTable.escape(row.errorMessage())).append('\n');
         });
         return new ImportErrorFile("production-import-errors-" + job.id() + ".csv", csv.toString().getBytes(StandardCharsets.UTF_8));
@@ -147,7 +158,7 @@ public class ProductionImportService {
         }
     }
 
-    private static List<List<String>> table(String filename, String mediaType, byte[] bytes) {
+    private List<List<String>> table(String filename, String mediaType, byte[] bytes) {
         String lower = filename.toLowerCase(java.util.Locale.ROOT);
         if (lower.endsWith(".csv") && (mediaType == null || mediaType.equals("text/csv")
                 || mediaType.equals("application/csv") || mediaType.equals("application/vnd.ms-excel"))) {
@@ -162,7 +173,10 @@ public class ProductionImportService {
         if (lower.endsWith(".xlsx") && (mediaType == null || mediaType.equals(
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))) {
             try {
-                return ProductionImportTemplate.canonicalXlsx(bytes);
+                var context = com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook
+                        .context(bytes, ProductionImportTemplate.DOMAIN);
+                return ProductionImportTemplate.canonicalXlsx(bytes,
+                        production.importDefinition(context.productCode(), context.objectTypeCode()));
             } catch (IllegalArgumentException exception) {
                 try {
                     return XlsxTable.parse(bytes, ProductionImportTemplate.HEADERS.size());
@@ -188,8 +202,10 @@ public class ProductionImportService {
 
     private List<ParsedRow> parse(String content) {
         List<List<String>> table;
-        List<String> headers = content.startsWith(String.join(",", ProductionImportTemplate.XLSX_CANONICAL_HEADERS))
-                ? ProductionImportTemplate.XLSX_CANONICAL_HEADERS : ProductionImportTemplate.HEADERS;
+        int lineEnd = content.indexOf('\n');
+        if (lineEnd < 0) throw new ClientRequestException(
+                "INVALID_IMPORT_TEMPLATE", "Import file does not contain a header row");
+        List<String> headers = List.of(content.substring(0, lineEnd).split(",", -1));
         try { table = CsvTable.parse(content, headers.size()); }
         catch (CsvTable.LimitExceededException exception) {
             throw new ClientRequestException(exception.code(), exception.getMessage());
@@ -197,6 +213,26 @@ public class ProductionImportService {
         catch (IllegalArgumentException exception) { throw new ClientRequestException("INVALID_IMPORT_CSV", "CSV syntax is invalid"); }
         if (table.isEmpty() || !table.getFirst().equals(headers)) {
             throw new ClientRequestException("INVALID_IMPORT_TEMPLATE", "CSV header does not match the current production template");
+        }
+        boolean legacy = headers.equals(ProductionImportTemplate.HEADERS)
+                || headers.equals(ProductionImportTemplate.XLSX_CANONICAL_HEADERS);
+        ProductionImportDefinition definition = null;
+        if (!legacy) {
+            if (table.size() < 2 || headers.size() < 5
+                    || !headers.subList(0, 3).equals(
+                            List.of("productCode", "objectTypeCode", "PROD_REPORTER_NAME"))) {
+                throw new ClientRequestException(
+                        "INVALID_IMPORT_TEMPLATE", "Workbook fields do not match the current production form");
+            }
+            definition = production.importDefinition(
+                    table.get(1).get(0).trim(), table.get(1).get(1).trim());
+            List<String> expected = java.util.stream.Stream.concat(
+                    java.util.stream.Stream.of("productCode", "objectTypeCode", "PROD_REPORTER_NAME"),
+                    ProductionImportTemplate.workbook(definition).headers().stream()).toList();
+            if (!headers.equals(expected)) {
+                throw new ClientRequestException(
+                        "INVALID_IMPORT_TEMPLATE", "Workbook fields do not match the current production form");
+            }
         }
         List<ParsedRow> rows = new ArrayList<>();
         for (int index = 1; index < table.size(); index++) {
@@ -208,11 +244,77 @@ public class ProductionImportService {
             if (values.values().stream().allMatch(String::isBlank)) {
                 rows.add(ParsedRow.error(index + 1, values, "IMPORT_ROW_EMPTY", "Import row is empty"));
             } else {
-                rows.add(toDraft(index + 1, values));
+                rows.add(definition == null
+                        ? toDraft(index + 1, values)
+                        : toDraft(index + 1, values, definition));
             }
         }
         if (rows.isEmpty()) throw new ClientRequestException("INVALID_IMPORT_CSV", "CSV must contain at least one data row");
         return List.copyOf(rows);
+    }
+
+    private static ParsedRow toDraft(
+            int number, Map<String, String> values, ProductionImportDefinition definition) {
+        try {
+            if (!definition.productCode().equals(values.get("productCode"))
+                    || !definition.objectTypeCode().equals(values.get("objectTypeCode"))) {
+                return ParsedRow.error(number, values,
+                        "IMPORT_ROW_CONTEXT_MISMATCH", "Workbook row context is inconsistent");
+            }
+            BoundedInput.requireMapText("IMPORT_ROW_VALUE_FORMAT", values);
+            if (required(values, "regionCode") || required(values, "surveyDate")
+                    || required(values, "cultivatedAreaMu")
+                    || required(values, "yieldPerMuKilograms")
+                    || required(values, "evidencePhotoId")
+                    || ProductionImportTemplate.SUBMISSION_METADATA_HEADERS.stream()
+                            .filter(header -> !header.equals("PROD_REPORTER_NAME"))
+                            .anyMatch(header -> required(values, header))) {
+                return ParsedRow.error(number, values,
+                        "IMPORT_ROW_REQUIRED_VALUE", "Required production import value is blank");
+            }
+            Map<String, String> submissionMetadata = new LinkedHashMap<>();
+            ProductionImportTemplate.SUBMISSION_METADATA_HEADERS.forEach(
+                    header -> submissionMetadata.put(header, values.getOrDefault(header, "")));
+            ProductionImportTemplate.DETAIL_HEADERS.forEach(
+                    header -> putIfPresent(submissionMetadata, header, values));
+            PlainDecimal.parse(values.get("PROD_SAMPLE_LATITUDE"), 3, 7, "IMPORT_ROW_VALUE_FORMAT");
+            PlainDecimal.parse(values.get("PROD_SAMPLE_LONGITUDE"), 3, 7, "IMPORT_ROW_VALUE_FORMAT");
+            Map<String, BigDecimal> quality = new LinkedHashMap<>();
+            Map<String, BigDecimal> costs = new LinkedHashMap<>();
+            Map<String, BigDecimal> insurance = new LinkedHashMap<>();
+            Map<String, BigDecimal> subsidies = new LinkedHashMap<>();
+            for (ProductionImportDefinition.Group group : definition.groups()) {
+                if (group.code().equals("DETAIL")) continue;
+                Map<String, BigDecimal> target = switch (group.code()) {
+                    case "QUALITY" -> quality;
+                    case "COST" -> costs;
+                    case "INSURANCE" -> insurance;
+                    case "SUBSIDY" -> subsidies;
+                    default -> throw new ClientRequestException(
+                            "INVALID_IMPORT_TEMPLATE", "Unsupported production field group");
+                };
+                group.fields().forEach(field -> {
+                    String value = values.get(field.code());
+                    if (value != null && !value.isBlank()) {
+                        target.put(field.code(), PlainDecimal.parse(value,
+                                field.precision() - field.scale(), field.scale(),
+                                "IMPORT_ROW_VALUE_FORMAT"));
+                    }
+                });
+            }
+            return ParsedRow.valid(number, values, new ProductionDraft(
+                    definition.productCode(), definition.objectTypeCode(), values.get("regionCode"),
+                    null, LocalDate.parse(values.get("surveyDate")),
+                    PlainDecimal.parse(values.get("cultivatedAreaMu"), 14, 4, "IMPORT_ROW_VALUE_FORMAT"),
+                    PlainDecimal.parse(values.get("yieldPerMuKilograms"), 14, 4, "IMPORT_ROW_VALUE_FORMAT"),
+                    Map.copyOf(quality), Map.copyOf(costs), Map.copyOf(insurance), Map.copyOf(subsidies),
+                    submissionMetadata, List.of(UUID.fromString(values.get("evidencePhotoId")))));
+        } catch (ClientRequestException exception) {
+            return ParsedRow.error(number, values, exception.code(), exception.clientMessage());
+        } catch (RuntimeException exception) {
+            return ParsedRow.error(number, values,
+                    "IMPORT_ROW_VALUE_FORMAT", "Production date or decimal value is invalid");
+        }
     }
 
     private static ParsedRow toDraft(int number, Map<String, String> values) {
@@ -233,7 +335,7 @@ public class ProductionImportService {
             PlainDecimal.parse(values.get("PROD_SAMPLE_LATITUDE"), 3, 7, "IMPORT_ROW_VALUE_FORMAT");
             PlainDecimal.parse(values.get("PROD_SAMPLE_LONGITUDE"), 3, 7, "IMPORT_ROW_VALUE_FORMAT");
             return ParsedRow.valid(number, values, new ProductionDraft(values.get("productCode"), values.get("objectTypeCode"),
-                    values.get("regionCode"), emptyToNull(values.get("cultivarCode")), LocalDate.parse(values.get("surveyDate")),
+                    values.get("regionCode"), null, LocalDate.parse(values.get("surveyDate")),
                     PlainDecimal.parse(values.get("cultivatedAreaMu"), 14, 4, "IMPORT_ROW_VALUE_FORMAT"),
                     PlainDecimal.parse(values.get("yieldPerMuKilograms"), 14, 4, "IMPORT_ROW_VALUE_FORMAT"),
                     decimalValues(values, ProductionImportTemplate.QUALITY_HEADERS),

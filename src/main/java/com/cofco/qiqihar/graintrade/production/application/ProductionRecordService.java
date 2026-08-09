@@ -113,6 +113,18 @@ public class ProductionRecordService implements ProductionImportPort {
         return new ProductionFormDefinition(productCode, objectTypeCode, groups);
     }
 
+    @Override
+    public ProductionImportDefinition importDefinition(String productCode, String objectTypeCode) {
+        ProductionFormDefinition definition = factDefinition(productCode, objectTypeCode);
+        return new ProductionImportDefinition(definition.productCode(), definition.objectTypeCode(),
+                definition.groups().stream().map(group -> new ProductionImportDefinition.Group(
+                        group.category(), group.label(), group.fields().stream()
+                                .map(field -> new ProductionImportDefinition.Field(
+                                        field.code(), field.label(), field.unit(),
+                                        field.precision(), field.scale()))
+                                .toList())).toList());
+    }
+
     @Transactional
     public ProductionRecordView create(ProductionDraft draft) {
         SecurityPrincipal principal = authorize("BUSINESS_CREATE", draft.regionCode());

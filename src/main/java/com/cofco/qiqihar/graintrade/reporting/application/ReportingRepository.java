@@ -18,6 +18,7 @@ public interface ReportingRepository {
             ReportDefinitionView definition,
             String productLabel,
             String regionLabel,
+            String periodLabel,
             String approvedSummaryJson,
             long approvedRecordCount) {}
     record ReportPreviewPersistence(

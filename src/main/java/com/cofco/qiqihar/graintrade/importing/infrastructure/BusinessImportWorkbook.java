@@ -61,20 +61,32 @@ public final class BusinessImportWorkbook {
 
     public record ImportSheet(String productCode, String objectTypeCode, List<List<String>> rows) {}
 
-    public static ImportSheet read(byte[] bytes, String domainCode, List<String> headers, List<String> labels) {
-        List<List<String>> instructions = XlsxTable.parseWorksheet(bytes, 2, 2);
-        Map<String, String> context = new LinkedHashMap<>();
-        instructions.forEach(row -> context.put(row.getFirst().trim(), row.get(1).trim()));
+    public record Context(String productCode, String objectTypeCode) {}
+
+    public static Context context(byte[] bytes, String domainCode) {
+        Map<String, String> context = instructionContext(bytes);
         if (!VERSION.equals(context.get("模板版本")) || !domainCode.equals(context.get("业务类型"))
                 || blank(context.get("产品品种")) || blank(context.get("对象类型"))) {
             throw new IllegalArgumentException("INVALID_XLSX_CONTEXT");
         }
+        return new Context(context.get("产品品种"), context.get("对象类型"));
+    }
+
+    public static ImportSheet read(byte[] bytes, String domainCode, List<String> headers, List<String> labels) {
+        Context context = context(bytes, domainCode);
         List<List<String>> sheet = XlsxTable.parseWorksheet(bytes, 1, headers.size());
         if (sheet.size() < 2 || !sheet.get(0).equals(labels) || !sheet.get(1).equals(headers)) {
             throw new IllegalArgumentException("INVALID_XLSX_TEMPLATE");
         }
-        return new ImportSheet(context.get("产品品种"), context.get("对象类型"),
+        return new ImportSheet(context.productCode(), context.objectTypeCode(),
                 List.copyOf(sheet.subList(2, sheet.size())));
+    }
+
+    private static Map<String, String> instructionContext(byte[] bytes) {
+        List<List<String>> instructions = XlsxTable.parseWorksheet(bytes, 2, 2);
+        Map<String, String> context = new LinkedHashMap<>();
+        instructions.forEach(row -> context.put(row.getFirst().trim(), row.get(1).trim()));
+        return context;
     }
 
     private static String dataSheet(Template template, List<List<String>> dataRows) {
@@ -95,14 +107,22 @@ public final class BusinessImportWorkbook {
     }
 
     private static String instructionSheet(Template template) {
-        List<List<String>> rows = List.of(
+        List<List<String>> metadata = List.of(
                 List.of("模板版本", VERSION),
                 List.of("业务类型", template.domainCode()),
                 List.of("产品品种", template.productCode()),
-                List.of("对象类型", template.objectTypeCode()),
-                List.of("填报人", "由登录账号自动记录，不得在模板中填写"));
+                List.of("对象类型", template.objectTypeCode()));
         StringBuilder xml = new StringBuilder();
-        for (int index = 0; index < rows.size(); index++) xml.append(row(index + 1, rows.get(index), index == 0 ? 1 : 0, false));
+        for (int index = 0; index < metadata.size(); index++) {
+            xml.append(row(index + 1, metadata.get(index), 0, true));
+        }
+        List<List<String>> instructions = List.of(
+                List.of("填报说明", "请按字段名称填写，不得修改表头或隐藏的模板校验信息"),
+                List.of("填报人", "由登录账号自动记录，不得在模板中填写"),
+                List.of("单批数量", "每次最多导入 5000 条；更多记录请分批导入"));
+        for (int index = 0; index < instructions.size(); index++) {
+            xml.append(row(index + 5, instructions.get(index), index == 0 ? 1 : 0, false));
+        }
         return """
                 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
                 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
@@ -141,7 +161,7 @@ public final class BusinessImportWorkbook {
         return """
                 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
                 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-                  <sheets><sheet name="%s填报" sheetId="1" r:id="rId1"/><sheet name="模板说明" sheetId="2" r:id="rId2"/></sheets>
+                  <sheets><sheet name="%s填报" sheetId="1" r:id="rId1"/><sheet name="填报说明" sheetId="2" r:id="rId2"/></sheets>
                 </workbook>
                 """.formatted(xml(template.domainLabel()));
     }

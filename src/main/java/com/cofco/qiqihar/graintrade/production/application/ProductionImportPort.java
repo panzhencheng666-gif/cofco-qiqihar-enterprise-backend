@@ -2,6 +2,8 @@ package com.cofco.qiqihar.graintrade.production.application;
 
 /** Explicit production-module boundary used by the shared import workflow. */
 public interface ProductionImportPort {
+    ProductionImportDefinition importDefinition(String productCode, String objectTypeCode);
+
     void validateImportDraft(ProductionDraft draft);
     String importDraft(ProductionDraft draft);
 }

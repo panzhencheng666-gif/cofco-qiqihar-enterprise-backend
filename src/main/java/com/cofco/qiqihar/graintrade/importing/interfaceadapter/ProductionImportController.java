@@ -3,7 +3,6 @@ package com.cofco.qiqihar.graintrade.importing.interfaceadapter;
 import com.cofco.qiqihar.graintrade.importing.application.ImportErrorFile;
 import com.cofco.qiqihar.graintrade.importing.application.ImportJobView;
 import com.cofco.qiqihar.graintrade.importing.application.ProductionImportService;
-import com.cofco.qiqihar.graintrade.importing.application.ProductionImportTemplate;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import java.nio.charset.StandardCharsets;
@@ -32,7 +31,7 @@ public class ProductionImportController {
                                     @RequestParam(required = false) String productCode,
                                     @RequestParam(required = false) String objectTypeCode) {
         if ("xlsx".equalsIgnoreCase(format)) {
-            byte[] bytes = BusinessImportWorkbook.create(ProductionImportTemplate.workbook(productCode, objectTypeCode));
+            byte[] bytes = BusinessImportWorkbook.create(service.workbook(productCode, objectTypeCode));
             return xlsx("产情-" + productCode + "-" + objectTypeCode + "-批量导入模板.xlsx", bytes);
         }
         return csv("production-import-template.csv", service.template().getBytes(StandardCharsets.UTF_8));

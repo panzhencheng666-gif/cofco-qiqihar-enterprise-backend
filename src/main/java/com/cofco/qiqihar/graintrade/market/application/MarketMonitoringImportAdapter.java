@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.market.application;
 
 import com.cofco.qiqihar.graintrade.market.importing.MarketImportPort;
+import com.cofco.qiqihar.graintrade.market.importing.MarketImportDefinition;
 import com.cofco.qiqihar.graintrade.market.importing.MarketImportRow;
 import org.springframework.stereotype.Component;
 
@@ -10,6 +11,22 @@ final class MarketMonitoringImportAdapter implements MarketImportPort {
 
     MarketMonitoringImportAdapter(MarketMonitoringService service) {
         this.service = service;
+    }
+
+    @Override
+    public MarketImportDefinition definition(String productCode, String objectTypeCode) {
+        MarketFormDefinition definition = service.definition(productCode, objectTypeCode);
+        return new MarketImportDefinition(
+                definition.productCode(),
+                definition.objectTypeCode(),
+                definition.coreFields().stream().map(field -> new MarketImportDefinition.Field(
+                        field.code(), field.label(), field.controlType(), field.unit(), field.required(),
+                        field.precision(), field.scale())).toList(),
+                definition.groups().stream().flatMap(group -> group.fields().stream())
+                        .map(field -> new MarketImportDefinition.Field(
+                                field.code(), field.label(), field.valueType(), field.unit(), true,
+                                field.precision(), field.scale()))
+                        .toList());
     }
 
     @Override

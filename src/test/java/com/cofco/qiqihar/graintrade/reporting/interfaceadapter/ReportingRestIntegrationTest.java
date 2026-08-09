@@ -88,7 +88,9 @@ class ReportingRestIntegrationTest {
                 INSERT INTO production.production_record(record_id,product_code,object_type_code,region_code,survey_date,reported_at,cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by)
                 VALUES(:id,'CORN','FARMER','230200',current_date,now(),100,20,'APPROVED','report-test')""").param("id", UUID.randomUUID().toString()).update();
         String preview = mvc.perform(post("/api/v1/reports/previews").principal(() -> "reporter").contentType(MediaType.APPLICATION_JSON).content(body))
-                .andExpect(status().isCreated()).andExpect(jsonPath("$.data.lines[0].value").value("1")).andReturn().getResponse().getContentAsString().replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.data.lines[0].value").value("1"))
+                .andExpect(jsonPath("$.data.dataCutoffLabel").value("2026年第三季度"))
+                .andReturn().getResponse().getContentAsString().replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
         String export = mvc.perform(post("/api/v1/reports/previews/{id}/exports",preview).principal(() -> "reporter").contentType(MediaType.APPLICATION_JSON).content("{\"formatCode\":\"CSV\"}"))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString().replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
         mvc.perform(get("/api/v1/reports/exports/{id}/content", export))
@@ -105,5 +107,15 @@ class ReportingRestIntegrationTest {
         assertThat(jdbc.sql("SELECT count(*) FROM platform.business_audit_event").query(Long.class).single()).isEqualTo(4L);
         assertThatThrownBy(() -> jdbc.sql("DELETE FROM platform.business_audit_event").update())
                 .hasMessageContaining("business audit events are immutable");
+    }
+
+    @Test void listsOnlyTheFourScopedBusinessReportTypes() throws Exception {
+        mvc.perform(get("/api/v1/reports/parameter-options").principal(() -> "reporter"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.definitions.length()").value(4))
+                .andExpect(jsonPath("$.data.definitions[*].code").value(org.hamcrest.Matchers.containsInAnyOrder(
+                        "PRODUCTION_DAILY", "MARKET_DAILY", "LOGISTICS_WEEKLY", "SUPPLY_MONTHLY")))
+                .andExpect(jsonPath("$.data.definitions[*].businessDomain", org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.hasItems("COMPREHENSIVE", "SUBMISSION"))));
     }
 }

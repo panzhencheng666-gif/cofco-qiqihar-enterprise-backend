@@ -4,6 +4,7 @@ import com.cofco.qiqihar.graintrade.importing.domain.CsvTable;
 import com.cofco.qiqihar.graintrade.importing.domain.ImportJob;
 import com.cofco.qiqihar.graintrade.importing.domain.ImportRowOutcome;
 import com.cofco.qiqihar.graintrade.market.importing.MarketImportPort;
+import com.cofco.qiqihar.graintrade.market.importing.MarketImportDefinition;
 import com.cofco.qiqihar.graintrade.market.importing.MarketImportRow;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
@@ -44,6 +45,12 @@ public class MarketImportService {
 
     public String template() { return MarketImportTemplate.csv(); }
 
+    public com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook.Template workbook(
+            String productCode, String objectTypeCode) {
+        access.require("BUSINESS_IMPORT", null);
+        return MarketImportTemplate.workbook(market.definition(productCode, objectTypeCode));
+    }
+
     public ImportErrorFile errors(UUID importJobId) {
         SecurityPrincipal principal = access.require("BUSINESS_IMPORT", null);
         ImportJob job = jobs.findById(importJobId)
@@ -53,10 +60,13 @@ public class MarketImportService {
         if (!job.requestedBy().equals(principal.subjectId())) {
             throw new ConflictException("IMPORT_ERROR_FILE_NOT_ALLOWED", "Import job belongs to a different subject");
         }
-        StringBuilder csv = new StringBuilder(String.join(",", MarketImportTemplate.HEADERS))
+        List<String> headers = job.rows().isEmpty()
+                ? MarketImportTemplate.HEADERS
+                : job.rows().getFirst().values().keySet().stream().sorted().toList();
+        StringBuilder csv = new StringBuilder(String.join(",", headers))
                 .append(",errorCode,errorMessage\n");
         job.rows().stream().filter(row -> row.outcomeCode().equals("ERROR")).forEach(row -> {
-            MarketImportTemplate.HEADERS.forEach(header -> csv.append(CsvTable.escape(row.values().get(header))).append(','));
+            headers.forEach(header -> csv.append(CsvTable.escape(row.values().get(header))).append(','));
             csv.append(CsvTable.escape(row.errorCode())).append(',')
                     .append(CsvTable.escape(row.errorMessage())).append('\n');
         });
@@ -122,15 +132,19 @@ public class MarketImportService {
         return ImportJobView.from(job);
     }
 
-    private static List<List<String>> table(String filename, String mediaType, byte[] bytes) {
+    private List<List<String>> table(String filename, String mediaType, byte[] bytes) {
         String lower = filename.toLowerCase(java.util.Locale.ROOT);
         try {
             if (lower.endsWith(".csv") && (mediaType == null || mediaType.equals("text/csv")
                     || mediaType.equals("application/csv") || mediaType.equals("application/vnd.ms-excel")))
                 return CsvTable.parse(new String(bytes, StandardCharsets.UTF_8), MarketImportTemplate.HEADERS.size());
             if (lower.endsWith(".xlsx") && (mediaType == null || mediaType.equals(
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")))
-                return MarketImportTemplate.canonicalXlsx(bytes);
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))) {
+                var context = com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook
+                        .context(bytes, MarketImportTemplate.DOMAIN);
+                return MarketImportTemplate.canonicalXlsx(bytes,
+                        market.definition(context.productCode(), context.objectTypeCode()));
+            }
         } catch (CsvTable.LimitExceededException exception) {
             throw new ClientRequestException(exception.code(), exception.getMessage());
         } catch (IllegalArgumentException exception) {
@@ -145,10 +159,17 @@ public class MarketImportService {
         return value.toString();
     }
 
-    private static List<Row> rows(String content) {
-        List<List<String>> table = CsvTable.parse(content, MarketImportTemplate.HEADERS.size());
-        if (table.isEmpty() || !table.getFirst().equals(MarketImportTemplate.HEADERS))
-            throw new ClientRequestException("INVALID_IMPORT_TEMPLATE", "CSV header does not match the current market template");
+    private List<Row> rows(String content) {
+        int lineEnd = content.indexOf('\n');
+        if (lineEnd < 0) throw new ClientRequestException(
+                "INVALID_IMPORT_TEMPLATE", "Import file does not contain a header row");
+        int columns = content.substring(0, lineEnd).split(",", -1).length;
+        List<List<String>> table = CsvTable.parse(content, columns);
+        if (table.isEmpty()) throw new ClientRequestException(
+                "INVALID_IMPORT_TEMPLATE", "Import file does not contain a header row");
+        if (!table.getFirst().equals(MarketImportTemplate.HEADERS)) {
+            return dynamicRows(table);
+        }
         List<Row> rows = new ArrayList<>();
         for (int index = 1; index < table.size(); index++) {
             Map<String, String> values = new LinkedHashMap<>();
@@ -164,6 +185,78 @@ public class MarketImportService {
         }
         if (rows.isEmpty()) throw new ClientRequestException("INVALID_IMPORT_CSV", "CSV must contain at least one data row");
         return List.copyOf(rows);
+    }
+
+    private List<Row> dynamicRows(List<List<String>> table) {
+        if (table.size() < 2 || table.getFirst().size() < 4
+                || !table.getFirst().get(0).equals("productCode")
+                || !table.getFirst().get(1).equals("objectTypeCode")) {
+            throw new ClientRequestException(
+                    "INVALID_IMPORT_TEMPLATE", "Workbook fields do not match the current market form");
+        }
+        String productCode = table.get(1).get(0).trim();
+        String objectTypeCode = table.get(1).get(1).trim();
+        MarketImportDefinition definition = market.definition(productCode, objectTypeCode);
+        List<String> expected = java.util.stream.Stream.concat(
+                java.util.stream.Stream.of("productCode", "objectTypeCode"),
+                MarketImportTemplate.workbook(definition).headers().stream()).toList();
+        if (!table.getFirst().equals(expected)) {
+            throw new ClientRequestException(
+                    "INVALID_IMPORT_TEMPLATE", "Workbook fields do not match the current market form");
+        }
+        List<Row> rows = new ArrayList<>();
+        for (int index = 1; index < table.size(); index++) {
+            Map<String, String> values = new LinkedHashMap<>();
+            for (int column = 0; column < expected.size(); column++) {
+                values.put(expected.get(column), table.get(index).get(column).trim());
+            }
+            if (!productCode.equals(values.get("productCode"))
+                    || !objectTypeCode.equals(values.get("objectTypeCode"))) {
+                rows.add(Row.error(index + 1, Map.copyOf(values),
+                        "IMPORT_ROW_CONTEXT_MISMATCH", "Workbook row context is inconsistent"));
+                continue;
+            }
+            try {
+                rows.add(Row.valid(index + 1, Map.copyOf(values), dynamicDraft(values, definition)));
+            } catch (ClientRequestException exception) {
+                rows.add(Row.error(index + 1, Map.copyOf(values),
+                        exception.code(), exception.clientMessage()));
+            }
+        }
+        if (rows.isEmpty()) throw new ClientRequestException(
+                "INVALID_IMPORT_XLSX", "Workbook must contain at least one data row");
+        return List.copyOf(rows);
+    }
+
+    private static MarketImportRow dynamicDraft(
+            Map<String, String> values, MarketImportDefinition definition) {
+        try {
+            Map<String, String> core = new LinkedHashMap<>();
+            core.put("MKT_OBJECT_TYPE", definition.objectTypeCode());
+            definition.coreFields().stream()
+                    .filter(field -> !field.readOnly())
+                    .filter(field -> !field.code().equals("MKT_OBJECT_TYPE"))
+                    .filter(field -> !field.code().equals("MKT_REPORTER_NAME"))
+                    .forEach(field -> {
+                        String value = values.get(field.code());
+                        if (value != null && !value.isBlank()) core.put(field.code(), value);
+                    });
+            Map<String, BigDecimal> facts = new LinkedHashMap<>();
+            definition.factFields().forEach(field -> {
+                String value = values.get(field.code());
+                if (value != null && !value.isBlank()) {
+                    facts.put(field.code(), PlainDecimal.parse(value,
+                            field.precision() - field.scale(), field.scale(),
+                            "IMPORT_ROW_VALUE_FORMAT"));
+                }
+            });
+            String evidence = values.get(MarketImportTemplate.EVIDENCE_PHOTO_ID);
+            return new MarketImportRow(definition.productCode(), core, facts,
+                    List.of(UUID.fromString(evidence)));
+        } catch (RuntimeException exception) {
+            throw new ClientRequestException(
+                    "IMPORT_ROW_VALUE_FORMAT", "Market import row is invalid");
+        }
     }
 
     private static MarketImportRow draft(Map<String, String> value) {

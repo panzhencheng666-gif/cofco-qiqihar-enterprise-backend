@@ -181,7 +181,7 @@ class FlywayMigrationReplayTest {
                 .containsEntry("product", 3L)
                 .containsEntry("cultivar", 2L)
                 .containsEntry("object_type", 12L)
-                .containsEntry("page_definition_field", 213L)
+                .containsEntry("page_definition_field", 216L)
                 .containsEntry("production_fact_category", 5L)
                 .containsEntry("production_fact_definition", 31L)
                 .containsEntry("production_fact_applicability", 204L);

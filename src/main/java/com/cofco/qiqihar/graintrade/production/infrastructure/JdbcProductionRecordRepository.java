@@ -231,7 +231,8 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         values.put("PROD_OBJECT_TYPE", row.objectTypeName());
         values.put("PROD_SURVEY_DATE", row.surveyDate().toString());
         values.put("PROD_REPORTED_AT", row.reportedAt().toString());
-        values.put("PROD_CULTIVAR", row.cultivarName());
+        values.put("PROD_CULTIVAR", submissionMetadata.getOrDefault(
+                "PROD_CULTIVAR_NAME", row.cultivarName()));
         values.put("PROD_AREA_MU", decimal(row.area()));
         values.put("PROD_YIELD_PER_MU", decimal(row.yield()));
         values.put("PROD_ESTIMATED_OUTPUT", decimal(row.output()));

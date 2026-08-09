@@ -3,7 +3,6 @@ package com.cofco.qiqihar.graintrade.importing.interfaceadapter;
 import com.cofco.qiqihar.graintrade.importing.application.ImportJobView;
 import com.cofco.qiqihar.graintrade.importing.application.ImportErrorFile;
 import com.cofco.qiqihar.graintrade.importing.application.MarketImportService;
-import com.cofco.qiqihar.graintrade.importing.application.MarketImportTemplate;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import java.nio.charset.StandardCharsets;
@@ -35,7 +34,7 @@ public class MarketImportController {
                                     @RequestParam(required = false) String productCode,
                                     @RequestParam(required = false) String objectTypeCode) {
         if ("xlsx".equalsIgnoreCase(format)) {
-            byte[] bytes = BusinessImportWorkbook.create(MarketImportTemplate.workbook(productCode, objectTypeCode));
+            byte[] bytes = BusinessImportWorkbook.create(service.workbook(productCode, objectTypeCode));
             return ResponseEntity.ok().contentType(MediaType.parseMediaType(
                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                     .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()

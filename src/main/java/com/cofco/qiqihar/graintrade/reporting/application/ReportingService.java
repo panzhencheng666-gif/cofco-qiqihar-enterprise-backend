@@ -117,7 +117,7 @@ public class ReportingService {
     private String content(ReportPreviewCommand command, ReportingRepository.ReportPreviewMaterial material, Instant now) {
         ObjectNode root = json.createObjectNode();
         root.put("title", material.regionLabel() + material.productLabel() + material.definition().name());
-        root.put("dataCutoffLabel", command.periodCode());
+        root.put("dataCutoffLabel", material.periodLabel());
         root.put("approvedRecordCount", material.approvedRecordCount());
         root.set("approvedSummary", json.readTree(material.approvedSummaryJson()));
         ArrayNode sections = root.putArray("sections");

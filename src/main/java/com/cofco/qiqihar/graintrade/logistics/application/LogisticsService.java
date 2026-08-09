@@ -59,6 +59,16 @@ public class LogisticsService {
         if(!repository.actionAllowed(securedDraft.productCode(),LogisticsStatus.DRAFT,"NEW"))throw invalid();
         LogisticsRecordView created=repository.insert(UUID.randomUUID().toString(),securedDraft,principal.subjectId(),clock.instant()); audit(principal,created,"LOGISTICS_RECORD_CREATED"); return created;
     }
+    public void validateImportDraft(LogisticsDraft draft) {
+        securedImportDraft(draft);
+    }
+    @Transactional public String importDraft(LogisticsDraft draft) {
+        LogisticsDraft securedDraft=securedImportDraft(draft);
+        SecurityPrincipal principal=accessControl.require("BUSINESS_IMPORT",repository.regionsForDraft(securedDraft).iterator().next());
+        LogisticsRecordView created=repository.insert(UUID.randomUUID().toString(),securedDraft,principal.subjectId(),clock.instant());
+        audit(principal,created,"LOGISTICS_RECORD_IMPORTED");
+        return created.id();
+    }
     @Transactional public LogisticsRecordView save(String id,long version,LogisticsDraft draft) {
         LogisticsRecordView existing=required(id); SecurityPrincipal principal=authorize("BUSINESS_UPDATE",repository.regionsForRecord(id)); requireVersion(existing,version);
         if (!existing.productCode().equals(draft.productCode())) throw invalid();
@@ -95,6 +105,14 @@ public class LogisticsService {
     private AuthorizedReadScope readScope(){return accessControl==null?AuthorizedReadScope.unrestricted():accessControl.requireReadScope();}
     private void audit(SecurityPrincipal principal,LogisticsRecordView record,String action){if(audit!=null)audit.record(principal,"LOGISTICS_RECORD",record.id(),action,clock.instant(),"{}");}
     private LogisticsRecordView required(String id){LogisticsRecordView value=repository.find(id); if(value==null) throw new ResourceNotFoundException("LOGISTICS_RECORD_NOT_FOUND","Logistics record was not found"); return value;}
+    private LogisticsDraft securedImportDraft(LogisticsDraft draft) {
+        Set<String> regions=repository.regionsForDraft(draft);
+        SecurityPrincipal principal=authorize("BUSINESS_IMPORT",regions);
+        LogisticsDraft secured=withReporter(draft,principal.displayName());
+        validate(secured);
+        if(!repository.actionAllowed(secured.productCode(),LogisticsStatus.DRAFT,"NEW"))throw invalid();
+        return secured;
+    }
     private static void requireVersion(LogisticsRecordView value,long version){if(version<0||value.version()!=version)throw new ConflictException("LOGISTICS_RECORD_VERSION_CONFLICT","Logistics record has changed");}
     private static LogisticsDraft withReporter(LogisticsDraft draft,String reporter){
         Map<String,String> values=new java.util.LinkedHashMap<>(draft.values());

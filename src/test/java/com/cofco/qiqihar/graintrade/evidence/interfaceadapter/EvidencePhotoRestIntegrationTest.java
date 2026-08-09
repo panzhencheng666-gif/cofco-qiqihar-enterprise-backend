@@ -39,7 +39,7 @@ class EvidencePhotoRestIntegrationTest {
     }
 
     @Test
-    void uploadsPrivatePhotoAndReturnsWatermarkedContentOnlyToItsUploader() throws Exception {
+    void keepsStagedPhotoPrivateThenSharesAttachedPhotoWithAuthorizedColleagues() throws Exception {
         byte[] original = pngBytes();
         String response = mvc.perform(multipart("/api/v1/evidence-photos")
                         .file(new MockMultipartFile("file", "field.png", "image/png", original))
@@ -63,6 +63,17 @@ class EvidencePhotoRestIntegrationTest {
                         .principal(() -> "market-tester"))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error.code").value("EVIDENCE_PHOTO_ACCESS_DENIED"));
+
+        JdbcClient.create(dataSource).sql("""
+                UPDATE evidence.evidence_photo
+                SET state_code='ATTACHED',attached_domain='PRODUCTION',
+                    attached_record_id='PROD-001',attached_region_code='230200'
+                WHERE photo_id=CAST(:id AS uuid)
+                """).param("id", photoId).update();
+
+        mvc.perform(get("/api/v1/evidence-photos/{id}/content", photoId)
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isOk());
     }
 
     @Test

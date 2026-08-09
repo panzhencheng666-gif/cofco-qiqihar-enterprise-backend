@@ -2,6 +2,7 @@ package com.cofco.qiqihar.graintrade.importing.application;
 
 import java.util.List;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
+import com.cofco.qiqihar.graintrade.market.importing.MarketImportDefinition;
 
 /** Server-owned fixed columns for market monitoring imports. */
 public final class MarketImportTemplate {
@@ -11,38 +12,48 @@ public final class MarketImportTemplate {
             "purchaseBasePrice", "saleBasePrice", "carriageBoardAmount", "packagingAmount",
             "freightAmount", "packagingForm", "reporterName", "reporterPhone", "sampleName",
             "sampleContact", "latitude", "longitude", "purchaseVolume", "moisture", "evidencePhotoId");
-    public static final List<String> XLSX_HEADERS = List.of("regionCode", "tradeDate", "tradeDirection",
-            "purchaseBasePrice", "saleBasePrice", "carriageBoardAmount", "packagingAmount", "freightAmount",
-            "packagingForm", "reporterPhone", "sampleName", "sampleContact", "latitude", "longitude",
-            "purchaseVolume", "moisture", "evidencePhotoId");
-    public static final List<String> XLSX_LABELS = List.of("所在地区代码", "交易日期", "买卖方向",
-            "采购基础价（元/吨）", "销售基础价（元/吨）", "车板组成（元/吨）", "包装组成（元/吨）",
-            "运费组成（元/吨）", "包装形态", "填报人联系方式", "填报对象/客户名称",
-            "填报对象联系方式", "纬度（度）", "经度（度）", "采购量（吨）", "水分（%）",
-            "现场水印照片编号");
+    public static final String EVIDENCE_PHOTO_ID = "evidencePhotoId";
 
     private MarketImportTemplate() {}
 
     public static String csv() { return String.join(",", HEADERS) + "\n"; }
-    public static BusinessImportWorkbook.Template workbook(String productCode, String objectTypeCode) {
-        return new BusinessImportWorkbook.Template(DOMAIN, "市场", productCode, objectTypeCode,
-                XLSX_HEADERS, XLSX_LABELS);
+    public static BusinessImportWorkbook.Template workbook(MarketImportDefinition definition) {
+        List<MarketImportDefinition.Field> fields = editableFields(definition);
+        List<String> headers = java.util.stream.Stream.concat(
+                fields.stream().map(MarketImportDefinition.Field::code),
+                java.util.stream.Stream.of(EVIDENCE_PHOTO_ID)).toList();
+        List<String> labels = java.util.stream.Stream.concat(
+                fields.stream().map(MarketImportDefinition.Field::displayLabel),
+                java.util.stream.Stream.of("现场水印照片编号")).toList();
+        return new BusinessImportWorkbook.Template(DOMAIN, "市场", definition.productCode(),
+                definition.objectTypeCode(), headers, labels);
     }
 
-    public static List<List<String>> canonicalXlsx(byte[] bytes) {
-        var sheet = BusinessImportWorkbook.read(bytes, DOMAIN, XLSX_HEADERS, XLSX_LABELS);
+    public static List<List<String>> canonicalXlsx(byte[] bytes, MarketImportDefinition definition) {
+        BusinessImportWorkbook.Template template = workbook(definition);
+        var sheet = BusinessImportWorkbook.read(bytes, DOMAIN, template.headers(), template.labels());
         java.util.ArrayList<List<String>> table = new java.util.ArrayList<>();
-        table.add(HEADERS);
+        List<String> headers = java.util.stream.Stream.concat(
+                java.util.stream.Stream.of("productCode", "objectTypeCode"),
+                template.headers().stream()).toList();
+        table.add(headers);
         for (List<String> row : sheet.rows()) {
             java.util.Map<String, String> values = new java.util.LinkedHashMap<>();
             values.put("productCode", sheet.productCode());
             values.put("objectTypeCode", sheet.objectTypeCode());
-            values.put("reporterName", "");
-            for (int index = 0; index < XLSX_HEADERS.size(); index++) {
-                values.put(XLSX_HEADERS.get(index), row.get(index));
+            for (int index = 0; index < template.headers().size(); index++) {
+                values.put(template.headers().get(index), row.get(index));
             }
-            table.add(HEADERS.stream().map(header -> values.getOrDefault(header, "")).toList());
+            table.add(headers.stream().map(header -> values.getOrDefault(header, "")).toList());
         }
         return List.copyOf(table);
+    }
+
+    public static List<MarketImportDefinition.Field> editableFields(MarketImportDefinition definition) {
+        return java.util.stream.Stream.concat(definition.coreFields().stream()
+                        .filter(field -> !field.readOnly())
+                        .filter(field -> !field.code().equals("MKT_OBJECT_TYPE"))
+                        .filter(field -> !field.code().equals("MKT_REPORTER_NAME")),
+                definition.factFields().stream()).toList();
     }
 }
