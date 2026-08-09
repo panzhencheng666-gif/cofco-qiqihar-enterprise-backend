@@ -29,7 +29,7 @@ class MarketV18MasterDataTest {
                 SELECT code || ':' || label || ':' || sort_order
                 FROM platform.market_fact_category ORDER BY sort_order
                 """)).containsExactly(
-                        "QUALITY:质量指标:10", "PURCHASE:采购与成交:20", "SALES:销售:30",
+                        "QUALITY:质量指标:10", "PURCHASE:采购业务:20", "SALES:销售:30",
                         "PROCESSING:加工生产:40", "INVENTORY:库存:50");
         assertThat(rows("""
                 SELECT code || ':' || label || ':' || control_type || ':' || sort_order
