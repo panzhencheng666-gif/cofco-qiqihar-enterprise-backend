@@ -40,11 +40,12 @@ public record LogisticsRecord(
     }
     public LogisticsRecord revise() {
         if (status != LogisticsStatus.RETURNED) throw new IllegalStateException("Only returned records can be revised");
-        return transition(LogisticsStatus.DRAFT, null);
+        return transition(LogisticsStatus.RETURNED, returnReason);
     }
     private LogisticsRecord transition(LogisticsStatus next, String reason) {
-        if (next == LogisticsStatus.PENDING_REVIEW && status != LogisticsStatus.DRAFT)
-            throw new IllegalStateException("Only drafts can be submitted");
+        if (next == LogisticsStatus.PENDING_REVIEW
+                && status != LogisticsStatus.DRAFT && status != LogisticsStatus.RETURNED)
+            throw new IllegalStateException("Only drafts or returned records can be submitted");
         return new LogisticsRecord(id, productCode, monitoringPeriodCode, collectionDate, reportedAt,
                 originNodeCode, destinationNodeCode, transportModeCode, directionCode, routeVolume,
                 freightRate, transitTimeHours, next, reason, version);

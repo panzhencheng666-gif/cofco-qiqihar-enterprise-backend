@@ -526,8 +526,15 @@ class MarketMonitoringRestIntegrationTest {
                         .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
                         .content(draftBody("CORN", "FEED_MILL", "MOISTURE", 2L)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("DRAFT"))
+                .andExpect(jsonPath("$.data.status").value("RETURNED"))
+                .andExpect(jsonPath("$.data.returnReason").value("请补充凭证"))
                 .andExpect(jsonPath("$.data.facts.PURCHASE_VOLUME").value("12.0000"));
+        mockMvc.perform(post("/api/v1/market-records/{id}/submit", id)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":3}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"))
+                .andExpect(jsonPath("$.data.version").value(4));
 
         long before = recordCount();
         mockMvc.perform(post("/api/v1/market-records")

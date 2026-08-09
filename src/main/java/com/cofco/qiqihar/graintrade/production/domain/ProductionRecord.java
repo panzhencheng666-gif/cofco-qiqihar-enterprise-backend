@@ -118,7 +118,7 @@ public record ProductionRecord(
         BigDecimal yield = input(nextYield, "yield per mu");
         return new ProductionRecord(id, nextProductCode, nextObjectTypeCode, nextRegionCode, nextCultivarCode,
                 nextSurveyDate, nextReportedAt, area, yield,
-                area.multiply(yield).setScale(INPUT_SCALE, RoundingMode.HALF_UP), ProductionStatus.DRAFT, null,
+                area.multiply(yield).setScale(INPUT_SCALE, RoundingMode.HALF_UP), status, returnReason,
                 nextQuality, nextCosts, nextInsurance, nextSubsidies, nextSubmissionMetadata, version);
     }
 

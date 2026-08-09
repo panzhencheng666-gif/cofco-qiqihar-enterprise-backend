@@ -18,6 +18,9 @@ class LogisticsRecordTest {
         assertThat(pending.status()).isEqualTo(LogisticsStatus.PENDING_REVIEW);
         assertThat(pending.approve().status()).isEqualTo(LogisticsStatus.APPROVED);
         assertThatThrownBy(() -> pending.returnForCorrection(" ")).isInstanceOf(IllegalArgumentException.class);
-        assertThat(pending.returnForCorrection("补充运单").revise().status()).isEqualTo(LogisticsStatus.DRAFT);
+        LogisticsRecord returned = pending.returnForCorrection("补充运单").revise();
+        assertThat(returned.status()).isEqualTo(LogisticsStatus.RETURNED);
+        assertThat(returned.returnReason()).isEqualTo("补充运单");
+        assertThat(returned.submit().status()).isEqualTo(LogisticsStatus.PENDING_REVIEW);
     }
 }

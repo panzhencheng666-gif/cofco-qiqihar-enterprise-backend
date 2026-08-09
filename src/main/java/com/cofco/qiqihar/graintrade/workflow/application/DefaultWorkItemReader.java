@@ -44,7 +44,8 @@ public class DefaultWorkItemReader implements WorkItemReader {
         AuthorizedReadScope scope = accessControl == null
                 ? AuthorizedReadScope.unrestricted() : accessControl.requireReadScope();
         if (query.regionId() != null) scope.requireRegion(query.regionId());
-        WorkItemQuery authorizedQuery = query.authorizedFor(scope.regionCodes());
+        WorkItemQuery authorizedQuery = query.authorizedFor(scope.regionCodes())
+                .assignedTo(scope.subjectId());
         if (!repository.allowsFilters(query)
                 || !pageDefinitions.allowsListQuery(
                         "WORKFLOW", "WORK_ITEMS", null, query.pageSize(), Set.of())) {

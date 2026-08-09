@@ -118,7 +118,8 @@ class LogisticsRestIntegrationTest {
         mvc.perform(put("/api/v1/logistics-records/{id}", corn).principal(() -> "logistics-tester")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("CORN", "RAIL", "TEST_RAIL", "TEST_ROAD", "13.500", true, 2)))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("DRAFT"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("RETURNED"))
+                .andExpect(jsonPath("$.data.returnReason").value("补充运单编号"))
                 .andExpect(jsonPath("$.data.version").value(3));
         transition(corn, "submit", 3, null);
         jdbc.sql("""

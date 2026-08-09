@@ -60,7 +60,7 @@ public record MarketMonitoringRecord(
             BigDecimal packagingAmount, BigDecimal freight, String packaging, Map<String, BigDecimal> nextFacts) {
         if (status != MarketStatus.DRAFT && status != MarketStatus.RETURNED) throw new IllegalStateException("Only DRAFT or RETURNED records may be revised");
         return create(id, productCode, object, region, date, reported, nextDirection, purchase, sale, carriage,
-                packagingAmount, freight, packaging, MarketStatus.DRAFT, null, nextFacts, version);
+                packagingAmount, freight, packaging, status, returnReason, nextFacts, version);
     }
     public MarketMonitoringRecord submit() { return transition(MarketStatus.DRAFT, MarketStatus.PENDING_REVIEW, null, true); }
     public MarketMonitoringRecord approve() { return transition(MarketStatus.PENDING_REVIEW, MarketStatus.APPROVED, null, false); }

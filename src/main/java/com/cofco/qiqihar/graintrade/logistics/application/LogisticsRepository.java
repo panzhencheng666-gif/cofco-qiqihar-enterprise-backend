@@ -18,6 +18,7 @@ public interface LogisticsRepository {
     Set<String> regionsForDraft(LogisticsDraft draft);
     Set<String> regionsForRecord(String id);
     LogisticsRecordView insert(String id, LogisticsDraft draft, String actor, Instant now);
-    LogisticsRecordView update(String id, long version, LogisticsDraft draft, String actor, Instant now);
+    LogisticsRecordView update(String id, long version, LogisticsDraft draft,
+            LogisticsStatus status, String returnReason, String actor, Instant now);
     LogisticsRecordView transition(String id, long version, LogisticsStatus status, String reason, String actor, Instant now);
 }

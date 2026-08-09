@@ -59,6 +59,7 @@ public class WorkItemController {
             String regionCode,
             String region,
             String product,
+            String businessPeriodCode,
             String businessPeriod,
             OffsetDateTime dueAt,
             String workflowNode,
@@ -72,7 +73,7 @@ public class WorkItemController {
             return new WorkItemResponse(
                 item.id(), item.task(), item.domain(), item.regionCode(), item.region(),
                 item.product(),
-                item.businessPeriod(), item.dueAt(), item.workflowNode(), item.statusCode(),
+                item.businessPeriodCode(), item.businessPeriod(), item.dueAt(), item.workflowNode(), item.statusCode(),
                 item.status(), item.responsiblePartyCode(), item.responsibleParty(),
                 item.sourceType(), item.sourceId());
         }

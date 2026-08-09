@@ -62,7 +62,9 @@ class MarketPricingTest {
         MarketMonitoringRecord revised = returned.revise("FEED_MILL", "230200", LocalDate.of(2026, 8, 1),
                 returned.reportedAt(), MarketTradeDirection.PURCHASE, new BigDecimal("2301"), null,
                 BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, "BULK", returned.facts());
-        assertThat(revised.status()).isEqualTo(MarketStatus.DRAFT);
+        assertThat(revised.status()).isEqualTo(MarketStatus.RETURNED);
+        assertThat(revised.returnReason()).isEqualTo("补充凭证");
+        assertThat(revised.submit().status()).isEqualTo(MarketStatus.PENDING_REVIEW);
         assertThat(revised.facts()).containsEntry("PURCHASE_VOLUME", new BigDecimal("12.0000"));
     }
 }

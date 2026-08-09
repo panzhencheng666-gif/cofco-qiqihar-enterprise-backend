@@ -76,7 +76,7 @@ public class LogisticsService {
         if(!repository.actionAllowed(existing.productCode(),existing.status(),"SAVE"))throw invalid();
         String reporter=existing.values().get("LOG_REPORTER");
         LogisticsDraft securedDraft=withReporter(draft,blank(reporter)?principal.displayName():reporter);
-        validate(securedDraft); authorize("BUSINESS_UPDATE",repository.regionsForDraft(securedDraft)); LogisticsRecordView updated=repository.update(id,version,securedDraft,principal.subjectId(),clock.instant()); audit(principal,updated,"LOGISTICS_RECORD_UPDATED"); return updated;
+        validate(securedDraft); authorize("BUSINESS_UPDATE",repository.regionsForDraft(securedDraft)); LogisticsRecordView updated=repository.update(id,version,securedDraft,existing.status(),existing.returnReason(),principal.subjectId(),clock.instant()); audit(principal,updated,"LOGISTICS_RECORD_UPDATED"); return updated;
     }
     @Transactional public LogisticsRecordView submit(String id,long version) { return transition(id,version,LogisticsStatus.PENDING_REVIEW,null,"BUSINESS_SUBMIT","LOGISTICS_RECORD_SUBMITTED"); }
     @Transactional public LogisticsRecordView approve(String id,long version) { return transition(id,version,LogisticsStatus.APPROVED,null,"BUSINESS_APPROVE","LOGISTICS_RECORD_APPROVED"); }
@@ -85,7 +85,8 @@ public class LogisticsService {
     }
     private LogisticsRecordView transition(String id,long version,LogisticsStatus target,String reason,String permission,String auditAction) {
         LogisticsRecordView existing=required(id); SecurityPrincipal principal=authorize(permission,repository.regionsForRecord(id)); requireVersion(existing,version);
-        boolean allowed=(target==LogisticsStatus.PENDING_REVIEW && existing.status()==LogisticsStatus.DRAFT)
+        boolean allowed=(target==LogisticsStatus.PENDING_REVIEW
+                && (existing.status()==LogisticsStatus.DRAFT || existing.status()==LogisticsStatus.RETURNED))
                 || ((target==LogisticsStatus.APPROVED || target==LogisticsStatus.RETURNED) && existing.status()==LogisticsStatus.PENDING_REVIEW);
         String action=target==LogisticsStatus.PENDING_REVIEW?"SUBMIT":target==LogisticsStatus.APPROVED?"APPROVE":"RETURN";
         if(!allowed||!repository.actionAllowed(existing.productCode(),existing.status(),action)) throw invalid();

@@ -65,6 +65,7 @@ public class JdbcWorkItemRepository implements WorkItemRepository {
                                item.region_code,
                                region.name AS region_name,
                                product.name AS product_name,
+                               period.code AS business_period_code,
                                period.name AS business_period,
                                item.due_at,
                                node.label AS node_label,
@@ -84,6 +85,7 @@ public class JdbcWorkItemRepository implements WorkItemRepository {
                         row.getString("region_code"),
                         row.getString("region_name"),
                         row.getString("product_name"),
+                        row.getString("business_period_code"),
                         row.getString("business_period"),
                         row.getObject("due_at", java.time.OffsetDateTime.class),
                         row.getString("node_label"),
@@ -109,6 +111,39 @@ public class JdbcWorkItemRepository implements WorkItemRepository {
             if (query.authorizedRegionCodes().isEmpty()) sql.append(" AND 1=0");
             else sql.append(" AND item.region_code IN (:authorizedRegionCodes)");
         }
+        if (!query.assignedSubjectId().isBlank()) {
+            sql.append("""
+                     AND (
+                         (party.party_type = 'USER'
+                          AND party.external_code = :assignedSubjectId
+                          AND (item.status_code IS DISTINCT FROM 'TO_REVIEW'
+                               OR EXISTS (
+                                   SELECT 1
+                                   FROM platform.security_user_role user_role
+                                   JOIN platform.access_role_permission role_permission
+                                     ON role_permission.role_code = user_role.role_code
+                                   WHERE user_role.subject_id = :assignedSubjectId
+                                     AND role_permission.permission_code IN
+                                         ('BUSINESS_APPROVE', 'BUSINESS_RETURN'))))
+                         OR
+                         (party.party_type = 'WORK_UNIT'
+                          AND item.status_code = 'TO_REVIEW'
+                          AND party.external_code = (
+                              SELECT security_user.work_unit_code
+                              FROM platform.security_user
+                              WHERE security_user.subject_id = :assignedSubjectId
+                                AND security_user.enabled)
+                          AND EXISTS (
+                              SELECT 1
+                              FROM platform.security_user_role user_role
+                              JOIN platform.access_role_permission role_permission
+                                ON role_permission.role_code = user_role.role_code
+                              WHERE user_role.subject_id = :assignedSubjectId
+                                AND role_permission.permission_code IN
+                                    ('BUSINESS_APPROVE', 'BUSINESS_RETURN')))
+                     )
+                    """);
+        }
         return sql.toString();
     }
 
@@ -120,6 +155,9 @@ public class JdbcWorkItemRepository implements WorkItemRepository {
         if (!query.authorizedRegionCodes().isEmpty()
                 && !query.authorizedRegionCodes().contains("*")) {
             statement = statement.param("authorizedRegionCodes", query.authorizedRegionCodes());
+        }
+        if (!query.assignedSubjectId().isBlank()) {
+            statement = statement.param("assignedSubjectId", query.assignedSubjectId());
         }
         return statement;
     }

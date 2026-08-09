@@ -110,8 +110,8 @@ class BusinessReadRegionIsolationIntegrationTest {
         crossRegionLogistics();
         jdbc.sql("UPDATE logistics.logistics_node SET region_code=:regionA WHERE node_code LIKE 'ISO_B_%'")
                 .param("regionA", REGION_A).update();
-        workItem(REGION_A, "区域A待办");
-        workItem(REGION_B, "区域B待办");
+        workItem(REGION_A, "区域A待办", READER_A);
+        workItem(REGION_B, "区域B待办", READER_B);
     }
 
     @AfterEach
@@ -398,15 +398,15 @@ class BusinessReadRegionIsolationIntegrationTest {
                 """).param("id", LOGISTICS_CROSS).update();
     }
 
-    private void workItem(String region, String task) {
+    private void workItem(String region, String task, String responsibleSubject) {
         jdbc.sql("""
                 INSERT INTO workflow.workflow_node(code,label) VALUES ('REGION_ISOLATION','区域隔离节点')
                 ON CONFLICT(code) DO NOTHING
                 """).update();
         jdbc.sql("""
                 INSERT INTO workflow.responsible_party(party_type,external_code,display_name)
-                VALUES ('USER','REGION_ISOLATION','区域隔离责任人') ON CONFLICT DO NOTHING
-                """).update();
+                VALUES ('USER',:subject,'区域隔离责任人') ON CONFLICT DO NOTHING
+                """).param("subject", responsibleSubject).update();
         jdbc.sql("""
                 INSERT INTO workflow.work_item(
                   task_name,business_domain,region_code,product_code,business_period_code,due_at,
@@ -414,13 +414,17 @@ class BusinessReadRegionIsolationIntegrationTest {
                 SELECT :task,'PRODUCTION',:region,'CORN',:period,'2026-08-09T08:00:00+08:00',
                   node.node_id,'TO_REVIEW',party.responsible_party_id
                 FROM workflow.workflow_node node,workflow.responsible_party party
-                WHERE node.code='REGION_ISOLATION' AND party.external_code='REGION_ISOLATION'
-                """).param("task", task).param("region", region).param("period", PERIOD).update();
+                WHERE node.code='REGION_ISOLATION' AND party.party_type='USER'
+                  AND party.external_code=:subject
+                """).param("task", task).param("region", region).param("period", PERIOD)
+                .param("subject", responsibleSubject).update();
     }
 
     private void cleanup() {
         if (jdbc == null) return;
         jdbc.sql("DELETE FROM workflow.work_item WHERE task_name IN ('区域A待办','区域B待办')").update();
+        jdbc.sql("DELETE FROM workflow.responsible_party WHERE party_type='USER' AND external_code IN (:subjects)")
+                .param("subjects", java.util.List.of(READER_A, READER_B)).update();
         jdbc.sql("DELETE FROM market.market_record_projection WHERE record_id IN (:ids)")
                 .param("ids", java.util.List.of(QUALITY_A, QUALITY_B, QUALITY_ORPHAN, QUALITY_PRODUCT_MISMATCH)).update();
         jdbc.sql("DELETE FROM logistics.route_event WHERE event_id::text IN (:ids)")

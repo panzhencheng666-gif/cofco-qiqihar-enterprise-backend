@@ -141,7 +141,8 @@ class ProductionRecordRestIntegrationTest {
                         .content(fullDraftBody(product, objectType, qualityCode, 2L)
                                 .replace("测试填报员", "修改填报员")))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("DRAFT"))
+                .andExpect(jsonPath("$.data.status").value("RETURNED"))
+                .andExpect(jsonPath("$.data.returnReason").value("补充依据"))
                 .andExpect(jsonPath("$.data.costs.LAND_RENT").value("4.0000"))
                 .andExpect(jsonPath("$.data.submissionMetadata.PROD_REPORTER_NAME").value("产情测试员"))
                 .andExpect(jsonPath("$.data.submissionMetadata.PROD_SAMPLE_LATITUDE").value("47.3543"));

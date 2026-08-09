@@ -9,6 +9,7 @@ public record WorkItem(
         String regionCode,
         String region,
         String product,
+        String businessPeriodCode,
         String businessPeriod,
         OffsetDateTime dueAt,
         String workflowNode,

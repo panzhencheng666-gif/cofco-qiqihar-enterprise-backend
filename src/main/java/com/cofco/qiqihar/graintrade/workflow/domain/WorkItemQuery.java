@@ -10,7 +10,8 @@ public record WorkItemQuery(
         String productCode,
         int pageNumber,
         int pageSize,
-        Set<String> authorizedRegionCodes) {
+        Set<String> authorizedRegionCodes,
+        String assignedSubjectId) {
 
     public WorkItemQuery {
         if (scope == null) {
@@ -23,11 +24,18 @@ public record WorkItemQuery(
             throw new IllegalArgumentException("invalid pagination");
         }
         authorizedRegionCodes = Set.copyOf(authorizedRegionCodes);
+        assignedSubjectId = assignedSubjectId == null ? "" : assignedSubjectId.trim();
     }
 
     public WorkItemQuery(WorkItemScope scope, WorkItemStatus status, String domain, String regionId,
             String productCode, int pageNumber, int pageSize) {
         this(scope, status, domain, regionId, productCode, pageNumber, pageSize, Set.of("*"));
+    }
+
+    public WorkItemQuery(WorkItemScope scope, WorkItemStatus status, String domain, String regionId,
+            String productCode, int pageNumber, int pageSize, Set<String> authorizedRegionCodes) {
+        this(scope, status, domain, regionId, productCode, pageNumber, pageSize,
+                authorizedRegionCodes, "");
     }
 
     public static WorkItemQuery of(
@@ -49,6 +57,12 @@ public record WorkItemQuery(
     }
 
     public WorkItemQuery authorizedFor(Set<String> regionCodes) {
-        return new WorkItemQuery(scope, status, domain, regionId, productCode, pageNumber, pageSize, regionCodes);
+        return new WorkItemQuery(scope, status, domain, regionId, productCode, pageNumber, pageSize,
+                regionCodes, assignedSubjectId);
+    }
+
+    public WorkItemQuery assignedTo(String subjectId) {
+        return new WorkItemQuery(scope, status, domain, regionId, productCode, pageNumber, pageSize,
+                authorizedRegionCodes, subjectId);
     }
 }

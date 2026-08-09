@@ -172,15 +172,16 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
 
     @Override
     public LogisticsRecordView insert(String id, LogisticsDraft draft, String actor, Instant now) {
-        writeEvent(id, null, draft, actor, now);
+        writeEvent(id, null, draft, null, null, actor, now);
         writeDynamicValues(id, draft);
         return find(id);
     }
 
     @Override
     public LogisticsRecordView update(
-            String id, long version, LogisticsDraft draft, String actor, Instant now) {
-        writeEvent(id, version, draft, actor, now);
+            String id, long version, LogisticsDraft draft, LogisticsStatus status,
+            String returnReason, String actor, Instant now) {
+        writeEvent(id, version, draft, status, returnReason, actor, now);
         writeDynamicValues(id, draft);
         return find(id);
     }
@@ -270,7 +271,8 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
                         header.reason, List.copyOf(allowedActions.getOrDefault(header.id, List.of())), header.version)).toList();
     }
 
-    private void writeEvent(String id, Long expectedVersion, LogisticsDraft draft, String actor, Instant now) {
+    private void writeEvent(String id, Long expectedVersion, LogisticsDraft draft,
+            LogisticsStatus status, String returnReason, String actor, Instant now) {
         List<FieldMeta> fields = fields(draft.productCode()).stream()
                 .filter(field -> field.binding.startsWith("EVENT.")).toList();
         Map<String, Object> parameters = new LinkedHashMap<>();
@@ -307,12 +309,14 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
             jdbc.sql("INSERT INTO logistics.route_event(" + String.join(",", columns) + ") VALUES(" +
                     String.join(",", values) + ")").params(parameters).update();
         } else {
+            parameters.put("status", status.name());
+            parameters.put("returnReason", returnReason);
             assignments.addAll(List.of(
                     "origin_region_code=(SELECT region_code FROM logistics.logistics_node WHERE node_code=:originCode)",
                     "destination_region_code=(SELECT region_code FROM logistics.logistics_node WHERE node_code=:destinationCode)",
                     "origin_node_id=(SELECT node_id FROM logistics.logistics_node WHERE node_code=:originCode)",
                     "destination_node_id=(SELECT node_id FROM logistics.logistics_node WHERE node_code=:destinationCode)",
-                    "reported_at=:now", "status_code='DRAFT'", "return_reason=NULL", "last_modified_by=:actor",
+                    "reported_at=:now", "status_code=:status", "return_reason=:returnReason", "last_modified_by=:actor",
                     "updated_at=:now", "version=version+1"));
             parameters.put("version", expectedVersion);
             int count = jdbc.sql("UPDATE logistics.route_event SET " + String.join(",", assignments)

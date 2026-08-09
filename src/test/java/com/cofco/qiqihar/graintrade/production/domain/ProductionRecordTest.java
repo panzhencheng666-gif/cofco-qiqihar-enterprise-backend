@@ -86,7 +86,8 @@ class ProductionRecordTest {
                 new BigDecimal("2"), new BigDecimal("3"),
                 returned.quality(), returned.costs(), returned.insurance(), returned.subsidies());
 
-        assertThat(revised.status()).isEqualTo(ProductionStatus.DRAFT);
+        assertThat(revised.status()).isEqualTo(ProductionStatus.RETURNED);
+        assertThat(revised.returnReason()).isEqualTo("补充依据");
         assertThat(revised.costs()).containsEntry("COST_TEST", new BigDecimal("4.0000"));
         assertThat(revised.insurance()).containsEntry("INSURANCE_TEST", new BigDecimal("5.0000"));
         assertThat(revised.subsidies()).containsEntry("SUBSIDY_TEST", new BigDecimal("6.0000"));
