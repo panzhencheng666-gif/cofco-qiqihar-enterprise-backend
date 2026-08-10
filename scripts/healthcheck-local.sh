@@ -2,7 +2,7 @@
 set -euo pipefail
 
 backend_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-runtime_root="${COFCO_ENTERPRISE_LOCAL_RUNTIME_ROOT:-${backend_root}/.local-runtime}"
+runtime_root="${COFCO_ENTERPRISE_LOCAL_RUNTIME_ROOT:-${HOME}/Library/Application Support/COFCO Qiqihar Enterprise/state}"
 log_dir="${runtime_root}/logs"
 source "${backend_root}/scripts/verify-loopback-listener.sh"
 

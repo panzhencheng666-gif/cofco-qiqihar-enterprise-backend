@@ -18,9 +18,12 @@ backend_pid_file="${pid_dir}/backend.pid"
 overview_pid_file="${pid_dir}/overview.pid"
 business_pid_file="${pid_dir}/business.pid"
 
-backend_log="${log_dir}/backend.log"
-overview_log="${log_dir}/overview.log"
-business_log="${log_dir}/business.log"
+backend_stdout_log="${log_dir}/backend.stdout.log"
+backend_stderr_log="${log_dir}/backend.stderr.log"
+overview_stdout_log="${log_dir}/overview.stdout.log"
+overview_stderr_log="${log_dir}/overview.stderr.log"
+business_stdout_log="${log_dir}/business.stdout.log"
+business_stderr_log="${log_dir}/business.stderr.log"
 
 watch_mode=1
 if [[ "${1:-}" == "--no-watch" ]]; then
@@ -100,8 +103,12 @@ service_state() {
   fi
 
   if [[ -f "$pid_file" ]]; then
-    log "$name ownership record exists but no matching listener is present; record was left untouched."
-    return 3
+    log "$name ownership record exists but no matching listener is present; reconciling its recorded identities."
+    if ! reconcile_stale_owned_process "$pid_file" "$name"; then
+      log "$name stale ownership record could not be reconciled safely; it was left untouched."
+      return 3
+    fi
+    log "$name stale ownership record reconciled."
   fi
   return 1
 }
@@ -122,9 +129,10 @@ wait_for_ready() {
 }
 
 start_service_background() {
-  local log_file=$1
-  shift
-  nohup "$@" </dev/null >> "$log_file" 2>&1 &
+  local stdout_log=$1
+  local stderr_log=$2
+  shift 2
+  nohup "$@" </dev/null >> "$stdout_log" 2>> "$stderr_log" &
 }
 
 stop_newly_started_service() {
@@ -195,7 +203,8 @@ start_backend() {
   log "start: backend"
   cd "$backend_root"
   start_service_background \
-    "$backend_log" \
+    "$backend_stdout_log" \
+    "$backend_stderr_log" \
     env \
     "QIQIHAR_SERVER_PORT=$backend_port" \
     "SERVER_ADDRESS=$local_access_host" \
@@ -203,7 +212,7 @@ start_backend() {
     spring-boot:run \
     -Dspring-boot.run.profiles=local
   backend_pid=$!
-  if ! wait_for_ready "backend" "http://127.0.0.1:${backend_port}/actuator/health" 30 "$backend_log"; then
+  if ! wait_for_ready "backend" "http://127.0.0.1:${backend_port}/actuator/health" 30 "$backend_stderr_log"; then
     log "Backend did not become ready; no unverified listener was signalled."
     return 1
   fi
@@ -241,7 +250,8 @@ start_overview() {
   log "start: overview frontend"
   cd "$overview_frontend_root"
   start_service_background \
-    "$overview_log" \
+    "$overview_stdout_log" \
+    "$overview_stderr_log" \
     env \
     VITE_BUSINESS_PLATFORM_HOST="$local_access_host" \
     VITE_BUSINESS_PLATFORM_PORT="$business_port" \
@@ -254,7 +264,7 @@ start_overview() {
     "$overview_port" \
     --strictPort
   overview_pid=$!
-  if ! wait_for_ready "overview frontend" "http://127.0.0.1:${overview_port}/" 30 "$overview_log"; then
+  if ! wait_for_ready "overview frontend" "http://127.0.0.1:${overview_port}/" 30 "$overview_stderr_log"; then
     log "Overview frontend did not become ready; no unverified listener was signalled."
     return 1
   fi
@@ -292,7 +302,8 @@ start_business() {
   log "start: business frontend"
   cd "$business_frontend_root"
   start_service_background \
-    "$business_log" \
+    "$business_stdout_log" \
+    "$business_stderr_log" \
     env \
     VITE_OVERVIEW_MAP_HOST="$local_access_host" \
     VITE_OVERVIEW_MAP_PORT="$overview_port" \
@@ -305,7 +316,7 @@ start_business() {
     "$business_port" \
     --strictPort
   business_pid=$!
-  if ! wait_for_ready "business frontend" "http://127.0.0.1:${business_port}/prototype.html" 30 "$business_log"; then
+  if ! wait_for_ready "business frontend" "http://127.0.0.1:${business_port}/prototype.html" 30 "$business_stderr_log"; then
     log "Business frontend did not become ready; no unverified listener was signalled."
     return 1
   fi

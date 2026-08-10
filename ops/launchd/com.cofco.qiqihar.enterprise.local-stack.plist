@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.cofco.qiqihar.enterprise.local-stack</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/federal/Library/Application Support/COFCO Qiqihar Enterprise/runtime/cofco-qiqihar-enterprise-backend/scripts/run-local-launch-agent.sh</string>
+    <string>/Users/federal/Library/Application Support/COFCO Qiqihar Enterprise/runtime/cofco-qiqihar-enterprise-backend/scripts/start-local.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/federal/Library/Application Support/COFCO Qiqihar Enterprise/runtime/cofco-qiqihar-enterprise-backend</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/federal</string>
+    <key>JAVA_HOME</key>
+    <string>/opt/homebrew/opt/openjdk@21</string>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/opt/openjdk@21/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>COFCO_ENTERPRISE_LOCAL_RUNTIME_ROOT</key>
+    <string>/Users/federal/Library/Application Support/COFCO Qiqihar Enterprise/state</string>
+    <key>COFCO_ENTERPRISE_LOCAL_ENV_FILE</key>
+    <string>/Users/federal/.config/cofco-qiqihar-enterprise/local-runtime.env</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>ExitTimeOut</key>
+  <integer>30</integer>
+  <key>Umask</key>
+  <string>077</string>
+  <key>StandardOutPath</key>
+  <string>/Users/federal/Library/Logs/COFCO Qiqihar Enterprise/supervisor.stdout.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/federal/Library/Logs/COFCO Qiqihar Enterprise/supervisor.stderr.log</string>
+</dict>
+</plist>

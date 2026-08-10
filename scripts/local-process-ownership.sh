@@ -137,6 +137,33 @@ owned_listener_matches_port_and_service() {
       process_matches_identity "$COFCO_OWNED_LISTENER_PID" "$COFCO_OWNED_LISTENER_IDENTITY"
 }
 
+reconcile_stale_owned_process() {
+  local pid_file=$1
+  local name=$2
+  local listener_pid_on_port
+
+  [[ -f "$pid_file" ]] || return 0
+  if ! load_owned_process "$pid_file"; then
+    echo "[$(date '+%F %T')] $name: refusing to reconcile a malformed or legacy ownership record." >&2
+    return 1
+  fi
+  if [[ "$COFCO_OWNED_SERVICE" != "$name" ]]; then
+    echo "[$(date '+%F %T')] $name: ownership record service mismatch; leaving it untouched." >&2
+    return 1
+  fi
+
+  listener_pid_on_port="$(pid_listening_on_port "$COFCO_OWNED_PORT" || true)"
+  if [[ -n "$listener_pid_on_port" ]]; then
+    echo "[$(date '+%F %T')] $name: port $COFCO_OWNED_PORT became occupied by pid=$listener_pid_on_port; leaving it untouched." >&2
+    return 1
+  fi
+
+  # stop_owned_process validates both recorded start times before signalling.
+  # If both identities are already gone it only removes the now-proven-stale
+  # record; if the root wrapper survived its listener, it stops that exact root.
+  stop_owned_process "$pid_file" "$name"
+}
+
 stop_owned_process() {
   local pid_file=$1
   local name=$2
@@ -163,7 +190,7 @@ stop_owned_process() {
   if process_matches_identity "$COFCO_OWNED_LISTENER_PID" "$COFCO_OWNED_LISTENER_IDENTITY"; then
     listener_alive=1
   fi
-  listener_pid_on_port="$(pid_listening_on_port "$COFCO_OWNED_PORT")"
+  listener_pid_on_port="$(pid_listening_on_port "$COFCO_OWNED_PORT" || true)"
   if [[ -n "$listener_pid_on_port" && "$listener_pid_on_port" != "$COFCO_OWNED_LISTENER_PID" ]]; then
     echo "[$(date '+%F %T')] $name: port $COFCO_OWNED_PORT is occupied by unrecorded pid=$listener_pid_on_port; leaving record and process untouched." >&2
     return 1

@@ -15,12 +15,13 @@ fi
 
 required_fragments=(
   "/Users/federal/Desktop/cofco-qiqihar-enterprise-backend"
-  "scripts/start-local.sh"
+  "scripts/local-runtime.sh"
+  "install"
   "scripts/verify-local-region-hierarchy.sh"
   "http://127.0.0.1:63182/"
   "http://127.0.0.1:63200/"
   "http://127.0.0.1:8090/actuator/health"
-  "cofco-qiqihar-enterprise-local"
+  "com.cofco.qiqihar.enterprise.local-stack"
 )
 
 for fragment in "${required_fragments[@]}"; do
@@ -29,6 +30,11 @@ for fragment in "${required_fragments[@]}"; do
     exit 1
   fi
 done
+
+if grep -Fq "/usr/bin/screen" "$launcher"; then
+  echo "[FAIL] desktop launcher still delegates lifecycle ownership to screen" >&2
+  exit 1
+fi
 
 if [[ ! -x "$launcher" ]]; then
   echo "[FAIL] desktop launcher is not executable: $launcher" >&2
