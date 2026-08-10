@@ -6,19 +6,17 @@ import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.util.List;
-import org.springframework.context.annotation.Profile;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Local-only bridge from the real production, market, and logistics records to the
- * work-item read model.
+ * Authoritative bridge from real production, market, and logistics records to the
+ * work-item read model in every runtime profile.
  * It is deliberately idempotent and uses a stable source key, so refreshing the work page
  * never duplicates tasks.
  */
 @Component
-@Profile("local")
 public class LocalRecordWorkItemProjection implements WorkItemProjection {
     private static final ZoneId REPORTING_ZONE = ZoneId.of("Asia/Shanghai");
 

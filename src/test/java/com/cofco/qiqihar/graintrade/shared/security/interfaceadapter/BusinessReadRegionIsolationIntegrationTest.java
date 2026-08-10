@@ -422,6 +422,18 @@ class BusinessReadRegionIsolationIntegrationTest {
 
     private void cleanup() {
         if (jdbc == null) return;
+        jdbc.sql("""
+                DELETE FROM workflow.work_item
+                WHERE (source_type='PRODUCTION' AND source_id IN (:productionIds))
+                   OR (source_type='MARKET' AND source_id IN (:marketIds))
+                   OR (source_type='LOGISTICS' AND source_id IN (:logisticsIds))
+                """)
+                .param("productionIds", java.util.List.of(PRODUCTION_A, PRODUCTION_B))
+                .param("marketIds", java.util.List.of(
+                        MARKET_A, MARKET_B, QUALITY_A, QUALITY_B,
+                        QUALITY_ORPHAN, QUALITY_PRODUCT_MISMATCH))
+                .param("logisticsIds", java.util.List.of(LOGISTICS_A, LOGISTICS_B, LOGISTICS_CROSS))
+                .update();
         jdbc.sql("DELETE FROM workflow.work_item WHERE task_name IN ('区域A待办','区域B待办')").update();
         jdbc.sql("DELETE FROM workflow.responsible_party WHERE party_type='USER' AND external_code IN (:subjects)")
                 .param("subjects", java.util.List.of(READER_A, READER_B)).update();
@@ -460,6 +472,10 @@ class BusinessReadRegionIsolationIntegrationTest {
         jdbc.sql("DELETE FROM overview.administrative_boundary WHERE region_code IN (:codes)")
                 .param("codes", ISOLATION_REGION_CODES).update();
         jdbc.sql("DELETE FROM platform.monitoring_scope_region WHERE region_code IN (:codes)")
+                .param("codes", ISOLATION_REGION_CODES).update();
+        jdbc.sql("DELETE FROM platform.work_unit_region_scope WHERE region_code IN (:codes)")
+                .param("codes", ISOLATION_REGION_CODES).update();
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE region_code IN (:codes)")
                 .param("codes", ISOLATION_REGION_CODES).update();
         jdbc.sql("DELETE FROM platform.region WHERE code IN (:codes)")
                 .param("codes", ISOLATION_REGION_CODES).update();
