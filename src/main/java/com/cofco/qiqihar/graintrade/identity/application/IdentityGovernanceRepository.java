@@ -7,8 +7,8 @@ public interface IdentityGovernanceRepository {
     boolean validAssignment(EmployeeAssignment assignment);
     boolean exists(String subjectId);
     EmployeeProfile create(String subjectId,EmployeeAssignment assignment,String actor);
-    Optional<EmployeeProfile> find(String subjectId);
-    List<EmployeeProfile> findAll();
+    Optional<EmployeeProfile> find(String subjectId,String workUnitCode);
+    List<EmployeeProfile> findAll(String workUnitCode);
     Optional<EmployeeProfile> update(String subjectId,long expectedVersion,EmployeeAssignment assignment,String actor);
     AssignmentOptions assignmentOptions(String workUnitCode);
 }

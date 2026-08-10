@@ -25,20 +25,30 @@ import java.util.UUID;
 @UsesProtectedTestDatabase
 class IdentityGovernanceRestIntegrationTest {
     private static final String WORK_UNIT="IDENTITY_GOV_TEST";
+    private static final String FUTURE_PERMISSION="IDENTITY_GOV_FUTURE_PERMISSION";
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
     private JdbcClient jdbc;
     private String employee;
     private UUID reviewId;
+    private static final String UNIT_ADMIN="identity-governance-unit-admin";
+    private static final String UNIT_SYSTEM_ADMIN="identity-governance-unit-system-admin";
 
     @BeforeEach
     void prepare() {
         jdbc=JdbcClient.create(dataSource);
+        deleteFuturePermission();
         employee="identity-governance-"+UUID.randomUUID();
         deleteAssignments("identity-governance-employee");
         jdbc.sql("DELETE FROM platform.security_user WHERE subject_id='identity-governance-employee'").update();
         deleteAssignments("identity-governance-outside-reviewer");
         jdbc.sql("DELETE FROM platform.security_user WHERE subject_id='identity-governance-outside-reviewer'").update();
+        deleteAssignments(UNIT_ADMIN);
+        jdbc.sql("DELETE FROM platform.security_user WHERE subject_id=:subject")
+                .param("subject",UNIT_ADMIN).update();
+        deleteAssignments(UNIT_SYSTEM_ADMIN);
+        jdbc.sql("DELETE FROM platform.security_user WHERE subject_id=:subject")
+                .param("subject",UNIT_SYSTEM_ADMIN).update();
         jdbc.sql("""
                 INSERT INTO platform.work_unit(code,name,sort_order)
                 VALUES('IDENTITY_GOV_TEST','身份治理自动化测试单位',9981)
@@ -71,6 +81,7 @@ class IdentityGovernanceRestIntegrationTest {
     @AfterEach
     void cleanup() {
         if(jdbc==null)return;
+        deleteFuturePermission();
         if(reviewId!=null)jdbc.sql("DELETE FROM platform.access_review_campaign WHERE review_id=:review")
                 .param("review",reviewId).update();
         if(employee!=null){
@@ -80,12 +91,191 @@ class IdentityGovernanceRestIntegrationTest {
         }
         deleteAssignments("identity-governance-outside-reviewer");
         jdbc.sql("DELETE FROM platform.security_user WHERE subject_id='identity-governance-outside-reviewer'").update();
+        deleteAssignments(UNIT_ADMIN);
+        jdbc.sql("DELETE FROM platform.security_user WHERE subject_id=:subject")
+                .param("subject",UNIT_ADMIN).update();
+        deleteAssignments(UNIT_SYSTEM_ADMIN);
+        jdbc.sql("DELETE FROM platform.security_user WHERE subject_id=:subject")
+                .param("subject",UNIT_SYSTEM_ADMIN).update();
         jdbc.sql("DELETE FROM platform.work_unit WHERE code='IDENTITY_GOV_OUTSIDE'").update();
         jdbc.sql("DELETE FROM platform.position WHERE code='GOVERNANCE_REPORTER'").update();
         jdbc.sql("DELETE FROM platform.work_unit_region_scope WHERE work_unit_code=:unit")
                 .param("unit",WORK_UNIT).update();
         // Immutable audit events retain their governed work-unit foreign key. Keep the stable
         // test fixture and recreate its mutable scope in prepare() instead of deleting history.
+    }
+
+    @Test
+    void unitAdministratorsCannotReadOtherUnitsOrGrantSystemAdministrator() throws Exception {
+        jdbc.sql("""
+                INSERT INTO platform.security_user(subject_id,display_name,work_unit_code,enabled)
+                VALUES(:subject,'单位权限管理员','IDENTITY_GOV_TEST',true)
+                """).param("subject",UNIT_ADMIN).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_role(subject_id,role_code)
+                VALUES(:subject,'IDENTITY_ADMIN')
+                """).param("subject",UNIT_ADMIN).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user(subject_id,display_name,work_unit_code,enabled)
+                VALUES(:subject,'同单位系统管理员','IDENTITY_GOV_TEST',true)
+                """).param("subject",UNIT_SYSTEM_ADMIN).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_role(subject_id,role_code)
+                VALUES(:subject,'SYSTEM_ADMIN')
+                """).param("subject",UNIT_SYSTEM_ADMIN).update();
+
+        mvc.perform(get("/api/v1/identity/employees").principal(() -> UNIT_ADMIN))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.subjectId == 'identity-governance-unit-admin')]").exists())
+                .andExpect(jsonPath("$.data[?(@.subjectId == 'identity-governance-outside-reviewer')]").doesNotExist());
+
+        mvc.perform(get("/api/v1/identity/employees/{subjectId}","identity-governance-outside-reviewer")
+                        .principal(() -> UNIT_ADMIN))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("IDENTITY_SUBJECT_NOT_FOUND"))
+                .andExpect(jsonPath("$.error.message").value("员工账号不存在"));
+
+        mvc.perform(get("/api/v1/identity/employees/assignment-options")
+                        .param("workUnitCode",WORK_UNIT).principal(() -> UNIT_ADMIN))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.workUnits.length()").value(1))
+                .andExpect(jsonPath("$.data.workUnits[0].code").value(WORK_UNIT))
+                .andExpect(jsonPath("$.data.roles[?(@.code == 'SYSTEM_ADMIN')]").doesNotExist());
+
+        mvc.perform(get("/api/v1/identity/employees/assignment-options")
+                        .param("workUnitCode","IDENTITY_GOV_OUTSIDE").principal(() -> UNIT_ADMIN))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_WORK_UNIT_DENIED"));
+
+        mvc.perform(post("/api/v1/identity/employees")
+                        .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"subjectId":"%s","displayName":"越权测试员工",
+                                 "workUnitCode":"IDENTITY_GOV_TEST","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "roleCodes":["SYSTEM_ADMIN"],"regionCodes":["230202"]}
+                                """.formatted(employee)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_ROLE_ASSIGNMENT_DENIED"));
+
+        mvc.perform(post("/api/v1/identity/employees")
+                        .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"subjectId":"%s","displayName":"跨单位测试员工",
+                                 "workUnitCode":"IDENTITY_GOV_OUTSIDE","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["230202"]}
+                                """.formatted(employee)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_WORK_UNIT_DENIED"))
+                .andExpect(jsonPath("$.error.message").value("无权访问其他工作单位"));
+
+        mvc.perform(post("/api/v1/identity/employees")
+                        .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"subjectId":"identity-governance-outside-reviewer","displayName":"越权探测",
+                                 "workUnitCode":"IDENTITY_GOV_OUTSIDE","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["230202"]}
+                                """))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_WORK_UNIT_DENIED"))
+                .andExpect(jsonPath("$.error.message").value("无权访问其他工作单位"));
+
+        String invalidAssignment = """
+                {"subjectId":"%s","displayName":"无效授权探测",
+                 "workUnitCode":"IDENTITY_GOV_TEST","positionCodes":["GOVERNANCE_REPORTER"],
+                 "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["INVALID_REGION"]}
+                """;
+        mvc.perform(post("/api/v1/identity/employees")
+                        .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content(invalidAssignment.formatted("identity-governance-outside-reviewer")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_IDENTITY_ASSIGNMENT"))
+                .andExpect(jsonPath("$.error.message").value("员工账号或授权信息不完整"));
+        mvc.perform(post("/api/v1/identity/employees")
+                        .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content(invalidAssignment.formatted(employee)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_IDENTITY_ASSIGNMENT"))
+                .andExpect(jsonPath("$.error.message").value("员工账号或授权信息不完整"));
+
+        mvc.perform(put("/api/v1/identity/employees/{subjectId}","identity-governance-outside-reviewer")
+                        .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"version":0,"displayName":"外单位复核员",
+                                 "workUnitCode":"IDENTITY_GOV_OUTSIDE","accountStatus":"ACTIVE",
+                                 "employmentStatus":"ACTIVE","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "roleCodes":["ACCESS_REVIEWER"],"regionCodes":["230202"]}
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("IDENTITY_SUBJECT_NOT_FOUND"))
+                .andExpect(jsonPath("$.error.message").value("员工账号不存在"));
+
+        mvc.perform(put("/api/v1/identity/employees/{subjectId}",UNIT_ADMIN)
+                        .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"version":0,"displayName":"单位权限管理员",
+                                 "workUnitCode":"IDENTITY_GOV_TEST","accountStatus":"ACTIVE",
+                                 "employmentStatus":"ACTIVE","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "roleCodes":["SYSTEM_ADMIN"],"regionCodes":["230202"]}
+                                """))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_ROLE_ASSIGNMENT_DENIED"))
+                .andExpect(jsonPath("$.error.message").value("当前账号不能授予系统管理员角色"));
+
+        mvc.perform(put("/api/v1/identity/employees/{subjectId}",UNIT_SYSTEM_ADMIN)
+                        .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"version":0,"displayName":"同单位系统管理员",
+                                 "workUnitCode":"IDENTITY_GOV_TEST","accountStatus":"ACTIVE",
+                                 "employmentStatus":"ACTIVE","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["230202"]}
+                                """))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_ROLE_ASSIGNMENT_DENIED"))
+                .andExpect(jsonPath("$.error.message").value("当前账号不能授予系统管理员角色"));
+
+        mvc.perform(get("/api/v1/identity/employees/{subjectId}","identity-governance-outside-reviewer")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.workUnitCode").value("IDENTITY_GOV_OUTSIDE"));
+
+        mvc.perform(put("/api/v1/identity/employees/{subjectId}",UNIT_ADMIN)
+                        .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"version":-1,"displayName":"单位权限管理员",
+                                 "workUnitCode":"IDENTITY_GOV_TEST","accountStatus":"ACTIVE",
+                                 "employmentStatus":"ACTIVE","positionCodes":[],
+                                 "roleCodes":["IDENTITY_ADMIN"],"regionCodes":[]}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_IDENTITY_ASSIGNMENT"))
+                .andExpect(jsonPath("$.error.message").value("员工账号或授权信息不完整"));
+    }
+
+    @Test
+    void newlyRegisteredPermissionsAreAlwaysGrantedToSystemAdministrators() throws Exception {
+        jdbc.sql("""
+                INSERT INTO platform.access_permission(code,name,active,sort_order)
+                VALUES(:code,'未来权限自动授权测试',true,9998)
+                """).param("code",FUTURE_PERMISSION).update();
+
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.access_role_permission
+                WHERE role_code='SYSTEM_ADMIN' AND permission_code=:code
+                """).param("code",FUTURE_PERMISSION).query(Long.class).single()).isOne();
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.access_role_permission
+                WHERE role_code='IDENTITY_ADMIN' AND permission_code=:code
+                """).param("code",FUTURE_PERMISSION).query(Long.class).single()).isZero();
+        mvc.perform(get("/api/v1/session/me").principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.permissions[?(@ == '%s')]".formatted(FUTURE_PERMISSION)).exists());
+    }
+
+    private void deleteFuturePermission() {
+        jdbc.sql("DELETE FROM platform.access_role_permission WHERE permission_code=:code")
+                .param("code",FUTURE_PERMISSION).update();
+        jdbc.sql("DELETE FROM platform.access_permission WHERE code=:code")
+                .param("code",FUTURE_PERMISSION).update();
     }
 
     private void deleteAssignments(String subjectId) {
@@ -95,6 +285,20 @@ class IdentityGovernanceRestIntegrationTest {
                 .param("subject",subjectId).update();
         jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:subject")
                 .param("subject",subjectId).update();
+    }
+
+    @Test
+    void systemAdministratorRoleIncludesEveryActivePermission() {
+        long missing=jdbc.sql("""
+                SELECT count(*)
+                FROM platform.access_permission permission
+                WHERE permission.active
+                  AND NOT EXISTS (
+                    SELECT 1 FROM platform.access_role_permission assignment
+                    WHERE assignment.role_code='SYSTEM_ADMIN'
+                      AND assignment.permission_code=permission.code)
+                """).query(Long.class).single();
+        org.assertj.core.api.Assertions.assertThat(missing).isZero();
     }
 
     @Test

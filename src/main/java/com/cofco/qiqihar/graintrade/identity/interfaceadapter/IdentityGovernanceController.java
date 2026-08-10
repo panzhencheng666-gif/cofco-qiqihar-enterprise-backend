@@ -89,6 +89,6 @@ public class IdentityGovernanceController {
 
     private static ClientRequestException invalid() {
         return new ClientRequestException(
-                "INVALID_IDENTITY_ASSIGNMENT", "Employee identity assignment is invalid");
+                "INVALID_IDENTITY_ASSIGNMENT", "员工账号或授权信息不完整");
     }
 }

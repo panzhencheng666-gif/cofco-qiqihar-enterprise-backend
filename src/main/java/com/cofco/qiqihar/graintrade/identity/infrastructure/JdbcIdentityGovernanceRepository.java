@@ -41,7 +41,7 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
                 """).param("subject",subjectId).param("name",value.displayName())
                 .param("unit",value.workUnitCode()).update();
         replaceAssignments(subjectId,value,actor);
-        return find(subjectId).orElseThrow();
+        return find(subjectId,null).orElseThrow();
     }
 
     @Override
@@ -61,31 +61,39 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
                 .param("enabled",enabled).param("subject",subjectId).param("version",expectedVersion).update();
         if(updated==0)return Optional.empty();
         replaceAssignments(subjectId,value,actor);
-        return find(subjectId);
+        return find(subjectId,null);
     }
 
-    @Override public Optional<EmployeeProfile> find(String subjectId){
-        return jdbc.sql("""
+    @Override public Optional<EmployeeProfile> find(String subjectId,String workUnitCode){
+        String unitFilter=workUnitCode==null ? "" : " AND security_user.work_unit_code=:unit";
+        JdbcClient.StatementSpec query=jdbc.sql("""
                 SELECT security_user.subject_id,security_user.display_name,security_user.work_unit_code,
                        work_unit.name,security_user.account_status,security_user.employment_status,
                        security_user.version
                 FROM platform.security_user security_user
                 JOIN platform.work_unit work_unit ON work_unit.code=security_user.work_unit_code
                 WHERE security_user.subject_id=:subject
-                """).param("subject",subjectId).query((row,index)->profile(
+                %s
+                """.formatted(unitFilter)).param("subject",subjectId);
+        if(workUnitCode!=null)query=query.param("unit",workUnitCode);
+        return query.query((row,index)->profile(
                         row.getString(1),row.getString(2),row.getString(3),row.getString(4),
                         row.getString(5),row.getString(6),row.getLong(7))).optional();
     }
 
-    @Override public List<EmployeeProfile> findAll(){
-        return jdbc.sql("""
+    @Override public List<EmployeeProfile> findAll(String workUnitCode){
+        String unitFilter=workUnitCode==null ? "" : " WHERE security_user.work_unit_code=:unit";
+        JdbcClient.StatementSpec query=jdbc.sql("""
                 SELECT security_user.subject_id,security_user.display_name,security_user.work_unit_code,
                        work_unit.name,security_user.account_status,security_user.employment_status,
                        security_user.version
                 FROM platform.security_user security_user
                 JOIN platform.work_unit work_unit ON work_unit.code=security_user.work_unit_code
+                %s
                 ORDER BY work_unit.sort_order,security_user.display_name,security_user.subject_id
-                """).query((row,index)->profile(row.getString(1),row.getString(2),row.getString(3),row.getString(4),
+                """.formatted(unitFilter));
+        if(workUnitCode!=null)query=query.param("unit",workUnitCode);
+        return query.query((row,index)->profile(row.getString(1),row.getString(2),row.getString(3),row.getString(4),
                         row.getString(5),row.getString(6),row.getLong(7))).list();
     }
 
