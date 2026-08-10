@@ -20,7 +20,9 @@ public class MarketWriteAuthenticationInterceptor implements HandlerInterceptor,
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
-        registry.addInterceptor(this).addPathPatterns("/api/v1/market-records/**");
+        registry.addInterceptor(this).addPathPatterns(
+                "/api/v1/market-records/**",
+                "/api/v1/market-objects/**");
     }
 
     @Override
