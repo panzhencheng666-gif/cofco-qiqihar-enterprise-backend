@@ -35,6 +35,11 @@ class LocalSecurityBootstrapOverviewIntegrationTest {
 
     @Test
     void localHeadquartersActorReadsEveryFormalBusinessRootRegion() throws Exception {
+        mockMvc.perform(get("/api/v1/session/me").header("X-Actor", "wang-yang"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.workUnitName").value("平台运营管理部"))
+                .andExpect(jsonPath("$.data.roleCodes[0]").value("SYSTEM_ADMIN"));
+
         mockMvc.perform(get("/api/v1/overview/regions")
                         .header("X-Actor", "wang-yang")
                         .queryParam("productCode", "CORN"))

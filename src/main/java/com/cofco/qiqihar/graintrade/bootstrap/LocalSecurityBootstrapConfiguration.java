@@ -16,9 +16,9 @@ public class LocalSecurityBootstrapConfiguration {
         return args -> {
             jdbc.sql("""
                     INSERT INTO platform.work_unit(code, name, sort_order)
-                    SELECT 'LOCAL_DEV', '本地开发操作组', COALESCE(MAX(sort_order), 0) + 1
+                    SELECT 'LOCAL_DEV', '平台运营管理部', COALESCE(MAX(sort_order), 0) + 1
                     FROM platform.work_unit
-                    ON CONFLICT (code) DO NOTHING
+                    ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name, active = true
                     """).update();
             jdbc.sql("""
                     DELETE FROM platform.work_unit_region_scope
