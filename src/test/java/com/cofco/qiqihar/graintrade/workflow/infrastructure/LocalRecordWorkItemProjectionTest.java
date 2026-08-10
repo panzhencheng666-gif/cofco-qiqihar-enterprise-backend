@@ -136,7 +136,7 @@ class LocalRecordWorkItemProjectionTest {
                 .singleRow();
 
         assertThat(item)
-                .containsEntry("business_domain", "MARKET")
+                .containsEntry("business_domain", "LOGISTICS")
                 .containsEntry("region_code", "230202")
                 .containsEntry("status_code", "TO_REVIEW")
                 .containsEntry("source_type", "LOGISTICS")

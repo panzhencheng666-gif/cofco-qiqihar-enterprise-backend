@@ -105,7 +105,7 @@ public class LocalRecordWorkItemProjection implements WorkItemProjection {
                 """)
                 .query((row, ignored) -> sourceRecord(row))
                 .list();
-        records.forEach(record -> upsert("MARKET", "物流监测", "LOGISTICS", record));
+        records.forEach(record -> upsert("LOGISTICS", "物流监测", "LOGISTICS", record));
     }
 
     private void upsert(
@@ -137,13 +137,14 @@ public class LocalRecordWorkItemProjection implements WorkItemProjection {
                 INSERT INTO workflow.work_item(
                     task_name, business_domain, region_code, product_code,
                     business_period_code, due_at, workflow_node_id, status_code,
-                    responsible_party_id, completed_at, source_type, source_id)
+                    responsible_party_id, completed_at, source_type, source_id,
+                    owner_subject_id, owner_work_unit_code)
                 VALUES (
                     :task, :domain, :region, :product, :period,
                     :dueAt, (SELECT node_id FROM workflow.workflow_node WHERE code = :node),
                     :status, (SELECT responsible_party_id FROM workflow.responsible_party
                               WHERE party_type = :partyType AND external_code = :partyCode),
-                    :completedAt, :sourceType, :sourceId)
+                    :completedAt, :sourceType, :sourceId, :ownerSubject, :ownerWorkUnit)
                 ON CONFLICT (source_type, source_id) DO UPDATE SET
                     task_name = EXCLUDED.task_name,
                     business_domain = EXCLUDED.business_domain,
@@ -154,7 +155,13 @@ public class LocalRecordWorkItemProjection implements WorkItemProjection {
                     workflow_node_id = EXCLUDED.workflow_node_id,
                     status_code = EXCLUDED.status_code,
                     responsible_party_id = EXCLUDED.responsible_party_id,
-                    completed_at = EXCLUDED.completed_at
+                    completed_at = CASE
+                        WHEN EXCLUDED.status_code IS NULL
+                            THEN COALESCE(workflow.work_item.completed_at, EXCLUDED.completed_at)
+                        ELSE NULL
+                    END,
+                    owner_subject_id = EXCLUDED.owner_subject_id,
+                    owner_work_unit_code = EXCLUDED.owner_work_unit_code
                 """)
                 .param("task", task)
                 .param("domain", domain)
@@ -169,6 +176,8 @@ public class LocalRecordWorkItemProjection implements WorkItemProjection {
                 .param("completedAt", status == null ? OffsetDateTime.now(REPORTING_ZONE) : null)
                 .param("sourceType", sourceType)
                 .param("sourceId", record.recordId())
+                .param("ownerSubject", record.ownerSubjectId())
+                .param("ownerWorkUnit", record.ownerWorkUnitCode())
                 .update();
     }
 
