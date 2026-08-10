@@ -23,7 +23,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class LogisticsService {
-    private static final Set<String> FILTERS = Set.of("regionCode","periodCode","nodeTypeCode","transportModeCode","status");
+    private static final Set<String> FILTERS = Set.of(
+            "regionCode", "periodCode", "nodeTypeCode", "transportModeCode", "status",
+            "surveyYear", "surveyMonth", "fillingDateFrom", "fillingDateTo");
     private final LogisticsRepository repository;
     private final PageDefinitionQuery pages;
     private final CurrentActor currentActor;

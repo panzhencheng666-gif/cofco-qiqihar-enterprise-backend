@@ -18,6 +18,7 @@ import java.sql.Types;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -45,7 +46,9 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
         long offset = Math.multiplyExact((long) query.pageNumber(), query.pageSize());
         List<ListHeader> headers = jdbc.sql("""
                         SELECT r.record_id, region.name region_name, object_type.name object_type_name,
-                               r.trade_date, r.reported_at,
+                               r.trade_date, r.reported_at, r.survey_year, r.survey_month,
+                               r.survey_period_precision, r.survey_period_governance_state,
+                               r.created_at, r.submitted_at,
                                r.purchase_base_price, r.sale_base_price, r.carriage_board_amount,
                                packaging.label packaging_label, r.packaging_amount, r.freight_amount,
                                r.status_code, status.label status_label, r.version
@@ -63,7 +66,11 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                 .query((row, ignored) -> new ListHeader(
                         row.getString("record_id"), row.getString("region_name"),
                         row.getString("object_type_name"), row.getObject("trade_date", LocalDate.class),
-                        row.getObject("reported_at", OffsetDateTime.class),
+                        row.getObject("reported_at", OffsetDateTime.class), row.getInt("survey_year"),
+                        (Integer) row.getObject("survey_month"), row.getString("survey_period_precision"),
+                        row.getString("survey_period_governance_state"),
+                        row.getObject("created_at", OffsetDateTime.class),
+                        row.getObject("submitted_at", OffsetDateTime.class),
                         row.getBigDecimal("purchase_base_price"), row.getBigDecimal("sale_base_price"),
                         row.getBigDecimal("carriage_board_amount"), row.getString("packaging_label"),
                         row.getBigDecimal("packaging_amount"), row.getBigDecimal("freight_amount"),
@@ -316,6 +323,13 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
         values.put("MKT_OBJECT_TYPE", row.objectTypeName());
         values.put("MKT_TRADE_DATE", row.tradeDate().toString());
         values.put("MKT_REPORTED_AT", row.reportedAt().toString());
+        values.put("MKT_SURVEY_YEAR", Integer.toString(row.surveyYear()));
+        if (row.surveyMonth() != null) values.put("MKT_SURVEY_MONTH", Integer.toString(row.surveyMonth()));
+        values.put("MKT_SURVEY_PERIOD_PRECISION", row.surveyPeriodPrecision());
+        values.put("MKT_SURVEY_PERIOD_GOVERNANCE_STATE", row.surveyPeriodGovernanceState());
+        OffsetDateTime fillingAt = row.submittedAt() == null ? row.createdAt() : row.submittedAt();
+        values.put("MKT_FILLING_AT", fillingAt.toString());
+        values.put("MKT_FILLING_TIME_BASIS", fillingTimeBasis(row.status(), row.submittedAt()));
         values.put("MKT_PURCHASE_BASE_PRICE", decimal(row.purchaseBasePrice()));
         values.put("MKT_SALE_BASE_PRICE", decimal(row.saleBasePrice()));
         values.put("MKT_CARRIAGE_BOARD_AMOUNT", decimal(row.carriageBoardAmount()));
@@ -474,6 +488,7 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
 
     private static SqlFilter filter(
             String productCode, Map<String, String> filters, Set<String> authorizedRegionCodes) {
+        requireValidTemporalFilters(filters);
         StringBuilder sql = new StringBuilder("WHERE r.product_code = :productCode");
         Map<String, Object> parameters = new LinkedHashMap<>();
         parameters.put("productCode", productCode);
@@ -502,10 +517,57 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                     sql.append(" AND r.trade_date = :tradeDate");
                     parameters.put("tradeDate", LocalDate.parse(value));
                 }
+                case "surveyYear" -> {
+                    sql.append(" AND r.survey_year = :surveyYear");
+                    parameters.put("surveyYear", year(value));
+                }
+                case "surveyMonth" -> {
+                    sql.append(" AND r.survey_month = :surveyMonth");
+                    parameters.put("surveyMonth", month(value));
+                }
+                case "fillingDateFrom" -> {
+                    sql.append(" AND COALESCE(r.submitted_at,r.created_at) >= :fillingDateFrom");
+                    parameters.put("fillingDateFrom", startOfDay(value));
+                }
+                case "fillingDateTo" -> {
+                    sql.append(" AND COALESCE(r.submitted_at,r.created_at) < :fillingDateToExclusive");
+                    parameters.put("fillingDateToExclusive", startOfDay(value).plusDays(1));
+                }
                 default -> throw new IllegalArgumentException("Unsupported market filter");
             }
         });
         return new SqlFilter(sql.toString(), parameters);
+    }
+
+    private static void requireValidTemporalFilters(Map<String, String> filters) {
+        if (filters.containsKey("surveyMonth") && !filters.containsKey("surveyYear")) {
+            throw new IllegalArgumentException("Survey month requires survey year");
+        }
+        if (filters.containsKey("fillingDateFrom") && filters.containsKey("fillingDateTo")
+                && LocalDate.parse(filters.get("fillingDateFrom")).isAfter(LocalDate.parse(filters.get("fillingDateTo")))) {
+            throw new IllegalArgumentException("Filling date range is reversed");
+        }
+    }
+
+    private static int year(String value) {
+        int parsed = Integer.parseInt(value);
+        if (parsed < 1900 || parsed > 2200) throw new IllegalArgumentException("Invalid survey year");
+        return parsed;
+    }
+
+    private static int month(String value) {
+        int parsed = Integer.parseInt(value);
+        if (parsed < 1 || parsed > 12) throw new IllegalArgumentException("Invalid survey month");
+        return parsed;
+    }
+
+    private static OffsetDateTime startOfDay(String value) {
+        return LocalDate.parse(value).atStartOfDay(ZoneId.of("Asia/Shanghai")).toOffsetDateTime();
+    }
+
+    private static String fillingTimeBasis(MarketStatus status, OffsetDateTime submittedAt) {
+        if (submittedAt != null) return "SUBMITTED_AT";
+        return status == MarketStatus.DRAFT ? "DRAFT_CREATED_AT" : "CREATED_AT_NO_SUBMISSION_AUDIT";
     }
 
     private static String decimal(BigDecimal value) {
@@ -527,7 +589,9 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                           String packagingForm, BigDecimal actualTradePrice, MarketStatus status,
                           String returnReason, long version) { }
     private record ListHeader(String id, String regionName, String objectTypeName, LocalDate tradeDate,
-                              OffsetDateTime reportedAt, BigDecimal purchaseBasePrice,
+                              OffsetDateTime reportedAt, int surveyYear, Integer surveyMonth,
+                              String surveyPeriodPrecision, String surveyPeriodGovernanceState,
+                              OffsetDateTime createdAt, OffsetDateTime submittedAt, BigDecimal purchaseBasePrice,
                               BigDecimal saleBasePrice, BigDecimal carriageBoardAmount, String packagingLabel,
                               BigDecimal packagingAmount, BigDecimal freightAmount, MarketStatus status,
                               String statusLabel, long version) { }

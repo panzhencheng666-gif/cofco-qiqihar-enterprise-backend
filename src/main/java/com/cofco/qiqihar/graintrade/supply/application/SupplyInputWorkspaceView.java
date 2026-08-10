@@ -6,6 +6,10 @@ import java.util.List;
 public record SupplyInputWorkspaceView(
         String productCode,
         String regionCode,
+        String periodCode,
+        int surveyYear,
+        String surveyQuarter,
+        String periodPrecision,
         String marketingYear,
         long inputSetVersion,
         String latestInputSetId,

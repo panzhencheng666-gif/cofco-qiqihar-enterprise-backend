@@ -44,8 +44,8 @@ class OverviewRestIntegrationTest {
                   supply.calculation_run RESTART IDENTITY CASCADE
                 """).update();
         jdbc.sql("""
-                INSERT INTO platform.business_period(code,name,starts_on,ends_on,sort_order)
-                VALUES('2026-Q3','2026年第三季度',DATE '2026-07-01',DATE '2026-09-30',202603)
+                INSERT INTO platform.business_period(code,name,starts_on,ends_on,sort_order,marketing_year_code)
+                VALUES('2026-Q3','2026年第三季度',DATE '2026-07-01',DATE '2026-09-30',202603,'2026/27')
                 ON CONFLICT(code) DO NOTHING
                 """).update();
         jdbc.sql("""

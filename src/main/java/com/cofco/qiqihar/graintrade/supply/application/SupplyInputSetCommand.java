@@ -5,7 +5,7 @@ import java.util.List;
 public record SupplyInputSetCommand(
         String productCode,
         String regionCode,
-        String marketingYear,
+        String periodCode,
         String reason,
         long expectedVersion,
         List<Item> items) {

@@ -378,6 +378,68 @@ class ProductionRecordRestIntegrationTest {
         assertThat(actorBusinessRowCount()).isEqualTo(before);
     }
 
+    @Test
+    void filtersByExplicitSurveyPeriodAndRealDraftOrSubmissionTime() throws Exception {
+        String id = create(validDraftBody());
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        jdbc.sql("""
+                UPDATE production.production_record
+                SET created_at=TIMESTAMPTZ '2026-08-05 09:00:00+08',
+                    reported_at=TIMESTAMPTZ '2030-01-01 09:00:00+08'
+                WHERE record_id=:id
+                """).param("id", id).update();
+
+        mockMvc.perform(get("/api/v1/production-records")
+                        .queryParam("productCode", "SOYBEAN").queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0").queryParam("pageSize", "20")
+                        .queryParam("filter.surveyYear", "2026").queryParam("filter.surveyMonth", "8")
+                        .queryParam("filter.fillingDateFrom", "2026-08-05")
+                        .queryParam("filter.fillingDateTo", "2026-08-05"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_SURVEY_YEAR").value("2026"))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_SURVEY_MONTH").value("8"))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_SURVEY_PERIOD_PRECISION").value("YEAR_MONTH"))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_FILLING_TIME_BASIS").value("DRAFT_CREATED_AT"));
+
+        jdbc.sql("""
+                UPDATE production.production_record
+                SET survey_month=NULL,survey_period_precision='YEAR'
+                WHERE record_id=:id
+                """).param("id", id).update();
+        mockMvc.perform(get("/api/v1/production-records")
+                        .queryParam("productCode", "SOYBEAN").queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0").queryParam("pageSize", "20")
+                        .queryParam("filter.surveyYear", "2026").queryParam("filter.surveyMonth", "8"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(0));
+        mockMvc.perform(get("/api/v1/production-records")
+                        .queryParam("productCode", "SOYBEAN").queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0").queryParam("pageSize", "20")
+                        .queryParam("filter.surveyYear", "2026"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(1));
+
+        mockMvc.perform(post("/api/v1/production-records/{id}/submit", id)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0}"))
+                .andExpect(status().isOk());
+        assertThat(jdbc.sql("SELECT submitted_at IS NOT NULL FROM production.production_record WHERE record_id=:id")
+                .param("id", id).query(Boolean.class).single()).isTrue();
+        jdbc.sql("""
+                UPDATE production.production_record
+                SET submitted_at=TIMESTAMPTZ '2026-08-06 10:30:00+08'
+                WHERE record_id=:id
+                """).param("id", id).update();
+        mockMvc.perform(get("/api/v1/production-records")
+                        .queryParam("productCode", "SOYBEAN").queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0").queryParam("pageSize", "20")
+                        .queryParam("filter.surveyYear", "2026")
+                        .queryParam("filter.fillingDateFrom", "2026-08-06")
+                        .queryParam("filter.fillingDateTo", "2026-08-06"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_FILLING_TIME_BASIS").value("SUBMITTED_AT"));
+    }
+
     private String create(String body) throws Exception {
         return mockMvc.perform(post("/api/v1/production-records")
                         .principal(() -> "production-tester")

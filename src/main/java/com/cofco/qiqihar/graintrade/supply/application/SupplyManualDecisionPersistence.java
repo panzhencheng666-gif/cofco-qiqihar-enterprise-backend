@@ -4,6 +4,7 @@ import java.time.Instant;
 
 public record SupplyManualDecisionPersistence(
         ManualInputDecisionCommand command,
+        SupplyTemporalContext temporalContext,
         SupplySourceReleaseMaterial.SourceMapping mapping,
         long version,
         String immutableDigest,

@@ -12,6 +12,7 @@ import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -39,7 +40,9 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         List<ListRow> rows = jdbc.sql("""
                         SELECT r.record_id, r.product_code, r.object_type_code, object_type.name AS object_type_name,
                                r.region_code, region.name AS region_name, r.cultivar_code, cultivar.name AS cultivar_name,
-                               r.survey_date, r.reported_at, r.cultivated_area_mu, r.yield_per_mu_kg,
+                               r.survey_date, r.reported_at, r.survey_year, r.survey_month,
+                               r.survey_period_precision, r.survey_period_governance_state,
+                               r.created_at, r.submitted_at, r.cultivated_area_mu, r.yield_per_mu_kg,
                                r.estimated_output_kg, r.status_code, status_option.label AS status_label, r.version
                         FROM production.production_record r
                         JOIN platform.region region ON region.code = r.region_code
@@ -59,7 +62,11 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
                         row.getString("record_id"), row.getString("product_code"),
                         row.getString("object_type_name"), row.getString("region_name"),
                         row.getString("cultivar_name"), row.getObject("survey_date", LocalDate.class),
-                        row.getObject("reported_at", OffsetDateTime.class), row.getBigDecimal("cultivated_area_mu"),
+                        row.getObject("reported_at", OffsetDateTime.class), row.getInt("survey_year"),
+                        (Integer) row.getObject("survey_month"), row.getString("survey_period_precision"),
+                        row.getString("survey_period_governance_state"),
+                        row.getObject("created_at", OffsetDateTime.class),
+                        row.getObject("submitted_at", OffsetDateTime.class), row.getBigDecimal("cultivated_area_mu"),
                         row.getBigDecimal("yield_per_mu_kg"), row.getBigDecimal("estimated_output_kg"),
                         ProductionStatus.valueOf(row.getString("status_code")), row.getString("status_label"),
                         row.getLong("version"))).list();
@@ -231,6 +238,13 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         values.put("PROD_OBJECT_TYPE", row.objectTypeName());
         values.put("PROD_SURVEY_DATE", row.surveyDate().toString());
         values.put("PROD_REPORTED_AT", row.reportedAt().toString());
+        values.put("PROD_SURVEY_YEAR", Integer.toString(row.surveyYear()));
+        if (row.surveyMonth() != null) values.put("PROD_SURVEY_MONTH", Integer.toString(row.surveyMonth()));
+        values.put("PROD_SURVEY_PERIOD_PRECISION", row.surveyPeriodPrecision());
+        values.put("PROD_SURVEY_PERIOD_GOVERNANCE_STATE", row.surveyPeriodGovernanceState());
+        OffsetDateTime fillingAt = row.submittedAt() == null ? row.createdAt() : row.submittedAt();
+        values.put("PROD_FILLING_AT", fillingAt.toString());
+        values.put("PROD_FILLING_TIME_BASIS", fillingTimeBasis(row.status(), row.submittedAt()));
         values.put("PROD_CULTIVAR", submissionMetadata.getOrDefault(
                 "PROD_CULTIVAR_NAME", row.cultivarName()));
         values.put("PROD_AREA_MU", decimal(row.area()));
@@ -347,6 +361,7 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
     }
 
     private SqlFilter filter(String productCode, Map<String, String> filters, Set<String> authorizedRegionCodes) {
+        requireValidTemporalFilters(filters);
         StringBuilder sql = new StringBuilder("WHERE r.product_code = :productCode");
         Map<String, Object> parameters = new LinkedHashMap<>();
         parameters.put("productCode", productCode);
@@ -363,10 +378,51 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
                 case "objectTypeCode" -> { sql.append(" AND r.object_type_code = :objectTypeCode"); parameters.put("objectTypeCode", value); }
                 case "regionCode" -> { sql.append(" AND r.region_code = :regionCode"); parameters.put("regionCode", value); }
                 case "surveyDate" -> { sql.append(" AND r.survey_date = :surveyDate"); parameters.put("surveyDate", LocalDate.parse(value)); }
+                case "surveyYear" -> { sql.append(" AND r.survey_year = :surveyYear"); parameters.put("surveyYear", year(value)); }
+                case "surveyMonth" -> { sql.append(" AND r.survey_month = :surveyMonth"); parameters.put("surveyMonth", month(value)); }
+                case "fillingDateFrom" -> {
+                    sql.append(" AND COALESCE(r.submitted_at,r.created_at) >= :fillingDateFrom");
+                    parameters.put("fillingDateFrom", startOfDay(value));
+                }
+                case "fillingDateTo" -> {
+                    sql.append(" AND COALESCE(r.submitted_at,r.created_at) < :fillingDateToExclusive");
+                    parameters.put("fillingDateToExclusive", startOfDay(value).plusDays(1));
+                }
                 default -> throw new IllegalArgumentException("Unsupported production filter");
             }
         });
         return new SqlFilter(sql.toString(), parameters);
+    }
+
+    private static void requireValidTemporalFilters(Map<String, String> filters) {
+        if (filters.containsKey("surveyMonth") && !filters.containsKey("surveyYear")) {
+            throw new IllegalArgumentException("Survey month requires survey year");
+        }
+        if (filters.containsKey("fillingDateFrom") && filters.containsKey("fillingDateTo")
+                && LocalDate.parse(filters.get("fillingDateFrom")).isAfter(LocalDate.parse(filters.get("fillingDateTo")))) {
+            throw new IllegalArgumentException("Filling date range is reversed");
+        }
+    }
+
+    private static int year(String value) {
+        int parsed = Integer.parseInt(value);
+        if (parsed < 1900 || parsed > 2200) throw new IllegalArgumentException("Invalid survey year");
+        return parsed;
+    }
+
+    private static int month(String value) {
+        int parsed = Integer.parseInt(value);
+        if (parsed < 1 || parsed > 12) throw new IllegalArgumentException("Invalid survey month");
+        return parsed;
+    }
+
+    private static OffsetDateTime startOfDay(String value) {
+        return LocalDate.parse(value).atStartOfDay(ZoneId.of("Asia/Shanghai")).toOffsetDateTime();
+    }
+
+    private static String fillingTimeBasis(ProductionStatus status, OffsetDateTime submittedAt) {
+        if (submittedAt != null) return "SUBMITTED_AT";
+        return status == ProductionStatus.DRAFT ? "DRAFT_CREATED_AT" : "CREATED_AT_NO_SUBMISSION_AUDIT";
     }
 
     private static String decimal(BigDecimal value) { return value == null ? null : value.toPlainString(); }
@@ -375,6 +431,8 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
     private record PageFactRow(String recordId, String code, BigDecimal value) { }
     private record SubmissionMetadataRow(String recordId, String code, String value) { }
     private record ListRow(String id, String productCode, String objectTypeName, String regionName,
-            String cultivarName, LocalDate surveyDate, OffsetDateTime reportedAt, BigDecimal area, BigDecimal yield,
+            String cultivarName, LocalDate surveyDate, OffsetDateTime reportedAt, int surveyYear, Integer surveyMonth,
+            String surveyPeriodPrecision, String surveyPeriodGovernanceState,
+            OffsetDateTime createdAt, OffsetDateTime submittedAt, BigDecimal area, BigDecimal yield,
             BigDecimal output, ProductionStatus status, String statusLabel, long version) { }
 }

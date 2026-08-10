@@ -10,6 +10,7 @@ import com.cofco.qiqihar.graintrade.masterdata.domain.PageDefaultContext;
 import com.cofco.qiqihar.graintrade.masterdata.domain.PageDefinition;
 import com.cofco.qiqihar.graintrade.masterdata.domain.Product;
 import com.cofco.qiqihar.graintrade.masterdata.domain.Region;
+import com.cofco.qiqihar.graintrade.masterdata.domain.SupplySurveyPeriod;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import java.time.LocalDate;
@@ -72,6 +73,12 @@ public class MasterDataController {
         return new ApiResponse<>(query.businessPeriods().stream().map(BusinessPeriodResponse::from).toList());
     }
 
+    @GetMapping("/supply-survey-periods")
+    ApiResponse<List<SupplySurveyPeriodResponse>> supplySurveyPeriods() {
+        return new ApiResponse<>(query.supplySurveyPeriods().stream()
+                .map(SupplySurveyPeriodResponse::from).toList());
+    }
+
     @GetMapping("/business-batches")
     ApiResponse<List<BusinessBatchResponse>> businessBatches(@RequestParam String businessPeriodCode) {
         return new ApiResponse<>(query.businessBatches(businessPeriodCode).stream()
@@ -112,9 +119,36 @@ public class MasterDataController {
         }
     }
 
-    public record BusinessPeriodResponse(String code, String name, LocalDate startsOn, LocalDate endsOn) {
+    public record BusinessPeriodResponse(
+            String code,
+            String name,
+            LocalDate startsOn,
+            LocalDate endsOn,
+            String marketingYearCode,
+            String marketingYearName) {
         static BusinessPeriodResponse from(BusinessPeriod period) {
-            return new BusinessPeriodResponse(period.code(), period.name(), period.startsOn(), period.endsOn());
+            return new BusinessPeriodResponse(
+                    period.code(),
+                    period.name(),
+                    period.startsOn(),
+                    period.endsOn(),
+                    period.marketingYearCode(),
+                    period.marketingYearName());
+        }
+    }
+
+    public record SupplySurveyPeriodResponse(
+            String code,
+            String name,
+            int surveyYear,
+            String surveyQuarter,
+            String precision,
+            String marketingYearCode,
+            String marketingYearName) {
+        static SupplySurveyPeriodResponse from(SupplySurveyPeriod period) {
+            return new SupplySurveyPeriodResponse(
+                    period.code(), period.name(), period.surveyYear(), period.surveyQuarter(),
+                    period.precision(), period.marketingYearCode(), period.marketingYearName());
         }
     }
 

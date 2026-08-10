@@ -55,8 +55,8 @@ class LogisticsRestIntegrationTest {
         jdbc.sql("DELETE FROM platform.logistics_core_field_definition WHERE code='LOG_REFERENCE'").update();
         jdbc.sql("DELETE FROM platform.business_period WHERE code='LOG-2026-08'").update();
         jdbc.sql("""
-                INSERT INTO platform.business_period(code,name,starts_on,ends_on,sort_order)
-                VALUES('LOG-2026-08','2026年8月物流监测期','2026-08-01','2026-08-31',900)
+                INSERT INTO platform.business_period(code,name,starts_on,ends_on,sort_order,marketing_year_code)
+                VALUES('LOG-2026-08','2026年8月物流监测期','2026-08-01','2026-08-31',900,'2026/27')
                 """).update();
         node(jdbc, "TEST_RAIL", "测试铁路站", "RAIL_NODE");
         node(jdbc, "TEST_ROAD", "测试公路节点", "ROAD_NODE");
@@ -190,6 +190,61 @@ class LogisticsRestIntegrationTest {
                                         "\"UNKNOWN_FIELD\":\"not-authorized\"")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("INVALID_LOGISTICS_RECORD"));
+    }
+
+    @Test
+    void filtersByExplicitSurveyPeriodRealFillingTimeAndStatus() throws Exception {
+        String id = create("CORN", "RAIL", "TEST_RAIL", "TEST_ROAD", true);
+        jdbc.sql("""
+                UPDATE logistics.route_event
+                SET created_at=TIMESTAMPTZ '2026-08-05 09:00:00+08',
+                    reported_at=TIMESTAMPTZ '2030-01-01 09:00:00+08'
+                WHERE event_id::text=:id
+                """).param("id", id).update();
+
+        mvc.perform(get("/api/v1/logistics-records")
+                        .queryParam("productCode", "CORN").queryParam("pageNumber", "0")
+                        .queryParam("pageSize", "20").queryParam("filter.surveyYear", "2026")
+                        .queryParam("filter.surveyMonth", "8")
+                        .queryParam("filter.fillingDateFrom", "2026-08-05")
+                        .queryParam("filter.fillingDateTo", "2026-08-05")
+                        .queryParam("filter.status", "DRAFT"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items[0].values.LOG_SURVEY_YEAR").value("2026"))
+                .andExpect(jsonPath("$.data.items[0].values.LOG_SURVEY_MONTH").value("8"))
+                .andExpect(jsonPath("$.data.items[0].values.LOG_SURVEY_PERIOD_PRECISION").value("YEAR_MONTH"))
+                .andExpect(jsonPath("$.data.items[0].values.LOG_FILLING_TIME_BASIS").value("DRAFT_CREATED_AT"));
+
+        jdbc.sql("""
+                UPDATE logistics.route_event SET survey_month=NULL,survey_period_precision='YEAR'
+                WHERE event_id::text=:id
+                """).param("id", id).update();
+        mvc.perform(get("/api/v1/logistics-records")
+                        .queryParam("productCode", "CORN").queryParam("pageNumber", "0")
+                        .queryParam("pageSize", "20").queryParam("filter.surveyYear", "2026")
+                        .queryParam("filter.surveyMonth", "8"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(0));
+        mvc.perform(get("/api/v1/logistics-records")
+                        .queryParam("productCode", "CORN").queryParam("pageNumber", "0")
+                        .queryParam("pageSize", "20").queryParam("filter.surveyYear", "2026"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(1));
+
+        transition(id, "submit", 0, null);
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql(
+                        "SELECT submitted_at IS NOT NULL FROM logistics.route_event WHERE event_id::text=:id")
+                .param("id", id).query(Boolean.class).single()).isTrue();
+        jdbc.sql("""
+                UPDATE logistics.route_event SET submitted_at=TIMESTAMPTZ '2026-08-06 10:30:00+08'
+                WHERE event_id::text=:id
+                """).param("id", id).update();
+        mvc.perform(get("/api/v1/logistics-records")
+                        .queryParam("productCode", "CORN").queryParam("pageNumber", "0")
+                        .queryParam("pageSize", "20").queryParam("filter.surveyYear", "2026")
+                        .queryParam("filter.fillingDateFrom", "2026-08-06")
+                        .queryParam("filter.fillingDateTo", "2026-08-06")
+                        .queryParam("filter.status", "PENDING_REVIEW"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items[0].values.LOG_FILLING_TIME_BASIS").value("SUBMITTED_AT"));
     }
 
     private String create(String product, String mode, String origin, String destination, boolean extension)

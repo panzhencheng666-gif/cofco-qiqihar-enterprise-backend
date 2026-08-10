@@ -98,6 +98,8 @@ class JdbcMasterDataRepositoryTest {
         assertThat(repository.findPageDefinition("CORN", "MARKET", "QUALITY")).isEmpty();
         assertThat(repository.findBusinessPeriods()).extracting(period -> period.code())
                 .contains("2026-W32");
+        assertThat(repository.findBusinessPeriods()).extracting(period -> period.marketingYearCode())
+                .containsOnly("2026/27");
     }
 
     @Test
@@ -129,8 +131,8 @@ class JdbcMasterDataRepositoryTest {
                 Statement statement = connection.createStatement()) {
             statement.execute("""
                     INSERT INTO platform.business_period
-                        (code, name, starts_on, ends_on, sort_order)
-                    VALUES ('PERIOD_2026', '2026业务期', DATE '2026-01-01', DATE '2026-12-31', 10)
+                        (code, name, starts_on, ends_on, sort_order, marketing_year_code)
+                    VALUES ('PERIOD_2026', '2026业务期', DATE '2026-01-01', DATE '2026-12-31', 10, '2026/27')
                     """);
             statement.execute("""
                     INSERT INTO platform.business_batch

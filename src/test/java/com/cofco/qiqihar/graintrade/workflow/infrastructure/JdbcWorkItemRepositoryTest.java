@@ -26,8 +26,8 @@ class JdbcWorkItemRepositoryTest {
         DATABASE.flyway().migrate();
         deleteFixtures();
         jdbc.sql("""
-                INSERT INTO platform.business_period (code, name, starts_on, ends_on, sort_order)
-                VALUES ('WORK_TEST_PERIOD', '2026年8月', DATE '2026-08-01', DATE '2026-08-31', 9900)
+                INSERT INTO platform.business_period (code, name, starts_on, ends_on, sort_order, marketing_year_code)
+                VALUES ('WORK_TEST_PERIOD', '2026年8月', DATE '2026-08-01', DATE '2026-08-31', 9900, '2026/27')
                 """).update();
         jdbc.sql("""
                 INSERT INTO platform.work_unit(code, name, sort_order)

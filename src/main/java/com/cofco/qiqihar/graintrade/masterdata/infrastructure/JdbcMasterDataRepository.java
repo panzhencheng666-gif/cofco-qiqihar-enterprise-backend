@@ -10,6 +10,7 @@ import com.cofco.qiqihar.graintrade.masterdata.domain.PageDefaultContext;
 import com.cofco.qiqihar.graintrade.masterdata.domain.PageDefinition;
 import com.cofco.qiqihar.graintrade.masterdata.domain.Product;
 import com.cofco.qiqihar.graintrade.masterdata.domain.Region;
+import com.cofco.qiqihar.graintrade.masterdata.domain.SupplySurveyPeriod;
 import java.util.List;
 import java.util.Optional;
 import javax.sql.DataSource;
@@ -157,15 +158,41 @@ public class JdbcMasterDataRepository implements MasterDataRepository {
     @Override
     public List<BusinessPeriod> findBusinessPeriods() {
         return jdbc.sql("""
-                        SELECT code, name, starts_on, ends_on
-                        FROM platform.business_period
-                        ORDER BY sort_order
+                        SELECT period.code,
+                               period.name,
+                               period.starts_on,
+                               period.ends_on,
+                               period.marketing_year_code,
+                               marketing_year.name AS marketing_year_name
+                        FROM platform.business_period period
+                        JOIN platform.marketing_year marketing_year
+                          ON marketing_year.code = period.marketing_year_code
+                        ORDER BY period.sort_order
                         """)
                 .query((row, rowNumber) -> new BusinessPeriod(
                         row.getString("code"),
                         row.getString("name"),
                         row.getObject("starts_on", java.time.LocalDate.class),
-                        row.getObject("ends_on", java.time.LocalDate.class)))
+                        row.getObject("ends_on", java.time.LocalDate.class),
+                        row.getString("marketing_year_code"),
+                        row.getString("marketing_year_name")))
+                .list();
+    }
+
+    @Override
+    public List<SupplySurveyPeriod> findSupplySurveyPeriods() {
+        return jdbc.sql("""
+                        SELECT period.code,period.name,period.survey_year,period.survey_quarter,
+                               period.precision,period.marketing_year_code,
+                               marketing_year.name AS marketing_year_name
+                        FROM platform.supply_survey_period period
+                        JOIN platform.marketing_year marketing_year ON marketing_year.code=period.marketing_year_code
+                        ORDER BY period.survey_year DESC,period.survey_quarter NULLS FIRST
+                        """)
+                .query((row, rowNumber) -> new SupplySurveyPeriod(
+                        row.getString("code"), row.getString("name"), row.getInt("survey_year"),
+                        row.getString("survey_quarter"), row.getString("precision"),
+                        row.getString("marketing_year_code"), row.getString("marketing_year_name")))
                 .list();
     }
 

@@ -11,7 +11,7 @@ public record SupplyRunPersistence(
         String calculationChecksum,
         String productCode,
         String regionCode,
-        String marketingYear,
+        SupplyTemporalContext temporalContext,
         String resultState,
         List<String> validationCodes,
         SupplyAccountCalculation calculation,

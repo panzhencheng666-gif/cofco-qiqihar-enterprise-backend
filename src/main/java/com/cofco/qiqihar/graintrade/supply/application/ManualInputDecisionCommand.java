@@ -5,7 +5,7 @@ import java.math.BigDecimal;
 public record ManualInputDecisionCommand(
         String productCode,
         String regionCode,
-        String marketingYear,
+        String periodCode,
         String roleCode,
         BigDecimal value,
         String reason,

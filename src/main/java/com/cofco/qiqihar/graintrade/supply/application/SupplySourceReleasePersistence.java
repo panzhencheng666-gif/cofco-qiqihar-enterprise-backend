@@ -5,6 +5,7 @@ import java.time.Instant;
 
 public record SupplySourceReleasePersistence(
         UpstreamSourceReleaseCommand command,
+        SupplyTemporalContext temporalContext,
         SupplySourceReleaseMaterial material,
         BigDecimal accountValue,
         String immutableDigest,

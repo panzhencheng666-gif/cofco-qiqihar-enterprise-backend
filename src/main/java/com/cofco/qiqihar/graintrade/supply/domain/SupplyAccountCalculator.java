@@ -51,7 +51,7 @@ public final class SupplyAccountCalculator {
                 values.get("CALCULATED_ENDING_INVENTORY"), values.get(ADJUSTMENT),
                 values.get("ADOPTED_ENDING_INVENTORY"), values.get("SURVEYED_ENDING_INVENTORY"),
                 difference, difference.abs().compareTo(normalize(formula.tolerance(), formula)) <= 0,
-                SupplyResultState.FORMAL_CANDIDATE);
+                SupplyResultState.CONFIRMED);
     }
 
     public static List<String> validate(SupplyFormula formula, List<SupplySource> sources) {

@@ -69,46 +69,55 @@ public class SupplyAccountService {
 
     @Transactional(readOnly = true)
     public List<SupplyAccountView> list(
-            String product, String region, String year, String state, Integer version) {
-        if (!PRODUCTS.contains(product) || blank(region) || blank(year)
-                || (state != null && !Set.of("TRIAL", "FORMAL_CANDIDATE", "FORMAL").contains(state))
+            String product, String region, String period, String state, Integer version) {
+        if (!PRODUCTS.contains(product) || blank(region) || blank(period)
+                || (state != null && !Set.of("DRAFT", "CONFIRMED", "PUBLISHED").contains(state))
                 || (version != null && version < 1)) throw invalid();
+        requireTemporalContext(period);
         AuthorizedReadScope scope=readScope(); scope.requireRegion(region);
-        return repository.find(product, region, year, state, version, scope.regionCodes());
+        return repository.find(product, region, period, state, version, scope.regionCodes());
     }
 
     @Transactional(readOnly = true)
-    public SupplyInputWorkspaceView inputWorkspace(String product, String region, String year) {
-        if (!PRODUCTS.contains(product) || blank(region) || blank(year)) throw invalid();
+    public SupplyInputWorkspaceView inputWorkspace(String product, String region, String period) {
+        if (!PRODUCTS.contains(product) || blank(region) || blank(period)) throw invalid();
+        requireTemporalContext(period);
         AuthorizedReadScope scope=readScope(); scope.requireRegion(region);
-        SupplyInputWorkspaceView workspace = repository.loadInputWorkspace(product, region, year, scope.regionCodes());
+        SupplyInputWorkspaceView workspace = repository.loadInputWorkspace(product, region, period, scope.regionCodes());
         if (workspace == null) throw invalid();
         return workspace;
+    }
+
+    @Transactional(readOnly = true)
+    public String resolvePeriodCode(String periodCodeOrMarketingYear) {
+        if (blank(periodCodeOrMarketingYear)) throw invalid();
+        return requireTemporalContext(periodCodeOrMarketingYear).periodCode();
     }
 
     @Transactional
     public SupplyAccountView run(SupplyRunCommand command) {
         if (command == null || !PRODUCTS.contains(command.productCode()) || blank(command.regionCode())
-                || blank(command.marketingYear()) || blank(command.inputSetId())
+                || blank(command.periodCode()) || blank(command.inputSetId())
                 || command.adjustmentProposalValue() == null || blank(command.adjustmentProposalReason())
                 || command.expectedDecisionVersion() < 0) throw invalid();
+        SupplyTemporalContext temporalContext = requireTemporalContext(command.periodCode());
         SecurityPrincipal principal = authorize("BUSINESS_UPDATE", command.regionCode());
         if (command.publish()) authorize("BUSINESS_APPROVE", command.regionCode());
         String current = principal.subjectId();
         Instant now = clock.instant();
 
-        repository.lockCalculationContext(command.productCode(), command.regionCode(), command.marketingYear());
+        repository.lockCalculationContext(command.productCode(), command.regionCode(), command.periodCode());
         SupplyCalculationMaterial material;
         try {
             material = repository.loadCalculationMaterial(
-                    command.inputSetId(), command.productCode(), command.regionCode(), command.marketingYear());
+                    command.inputSetId(), command.productCode(), command.regionCode(), command.periodCode());
         } catch (IllegalArgumentException exception) {
             throw formulaContract(exception.getMessage());
         }
         if (material == null
                 || !material.inputSet().productCode().equals(command.productCode())
                 || !material.inputSet().regionCode().equals(command.regionCode())
-                || !material.inputSet().marketingYear().equals(command.marketingYear())) throw invalidInputSet();
+                || !material.inputSet().periodCode().equals(command.periodCode())) throw invalidInputSet();
         validateFormula(material.formula().formula());
         if (material.decision().version() != command.expectedDecisionVersion()) {
             throw new ConflictException("SUPPLY_DECISION_VERSION_CONFLICT", "Supply decision has changed");
@@ -133,7 +142,7 @@ public class SupplyAccountService {
 
         boolean eligible = errors.isEmpty() && calculation != null && calculation.balanced();
         boolean formal = eligible && command.publish();
-        String state = formal ? "FORMAL" : eligible ? "FORMAL_CANDIDATE" : "TRIAL";
+        String state = formal ? "PUBLISHED" : eligible ? "CONFIRMED" : "DRAFT";
         long decisionVersion = material.decision().version();
         if (formal) {
             repository.persistFormalDecision(command, material, current, now);
@@ -145,7 +154,7 @@ public class SupplyAccountService {
                 calculationChecksum(material, calculation),
                 command.productCode(),
                 command.regionCode(),
-                command.marketingYear(),
+                temporalContext,
                 state,
                 errors,
                 calculation,
@@ -166,8 +175,9 @@ public class SupplyAccountService {
         if (command == null || !Set.of("PRODUCTION", "MARKET", "LOGISTICS").contains(command.sourceDomain())
                 || blank(command.sourceRecordId()) || command.sourceVersion() < 0
                 || !PRODUCTS.contains(command.productCode()) || blank(command.regionCode())
-                || blank(command.marketingYear()) || blank(command.roleCode()) || blank(command.sourceFieldCode())
+                || blank(command.periodCode()) || blank(command.roleCode()) || blank(command.sourceFieldCode())
                 || !Set.of("PASSED", "WARNING", "BLOCKING").contains(command.qualityState())) throw invalid();
+        SupplyTemporalContext temporalContext = requireTemporalContext(command.periodCode());
         SecurityPrincipal principal = authorize("BUSINESS_UPDATE", command.regionCode());
         String current = principal.subjectId();
 
@@ -182,7 +192,7 @@ public class SupplyAccountService {
         BigDecimal value = material.upstreamFact().value()
                 .multiply(material.mapping().conversionFactor()).setScale(4, RoundingMode.HALF_UP);
         SupplyReleaseView persisted = repository.persistSourceRelease(new SupplySourceReleasePersistence(
-                command, material, value, digest(command, value), current, clock.instant()));
+                command, temporalContext, material, value, digest(command, value), current, clock.instant()));
         audit(principal, "SUPPLY_SOURCE_RELEASE", persisted.id(), "SUPPLY_SOURCE_RELEASED", command.regionCode());
         return persisted;
     }
@@ -190,8 +200,9 @@ public class SupplyAccountService {
     @Transactional
     public SupplyReleaseView approveManual(ManualInputDecisionCommand command) {
         if (command == null || !PRODUCTS.contains(command.productCode()) || blank(command.regionCode())
-                || blank(command.marketingYear()) || blank(command.roleCode()) || command.value() == null
+                || blank(command.periodCode()) || blank(command.roleCode()) || command.value() == null
                 || blank(command.reason()) || command.expectedVersion() < 0) throw invalid();
+        SupplyTemporalContext temporalContext = requireTemporalContext(command.periodCode());
         SecurityPrincipal principal = authorize("BUSINESS_APPROVE", command.regionCode());
         String current = principal.subjectId();
 
@@ -201,7 +212,7 @@ public class SupplyAccountService {
         if (material.currentVersion() != command.expectedVersion()) decisionConflict();
         long version = material.decisionExists() ? material.currentVersion() + 1 : 0;
         SupplyReleaseView persisted = repository.persistManualDecision(new SupplyManualDecisionPersistence(
-                command, material.mapping(), version, digest(command, command.value()), current, clock.instant()));
+                command, temporalContext, material.mapping(), version, digest(command, command.value()), current, clock.instant()));
         audit(principal, "SUPPLY_MANUAL_INPUT", persisted.id(), "SUPPLY_MANUAL_INPUT_APPROVED", command.regionCode());
         return persisted;
     }
@@ -209,8 +220,9 @@ public class SupplyAccountService {
     @Transactional
     public SupplyInputSetView createInputSet(SupplyInputSetCommand command) {
         if (command == null || !PRODUCTS.contains(command.productCode()) || blank(command.regionCode())
-                || blank(command.marketingYear()) || blank(command.reason()) || command.expectedVersion() < 0
+                || blank(command.periodCode()) || blank(command.reason()) || command.expectedVersion() < 0
                 || command.items() == null || command.items().isEmpty()) throw invalidInputSet();
+        SupplyTemporalContext temporalContext = requireTemporalContext(command.periodCode());
         SecurityPrincipal principal = authorize("BUSINESS_CREATE", command.regionCode());
         String current = principal.subjectId();
         Set<String> roles = new HashSet<>();
@@ -232,7 +244,7 @@ public class SupplyAccountService {
             throw invalidInputSet();
         }
         SupplyInputSetView persisted = repository.persistInputSet(new SupplyInputSetPersistence(
-                command, material.currentVersion() + 1, material.selectedSources(), current, clock.instant()));
+                command, temporalContext, material.currentVersion() + 1, material.selectedSources(), current, clock.instant()));
         audit(principal, "SUPPLY_INPUT_SET", persisted.id(), "SUPPLY_INPUT_SET_CREATED", command.regionCode());
         return persisted;
     }
@@ -243,6 +255,12 @@ public class SupplyAccountService {
         } catch (IllegalArgumentException exception) {
             throw formulaContract(exception.getMessage());
         }
+    }
+
+    private SupplyTemporalContext requireTemporalContext(String periodCode) {
+        SupplyTemporalContext context = repository.findTemporalContext(periodCode);
+        if (context == null) throw invalid();
+        return context;
     }
 
     private String formulaSnapshot(SupplyCalculationMaterial.FormulaDefinition definition) {

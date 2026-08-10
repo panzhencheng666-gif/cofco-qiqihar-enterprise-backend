@@ -7,6 +7,7 @@ import com.cofco.qiqihar.graintrade.masterdata.domain.ObjectType;
 import com.cofco.qiqihar.graintrade.masterdata.domain.PageDefinition;
 import com.cofco.qiqihar.graintrade.masterdata.domain.Product;
 import com.cofco.qiqihar.graintrade.masterdata.domain.Region;
+import com.cofco.qiqihar.graintrade.masterdata.domain.SupplySurveyPeriod;
 import java.util.List;
 import java.util.Optional;
 
@@ -27,6 +28,10 @@ public interface MasterDataRepository {
     List<ObjectType> findObjectTypes(String productCode, String domain);
 
     List<BusinessPeriod> findBusinessPeriods();
+
+    default List<SupplySurveyPeriod> findSupplySurveyPeriods() {
+        return List.of();
+    }
 
     List<BusinessBatch> findBusinessBatchesByPeriodCode(String businessPeriodCode);
 

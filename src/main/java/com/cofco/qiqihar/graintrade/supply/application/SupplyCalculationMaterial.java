@@ -17,6 +17,7 @@ public record SupplyCalculationMaterial(
             long version,
             String productCode,
             String regionCode,
+            String periodCode,
             String marketingYear,
             String reason,
             List<Source> sources) {

@@ -48,8 +48,8 @@ class SupplyAccountRestIntegrationTest {
                 """).update();
         jdbc.sql("DELETE FROM supply.formula_version WHERE version_no>1").update();
         jdbc.sql("""
-                INSERT INTO platform.business_period(code,name,starts_on,ends_on,sort_order)
-                VALUES('2026-Q3','2026年第三季度',DATE '2026-07-01',DATE '2026-09-30',202603)
+                INSERT INTO platform.business_period(code,name,starts_on,ends_on,sort_order,marketing_year_code)
+                VALUES('2026-Q3','2026年第三季度',DATE '2026-07-01',DATE '2026-09-30',202603,'2026/27')
                 ON CONFLICT(code) DO NOTHING
                 """).update();
     }
@@ -74,6 +74,7 @@ class SupplyAccountRestIntegrationTest {
                             .queryParam("regionCode", "230200")
                             .queryParam("marketingYear", "2026/27"))
                     .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.periodCode").value("2026"))
                     .andExpect(jsonPath("$.data.inputSetVersion").value(1))
                     .andExpect(jsonPath("$.data.latestInputSetId").value(inputSet))
                     .andExpect(jsonPath("$.data.roles.length()").value(14))
@@ -84,7 +85,8 @@ class SupplyAccountRestIntegrationTest {
             mvc.perform(post("/api/v1/supply-accounts/runs").principal(() -> "supply-reviewer")
                             .contentType(MediaType.APPLICATION_JSON).content(runBody(product, inputSet, "1.000", 0)))
                     .andExpect(status().isOk()).andExpect(jsonPath("$.data.productCode").value(product))
-                    .andExpect(jsonPath("$.data.resultState").value("FORMAL"))
+                    .andExpect(jsonPath("$.data.periodCode").value("2026"))
+                    .andExpect(jsonPath("$.data.resultState").value("PUBLISHED"))
                     .andExpect(jsonPath("$.data.resultVersion").value(1))
                     .andExpect(jsonPath("$.data.decisionVersion").value(0))
                     .andExpect(jsonPath("$.data.balanced").value(true))
@@ -106,7 +108,7 @@ class SupplyAccountRestIntegrationTest {
         String trialInputSet = inputSet("CORN", 1, Map.of());
         mvc.perform(post("/api/v1/supply-accounts/runs").principal(() -> "supply-reviewer")
                         .contentType(MediaType.APPLICATION_JSON).content(runBody("CORN", trialInputSet, "1.000", 0)))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.resultState").value("TRIAL"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.resultState").value("DRAFT"))
                 .andExpect(jsonPath("$.data.resultVersion").value(2))
                 .andExpect(jsonPath("$.data.decisionVersion").value(0))
                 .andExpect(jsonPath("$.data.publishable").value(false))
@@ -120,7 +122,7 @@ class SupplyAccountRestIntegrationTest {
         String repairedInputSet = inputSet("CORN", 2, Map.of());
         mvc.perform(post("/api/v1/supply-accounts/runs").principal(() -> "supply-reviewer")
                         .contentType(MediaType.APPLICATION_JSON).content(runBody("CORN", repairedInputSet, "1.000", 0)))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.resultState").value("FORMAL"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.resultState").value("PUBLISHED"))
                 .andExpect(jsonPath("$.data.resultVersion").value(3))
                 .andExpect(jsonPath("$.data.decisionVersion").value(1))
                 .andExpect(jsonPath("$.data.adjustmentProposal").doesNotExist())
@@ -197,7 +199,7 @@ class SupplyAccountRestIntegrationTest {
         String inputSet = inputSet("CORN", 0, Map.of());
         mvc.perform(post("/api/v1/supply-accounts/runs").principal(() -> "supply-reviewer")
                         .contentType(MediaType.APPLICATION_JSON).content(runBody("CORN", inputSet, "1.000", 0)))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.resultState").value("FORMAL"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.resultState").value("PUBLISHED"))
                 .andExpect(jsonPath("$.data.formula.version").value(1));
         long v1 = jdbc.sql("SELECT formula_version_id FROM supply.formula_version WHERE code='GRAIN_BALANCE' AND version_no=1")
                 .query(Long.class).single();
@@ -216,7 +218,7 @@ class SupplyAccountRestIntegrationTest {
         installFormulaV2();
         mvc.perform(post("/api/v1/supply-accounts/runs").principal(() -> "supply-reviewer")
                         .contentType(MediaType.APPLICATION_JSON).content(runBody("CORN", inputSet, "1.000", 0)))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.resultState").value("TRIAL"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.resultState").value("DRAFT"))
                 .andExpect(jsonPath("$.data.formula.version").value(2))
                 .andExpect(jsonPath("$.data.formula.tolerance").value("0.501"))
                 .andExpect(jsonPath("$.data.totalSupply").value("18.000"))
@@ -254,6 +256,104 @@ class SupplyAccountRestIntegrationTest {
                 .param("id", mappingId).update()).hasMessageContaining("immutable");
     }
 
+    @Test
+    void keepsTwoPeriodsAndPublishedRevisionsIndependentAndImmutable() throws Exception {
+        mvc.perform(get("/api/v1/master-data/supply-survey-periods"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.code == '2026')].precision").value("YEAR"))
+                .andExpect(jsonPath("$.data[0].surveyQuarter").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.data[?(@.code == '2026-Q3')].precision").value("QUARTER"))
+                .andExpect(jsonPath("$.data[?(@.code == '2026-Q3')].surveyQuarter").value("Q3"));
+
+        manualSourcesAtPeriod("RICE", "2026");
+        String annualInput = inputSetAtPeriod("RICE", "2026", 0);
+        mvc.perform(post("/api/v1/supply-accounts/runs").principal(() -> "supply-reviewer")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(runBodyAtPeriod("RICE", "2026", annualInput, "1.000", 0)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.periodCode").value("2026"))
+                .andExpect(jsonPath("$.data.surveyYear").value(2026))
+                .andExpect(jsonPath("$.data.surveyQuarter").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.data.periodPrecision").value("YEAR"))
+                .andExpect(jsonPath("$.data.resultVersion").value(1));
+
+        manualSourcesAtPeriod("RICE", "2026-Q3");
+        String q3FirstInput = inputSetAtPeriod("RICE", "2026-Q3", 0);
+        mvc.perform(post("/api/v1/supply-accounts/runs").principal(() -> "supply-reviewer")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(runBodyAtPeriod("RICE", "2026-Q3", q3FirstInput, "1.000", 0)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.periodCode").value("2026-Q3"))
+                .andExpect(jsonPath("$.data.surveyYear").value(2026))
+                .andExpect(jsonPath("$.data.surveyQuarter").value("Q3"))
+                .andExpect(jsonPath("$.data.periodPrecision").value("QUARTER"))
+                .andExpect(jsonPath("$.data.marketingYear").value("2026/27"))
+                .andExpect(jsonPath("$.data.resultState").value("PUBLISHED"))
+                .andExpect(jsonPath("$.data.resultVersion").value(1))
+                .andExpect(jsonPath("$.data.supersedesResultVersion").doesNotExist());
+
+        manualAtPeriod("RICE", "2026-Q3", "SURVEYED_ENDING_INVENTORY", "7.750", 0)
+                .andExpect(status().isOk());
+        String q3SecondInput = inputSetAtPeriod("RICE", "2026-Q3", 1);
+        mvc.perform(post("/api/v1/supply-accounts/runs").principal(() -> "supply-reviewer")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(runBodyAtPeriod("RICE", "2026-Q3", q3SecondInput, "1.000", 0)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.resultState").value("PUBLISHED"))
+                .andExpect(jsonPath("$.data.resultVersion").value(2))
+                .andExpect(jsonPath("$.data.supersedesResultVersion").value(1));
+
+        manualSourcesAtPeriod("RICE", "2026-Q4");
+        String q4Input = inputSetAtPeriod("RICE", "2026-Q4", 0);
+        mvc.perform(post("/api/v1/supply-accounts/runs").principal(() -> "supply-reviewer")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(runBodyAtPeriod("RICE", "2026-Q4", q4Input, "1.000", 0)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.resultVersion").value(1));
+
+        mvc.perform(get("/api/v1/supply-accounts")
+                        .queryParam("productCode", "RICE")
+                        .queryParam("regionCode", "230200")
+                        .queryParam("periodCode", "2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(4))
+                .andExpect(jsonPath("$.data[0].periodPrecision").value("YEAR"))
+                .andExpect(jsonPath("$.data[1].periodCode").value("2026-Q3"))
+                .andExpect(jsonPath("$.data[1].resultVersion").value(2))
+                .andExpect(jsonPath("$.data[2].resultVersion").value(1))
+                .andExpect(jsonPath("$.data[3].periodCode").value("2026-Q4"));
+        mvc.perform(get("/api/v1/supply-accounts")
+                        .queryParam("productCode", "RICE")
+                        .queryParam("regionCode", "230200")
+                        .queryParam("periodCode", "2026-Q3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(2));
+        mvc.perform(get("/api/v1/supply-accounts")
+                        .queryParam("productCode", "RICE")
+                        .queryParam("regionCode", "230200")
+                        .queryParam("periodCode", "2026-Q4"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].resultVersion").value(1));
+
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM supply.approved_adjustment
+                WHERE product_code='RICE' AND region_code='230200' AND period_code='2026-Q3'
+                """).query(Long.class).single()).isEqualTo(2);
+        assertThat(jdbc.sql("""
+                SELECT survey_year || ':' || COALESCE(survey_quarter,'ANNUAL') || ':' || period_precision
+                FROM supply.calculation_run WHERE product_code='RICE' AND period_code='2026'
+                """).query(String.class).single()).isEqualTo("2026:ANNUAL:YEAR");
+        String publishedRun = jdbc.sql("""
+                SELECT calculation_run_id::text FROM supply.calculation_run
+                WHERE product_code='RICE' AND period_code='2026-Q3' ORDER BY created_at LIMIT 1
+                """).query(String.class).single();
+        assertThatThrownBy(() -> jdbc.sql("""
+                UPDATE supply.calculation_run SET result_state='DRAFT'
+                WHERE calculation_run_id=CAST(:id AS uuid)
+                """).param("id", publishedRun).update()).hasMessageContaining("immutable");
+    }
+
     private void controlledCornSources() throws Exception {
         String production = productionRecord("CORN", "APPROVED", "3.000");
         release("PRODUCTION", production, 0, "CORN", "LOCAL_PRODUCTION", "PROD_ESTIMATED_OUTPUT", "PASSED")
@@ -274,6 +374,21 @@ class SupplyAccountRestIntegrationTest {
 
     private void manualSources(String product) throws Exception {
         for (String role : ROLES) manual(product, role, value(role), 0).andExpect(status().isOk());
+    }
+
+    private void manualSourcesAtPeriod(String product, String periodCode) throws Exception {
+        for (String role : ROLES) {
+            manualAtPeriod(product, periodCode, role, value(role), 0).andExpect(status().isOk());
+        }
+    }
+
+    private org.springframework.test.web.servlet.ResultActions manualAtPeriod(
+            String product, String periodCode, String role, String value, long expected) throws Exception {
+        return mvc.perform(post("/api/v1/supply-inputs/manual-decisions").principal(() -> "supply-reviewer")
+                .contentType(MediaType.APPLICATION_JSON).content("""
+                        {"productCode":"%s","regionCode":"230200","periodCode":"%s",
+                         "roleCode":"%s","value":"%s","reason":"人工核定依据完整","expectedVersion":%d}
+                        """.formatted(product, periodCode, role, value, expected)));
     }
 
     private org.springframework.test.web.servlet.ResultActions manual(
@@ -414,11 +529,51 @@ class SupplyAccountRestIntegrationTest {
                 """).param("product", product).query(String.class).single();
     }
 
+    private String inputSetAtPeriod(String product, String periodCode, long expectedVersion) throws Exception {
+        Map<String, String> selections = new LinkedHashMap<>();
+        jdbc.sql("""
+                SELECT DISTINCT ON (binding.role_code) binding.role_code,release.source_release_id::text
+                FROM supply.source_release release JOIN supply.source_release_binding binding
+                  ON binding.source_release_id=release.source_release_id
+                WHERE release.product_code=:product AND release.region_code='230200'
+                  AND release.period_code=:period AND release.approval_state='APPROVED'
+                ORDER BY binding.role_code,release.source_version DESC,release.approved_at DESC
+                """).param("product", product).param("period", periodCode)
+                .query((row, index) -> Map.entry(row.getString("role_code"), row.getString("source_release_id")))
+                .list().forEach(entry -> selections.put(entry.getKey(), entry.getValue()));
+        StringBuilder items = new StringBuilder();
+        for (String role : ROLES) {
+            if (!items.isEmpty()) items.append(',');
+            items.append("{\"roleCode\":\"").append(role).append("\",\"sourceReleaseId\":\"")
+                    .append(selections.get(role)).append("\"}");
+        }
+        mvc.perform(post("/api/v1/supply-input-sets").principal(() -> "supply-reviewer")
+                        .contentType(MediaType.APPLICATION_JSON).content("""
+                                {"productCode":"%s","regionCode":"230200","periodCode":"%s",
+                                 "reason":"明确采用本期核定来源","expectedVersion":%d,"items":[%s]}
+                                """.formatted(product, periodCode, expectedVersion, items)))
+                .andExpect(status().isOk());
+        return jdbc.sql("""
+                SELECT input_set_id::text FROM supply.source_adoption_set
+                WHERE product_code=:product AND region_code='230200' AND period_code=:period
+                ORDER BY version_no DESC LIMIT 1
+                """).param("product", product).param("period", periodCode).query(String.class).single();
+    }
+
     private static String runBody(String product, String inputSetId, String adjustment, long expected) {
         return """
                 {"productCode":"%s","regionCode":"230200","marketingYear":"2026/27","inputSetId":"%s",
                  "adjustmentProposalValue":"%s","adjustmentProposalReason":"库存覆盖差异调整建议",
                  "expectedDecisionVersion":%d,"publish":true}
                 """.formatted(product, inputSetId, adjustment, expected);
+    }
+
+    private static String runBodyAtPeriod(
+            String product, String periodCode, String inputSetId, String adjustment, long expected) {
+        return """
+                {"productCode":"%s","regionCode":"230200","periodCode":"%s","inputSetId":"%s",
+                 "adjustmentProposalValue":"%s","adjustmentProposalReason":"库存覆盖差异调整建议",
+                 "expectedDecisionVersion":%d,"publish":true}
+                """.formatted(product, periodCode, inputSetId, adjustment, expected);
     }
 }

@@ -18,13 +18,15 @@ class SupplyAccountServiceTest {
     @Test
     void translatesFormulaConstructionFailureAtTheRepositoryBoundaryToTheStableContract() {
         SupplyAccountRepository repository = mock(SupplyAccountRepository.class);
-        when(repository.loadCalculationMaterial("set-1", "CORN", "230200", "2026/27"))
+        when(repository.findTemporalContext("2026-Q3"))
+                .thenReturn(new SupplyTemporalContext("2026-Q3", 2026, "Q3", "QUARTER", "2026/27"));
+        when(repository.loadCalculationMaterial("set-1", "CORN", "230200", "2026-Q3"))
                 .thenThrow(new IllegalArgumentException("Invalid supply formula result"));
         CurrentActor actor = () -> Optional.of(new AuthenticatedActor("reviewer"));
         SupplyAccountService service = new SupplyAccountService(repository, actor,
                 Clock.fixed(Instant.parse("2026-08-03T00:00:00Z"), ZoneOffset.UTC), mock(ObjectMapper.class));
         SupplyRunCommand command = new SupplyRunCommand(
-                "CORN", "230200", "2026/27", "set-1", new BigDecimal("1.000"), "调整建议", 0, true);
+                "CORN", "230200", "2026-Q3", "set-1", new BigDecimal("1.000"), "调整建议", 0, true);
 
         assertThatThrownBy(() -> service.run(command))
                 .isInstanceOf(ServerContractException.class)

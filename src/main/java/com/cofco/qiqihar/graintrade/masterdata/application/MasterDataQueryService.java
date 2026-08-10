@@ -7,6 +7,7 @@ import com.cofco.qiqihar.graintrade.masterdata.domain.ObjectType;
 import com.cofco.qiqihar.graintrade.masterdata.domain.PageDefinition;
 import com.cofco.qiqihar.graintrade.masterdata.domain.Product;
 import com.cofco.qiqihar.graintrade.masterdata.domain.Region;
+import com.cofco.qiqihar.graintrade.masterdata.domain.SupplySurveyPeriod;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import java.util.List;
 import org.springframework.stereotype.Service;
@@ -60,6 +61,11 @@ public class MasterDataQueryService implements MasterDataQuery {
     @Override
     public List<BusinessPeriod> businessPeriods() {
         return repository.findBusinessPeriods();
+    }
+
+    @Override
+    public List<SupplySurveyPeriod> supplySurveyPeriods() {
+        return repository.findSupplySurveyPeriods();
     }
 
     @Override

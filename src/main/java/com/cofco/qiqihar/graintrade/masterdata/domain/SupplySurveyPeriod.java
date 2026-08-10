@@ -1,12 +1,11 @@
 package com.cofco.qiqihar.graintrade.masterdata.domain;
 
-import java.time.LocalDate;
-
-public record BusinessPeriod(
+public record SupplySurveyPeriod(
         String code,
         String name,
-        LocalDate startsOn,
-        LocalDate endsOn,
+        int surveyYear,
+        String surveyQuarter,
+        String precision,
         String marketingYearCode,
         String marketingYearName) {
 }

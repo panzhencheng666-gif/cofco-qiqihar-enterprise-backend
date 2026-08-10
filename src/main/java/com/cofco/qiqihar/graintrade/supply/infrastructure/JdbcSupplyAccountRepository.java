@@ -23,6 +23,7 @@ import com.cofco.qiqihar.graintrade.supply.application.SupplyRunPersistence;
 import com.cofco.qiqihar.graintrade.supply.application.SupplySourceReleaseMaterial;
 import com.cofco.qiqihar.graintrade.supply.application.SupplySourceReleasePersistence;
 import com.cofco.qiqihar.graintrade.supply.application.SupplySourceView;
+import com.cofco.qiqihar.graintrade.supply.application.SupplyTemporalContext;
 import com.cofco.qiqihar.graintrade.supply.application.UpstreamSourceReleaseCommand;
 import com.cofco.qiqihar.graintrade.supply.domain.SupplyAccountCalculation;
 import com.cofco.qiqihar.graintrade.supply.domain.SupplyAccountCalculator;
@@ -54,12 +55,28 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
     }
 
     @Override
+    public SupplyTemporalContext findTemporalContext(String periodCode) {
+        return jdbc.sql("""
+                SELECT code,survey_year,survey_quarter,precision,marketing_year_code
+                FROM platform.supply_survey_period
+                WHERE code=:period
+                   OR (marketing_year_code=:period AND precision='YEAR')
+                ORDER BY CASE WHEN code=:period THEN 0 ELSE 1 END
+                """).param("period", periodCode).query((row, index) -> new SupplyTemporalContext(
+                        row.getString("code"), row.getInt("survey_year"), row.getString("survey_quarter"),
+                        row.getString("precision"), row.getString("marketing_year_code")))
+                .optional().orElse(null);
+    }
+
+    @Override
     public List<SupplyAccountView> find(
-            String product, String region, String year, String state, Integer resultVersion,
+            String product, String region, String period, String state, Integer resultVersion,
             Set<String> authorizedRegionCodes) {
         StringBuilder sql = new StringBuilder("""
-                SELECT r.calculation_run_id::text id,r.product_code,r.region_code,r.marketing_year,
+                SELECT r.calculation_run_id::text id,r.product_code,r.region_code,r.period_code,
+                  r.survey_year,r.survey_quarter,r.period_precision,r.marketing_year,
                   r.result_state,r.validation_codes,r.balanced,r.calculation_checksum,r.decision_version,
+                  r.temporal_governance_state,
                   r.total_supply,r.total_use,r.calculated_ending_inventory,r.approved_adjustment,
                   r.adopted_ending_inventory,r.surveyed_ending_inventory,r.inventory_reconciliation_difference,
                   r.adjustment_reason_snapshot,r.adjustment_actor_snapshot,r.adjustment_decided_at_snapshot,
@@ -70,16 +87,27 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                   r.formula_snapshot->>'code' formula_code,(r.formula_snapshot->>'version')::integer formula_version,
                   r.formula_snapshot->>'name' formula_name,(r.formula_snapshot->>'precision')::integer formula_precision,
                   (r.formula_snapshot->>'scale')::integer formula_scale,r.formula_snapshot->>'roundingMode' rounding_mode,
-                  r.formula_snapshot->>'tolerance' tolerance,rv.version_no
+                  r.formula_snapshot->>'tolerance' tolerance,rv.version_no,
+                  previous_version.version_no supersedes_version_no
                 FROM supply.calculation_run r
                 JOIN supply.result_version rv ON rv.calculation_run_id=r.calculation_run_id
+                LEFT JOIN supply.result_version previous_version
+                  ON previous_version.result_version_id=rv.supersedes_result_version_id
                 LEFT JOIN supply.source_adoption_set input_set ON input_set.input_set_id=r.input_set_id
-                WHERE r.product_code=:product AND r.region_code=:region AND r.marketing_year=:year
+                WHERE r.product_code=:product AND r.region_code=:region
                 """);
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("product", product);
         params.put("region", region);
-        params.put("year", year);
+        SupplyTemporalContext selectedPeriod = findTemporalContext(period);
+        if (selectedPeriod == null) return List.of();
+        if (selectedPeriod.periodPrecision().equals("YEAR")) {
+            sql.append(" AND r.survey_year=:surveyYear");
+            params.put("surveyYear", selectedPeriod.surveyYear());
+        } else {
+            sql.append(" AND r.period_code=:period");
+            params.put("period", period);
+        }
         if (!authorizedRegionCodes.contains("*")) {
             if (authorizedRegionCodes.isEmpty()) sql.append(" AND 1=0");
             else {
@@ -95,11 +123,14 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
             sql.append(" AND rv.version_no=:resultVersion");
             params.put("resultVersion", resultVersion);
         }
-        sql.append(" ORDER BY rv.version_no DESC");
+        sql.append(" ORDER BY r.survey_quarter NULLS FIRST,rv.version_no DESC");
         List<Header> headers = jdbc.sql(sql.toString()).params(params).query((row, index) -> new Header(
                 row.getString("id"), row.getString("product_code"), row.getString("region_code"),
-                row.getString("marketing_year"), row.getInt("version_no"), row.getString("calculation_checksum"), row.getLong("decision_version"),
-                row.getString("result_state"), strings(row.getArray("validation_codes")),
+                row.getString("period_code"), row.getInt("survey_year"), row.getString("survey_quarter"),
+                row.getString("period_precision"), row.getString("marketing_year"), row.getInt("version_no"),
+                row.getObject("supersedes_version_no", Integer.class), row.getString("calculation_checksum"),
+                row.getLong("decision_version"), row.getString("result_state"),
+                row.getString("temporal_governance_state"), strings(row.getArray("validation_codes")),
                 Boolean.TRUE.equals(row.getObject("balanced", Boolean.class)), plain(row.getBigDecimal("total_supply")),
                 plain(row.getBigDecimal("total_use")), plain(row.getBigDecimal("calculated_ending_inventory")),
                 plain(row.getBigDecimal("approved_adjustment")), plain(row.getBigDecimal("adopted_ending_inventory")),
@@ -119,9 +150,11 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
 
     @Override
     public SupplyInputWorkspaceView loadInputWorkspace(
-            String product, String region, String year, Set<String> authorizedRegionCodes) {
+            String product, String region, String period, Set<String> authorizedRegionCodes) {
         if (!authorizedRegionCodes.contains("*") && !authorizedRegionCodes.contains(region)) return null;
         if (!contextExists(product, region)) return null;
+        SupplyTemporalContext temporalContext = findTemporalContext(period);
+        if (temporalContext == null) return null;
 
         InputWorkspaceState state = jdbc.sql("""
                 SELECT COALESCE(max(adoption_set.version_no),0) input_set_version,
@@ -129,11 +162,11 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                     FILTER (WHERE adoption_set.input_set_id IS NOT NULL))[1] latest_input_set_id,
                   COALESCE((SELECT adjustment.version FROM supply.approved_adjustment adjustment
                     WHERE adjustment.product_code=:product AND adjustment.region_code=:region
-                      AND adjustment.marketing_year=:year),0) decision_version
+                      AND adjustment.period_code=:period ORDER BY adjustment.version DESC LIMIT 1),0) decision_version
                 FROM supply.source_adoption_set adoption_set
                 WHERE adoption_set.product_code=:product AND adoption_set.region_code=:region
-                  AND adoption_set.marketing_year=:year AND NOT adoption_set.legacy
-                """).param("product", product).param("region", region).param("year", year)
+                  AND adoption_set.period_code=:period AND NOT adoption_set.legacy
+                """).param("product", product).param("region", region).param("period", period)
                 .query((row, index) -> new InputWorkspaceState(
                         row.getLong("input_set_version"), row.getString("latest_input_set_id"),
                         row.getLong("decision_version"))).single();
@@ -148,10 +181,10 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                   ON binding.source_release_id=release.source_release_id
                 JOIN supply.account_input_role role ON role.role_code=binding.role_code
                 WHERE release.product_code=:product AND release.region_code=:region
-                  AND release.marketing_year=:year AND release.approval_state='APPROVED'
+                  AND release.period_code=:period AND release.approval_state='APPROVED'
                   AND binding.mapping_id IS NOT NULL
                 ORDER BY role.sort_order,release.approved_at DESC,release.source_release_id
-                """).param("product", product).param("region", region).param("year", year)
+                """).param("product", product).param("region", region).param("period", period)
                 .query((row, index) -> new WorkspaceReleaseRow(
                         row.getString("role_code"),
                         new SupplyInputWorkspaceView.Release(
@@ -170,18 +203,18 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                       AND mapping.source_domain='MANUAL' AND mapping.active) manual_allowed,
                   COALESCE((SELECT max(decision.version) FROM supply.manual_input_decision decision
                     WHERE decision.product_code=:product AND decision.region_code=:region
-                      AND decision.marketing_year=:year AND decision.role_code=role.role_code),0)
+                      AND decision.period_code=:period AND decision.role_code=role.role_code),0)
                     manual_decision_version,
                   (SELECT item.source_release_id::text
                     FROM supply.source_adoption_set adoption_set
                     JOIN supply.source_adoption_set_item item
                       ON item.input_set_id=adoption_set.input_set_id AND item.role_code=role.role_code
                     WHERE adoption_set.product_code=:product AND adoption_set.region_code=:region
-                      AND adoption_set.marketing_year=:year AND NOT adoption_set.legacy
+                      AND adoption_set.period_code=:period AND NOT adoption_set.legacy
                     ORDER BY adoption_set.version_no DESC LIMIT 1) selected_release_id
                 FROM supply.account_input_role role
                 ORDER BY role.sort_order
-                """).param("product", product).param("region", region).param("year", year)
+                """).param("product", product).param("region", region).param("period", period)
                 .query((row, index) -> new SupplyInputWorkspaceView.Role(
                         row.getString("role_code"), row.getString("label"), row.getString("group_code"),
                         row.getBoolean("required"), row.getInt("sort_order"), row.getBoolean("manual_allowed"),
@@ -190,19 +223,21 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                         List.copyOf(releases.getOrDefault(row.getString("role_code"), List.of()))))
                 .list();
 
-        return new SupplyInputWorkspaceView(product, region, year, state.inputSetVersion(),
+        return new SupplyInputWorkspaceView(product, region, period, temporalContext.surveyYear(),
+                temporalContext.surveyQuarter(), temporalContext.periodPrecision(), temporalContext.marketingYear(),
+                state.inputSetVersion(),
                 state.latestInputSetId(), state.decisionVersion(), roles);
     }
 
     @Override
-    public void lockCalculationContext(String product, String region, String year) {
+    public void lockCalculationContext(String product, String region, String period) {
         requireContext(product, region);
-        lockContext(product, region, year);
+        lockContext(product, region, period);
     }
 
     @Override
     public SupplyCalculationMaterial loadCalculationMaterial(
-            String inputSetId, String product, String region, String year) {
+            String inputSetId, String product, String region, String period) {
         long formulaId = jdbc.sql("""
                 SELECT formula_version_id FROM supply.formula_version
                 WHERE active ORDER BY version_no DESC LIMIT 1
@@ -211,12 +246,13 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
         String formulaName = jdbc.sql("SELECT name FROM supply.formula_version WHERE formula_version_id=:id")
                 .param("id", formulaId).query(String.class).single();
         InputSetHeader inputSet = jdbc.sql("""
-                SELECT input_set_id::text,version_no,product_code,region_code,marketing_year,reason
+                SELECT input_set_id::text,version_no,product_code,region_code,period_code,marketing_year,reason
                 FROM supply.source_adoption_set WHERE input_set_id::text=:id AND NOT legacy
-                  AND product_code=:product AND region_code=:region AND marketing_year=:year
-                """).param("id", inputSetId).param("product", product).param("region", region).param("year", year)
+                  AND product_code=:product AND region_code=:region AND period_code=:period
+                """).param("id", inputSetId).param("product", product).param("region", region).param("period", period)
                 .query((row, index) -> new InputSetHeader(row.getString("input_set_id"), row.getLong("version_no"),
-                        row.getString("product_code"), row.getString("region_code"), row.getString("marketing_year"),
+                        row.getString("product_code"), row.getString("region_code"), row.getString("period_code"),
+                        row.getString("marketing_year"),
                         row.getString("reason"))).optional().orElse(null);
         if (inputSet == null) return null;
         List<SupplyCalculationMaterial.Source> sources = jdbc.sql("""
@@ -236,22 +272,24 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                         row.getString("role_code"), row.getString("label"), row.getString("group_code"),
                         row.getInt("sort_order"), row.getString("source_field_code"),
                         row.getBigDecimal("source_value"), row.getString("unit_code"))).list();
-        DecisionState current = decisionState(product, region, year);
+        DecisionState current = decisionState(product, region, period);
         return new SupplyCalculationMaterial(
                 new SupplyCalculationMaterial.FormulaDefinition(formulaId, formulaName, formula),
                 new SupplyCalculationMaterial.InputSet(inputSet.id, inputSet.version, inputSet.product,
-                        inputSet.region, inputSet.year, inputSet.reason, sources),
+                        inputSet.region, inputSet.period, inputSet.year, inputSet.reason, sources),
                 new SupplyCalculationMaterial.DecisionState(current.exists, current.version),
-                nextResultVersion(product, region, year));
+                nextResultVersion(product, region, period));
     }
 
     @Override
     public void persistFormalDecision(
             SupplyRunCommand command, SupplyCalculationMaterial material, String actor, Instant now) {
         OffsetDateTime timestamp = OffsetDateTime.ofInstant(now, ZoneOffset.UTC);
+        long nextDecisionVersion = material.decision().exists() ? material.decision().version() + 1 : 0;
         material.inputSet().sources().forEach(source -> upsertDecision(command, material.inputSet().reason(),
-                source.releaseId(), source.roleCode(), source.accountValue(), actor, timestamp));
-        upsertAdjustment(command, actor, timestamp);
+                source.releaseId(), source.roleCode(), source.accountValue(), actor, timestamp,
+                material.inputSet().marketingYear(), nextDecisionVersion));
+        upsertAdjustment(command, actor, timestamp, material.inputSet().marketingYear(), nextDecisionVersion);
     }
 
     @Override
@@ -261,14 +299,25 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
         OffsetDateTime timestamp = OffsetDateTime.ofInstant(run.occurredAt(), ZoneOffset.UTC);
         insertRun(runId, run, timestamp);
         jdbc.sql("""
-                INSERT INTO supply.result_version(result_version_id,calculation_run_id,version_no,published_by,published_at)
-                VALUES(CAST(:result AS uuid),CAST(:run AS uuid),:version,:publisher,:publishedAt)
+                INSERT INTO supply.result_version(result_version_id,calculation_run_id,version_no,published_by,published_at,
+                  product_code,region_code,marketing_year,period_code,result_state,temporal_governance_state,
+                  supersedes_result_version_id)
+                VALUES(CAST(:result AS uuid),CAST(:run AS uuid),:version,:publisher,:publishedAt,
+                  :product,:region,:year,:period,:state,'CONFIRMED',(
+                    SELECT previous.result_version_id FROM supply.result_version previous
+                    WHERE previous.product_code=:product AND previous.region_code=:region
+                      AND previous.period_code=:period ORDER BY previous.version_no DESC LIMIT 1))
                 """).param("result", UUID.randomUUID().toString()).param("run", runId)
-                .param("version", resultVersion).param("publisher", run.resultState().equals("FORMAL") ? run.actor() : null)
-                .param("publishedAt", run.resultState().equals("FORMAL") ? timestamp : null).update();
+                .param("version", resultVersion).param("publisher", run.resultState().equals("PUBLISHED") ? run.actor() : null)
+                .param("publishedAt", run.resultState().equals("PUBLISHED") ? timestamp : null)
+                .param("product", run.productCode()).param("region", run.regionCode())
+                .param("year", run.temporalContext().marketingYear()).param("period", run.temporalContext().periodCode())
+                .param("state", run.resultState()).update();
         run.material().inputSet().sources().forEach(source -> insertSourceSnapshot(
                 runId, source, run.material().inputSet().reason()));
-        return find(run.productCode(), run.regionCode(), run.marketingYear(), null, resultVersion).getFirst();
+        return find(run.productCode(), run.regionCode(), run.temporalContext().periodCode(), null, resultVersion)
+                .stream().filter(view -> view.periodCode().equals(run.temporalContext().periodCode()))
+                .findFirst().orElseThrow();
     }
 
     @Override
@@ -301,14 +350,17 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
             releaseId = UUID.randomUUID().toString();
             jdbc.sql("""
                     INSERT INTO supply.source_release(source_release_id,source_domain,source_record_id,source_version,
-                      approval_state,approved_at,quality_state,product_code,region_code,marketing_year,immutable_digest)
-                    VALUES(CAST(:id AS uuid),:domain,:record,:version,'APPROVED',:approvedAt,:quality,:product,:region,:year,:digest)
+                      approval_state,approved_at,quality_state,product_code,region_code,marketing_year,immutable_digest,
+                      period_code,temporal_governance_state)
+                    VALUES(CAST(:id AS uuid),:domain,:record,:version,'APPROVED',:approvedAt,:quality,:product,:region,
+                      :year,:digest,:period,'CONFIRMED')
                     """).param("id", releaseId).param("domain", command.sourceDomain())
                     .param("record", command.sourceRecordId()).param("version", command.sourceVersion())
                     .param("approvedAt", OffsetDateTime.ofInstant(release.occurredAt(), ZoneOffset.UTC))
                     .param("quality", command.qualityState())
                     .param("product", command.productCode()).param("region", command.regionCode())
-                    .param("year", command.marketingYear()).param("digest", release.immutableDigest()).update();
+                    .param("year", release.temporalContext().marketingYear()).param("digest", release.immutableDigest())
+                    .param("period", command.periodCode()).update();
         }
         jdbc.sql("""
                 INSERT INTO supply.source_release_binding(source_release_id,role_code,source_field_code,source_value,unit_code,
@@ -330,13 +382,13 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
         boolean contextExists = contextExists(command.productCode(), command.regionCode());
         SupplySourceReleaseMaterial.SourceMapping mapping = sourceMapping(command.productCode(), command.roleCode(), "MANUAL",
                 "MANUAL_APPROVED_VALUE", "万吨", null);
-        lockContext(command.productCode(), command.regionCode(), command.marketingYear() + "|" + command.roleCode());
+        lockContext(command.productCode(), command.regionCode(), command.periodCode() + "|" + command.roleCode());
         ManualState state = jdbc.sql("""
                 SELECT version FROM supply.manual_input_decision
-                WHERE product_code=:product AND region_code=:region AND marketing_year=:year AND role_code=:role
+                WHERE product_code=:product AND region_code=:region AND period_code=:period AND role_code=:role
                 ORDER BY version DESC LIMIT 1
                 """).param("product", command.productCode()).param("region", command.regionCode())
-                .param("year", command.marketingYear()).param("role", command.roleCode())
+                .param("period", command.periodCode()).param("role", command.roleCode())
                 .query(Long.class).optional().map(version -> new ManualState(true, version)).orElse(new ManualState(false, 0));
         return new SupplyManualDecisionMaterial(contextExists, mapping, state.exists, state.version);
     }
@@ -349,20 +401,25 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
         OffsetDateTime timestamp = OffsetDateTime.ofInstant(decision.occurredAt(), ZoneOffset.UTC);
         jdbc.sql("""
                 INSERT INTO supply.manual_input_decision(manual_input_id,product_code,region_code,marketing_year,role_code,
-                  value,unit_code,reason,status_code,decided_by,approved_at,version)
-                VALUES(CAST(:id AS uuid),:product,:region,:year,:role,:value,:unit,:reason,'APPROVED',:actor,:approvedAt,:version)
+                  value,unit_code,reason,status_code,decided_by,approved_at,version,period_code,temporal_governance_state)
+                VALUES(CAST(:id AS uuid),:product,:region,:year,:role,:value,:unit,:reason,'APPROVED',:actor,
+                  :approvedAt,:version,:period,'CONFIRMED')
                 """).param("id", manualId).param("product", command.productCode()).param("region", command.regionCode())
-                .param("year", command.marketingYear()).param("role", command.roleCode()).param("value", command.value())
+                .param("year", decision.temporalContext().marketingYear()).param("role", command.roleCode())
+                .param("value", command.value()).param("period", command.periodCode())
                 .param("unit", mapping.sourceUnitCode()).param("reason", command.reason()).param("actor", decision.actor())
                 .param("approvedAt", timestamp).param("version", decision.version()).update();
         String releaseId = UUID.randomUUID().toString();
         jdbc.sql("""
                 INSERT INTO supply.source_release(source_release_id,source_domain,source_record_id,source_version,
-                  approval_state,approved_at,quality_state,product_code,region_code,marketing_year,immutable_digest)
-                VALUES(CAST(:release AS uuid),'MANUAL',:manual,:version,'APPROVED',:approvedAt,'PASSED',:product,:region,:year,:digest)
+                  approval_state,approved_at,quality_state,product_code,region_code,marketing_year,immutable_digest,
+                  period_code,temporal_governance_state)
+                VALUES(CAST(:release AS uuid),'MANUAL',:manual,:version,'APPROVED',:approvedAt,'PASSED',:product,:region,
+                  :year,:digest,:period,'CONFIRMED')
                 """).param("release", releaseId).param("manual", manualId).param("version", decision.version())
                 .param("approvedAt", timestamp).param("product", command.productCode()).param("region", command.regionCode())
-                .param("year", command.marketingYear()).param("digest", decision.immutableDigest()).update();
+                .param("year", decision.temporalContext().marketingYear()).param("digest", decision.immutableDigest())
+                .param("period", command.periodCode()).update();
         jdbc.sql("""
                 INSERT INTO supply.source_release_binding(source_release_id,role_code,source_field_code,source_value,unit_code,manual_input_id,
                   mapping_id,mapping_version,source_raw_value,source_unit_code,conversion_rule_snapshot,conversion_factor_snapshot)
@@ -379,12 +436,12 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
     @Override
     public SupplyInputSetMaterial loadInputSetMaterial(SupplyInputSetCommand command) {
         boolean contextExists = contextExists(command.productCode(), command.regionCode());
-        lockContext(command.productCode(), command.regionCode(), command.marketingYear() + "|INPUT_SET");
+        lockContext(command.productCode(), command.regionCode(), command.periodCode() + "|INPUT_SET");
         long currentVersion = jdbc.sql("""
                 SELECT COALESCE(max(version_no),0) FROM supply.source_adoption_set
-                WHERE product_code=:product AND region_code=:region AND marketing_year=:year
+                WHERE product_code=:product AND region_code=:region AND period_code=:period
                 """).param("product", command.productCode()).param("region", command.regionCode())
-                .param("year", command.marketingYear()).query(Long.class).single();
+                .param("period", command.periodCode()).query(Long.class).single();
         List<String> requiredRoles = jdbc.sql("""
                 SELECT role_code FROM supply.account_input_role WHERE required
                 """).query(String.class).list();
@@ -402,11 +459,11 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                 JOIN supply.source_release_binding binding ON binding.source_release_id=release.source_release_id
                   AND binding.role_code=requested.role_code
                 WHERE release.product_code=:product AND release.region_code=:region
-                  AND release.marketing_year=:year AND release.approval_state='APPROVED'
+                  AND release.period_code=:period AND release.approval_state='APPROVED'
                   AND binding.mapping_id IS NOT NULL
                 """).param("roles", roles).param("releases", releases)
                 .param("product", command.productCode()).param("region", command.regionCode())
-                .param("year", command.marketingYear()).query((row, index) -> new SupplyInputSetMaterial.Source(
+                .param("period", command.periodCode()).query((row, index) -> new SupplyInputSetMaterial.Source(
                         row.getString("source_release_id"), row.getString("role_code"),
                         row.getString("source_domain"), row.getString("source_record_id"),
                         row.getLong("source_version"), row.getString("source_field_code"))).list();
@@ -420,10 +477,11 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
         OffsetDateTime timestamp = OffsetDateTime.ofInstant(inputSet.occurredAt(), ZoneOffset.UTC);
         jdbc.sql("""
                 INSERT INTO supply.source_adoption_set(input_set_id,version_no,product_code,region_code,
-                  marketing_year,reason,created_by,created_at)
-                VALUES(CAST(:id AS uuid),:version,:product,:region,:year,:reason,:actor,:now)
+                  marketing_year,reason,created_by,created_at,period_code,temporal_governance_state)
+                VALUES(CAST(:id AS uuid),:version,:product,:region,:year,:reason,:actor,:now,:period,'CONFIRMED')
                 """).param("id", id).param("version", inputSet.version()).param("product", command.productCode())
-                .param("region", command.regionCode()).param("year", command.marketingYear())
+                .param("region", command.regionCode()).param("year", inputSet.temporalContext().marketingYear())
+                .param("period", command.periodCode())
                 .param("reason", command.reason()).param("actor", inputSet.actor()).param("now", timestamp).update();
         inputSet.selectedSources().forEach(source -> jdbc.sql("""
                 INSERT INTO supply.source_adoption_set_item(input_set_id,role_code,source_release_id,
@@ -433,46 +491,42 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                 .param("domain", source.sourceDomain()).param("record", source.sourceRecordId())
                 .param("version", source.sourceVersion()).param("field", source.sourceFieldCode()).update());
         return new SupplyInputSetView(id, inputSet.version(), command.productCode(), command.regionCode(),
-                command.marketingYear());
+                command.periodCode(), inputSet.temporalContext().surveyYear(), inputSet.temporalContext().surveyQuarter(),
+                inputSet.temporalContext().periodPrecision(), inputSet.temporalContext().marketingYear());
     }
 
     private void upsertDecision(SupplyRunCommand command, String reason, String releaseId,
-            String role, BigDecimal value, String actor, OffsetDateTime now) {
-        int updated = jdbc.sql("""
+            String role, BigDecimal value, String actor, OffsetDateTime now,
+            String marketingYear, long version) {
+        jdbc.sql("""
                 INSERT INTO supply.adoption_decision(adoption_decision_id,product_code,region_code,marketing_year,
-                  role_code,source_release_id,adopted_value,reason,decided_by,decided_at,version)
-                VALUES(CAST(:id AS uuid),:product,:region,:year,:role,CAST(:release AS uuid),:value,:reason,:actor,:now,0)
-                ON CONFLICT(product_code,region_code,marketing_year,role_code) DO UPDATE
-                  SET source_release_id=excluded.source_release_id,adopted_value=excluded.adopted_value,
-                    reason=excluded.reason,decided_by=excluded.decided_by,decided_at=excluded.decided_at,
-                    version=supply.adoption_decision.version+1
-                  WHERE supply.adoption_decision.version=:expected
+                  role_code,source_release_id,adopted_value,reason,decided_by,decided_at,version,
+                  period_code,temporal_governance_state)
+                VALUES(CAST(:id AS uuid),:product,:region,:year,:role,CAST(:release AS uuid),:value,:reason,
+                  :actor,:now,:version,:period,'CONFIRMED')
                 """).param("id", UUID.randomUUID().toString()).param("product", command.productCode())
-                .param("region", command.regionCode()).param("year", command.marketingYear()).param("role", role)
+                .param("region", command.regionCode()).param("year", marketingYear).param("role", role)
                 .param("release", releaseId).param("value", value).param("reason", reason)
-                .param("actor", actor).param("now", now).param("expected", command.expectedDecisionVersion()).update();
-        if (updated == 0) conflict();
+                .param("actor", actor).param("now", now).param("version", version)
+                .param("period", command.periodCode()).update();
     }
 
-    private void upsertAdjustment(SupplyRunCommand command, String actor, OffsetDateTime now) {
-        int updated = jdbc.sql("""
+    private void upsertAdjustment(SupplyRunCommand command, String actor, OffsetDateTime now,
+            String marketingYear, long version) {
+        jdbc.sql("""
                 INSERT INTO supply.approved_adjustment(adjustment_id,product_code,region_code,marketing_year,
-                  value,reason,decided_by,decided_at,version)
-                VALUES(CAST(:id AS uuid),:product,:region,:year,:value,:reason,:actor,:now,0)
-                ON CONFLICT(product_code,region_code,marketing_year) DO UPDATE
-                  SET value=excluded.value,reason=excluded.reason,decided_by=excluded.decided_by,
-                    decided_at=excluded.decided_at,version=supply.approved_adjustment.version+1
-                  WHERE supply.approved_adjustment.version=:expected
+                  value,reason,decided_by,decided_at,version,period_code,temporal_governance_state)
+                VALUES(CAST(:id AS uuid),:product,:region,:year,:value,:reason,:actor,:now,:version,:period,'CONFIRMED')
                 """).param("id", UUID.randomUUID().toString()).param("product", command.productCode())
-                .param("region", command.regionCode()).param("year", command.marketingYear())
+                .param("region", command.regionCode()).param("year", marketingYear)
                 .param("value", command.adjustmentProposalValue()).param("reason", command.adjustmentProposalReason())
-                .param("actor", actor).param("now", now).param("expected", command.expectedDecisionVersion()).update();
-        if (updated == 0) conflict();
+                .param("actor", actor).param("now", now).param("version", version)
+                .param("period", command.periodCode()).update();
     }
 
     private void insertRun(String id, SupplyRunPersistence run, OffsetDateTime now) {
         SupplyAccountCalculation calculation = run.calculation();
-        boolean formal = run.resultState().equals("FORMAL");
+        boolean formal = run.resultState().equals("PUBLISHED");
         jdbc.sql("""
                 INSERT INTO supply.calculation_run(calculation_run_id,product_code,region_code,marketing_year,
                   formula_version_id,result_state,validation_codes,total_supply,total_use,calculated_ending_inventory,
@@ -480,14 +534,14 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                   inventory_reconciliation_difference,balanced,decision_version,adjustment_reason_snapshot,
                   adjustment_actor_snapshot,adjustment_decided_at_snapshot,created_by,created_at,input_set_id,
                   formula_snapshot,calculation_checksum,adjustment_proposal_value,adjustment_proposal_reason,adjustment_requested_by,
-                  adjustment_requested_at)
+                  adjustment_requested_at,period_code,temporal_governance_state)
                 VALUES(CAST(:id AS uuid),:product,:region,:year,:formula,:state,CAST(:errors AS text[]),:supply,
                   :use,:calculated,:adjustment,:adopted,:surveyed,:difference,:balanced,:decisionVersion,
                   :auditReason,:auditActor,:auditAt,:actor,:now,CAST(:inputSet AS uuid),
                   CAST(:formulaSnapshot AS jsonb),
-                  :checksum,:proposalValue,:proposalReason,:requestedBy,:requestedAt)
+                  :checksum,:proposalValue,:proposalReason,:requestedBy,:requestedAt,:period,'CONFIRMED')
                 """).param("id", id).param("product", run.productCode()).param("region", run.regionCode())
-                .param("year", run.marketingYear()).param("formula", run.material().formula().id())
+                .param("year", run.temporalContext().marketingYear()).param("formula", run.material().formula().id())
                 .param("state", run.resultState()).param("errors", run.validationCodes().toArray(String[]::new))
                 .param("supply", calculation == null ? null : calculation.totalSupply())
                 .param("use", calculation == null ? null : calculation.totalUse())
@@ -505,7 +559,8 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                 .param("checksum", run.calculationChecksum())
                 .param("proposalValue", formal ? null : run.proposalValue())
                 .param("proposalReason", formal ? null : run.proposalReason())
-                .param("requestedBy", formal ? null : run.actor()).param("requestedAt", formal ? null : now).update();
+                .param("requestedBy", formal ? null : run.actor()).param("requestedAt", formal ? null : now)
+                .param("period", run.temporalContext().periodCode()).update();
     }
 
     private void insertSourceSnapshot(String runId, SupplyCalculationMaterial.Source row, String reason) {
@@ -524,20 +579,20 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                 .param("group", row.groupCode()).param("sortOrder", row.sortOrder()).update();
     }
 
-    private int nextResultVersion(String product, String region, String year) {
+    private int nextResultVersion(String product, String region, String period) {
         return jdbc.sql("""
                 SELECT COALESCE(max(rv.version_no),0)+1 FROM supply.result_version rv
-                JOIN supply.calculation_run r ON r.calculation_run_id=rv.calculation_run_id
-                WHERE r.product_code=:product AND r.region_code=:region AND r.marketing_year=:year
+                WHERE rv.product_code=:product AND rv.region_code=:region AND rv.period_code=:period
                 """).param("product", product).param("region", region)
-                .param("year", year).query(Integer.class).single();
+                .param("period", period).query(Integer.class).single();
     }
 
-    private DecisionState decisionState(String product, String region, String year) {
+    private DecisionState decisionState(String product, String region, String period) {
         return jdbc.sql("""
                 SELECT version FROM supply.approved_adjustment
-                WHERE product_code=:product AND region_code=:region AND marketing_year=:year
-                """).param("product", product).param("region", region).param("year", year)
+                WHERE product_code=:product AND region_code=:region AND period_code=:period
+                ORDER BY version DESC LIMIT 1
+                """).param("product", product).param("region", region).param("period", period)
                 .query(Long.class).optional().map(version -> new DecisionState(true, version))
                 .orElse(new DecisionState(false, 0));
     }
@@ -581,10 +636,10 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
             boolean publishable = header.balanced && header.errors.isEmpty();
             String balanceReason = !header.errors.isEmpty() ? String.join(",", header.errors)
                     : header.balanced ? "WITHIN_TOLERANCE" : "OUTSIDE_BALANCE_TOLERANCE";
-            SupplyAdjustmentAuditView audit = header.state.equals("FORMAL") ? new SupplyAdjustmentAuditView(
+            SupplyAdjustmentAuditView audit = header.state.equals("PUBLISHED") ? new SupplyAdjustmentAuditView(
                     normalized(header.adjustment, header.formula), header.adjustmentReason, header.adjustmentActor,
                     header.adjustmentAt, header.decisionVersion) : null;
-            SupplyAdjustmentProposalView proposal = header.state.equals("FORMAL") ? null
+            SupplyAdjustmentProposalView proposal = header.state.equals("PUBLISHED") ? null
                     : new SupplyAdjustmentProposalView(normalized(header.proposalValue, header.formula), header.proposalReason,
                             header.proposalActor, header.proposalAt);
             List<SupplyFormulaView.Expression> runExpressions = List.copyOf(
@@ -596,8 +651,10 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                     header.formula.name, header.formula.precision, header.formula.scale,
                     header.formula.roundingMode, normalized(header.formula.tolerance, header.formula),
                     difference.resultCode(), difference.label(), difference.expression(), runExpressions);
-            return new SupplyAccountView(header.id, header.product, header.region, header.year,
-                    header.resultVersion, header.calculationChecksum, header.decisionVersion, header.state, header.errors,
+            return new SupplyAccountView(header.id, header.product, header.region, header.period,
+                    header.surveyYear, header.surveyQuarter, header.periodPrecision, header.year,
+                    header.resultVersion, header.supersedesResultVersion, header.calculationChecksum,
+                    header.decisionVersion, header.state, header.temporalGovernanceState, header.errors,
                     header.balanced, publishable, balanceReason, normalized(header.totalSupply, header.formula),
                     normalized(header.totalUse, header.formula), normalized(header.calculated, header.formula),
                     normalized(header.adjustment, header.formula), normalized(header.adopted, header.formula),
@@ -642,22 +699,35 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
     private SupplySourceReleaseMaterial.UpstreamFact upstreamFact(UpstreamSourceReleaseCommand command) {
         String sql = switch (command.sourceDomain()) {
             case "PRODUCTION" -> """
-                    SELECT estimated_output_kg value,'公斤' unit_code,NULL::varchar direction_code
-                    FROM production.production_record
-                    WHERE record_id=:record AND version=:version AND product_code=:product AND region_code=:region AND status_code='APPROVED'
+                    SELECT record.estimated_output_kg value,'公斤' unit_code,NULL::varchar direction_code
+                    FROM production.production_record record
+                    JOIN platform.supply_survey_period period ON period.code=:period
+                    WHERE record.record_id=:record AND record.version=:version AND record.product_code=:product
+                      AND record.region_code=:region AND record.status_code='APPROVED'
+                      AND EXTRACT(YEAR FROM record.survey_date)=period.survey_year
+                      AND (period.survey_quarter IS NULL
+                        OR period.survey_quarter='Q'||EXTRACT(QUARTER FROM record.survey_date)::integer::text)
                     """;
             case "LOGISTICS" -> """
                     SELECT fact.value,fact.unit_code,event.direction_code
                     FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id
+                    JOIN platform.business_period source_period ON source_period.code=event.monitoring_period_code
+                    JOIN platform.supply_survey_period period ON period.code=:period
                     WHERE event.event_id::text=:record AND event.version=:version AND event.product_code=:product
                       AND event.status_code='APPROVED' AND :region IN(event.origin_region_code,event.destination_region_code)
                       AND fact.fact_code=:field
+                      AND EXTRACT(YEAR FROM source_period.starts_on)=period.survey_year
+                      AND EXTRACT(YEAR FROM source_period.ends_on)=period.survey_year
+                      AND (period.survey_quarter IS NULL OR (
+                        period.survey_quarter='Q'||EXTRACT(QUARTER FROM source_period.starts_on)::integer::text
+                        AND period.survey_quarter='Q'||EXTRACT(QUARTER FROM source_period.ends_on)::integer::text))
                     """;
             default -> null;
         };
         if (sql == null) return null;
         return jdbc.sql(sql).param("record", command.sourceRecordId()).param("version", command.sourceVersion())
                 .param("product", command.productCode()).param("region", command.regionCode())
+                .param("period", command.periodCode())
                 .param("field", command.sourceFieldCode())
                 .query((row, index) -> new SupplySourceReleaseMaterial.UpstreamFact(
                         row.getBigDecimal("value"), row.getString("unit_code"), row.getString("direction_code")))
@@ -709,10 +779,10 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
     private boolean releaseMatches(String releaseId, UpstreamSourceReleaseCommand command) {
         return Boolean.TRUE.equals(jdbc.sql("""
                 SELECT EXISTS(SELECT 1 FROM supply.source_release WHERE source_release_id::text=:id
-                  AND product_code=:product AND region_code=:region AND marketing_year=:year
+                  AND product_code=:product AND region_code=:region AND period_code=:period
                   AND quality_state=:quality AND approval_state='APPROVED')
                 """).param("id", releaseId).param("product", command.productCode()).param("region", command.regionCode())
-                .param("year", command.marketingYear()).param("quality", command.qualityState()).query(Boolean.class).single());
+                .param("period", command.periodCode()).param("quality", command.qualityState()).query(Boolean.class).single());
     }
 
     private void requireContext(String product, String region) {
@@ -782,11 +852,13 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
     private record InputWorkspaceState(long inputSetVersion, String latestInputSetId, long decisionVersion) {}
     private record WorkspaceReleaseRow(String roleCode, SupplyInputWorkspaceView.Release release) {}
     private record InputSetHeader(String id, long version, String product, String region,
-                                  String year, String reason) {}
+                                  String period, String year, String reason) {}
     private record FormulaHeader(String code, int version, String name, int precision, int scale,
                                  String roundingMode, String tolerance) {}
-    private record Header(String id, String product, String region, String year, int resultVersion,
-                          String calculationChecksum, long decisionVersion, String state, List<String> errors, boolean balanced,
+    private record Header(String id, String product, String region, String period, int surveyYear,
+                          String surveyQuarter, String periodPrecision, String year, int resultVersion,
+                          Integer supersedesResultVersion, String calculationChecksum, long decisionVersion,
+                          String state, String temporalGovernanceState, List<String> errors, boolean balanced,
                           String totalSupply, String totalUse, String calculated, String adjustment,
                           String adopted, String surveyed, String difference, String adjustmentReason,
                           String adjustmentActor, String adjustmentAt, String proposalValue,

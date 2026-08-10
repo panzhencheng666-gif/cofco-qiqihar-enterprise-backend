@@ -27,9 +27,9 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 public class SupplyAccountController {
     private static final Set<String> ACCOUNT_QUERY_PARAMETERS =
-            Set.of("productCode", "regionCode", "marketingYear", "resultState", "version");
+            Set.of("productCode", "regionCode", "periodCode", "marketingYear", "resultState", "version");
     private static final Set<String> WORKSPACE_QUERY_PARAMETERS =
-            Set.of("productCode", "regionCode", "marketingYear");
+            Set.of("productCode", "regionCode", "periodCode", "marketingYear");
 
     private final SupplyAccountService service;
 
@@ -46,7 +46,7 @@ public class SupplyAccountController {
         return new ApiResponse<>(service.list(
                 parsed.required("productCode"),
                 parsed.required("regionCode"),
-                parsed.required("marketingYear"),
+                canonicalPeriod(parsed.optional("periodCode"), parsed.optional("marketingYear")),
                 parsed.optional("resultState"),
                 version));
     }
@@ -59,47 +59,52 @@ public class SupplyAccountController {
         return new ApiResponse<>(service.inputWorkspace(
                 parsed.required("productCode"),
                 parsed.required("regionCode"),
-                parsed.required("marketingYear")));
+                canonicalPeriod(parsed.optional("periodCode"), parsed.optional("marketingYear"))));
     }
 
     @PostMapping("/api/v1/supply-accounts/runs")
     ApiResponse<SupplyAccountView> run(@RequestBody RunRequest request) {
-        return new ApiResponse<>(service.run(request.command()));
+        return new ApiResponse<>(service.run(request.command(
+                canonicalPeriod(request.periodCode(), request.marketingYear()))));
     }
 
     @PostMapping("/api/v1/supply-sources/releases")
     ApiResponse<SupplyReleaseView> release(@RequestBody ReleaseRequest request) {
-        return new ApiResponse<>(service.release(request.command()));
+        return new ApiResponse<>(service.release(request.command(
+                canonicalPeriod(request.periodCode(), request.marketingYear()))));
     }
 
     @PostMapping("/api/v1/supply-inputs/manual-decisions")
     ApiResponse<SupplyReleaseView> manual(@RequestBody ManualRequest request) {
-        return new ApiResponse<>(service.approveManual(request.command()));
+        return new ApiResponse<>(service.approveManual(request.command(
+                canonicalPeriod(request.periodCode(), request.marketingYear()))));
     }
 
     @PostMapping("/api/v1/supply-input-sets")
     ApiResponse<SupplyInputSetView> inputSet(@RequestBody InputSetRequest request) {
-        return new ApiResponse<>(service.createInputSet(request.command()));
+        return new ApiResponse<>(service.createInputSet(request.command(
+                canonicalPeriod(request.periodCode(), request.marketingYear()))));
     }
 
     record RunRequest(
             String productCode,
             String regionCode,
+            String periodCode,
             String marketingYear,
             String inputSetId,
             String adjustmentProposalValue,
             String adjustmentProposalReason,
             Long expectedDecisionVersion,
             Boolean publish) {
-        SupplyRunCommand command() {
+        SupplyRunCommand command(String canonicalPeriodCode) {
             if (expectedDecisionVersion == null || expectedDecisionVersion < 0 || publish == null
                     || adjustmentProposalValue == null) {
                 throw invalid();
             }
-            BoundedInput.requireText("INVALID_SUPPLY_ACCOUNT_REQUEST", productCode, regionCode, marketingYear,
+            BoundedInput.requireText("INVALID_SUPPLY_ACCOUNT_REQUEST", productCode, regionCode, canonicalPeriodCode,
                     inputSetId, adjustmentProposalReason);
             return new SupplyRunCommand(
-                    productCode, regionCode, marketingYear, inputSetId,
+                    productCode, regionCode, canonicalPeriodCode, inputSetId,
                     PlainDecimal.parse(adjustmentProposalValue, 14, 4, "INVALID_SUPPLY_ACCOUNT_REQUEST"),
                     adjustmentProposalReason,
                     expectedDecisionVersion, publish);
@@ -112,36 +117,38 @@ public class SupplyAccountController {
             Long sourceVersion,
             String productCode,
             String regionCode,
+            String periodCode,
             String marketingYear,
             String roleCode,
             String sourceFieldCode,
             String qualityState) {
-        UpstreamSourceReleaseCommand command() {
+        UpstreamSourceReleaseCommand command(String canonicalPeriodCode) {
             if (sourceVersion == null) throw invalid();
             BoundedInput.requireText("INVALID_SUPPLY_ACCOUNT_REQUEST", sourceDomain, sourceRecordId,
-                    productCode, regionCode, marketingYear, roleCode, sourceFieldCode, qualityState);
+                    productCode, regionCode, canonicalPeriodCode, roleCode, sourceFieldCode, qualityState);
             return new UpstreamSourceReleaseCommand(
                     sourceDomain, sourceRecordId, sourceVersion, productCode, regionCode,
-                    marketingYear, roleCode, sourceFieldCode, qualityState);
+                    canonicalPeriodCode, roleCode, sourceFieldCode, qualityState);
         }
     }
 
     record ManualRequest(
             String productCode,
             String regionCode,
+            String periodCode,
             String marketingYear,
             String roleCode,
             String value,
             String reason,
             Long expectedVersion) {
-        ManualInputDecisionCommand command() {
+        ManualInputDecisionCommand command(String canonicalPeriodCode) {
             if (expectedVersion == null || value == null) {
                 throw invalid();
             }
-            BoundedInput.requireText("INVALID_SUPPLY_ACCOUNT_REQUEST", productCode, regionCode, marketingYear,
+            BoundedInput.requireText("INVALID_SUPPLY_ACCOUNT_REQUEST", productCode, regionCode, canonicalPeriodCode,
                     roleCode, reason);
             return new ManualInputDecisionCommand(
-                    productCode, regionCode, marketingYear, roleCode,
+                    productCode, regionCode, canonicalPeriodCode, roleCode,
                     PlainDecimal.parse(value, 14, 4, "INVALID_SUPPLY_ACCOUNT_REQUEST"), reason, expectedVersion);
         }
     }
@@ -149,17 +156,19 @@ public class SupplyAccountController {
     record InputSetRequest(
             String productCode,
             String regionCode,
+            String periodCode,
             String marketingYear,
             String reason,
             Long expectedVersion,
             List<InputSetItemRequest> items) {
-        SupplyInputSetCommand command() {
+        SupplyInputSetCommand command(String canonicalPeriodCode) {
             if (expectedVersion == null) throw invalid();
             BoundedInput.requireAggregateSize("INVALID_SUPPLY_ACCOUNT_REQUEST", items);
-            BoundedInput.requireText("INVALID_SUPPLY_ACCOUNT_REQUEST", productCode, regionCode, marketingYear, reason);
+            BoundedInput.requireText(
+                    "INVALID_SUPPLY_ACCOUNT_REQUEST", productCode, regionCode, canonicalPeriodCode, reason);
             if (items != null) items.forEach(InputSetItemRequest::validate);
             return new SupplyInputSetCommand(
-                    productCode, regionCode, marketingYear, reason, expectedVersion,
+                    productCode, regionCode, canonicalPeriodCode, reason, expectedVersion,
                     items == null ? null : items.stream().map(InputSetItemRequest::item).toList());
         }
     }
@@ -180,6 +189,13 @@ public class SupplyAccountController {
         } catch (NumberFormatException exception) {
             throw invalid();
         }
+    }
+
+    private String canonicalPeriod(String periodCode, String marketingYear) {
+        boolean hasPeriodCode = periodCode != null && !periodCode.isBlank();
+        boolean hasMarketingYear = marketingYear != null && !marketingYear.isBlank();
+        if (hasPeriodCode == hasMarketingYear) throw invalid();
+        return service.resolvePeriodCode(hasPeriodCode ? periodCode : marketingYear);
     }
 
     private static ClientRequestException invalid() {

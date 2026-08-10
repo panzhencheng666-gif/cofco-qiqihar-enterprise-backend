@@ -50,8 +50,8 @@ class AnnualComparisonRestIntegrationTest {
                 INSERT INTO platform.security_user(subject_id,display_name,work_unit_code) VALUES (:reader,'年度同比读取员','ANNUAL_COMPARISON');
                 INSERT INTO platform.security_user_role(subject_id,role_code) VALUES (:reader,'SYSTEM_ADMIN');
                 INSERT INTO platform.security_user_region_scope(subject_id,region_code) VALUES (:reader,:region);
-                INSERT INTO platform.business_period(code,name,starts_on,ends_on,sort_order)
-                VALUES (:period,'年度同比截止期间',DATE '2026-07-01',DATE '2026-09-30',9940)
+                INSERT INTO platform.business_period(code,name,starts_on,ends_on,sort_order,marketing_year_code)
+                VALUES (:period,'年度同比截止期间',DATE '2026-07-01',DATE '2026-09-30',9940,'2026/27')
                 """).param("reader", READER).param("region", REGION).param("period", PERIOD).update();
         for (int year = 2023; year <= 2026; year++) {
             int area = year - 2014;

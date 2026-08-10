@@ -413,8 +413,8 @@ class FlywayMigrationReplayTest {
                 Statement statement = connection.createStatement()) {
             statement.execute("""
                     INSERT INTO platform.business_period
-                        (code, name, starts_on, ends_on, sort_order)
-                    VALUES ('WORK_SCOPE_PERIOD', '工作流约束期间', DATE '2026-08-01', DATE '2026-08-31', 9990)
+                        (code, name, starts_on, ends_on, sort_order, marketing_year_code)
+                    VALUES ('WORK_SCOPE_PERIOD', '工作流约束期间', DATE '2026-08-01', DATE '2026-08-31', 9990, '2026/27')
                     """);
             statement.execute("INSERT INTO workflow.workflow_node (code, label) VALUES ('WORK_SCOPE_NODE', '约束节点')");
             statement.execute("""
@@ -1025,10 +1025,10 @@ class FlywayMigrationReplayTest {
                 Statement statement = connection.createStatement()) {
             statement.execute("""
                     INSERT INTO platform.business_period
-                        (code, name, starts_on, ends_on, sort_order)
+                        (code, name, starts_on, ends_on, sort_order, marketing_year_code)
                     VALUES
-                        ('PERIOD_A', '约束测试期间A', DATE '2026-01-01', DATE '2026-06-30', 9001),
-                        ('PERIOD_B', '约束测试期间B', DATE '2026-07-01', DATE '2026-12-31', 9002)
+                        ('PERIOD_A', '约束测试期间A', DATE '2026-01-01', DATE '2026-06-30', 9001, '2026/27'),
+                        ('PERIOD_B', '约束测试期间B', DATE '2026-07-01', DATE '2026-12-31', 9002, '2026/27')
                     """);
             statement.execute("""
                     INSERT INTO platform.business_batch

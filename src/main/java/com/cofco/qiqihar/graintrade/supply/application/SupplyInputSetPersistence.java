@@ -5,6 +5,7 @@ import java.util.List;
 
 public record SupplyInputSetPersistence(
         SupplyInputSetCommand command,
+        SupplyTemporalContext temporalContext,
         long version,
         List<SupplyInputSetMaterial.Source> selectedSources,
         String actor,

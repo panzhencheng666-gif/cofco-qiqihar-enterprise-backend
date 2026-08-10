@@ -6,7 +6,7 @@ public record UpstreamSourceReleaseCommand(
         long sourceVersion,
         String productCode,
         String regionCode,
-        String marketingYear,
+        String periodCode,
         String roleCode,
         String sourceFieldCode,
         String qualityState) {}

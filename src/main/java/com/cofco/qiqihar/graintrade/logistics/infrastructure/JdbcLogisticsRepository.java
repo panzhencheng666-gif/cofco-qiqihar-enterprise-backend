@@ -12,6 +12,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -203,11 +204,17 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
     private List<LogisticsRecordView> findAll(List<String> ids) {
         if (ids.isEmpty()) return List.of();
         List<Header> headers = jdbc.sql("""
-                SELECT event_id::text id,product_code,status_code,return_reason,version
+                SELECT event_id::text id,product_code,status_code,return_reason,version,
+                  survey_year,survey_month,survey_period_precision,survey_period_governance_state,
+                  created_at,submitted_at
                 FROM logistics.route_event WHERE event_id::text IN (:ids)
                 """).param("ids", ids).query((row, index) -> new Header(row.getString("id"),
                         row.getString("product_code"), LogisticsStatus.valueOf(row.getString("status_code")),
-                        row.getString("return_reason"), row.getLong("version"))).list();
+                        row.getString("return_reason"), row.getLong("version"), row.getInt("survey_year"),
+                        (Integer) row.getObject("survey_month"), row.getString("survey_period_precision"),
+                        row.getString("survey_period_governance_state"),
+                        row.getObject("created_at", OffsetDateTime.class),
+                        row.getObject("submitted_at", OffsetDateTime.class))).list();
         Map<String, Map<String, String>> values = new LinkedHashMap<>();
         Map<String, Map<String, String>> displayValues = new LinkedHashMap<>();
         jdbc.sql("""
@@ -249,6 +256,26 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
                                     .computeIfAbsent(value.id, key -> new LinkedHashMap<>())
                                     .put(value.code, value.displayValue);
                         });
+        headers.forEach(header -> {
+            Map<String, String> raw = values.computeIfAbsent(header.id, key -> new LinkedHashMap<>());
+            Map<String, String> display = displayValues.computeIfAbsent(header.id, key -> new LinkedHashMap<>());
+            raw.put("LOG_SURVEY_YEAR", Integer.toString(header.surveyYear));
+            display.put("LOG_SURVEY_YEAR", Integer.toString(header.surveyYear));
+            if (header.surveyMonth != null) {
+                raw.put("LOG_SURVEY_MONTH", Integer.toString(header.surveyMonth));
+                display.put("LOG_SURVEY_MONTH", Integer.toString(header.surveyMonth));
+            }
+            raw.put("LOG_SURVEY_PERIOD_PRECISION", header.surveyPeriodPrecision);
+            display.put("LOG_SURVEY_PERIOD_PRECISION", header.surveyPeriodPrecision);
+            raw.put("LOG_SURVEY_PERIOD_GOVERNANCE_STATE", header.surveyPeriodGovernanceState);
+            display.put("LOG_SURVEY_PERIOD_GOVERNANCE_STATE", header.surveyPeriodGovernanceState);
+            OffsetDateTime fillingAt = header.submittedAt == null ? header.createdAt : header.submittedAt;
+            String fillingBasis = fillingTimeBasis(header.status, header.submittedAt);
+            raw.put("LOG_FILLING_AT", fillingAt.toString());
+            display.put("LOG_FILLING_AT", fillingAt.toString());
+            raw.put("LOG_FILLING_TIME_BASIS", fillingBasis);
+            display.put("LOG_FILLING_TIME_BASIS", fillingBasis);
+        });
         Map<String, List<String>> allowedActions = new LinkedHashMap<>();
         jdbc.sql("""
                 SELECT event.event_id::text id,policy.action_code
@@ -415,6 +442,7 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
 
     private static SqlFilter filter(
             String product, Map<String, String> filters, Set<String> authorizedRegionCodes) {
+        requireValidTemporalFilters(filters);
         StringBuilder sql = new StringBuilder("WHERE e.product_code=:product");
         Map<String, Object> params = new LinkedHashMap<>();
         params.put("product", product);
@@ -433,11 +461,60 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
                 case "periodCode" -> sql.append(" AND e.monitoring_period_code=:periodCode");
                 case "transportModeCode" -> sql.append(" AND e.transport_mode_code=:transportModeCode");
                 case "nodeTypeCode" -> sql.append(" AND EXISTS(SELECT 1 FROM logistics.logistics_node n WHERE n.node_code IN(e.origin_node_code,e.destination_node_code) AND n.node_type_code=:nodeTypeCode)");
+                case "surveyYear" -> {
+                    sql.append(" AND e.survey_year=:surveyYear");
+                    params.put("surveyYear", year(value));
+                }
+                case "surveyMonth" -> {
+                    sql.append(" AND e.survey_month=:surveyMonth");
+                    params.put("surveyMonth", month(value));
+                }
+                case "fillingDateFrom" -> {
+                    sql.append(" AND COALESCE(e.submitted_at,e.created_at)>=:fillingDateFrom");
+                    params.put("fillingDateFrom", startOfDay(value));
+                }
+                case "fillingDateTo" -> {
+                    sql.append(" AND COALESCE(e.submitted_at,e.created_at)<:fillingDateToExclusive");
+                    params.put("fillingDateToExclusive", startOfDay(value).plusDays(1));
+                }
                 default -> throw new IllegalArgumentException();
             }
-            params.put(key, value);
+            if (!Set.of("surveyYear", "surveyMonth", "fillingDateFrom", "fillingDateTo").contains(key)) {
+                params.put(key, value);
+            }
         });
         return new SqlFilter(sql.toString(), params);
+    }
+
+    private static void requireValidTemporalFilters(Map<String, String> filters) {
+        if (filters.containsKey("surveyMonth") && !filters.containsKey("surveyYear")) {
+            throw new IllegalArgumentException("Survey month requires survey year");
+        }
+        if (filters.containsKey("fillingDateFrom") && filters.containsKey("fillingDateTo")
+                && LocalDate.parse(filters.get("fillingDateFrom")).isAfter(LocalDate.parse(filters.get("fillingDateTo")))) {
+            throw new IllegalArgumentException("Filling date range is reversed");
+        }
+    }
+
+    private static int year(String value) {
+        int parsed = Integer.parseInt(value);
+        if (parsed < 1900 || parsed > 2200) throw new IllegalArgumentException("Invalid survey year");
+        return parsed;
+    }
+
+    private static int month(String value) {
+        int parsed = Integer.parseInt(value);
+        if (parsed < 1 || parsed > 12) throw new IllegalArgumentException("Invalid survey month");
+        return parsed;
+    }
+
+    private static OffsetDateTime startOfDay(String value) {
+        return LocalDate.parse(value).atStartOfDay(ZoneId.of("Asia/Shanghai")).toOffsetDateTime();
+    }
+
+    private static String fillingTimeBasis(LogisticsStatus status, OffsetDateTime submittedAt) {
+        if (submittedAt != null) return "SUBMITTED_AT";
+        return status == LogisticsStatus.DRAFT ? "DRAFT_CREATED_AT" : "CREATED_AT_NO_SUBMISSION_AUDIT";
     }
 
     private static boolean blank(String value) {
@@ -449,6 +526,9 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
                              boolean required, int order) {}
     private record OptionRow(String field, String value, String label, int order) {}
     private record ValueRow(String id, String code, String value, String displayValue) {}
-    private record Header(String id, String product, LogisticsStatus status, String reason, long version) {}
+    private record Header(String id, String product, LogisticsStatus status, String reason, long version,
+                          int surveyYear, Integer surveyMonth, String surveyPeriodPrecision,
+                          String surveyPeriodGovernanceState, OffsetDateTime createdAt,
+                          OffsetDateTime submittedAt) {}
     private record SqlFilter(String sql, Map<String, Object> params) {}
 }

@@ -82,8 +82,8 @@ class BusinessReadRegionIsolationIntegrationTest {
                 """).param("readerA", READER_A).param("readerB", READER_B)
                 .param("regionA", REGION_A).param("regionB", REGION_B).update();
         jdbc.sql("""
-                INSERT INTO platform.business_period(code,name,starts_on,ends_on,sort_order)
-                VALUES (:period,'区域隔离测试期间','2026-08-01','2026-08-31',9930)
+                INSERT INTO platform.business_period(code,name,starts_on,ends_on,sort_order,marketing_year_code)
+                VALUES (:period,'区域隔离测试期间','2026-08-01','2026-08-31',9930,'2026/27')
                 """).param("period", PERIOD).update();
 
         production(PRODUCTION_A, REGION_A, "2026-08-04", "10");

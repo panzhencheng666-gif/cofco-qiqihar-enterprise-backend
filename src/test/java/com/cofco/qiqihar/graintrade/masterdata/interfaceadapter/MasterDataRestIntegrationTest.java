@@ -44,7 +44,11 @@ class MasterDataRestIntegrationTest {
                 .andExpect(jsonPath("$.data[?(@.code == '2026-W32')].startsOn")
                         .value(contains("2026-08-03")))
                 .andExpect(jsonPath("$.data[?(@.code == '2026-W32')].endsOn")
-                        .value(contains("2026-08-09")));
+                        .value(contains("2026-08-09")))
+                .andExpect(jsonPath("$.data[?(@.code == '2026-W32')].marketingYearCode")
+                        .value(contains("2026/27")))
+                .andExpect(jsonPath("$.data[?(@.code == '2026-W32')].marketingYearName")
+                        .value(contains("2026/27营销年度")));
     }
 
     @Test
