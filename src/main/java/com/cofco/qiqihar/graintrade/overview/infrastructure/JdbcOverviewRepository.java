@@ -69,6 +69,10 @@ public class JdbcOverviewRepository implements OverviewRepository {
         return exists("SELECT EXISTS(SELECT 1 FROM platform.region WHERE code=:value)", regionCode);
     }
     @Override public boolean knownPeriod(String periodCode) { return exists("SELECT EXISTS(SELECT 1 FROM platform.business_period WHERE code=:value)", periodCode); }
+    @Override public Optional<Integer> surveyYearForPeriod(String periodCode) {
+        return jdbc.sql("SELECT EXTRACT(YEAR FROM ends_on)::integer FROM platform.business_period WHERE code=:period")
+                .param("period", periodCode).query(Integer.class).optional();
+    }
     @Override public boolean knownCultivar(String productCode, String cultivarCode) {
         return Boolean.TRUE.equals(jdbc.sql("""
                 SELECT EXISTS(SELECT 1 FROM platform.cultivar WHERE product_code=:product AND code=:cultivar)
@@ -333,7 +337,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
 
     @Override
     public List<AnnualComparisonPoint> annualComparison(String productCode, String cultivarCode, String regionCode,
-            String periodCode, AnnualComparisonDefinition definition, Set<String> authorizedRegionCodes) {
+            int surveyYear, AnnualComparisonDefinition definition, Set<String> authorizedRegionCodes) {
         String publication = "APPROVED_" + definition.sourceDomain() + "_RECORD:v";
         return jdbc.sql("""
                 WITH RECURSIVE monitoring_scope AS (
@@ -347,18 +351,16 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   SELECT child.code FROM platform.region child
                   JOIN scope parent ON child.parent_code=parent.code
                   JOIN monitoring_scope ON monitoring_scope.region_code=child.code
-                ), period AS (
-                  SELECT starts_on,ends_on FROM platform.business_period WHERE code=:period
                 ), comparison_year AS (
-                  SELECT (EXTRACT(YEAR FROM period.ends_on)::integer-year_offset)::text business_year,
-                    (period.starts_on-make_interval(years=>year_offset))::date starts_on,
-                    (period.ends_on-make_interval(years=>year_offset))::date ends_on
-                  FROM period CROSS JOIN generate_series(0,3) year_offset
+                  SELECT (:surveyYear-year_offset)::text business_year,
+                    make_date(:surveyYear-year_offset,1,1) starts_on,
+                    make_date(:surveyYear-year_offset,12,31) ends_on
+                  FROM generate_series(0,3) year_offset
                 ), approved AS (
-                  SELECT record.* FROM overview.approved_annual_metric_fact record,period
+                  SELECT record.* FROM overview.approved_annual_metric_fact record
                   WHERE record.metric_code=:metric AND record.product_code=:product
                     AND record.region_code IN (SELECT code FROM scope)
-                    AND record.occurred_on BETWEEN (period.starts_on-INTERVAL '3 years')::date AND period.ends_on
+                    AND record.occurred_on BETWEEN make_date(:surveyYear-3,1,1) AND make_date(:surveyYear,12,31)
                     AND (CAST(:cultivar AS varchar) IS NULL
                       OR record.cultivar_code=CAST(:cultivar AS varchar))
                 )
@@ -371,7 +373,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 GROUP BY comparison_year.business_year,comparison_year.ends_on
                 ORDER BY comparison_year.ends_on DESC
                 """)
-                .param("region", regionCode).param("period", periodCode).param("product", productCode)
+                .param("region", regionCode).param("surveyYear", surveyYear).param("product", productCode)
                 .param("metric", definition.code()).param("aggregation", definition.aggregationCode())
                 .param("cultivar", cultivarCode).param("unrestricted", authorizedRegionCodes.contains("*"))
                 .param("authorizedRegions", authorizedRegionCodes)

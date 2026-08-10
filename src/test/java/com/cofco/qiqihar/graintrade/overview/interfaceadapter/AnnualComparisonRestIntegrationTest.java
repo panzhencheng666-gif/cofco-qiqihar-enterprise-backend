@@ -149,7 +149,7 @@ class AnnualComparisonRestIntegrationTest {
                         .queryParam("indicatorCode", "PRODUCTION_CULTIVATED_AREA"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.unitCode").value("亩"))
-                .andExpect(jsonPath("$.data.methodologyVersion").value("OVERVIEW_APPROVED_FACTS_V2"))
+                .andExpect(jsonPath("$.data.methodologyVersion").value("OVERVIEW_APPROVED_FACTS_V3_SURVEY_YEAR"))
                 .andExpect(jsonPath("$.data.points.length()").value(4))
                 .andExpect(jsonPath("$.data.points[0].businessYear").value("2026"))
                 .andExpect(jsonPath("$.data.points[0].value").value(12.0))
@@ -174,6 +174,26 @@ class AnnualComparisonRestIntegrationTest {
                 .andExpect(jsonPath("$.data.unitCode").value("元/吨"))
                 .andExpect(jsonPath("$.data.points[0].value").value(26.0))
                 .andExpect(jsonPath("$.data.points[3].value").value(23.0));
+    }
+
+    @Test
+    void filtersAnnualAnalysisBySurveyYearAndIncludesTheWholeYear() throws Exception {
+        jdbc.sql("""
+                INSERT INTO production.production_record(record_id,product_code,object_type_code,region_code,cultivar_code,
+                  survey_date,reported_at,cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by)
+                VALUES ('annual-production-2026-year-end','SOYBEAN','FARMER',:region,'HEINONG_84',
+                  DATE '2026-12-31','2027-01-01T08:00:00+08:00',5,20,'APPROVED',:reader)
+                """).param("region", REGION).param("reader", READER).update();
+
+        mvc.perform(get("/api/v1/overview/annual-comparisons").principal(() -> READER)
+                        .queryParam("productCode", "SOYBEAN").queryParam("cultivarCode", "HEINONG_84")
+                        .queryParam("regionCode", REGION).queryParam("surveyYear", "2026")
+                        .queryParam("indicatorCode", "PRODUCTION_CULTIVATED_AREA"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.surveyYear").value(2026))
+                .andExpect(jsonPath("$.data.cutoffPeriodCode").doesNotExist())
+                .andExpect(jsonPath("$.data.points[0].businessYear").value("2026"))
+                .andExpect(jsonPath("$.data.points[0].value").value(17.0));
     }
 
     @Test

@@ -77,11 +77,15 @@ public class OverviewService {
 
     @Transactional(readOnly = true)
     public AnnualComparisonView annualComparison(String productCode, String cultivarCode, String regionCode,
-            String periodCode, String indicatorCode) {
-        if (blank(productCode) || blank(regionCode) || blank(periodCode) || blank(indicatorCode)
+            Integer surveyYear, String periodCode, String indicatorCode) {
+        if (blank(productCode) || blank(regionCode) || blank(indicatorCode)
                 || !repository.knownProduct(productCode) || !repository.knownRegion(regionCode)
-                || !repository.knownPeriod(periodCode)
                 || (!blank(cultivarCode) && !repository.knownCultivar(productCode, cultivarCode))) throw invalid();
+        Integer effectiveSurveyYear = surveyYear;
+        if (effectiveSurveyYear == null && !blank(periodCode)) {
+            effectiveSurveyYear = repository.surveyYearForPeriod(periodCode).orElseThrow(OverviewService::invalid);
+        }
+        if (effectiveSurveyYear == null || effectiveSurveyYear < 1900 || effectiveSurveyYear > 2200) throw invalid();
         AnnualComparisonDefinition definition = repository.annualComparisonDefinition(indicatorCode)
                 .orElseThrow(OverviewService::invalid);
         if (!("PRODUCTION".equals(definition.sourceDomain()) || "MARKET".equals(definition.sourceDomain()))
@@ -89,8 +93,9 @@ public class OverviewService {
         AuthorizedReadScope scope = readScope();
         scope.requireRegion(regionCode);
         return new AnnualComparisonView(definition.code(), definition.name(), definition.sourceDomain(), productCode,
-                cultivarCode, regionCode, periodCode, definition.unitCode(), "OVERVIEW_APPROVED_FACTS_V2",
-                repository.annualComparison(productCode, cultivarCode, regionCode, periodCode, definition,
+                cultivarCode, regionCode, effectiveSurveyYear, surveyYear == null ? periodCode : null,
+                definition.unitCode(), "OVERVIEW_APPROVED_FACTS_V3_SURVEY_YEAR",
+                repository.annualComparison(productCode, cultivarCode, regionCode, effectiveSurveyYear, definition,
                         scope.regionCodes()));
     }
 

@@ -10,6 +10,7 @@ public interface OverviewRepository {
     boolean knownProduct(String productCode);
     boolean knownRegion(String regionCode);
     boolean knownPeriod(String periodCode);
+    Optional<Integer> surveyYearForPeriod(String periodCode);
     boolean knownCultivar(String productCode, String cultivarCode);
     List<AnnualComparisonDefinition> annualComparisonDefinitions(String sourceDomain, String productCode);
     Optional<AnnualComparisonDefinition> annualComparisonDefinition(String indicatorCode);
@@ -21,5 +22,5 @@ public interface OverviewRepository {
     OverviewDashboard dashboard(String productCode, String periodCode, String regionCode, String marketingYear,
             Set<String> authorizedRegionCodes);
     List<AnnualComparisonPoint> annualComparison(String productCode, String cultivarCode, String regionCode,
-            String periodCode, AnnualComparisonDefinition definition, Set<String> authorizedRegionCodes);
+            int surveyYear, AnnualComparisonDefinition definition, Set<String> authorizedRegionCodes);
 }

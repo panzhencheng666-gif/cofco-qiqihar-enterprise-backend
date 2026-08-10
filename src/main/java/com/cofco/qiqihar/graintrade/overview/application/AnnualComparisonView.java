@@ -10,6 +10,7 @@ public record AnnualComparisonView(
         String productCode,
         String cultivarCode,
         String regionCode,
+        Integer surveyYear,
         String cutoffPeriodCode,
         String unitCode,
         String methodologyVersion,

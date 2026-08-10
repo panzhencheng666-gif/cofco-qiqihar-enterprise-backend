@@ -47,8 +47,10 @@ public class OverviewController {
     @GetMapping("/api/v1/overview/annual-comparisons")
     ApiResponse<AnnualComparisonView> annualComparison(@RequestParam String productCode,
             @RequestParam(required = false) String cultivarCode, @RequestParam String regionCode,
-            @RequestParam String periodCode, @RequestParam String indicatorCode) {
-        return new ApiResponse<>(service.annualComparison(productCode, cultivarCode, regionCode, periodCode, indicatorCode));
+            @RequestParam(required = false) Integer surveyYear,
+            @RequestParam(required = false) String periodCode, @RequestParam String indicatorCode) {
+        return new ApiResponse<>(service.annualComparison(
+                productCode, cultivarCode, regionCode, surveyYear, periodCode, indicatorCode));
     }
 
     @GetMapping("/api/v1/overview/annual-comparison-definitions")
