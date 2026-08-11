@@ -21,7 +21,25 @@ public record OverviewDashboard(
             long approvedRecordCount,
             String latestUpdatedAt) {}
 
-    public record Metric(String code, String name, String unitCode, String value, long sourceCount) {}
+    public record Metric(
+            String code,
+            String name,
+            String unitCode,
+            String value,
+            long sourceCount,
+            String dataCutoff,
+            String coverageStatus,
+            String calculationVersion,
+            List<RegionSurplusAuditSource> auditSources) {
+        public Metric(String code, String name, String unitCode, String value, long sourceCount) {
+            this(code, name, unitCode, value, sourceCount, null,
+                    sourceCount > 0 ? "AVAILABLE" : "NO_APPROVED_SOURCES", null, List.of());
+        }
+
+        public Metric {
+            auditSources = auditSources == null ? List.of() : List.copyOf(auditSources);
+        }
+    }
 
     public record PriceTrendPoint(String periodLabel, String value, long sourceCount) {}
 

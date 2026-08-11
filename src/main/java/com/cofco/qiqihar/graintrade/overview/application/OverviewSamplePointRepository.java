@@ -8,12 +8,13 @@ import java.util.UUID;
 public interface OverviewSamplePointRepository {
     String regionLevel(String regionCode);
     boolean knownCategory(String categoryCode);
-    boolean knownType(String categoryCode, String typeCode);
-    List<OverviewSamplePointAggregate> aggregates(String parentCode, Set<String> authorizedRegionCodes);
-    OverviewSamplePointList list(String regionCode, String categoryCode, String typeCode, String query,
+    boolean knownType(String productCode, String categoryCode, String typeCode);
+    List<OverviewSamplePointAggregate> aggregates(String productCode, String parentCode,
             Set<String> authorizedRegionCodes);
-    List<OverviewSamplePointIcon> icons(String regionCode, String categoryCode, String typeCode,
+    OverviewSamplePointList list(String productCode, String regionCode, String categoryCode, String typeCode, String query,
             Set<String> authorizedRegionCodes);
-    Optional<OverviewSamplePointDetail> detail(UUID samplePointId, String regionCode,
+    List<OverviewSamplePointIcon> icons(String productCode, String regionCode, String categoryCode, String typeCode,
+            Set<String> authorizedRegionCodes);
+    Optional<OverviewSamplePointDetail> detail(String productCode, UUID samplePointId, String regionCode,
             Set<String> authorizedRegionCodes);
 }

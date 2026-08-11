@@ -8,6 +8,9 @@ import com.cofco.qiqihar.graintrade.overview.application.OverviewOptions;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewPeriodOption;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewRegion;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewRepository;
+import com.cofco.qiqihar.graintrade.overview.application.RegionSurplusCalculation;
+import com.cofco.qiqihar.graintrade.overview.application.RegionSurplusCalculator;
+import com.cofco.qiqihar.graintrade.overview.application.RegionSurplusSource;
 import com.cofco.qiqihar.graintrade.overview.application.AnnualComparisonDefinition;
 import com.cofco.qiqihar.graintrade.overview.application.AnnualComparisonPoint;
 import java.math.BigDecimal;
@@ -17,6 +20,8 @@ import java.time.format.DateTimeFormatter;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
@@ -446,7 +451,8 @@ public class JdbcOverviewRepository implements OverviewRepository {
     private List<OverviewDashboard.Metric> dashboardMetrics(
             String productCode, String periodCode, String regionCode, String marketingYear,
             Set<String> authorizedRegionCodes) {
-        return indicators(productCode, regionCode, periodCode, marketingYear, authorizedRegionCodes).stream()
+        List<OverviewDashboard.Metric> metrics = new java.util.ArrayList<>(indicators(
+                productCode, regionCode, periodCode, marketingYear, authorizedRegionCodes).stream()
                 .filter(indicator -> switch (indicator.code()) {
                     case "PRODUCTION_CULTIVATED_AREA", "PRODUCTION_ESTIMATED_OUTPUT",
                             "MARKET_AVERAGE_TRADE_PRICE", "SUPPLY_TOTAL_SUPPLY",
@@ -456,7 +462,130 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 .map(indicator -> new OverviewDashboard.Metric(
                         indicator.code(), indicator.name(), indicator.unitCode(),
                         indicator.value(), indicator.sourceCount()))
-                .toList();
+                .toList());
+        RegionSurplusCalculation surplus = new RegionSurplusCalculator().calculate(
+                regionSurplusSources(productCode, periodCode, regionCode, authorizedRegionCodes));
+        metrics.add(new OverviewDashboard.Metric(
+                "REGION_SURPLUS", "地区余粮", "吨",
+                surplus.valueTonnes() == null ? null : decimal(surplus.valueTonnes()),
+                surplus.sourceCount(),
+                surplus.dataCutoff() == null ? null : surplus.dataCutoff().toString(),
+                surplus.coverageStatus(), surplus.calculationVersion(), surplus.auditSources()));
+        return List.copyOf(metrics);
+    }
+
+    private List<RegionSurplusSource> regionSurplusSources(
+            String productCode, String periodCode, String regionCode,
+            Set<String> authorizedRegionCodes) {
+        return jdbc.sql("""
+                WITH RECURSIVE monitoring_scope AS (
+                  SELECT region_code FROM platform.monitoring_scope_region
+                  WHERE scope_code='FORMAL_BUSINESS' AND included
+                    AND (:unrestricted OR region_code IN (:authorizedRegions))
+                ), scope(code) AS (
+                  SELECT region.code FROM platform.region region
+                  JOIN monitoring_scope ON monitoring_scope.region_code=region.code
+                  WHERE CAST(:region AS varchar) IS NULL OR region.code=CAST(:region AS varchar)
+                  UNION
+                  SELECT child.code FROM platform.region child
+                  JOIN scope parent ON child.parent_code=parent.code
+                  JOIN monitoring_scope ON monitoring_scope.region_code=child.code
+                ), period AS (
+                  SELECT starts_on,ends_on FROM platform.business_period
+                  WHERE code=CAST(:period AS varchar)
+                ), production_metadata AS (
+                  SELECT metadata.record_id,
+                    max(metadata.value) FILTER(WHERE metadata.field_code='PROD_ENDING_INVENTORY') ending_value,
+                    max(metadata.value) FILTER(WHERE metadata.field_code='PROD_SURPLUS_SUBJECT_CODE') subject_code,
+                    max(metadata.value) FILTER(WHERE metadata.field_code='PROD_SURPLUS_CUTOFF_DATE') cutoff_date
+                  FROM production.production_record_submission_metadata metadata
+                  WHERE metadata.field_code IN (
+                    'PROD_ENDING_INVENTORY','PROD_SURPLUS_SUBJECT_CODE','PROD_SURPLUS_CUTOFF_DATE')
+                  GROUP BY metadata.record_id
+                ), market_context AS (
+                  SELECT context.record_id,
+                    max(context.value) FILTER(WHERE context.field_code='MKT_INVENTORY_HOLDER_CODE') holder_code,
+                    max(context.value) FILTER(WHERE context.field_code='MKT_INVENTORY_OWNERSHIP_TYPE') ownership_type,
+                    max(context.value) FILTER(WHERE context.field_code='MKT_STORAGE_REGION_CODE') storage_region_code,
+                    max(context.value) FILTER(WHERE context.field_code='MKT_CARGO_OWNER_CODE') cargo_owner_code,
+                    max(context.value) FILTER(WHERE context.field_code='MKT_INVENTORY_CUTOFF_DATE') cutoff_date
+                  FROM market.market_record_core_value context
+                  WHERE context.field_code IN (
+                    'MKT_INVENTORY_HOLDER_CODE','MKT_INVENTORY_OWNERSHIP_TYPE',
+                    'MKT_STORAGE_REGION_CODE','MKT_CARGO_OWNER_CODE','MKT_INVENTORY_CUTOFF_DATE')
+                  GROUP BY context.record_id
+                ), sources AS (
+                  SELECT 'PRODUCTION'::varchar source_domain,record.record_id source_record_id,
+                    record.version source_version,
+                    metadata.subject_code subject_key,
+                    NULL::varchar inventory_holder_key,
+                    metadata.subject_code cargo_owner_key,
+                    'PRODUCTION_SURPLUS'::varchar ownership_type,record.region_code,
+                    metadata.cutoff_date,metadata.ending_value,
+                    approval.occurred_at approved_at,NULL::varchar contract_issue
+                  FROM production.production_record record
+                  JOIN production_metadata metadata ON metadata.record_id=record.record_id
+                  JOIN period ON record.survey_date BETWEEN period.starts_on AND period.ends_on
+                  LEFT JOIN LATERAL (
+                    SELECT event.occurred_at FROM platform.business_event_outbox event
+                    WHERE event.aggregate_type='PRODUCTION_RECORD'
+                      AND event.aggregate_id=record.record_id
+                      AND event.action_code='PRODUCTION_RECORD_APPROVED'
+                    ORDER BY event.event_sequence DESC LIMIT 1
+                  ) approval ON true
+                  WHERE record.product_code=:product AND record.status_code='APPROVED'
+                    AND record.region_code IN(SELECT code FROM scope)
+                    AND metadata.ending_value IS NOT NULL
+                  UNION ALL
+                  SELECT 'MARKET',record.record_id,record.version,
+                    context.holder_code,context.holder_code,context.cargo_owner_code,
+                    context.ownership_type,context.storage_region_code,
+                    context.cutoff_date,fact.value::text,approval.occurred_at,NULL::varchar
+                  FROM market.market_record record
+                  JOIN market.market_record_fact fact ON fact.record_id=record.record_id
+                    AND fact.fact_code='ENDING_INVENTORY'
+                  LEFT JOIN market_context context ON context.record_id=record.record_id
+                  JOIN period ON record.trade_date BETWEEN period.starts_on AND period.ends_on
+                  LEFT JOIN LATERAL (
+                    SELECT event.occurred_at FROM platform.business_event_outbox event
+                    WHERE event.aggregate_type='MARKET_RECORD'
+                      AND event.aggregate_id=record.record_id
+                      AND event.action_code='MARKET_RECORD_APPROVED'
+                    ORDER BY event.event_sequence DESC LIMIT 1
+                  ) approval ON true
+                  WHERE record.product_code=:product AND record.status_code='APPROVED'
+                    AND (context.storage_region_code IN(SELECT code FROM scope)
+                      OR (context.storage_region_code IS NULL AND record.region_code IN(SELECT code FROM scope)))
+                )
+                SELECT * FROM sources ORDER BY source_domain,source_record_id
+                """).param("region", regionCode).param("period", periodCode).param("product", productCode)
+                .param("unrestricted", authorizedRegionCodes.contains("*"))
+                .param("authorizedRegions", authorizedRegionCodes)
+                .query(this::regionSurplusSource).list();
+    }
+
+    private RegionSurplusSource regionSurplusSource(ResultSet row, int ignored) throws SQLException {
+        String issue = row.getString("contract_issue");
+        BigDecimal value = null;
+        LocalDate cutoff = null;
+        try {
+            String valueText = row.getString("ending_value");
+            if (valueText != null) value = new BigDecimal(valueText);
+        } catch (NumberFormatException exception) {
+            issue = "INVALID_VALUE";
+        }
+        try {
+            String cutoffText = row.getString("cutoff_date");
+            if (cutoffText != null) cutoff = LocalDate.parse(cutoffText);
+        } catch (java.time.DateTimeException exception) {
+            issue = "INVALID_CUTOFF_DATE";
+        }
+        return new RegionSurplusSource(
+                row.getString("source_domain"), row.getString("source_record_id"),
+                row.getLong("source_version"), row.getString("subject_key"),
+                row.getString("inventory_holder_key"), row.getString("cargo_owner_key"),
+                row.getString("ownership_type"), row.getString("region_code"), cutoff, value,
+                row.getObject("approved_at", OffsetDateTime.class), issue);
     }
 
     private List<OverviewOption> dashboardRegionPath(String regionCode) {

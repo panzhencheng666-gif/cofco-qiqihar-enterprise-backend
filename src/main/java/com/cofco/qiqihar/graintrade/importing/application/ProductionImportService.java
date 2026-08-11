@@ -40,10 +40,11 @@ public class ProductionImportService implements QueuedImportProcessor {
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final BusinessImportLimits limits;
+    private final RegionImportResolver regions;
 
     public ProductionImportService(ImportJobRepository repository, ProductionImportPort production,
             AccessControl accessControl, BusinessAuditRecorder audit, ObjectMapper objectMapper, Clock clock,
-            BusinessImportLimits limits) {
+            BusinessImportLimits limits, RegionImportResolver regions) {
         this.repository = repository;
         this.production = production;
         this.accessControl = accessControl;
@@ -51,6 +52,7 @@ public class ProductionImportService implements QueuedImportProcessor {
         this.objectMapper = objectMapper;
         this.clock = clock;
         this.limits = limits;
+        this.regions = regions;
     }
 
     public String template() { return ProductionImportTemplate.csv(); }
@@ -319,7 +321,7 @@ public class ProductionImportService implements QueuedImportProcessor {
         return List.copyOf(rows);
     }
 
-    private static ParsedRow toDraft(
+    private ParsedRow toDraft(
             int number, Map<String, String> values, ProductionImportDefinition definition) {
         try {
             if (!definition.productCode().equals(values.get("productCode"))
@@ -338,6 +340,8 @@ public class ProductionImportService implements QueuedImportProcessor {
                 return ParsedRow.error(number, values,
                         "IMPORT_ROW_REQUIRED_VALUE", "Required production import value is blank");
             }
+            String regionCode = regions.resolve(values.get("regionCode"));
+            values.put("regionCode", regionCode);
             Map<String, String> submissionMetadata = new LinkedHashMap<>();
             ProductionImportTemplate.SUBMISSION_METADATA_HEADERS.forEach(
                     header -> submissionMetadata.put(header, values.getOrDefault(header, "")));
@@ -369,7 +373,7 @@ public class ProductionImportService implements QueuedImportProcessor {
                 });
             }
             return ParsedRow.valid(number, values, new ProductionDraft(
-                    definition.productCode(), definition.objectTypeCode(), values.get("regionCode"),
+                    definition.productCode(), definition.objectTypeCode(), regionCode,
                     null, LocalDate.parse(values.get("surveyDate")),
                     PlainDecimal.parse(values.get("cultivatedAreaMu"), 14, 4, "IMPORT_ROW_VALUE_FORMAT"),
                     PlainDecimal.parse(values.get("yieldPerMuKilograms"), 14, 4, "IMPORT_ROW_VALUE_FORMAT"),
@@ -383,7 +387,7 @@ public class ProductionImportService implements QueuedImportProcessor {
         }
     }
 
-    private static ParsedRow toDraft(int number, Map<String, String> values) {
+    private ParsedRow toDraft(int number, Map<String, String> values) {
         try {
             BoundedInput.requireMapText("IMPORT_ROW_VALUE_FORMAT", values);
             if (required(values, "productCode") || required(values, "objectTypeCode") || required(values, "regionCode")
@@ -394,6 +398,8 @@ public class ProductionImportService implements QueuedImportProcessor {
                             .anyMatch(header -> required(values, header))) {
                 return ParsedRow.error(number, values, "IMPORT_ROW_REQUIRED_VALUE", "Required production import value is blank");
             }
+            String regionCode = regions.resolve(values.get("regionCode"));
+            values.put("regionCode", regionCode);
             Map<String, String> submissionMetadata = new LinkedHashMap<>();
             ProductionImportTemplate.SUBMISSION_METADATA_HEADERS.forEach(
                     header -> submissionMetadata.put(header, values.get(header)));
@@ -401,7 +407,7 @@ public class ProductionImportService implements QueuedImportProcessor {
             PlainDecimal.parse(values.get("PROD_SAMPLE_LATITUDE"), 3, 7, "IMPORT_ROW_VALUE_FORMAT");
             PlainDecimal.parse(values.get("PROD_SAMPLE_LONGITUDE"), 3, 7, "IMPORT_ROW_VALUE_FORMAT");
             return ParsedRow.valid(number, values, new ProductionDraft(values.get("productCode"), values.get("objectTypeCode"),
-                    values.get("regionCode"), null, LocalDate.parse(values.get("surveyDate")),
+                    regionCode, null, LocalDate.parse(values.get("surveyDate")),
                     PlainDecimal.parse(values.get("cultivatedAreaMu"), 14, 4, "IMPORT_ROW_VALUE_FORMAT"),
                     PlainDecimal.parse(values.get("yieldPerMuKilograms"), 14, 4, "IMPORT_ROW_VALUE_FORMAT"),
                     decimalValues(values, ProductionImportTemplate.QUALITY_HEADERS),
@@ -409,6 +415,8 @@ public class ProductionImportService implements QueuedImportProcessor {
                     decimalValues(values, List.of("INSURANCE_AMOUNT")),
                     decimalValues(values, List.of("SUBSIDY_AMOUNT")), submissionMetadata,
                     List.of(UUID.fromString(values.get("evidencePhotoId")))));
+        } catch (ClientRequestException exception) {
+            return ParsedRow.error(number, values, exception.code(), exception.clientMessage());
         } catch (RuntimeException exception) {
             return ParsedRow.error(number, values, "IMPORT_ROW_VALUE_FORMAT", "Production date or decimal value is invalid");
         }

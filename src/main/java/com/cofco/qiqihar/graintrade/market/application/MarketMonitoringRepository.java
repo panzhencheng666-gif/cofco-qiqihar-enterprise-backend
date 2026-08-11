@@ -26,4 +26,6 @@ public interface MarketMonitoringRepository {
             Map<String, String> extensionCoreValues);
     MarketMonitoringRecord updateState(
             MarketMonitoringRecord record, long expectedVersion, String actorId, Instant updatedAt);
+    void linkApprovedSamplePoint(MarketMonitoringRecord record, Map<String, String> extensionCoreValues,
+            String approvingActorId, Instant approvedAt);
 }

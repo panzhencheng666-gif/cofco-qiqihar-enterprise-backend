@@ -25,48 +25,56 @@ public class OverviewSamplePointService {
     }
 
     @Transactional(readOnly = true)
-    public List<OverviewSamplePointAggregate> aggregates(String parentCode) {
+    public List<OverviewSamplePointAggregate> aggregates(String productCode, String parentCode) {
+        validateProduct(productCode);
         if (!blank(parentCode) && !overview.knownRegion(parentCode)) throw invalid();
         AuthorizedReadScope scope = accessControl.requireReadScope();
         if (scope.regionCodes().isEmpty()) return List.of();
         authorizeNavigation(parentCode, scope);
-        return samplePoints.aggregates(parentCode, scope.regionCodes());
+        return samplePoints.aggregates(productCode, parentCode, scope.regionCodes());
     }
 
     @Transactional(readOnly = true)
-    public OverviewSamplePointList list(String regionCode, String categoryCode, String typeCode, String query) {
-        validateFilter(regionCode, categoryCode, typeCode);
+    public OverviewSamplePointList list(String productCode, String regionCode, String categoryCode, String typeCode, String query) {
+        validateFilter(productCode, regionCode, categoryCode, typeCode);
         String normalizedQuery = normalizeQuery(query);
         AuthorizedReadScope scope = accessControl.requireReadScope();
         authorizeNavigation(regionCode, scope);
-        return samplePoints.list(regionCode, categoryCode, typeCode, normalizedQuery, scope.regionCodes());
+        return samplePoints.list(productCode, regionCode, categoryCode, typeCode, normalizedQuery, scope.regionCodes());
     }
 
     @Transactional(readOnly = true)
-    public List<OverviewSamplePointIcon> icons(String regionCode, String categoryCode, String typeCode) {
-        validateFilter(regionCode, categoryCode, typeCode);
+    public List<OverviewSamplePointIcon> icons(String productCode, String regionCode, String categoryCode, String typeCode) {
+        validateFilter(productCode, regionCode, categoryCode, typeCode);
         if (blank(categoryCode) || !"VILLAGE".equals(samplePoints.regionLevel(regionCode))) throw invalid();
         AuthorizedReadScope scope = accessControl.requireReadScope();
         scope.requireRegion(regionCode);
-        return samplePoints.icons(regionCode, categoryCode, typeCode, scope.regionCodes());
+        return samplePoints.icons(productCode, regionCode, categoryCode, typeCode, scope.regionCodes());
     }
 
     @Transactional(readOnly = true)
-    public OverviewSamplePointDetail detail(UUID samplePointId, String regionCode) {
+    public OverviewSamplePointDetail detail(String productCode, UUID samplePointId, String regionCode) {
+        validateProduct(productCode);
         if (samplePointId == null || blank(regionCode) || !overview.knownRegion(regionCode)) throw invalid();
         AuthorizedReadScope scope = accessControl.requireReadScope();
         authorizeNavigation(regionCode, scope);
-        return samplePoints.detail(samplePointId, regionCode, scope.regionCodes())
+        return samplePoints.detail(productCode, samplePointId, regionCode, scope.regionCodes())
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "OVERVIEW_SAMPLE_POINT_NOT_FOUND", "Sample point was not found"));
     }
 
-    private void validateFilter(String regionCode, String categoryCode, String typeCode) {
+    private void validateFilter(String productCode, String regionCode, String categoryCode, String typeCode) {
+        validateProduct(productCode);
         if (blank(regionCode) || !overview.knownRegion(regionCode)) throw invalid();
         if (!blank(categoryCode) && !samplePoints.knownCategory(categoryCode)) throw invalid();
-        if (!blank(typeCode) && (blank(categoryCode) || !samplePoints.knownType(categoryCode, typeCode))) {
+        if (!blank(typeCode) && (blank(categoryCode)
+                || !samplePoints.knownType(productCode, categoryCode, typeCode))) {
             throw invalid();
         }
+    }
+
+    private void validateProduct(String productCode) {
+        if (blank(productCode) || !overview.knownProduct(productCode)) throw invalid();
     }
 
     private void authorizeNavigation(String regionCode, AuthorizedReadScope scope) {

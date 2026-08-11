@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import javax.sql.DataSource;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -280,6 +281,67 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                 .param("id", record.id()).param("expectedVersion", expectedVersion).update();
         requireUpdated(updated);
         return record.savedAsVersion(expectedVersion + 1);
+    }
+
+    @Override
+    public void linkApprovedSamplePoint(MarketMonitoringRecord record,
+            Map<String, String> extensionCoreValues, String approvingActorId, Instant approvedAt) {
+        String canonicalName = extensionCoreValues.get("MKT_SAMPLE_NAME");
+        String latitudeValue = extensionCoreValues.get("MKT_SAMPLE_LATITUDE");
+        String longitudeValue = extensionCoreValues.get("MKT_SAMPLE_LONGITUDE");
+        if (canonicalName == null || canonicalName.isBlank()
+                || latitudeValue == null || longitudeValue == null) return;
+        BigDecimal latitude = new BigDecimal(latitudeValue);
+        BigDecimal longitude = new BigDecimal(longitudeValue);
+        boolean contained = jdbc.sql("""
+                        SELECT EXISTS(
+                            SELECT 1 FROM overview.administrative_boundary
+                            WHERE region_code=:regionCode
+                              AND ST_Covers(geometry,
+                                  ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326)))
+                        """).param("regionCode", record.regionCode()).param("longitude", longitude)
+                .param("latitude", latitude).query(Boolean.class).single();
+        if (!contained) return;
+        String submittingActorId = jdbc.sql("""
+                        SELECT actor_subject_id
+                        FROM platform.business_event_outbox
+                        WHERE aggregate_type='MARKET_RECORD' AND aggregate_id=:recordId
+                          AND action_code='MARKET_RECORD_SUBMITTED'
+                        ORDER BY event_sequence DESC
+                        LIMIT 1
+                        """).param("recordId", record.id()).query(String.class).single();
+        UUID partyId = UUID.randomUUID();
+        UUID samplePointId = UUID.randomUUID();
+        OffsetDateTime approvedTime = OffsetDateTime.ofInstant(approvedAt, ZoneOffset.UTC);
+        jdbc.sql("""
+                        INSERT INTO market.business_party(
+                            party_id,current_name,version,created_at,created_by,updated_at,updated_by)
+                        VALUES(:partyId,:canonicalName,0,:approvedAt,:submittingActorId,
+                            :approvedAt,:approvingActorId)
+                        """).param("partyId", partyId).param("canonicalName", canonicalName)
+                .param("approvedAt", approvedTime).param("submittingActorId", submittingActorId)
+                .param("approvingActorId", approvingActorId).update();
+        jdbc.sql("""
+                        INSERT INTO registry.sample_point(
+                            sample_point_id,kind_code,owner_party_id,canonical_name,region_code,
+                            approval_state,location_state,governed_point,effective_from,version,
+                            created_by,created_at,updated_by,updated_at)
+                        VALUES(:samplePointId,'SURVEY_SITE',:partyId,:canonicalName,:regionCode,
+                            'APPROVED','VALID',ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326),
+                            :effectiveFrom,0,:submittingActorId,:approvedAt,:approvingActorId,:approvedAt)
+                        """).param("samplePointId", samplePointId).param("partyId", partyId)
+                .param("canonicalName", canonicalName).param("regionCode", record.regionCode())
+                .param("longitude", longitude).param("latitude", latitude)
+                .param("effectiveFrom", record.tradeDate()).param("submittingActorId", submittingActorId)
+                .param("approvedAt", approvedTime).param("approvingActorId", approvingActorId).update();
+        int linked = jdbc.sql("""
+                        UPDATE market.market_record
+                        SET party_id=:partyId,sample_point_id=:samplePointId
+                        WHERE record_id=:recordId AND status_code='APPROVED'
+                          AND party_id IS NULL AND sample_point_id IS NULL
+                        """).param("partyId", partyId).param("samplePointId", samplePointId)
+                .param("recordId", record.id()).update();
+        requireUpdated(linked);
     }
 
     private Map<String, List<MarketFieldOption>> coreOptions(String productCode) {

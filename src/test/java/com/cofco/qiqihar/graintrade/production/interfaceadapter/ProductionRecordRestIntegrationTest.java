@@ -87,6 +87,8 @@ class ProductionRecordRestIntegrationTest {
                                 + "\"PROD_SALES_VOLUME\":\"3\","
                                 + "\"PROD_SELF_USE\":\"1\","
                                 + "\"PROD_ENDING_INVENTORY\":\"8\","
+                                + "\"PROD_SURPLUS_SUBJECT_CODE\":\"farmer-longjiang-1\","
+                                + "\"PROD_SURPLUS_CUTOFF_DATE\":\"2026-08-01\","
                                 + "\"PROD_INTENDED_AREA_MU\":\"110\","
                                 + "\"PROD_INTENTION_REASON\":\"订单增加\"");
         String id = create(body);
@@ -102,6 +104,20 @@ class ProductionRecordRestIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].values.PROD_SAMPLE_NAME").value("龙江县第一调查户"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_HARVEST_AREA_MU").value("96.5"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_GROWTH_STAGE").value("灌浆期"));
+    }
+
+    @Test
+    void rejectsEndingInventoryWithoutTheStableSurplusIdentityContract() throws Exception {
+        String body = fullDraftBody("CORN", "FARMER", "MOISTURE", null)
+                .replace("\"PROD_SAMPLE_LONGITUDE\":\"123.9182\"",
+                        "\"PROD_SAMPLE_LONGITUDE\":\"123.9182\","
+                                + "\"PROD_ENDING_INVENTORY\":\"8\"");
+
+        mockMvc.perform(post("/api/v1/production-records")
+                        .principal(() -> "production-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_PRODUCTION_RECORD"));
     }
 
     @Test

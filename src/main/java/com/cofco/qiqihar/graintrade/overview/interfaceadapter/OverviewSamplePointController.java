@@ -23,31 +23,35 @@ public class OverviewSamplePointController {
 
     @GetMapping("/api/v1/overview/sample-point-aggregates")
     ApiResponse<List<OverviewSamplePointAggregate>> aggregates(
+            @RequestParam(required = false) String productCode,
             @RequestParam(required = false) String parentCode) {
-        return new ApiResponse<>(service.aggregates(parentCode));
+        return new ApiResponse<>(service.aggregates(productCode, parentCode));
     }
 
     @GetMapping("/api/v1/overview/sample-points")
     ApiResponse<OverviewSamplePointList> list(
+            @RequestParam(required = false) String productCode,
             @RequestParam String regionCode,
             @RequestParam(required = false) String categoryCode,
             @RequestParam(required = false) String typeCode,
             @RequestParam(required = false) String query) {
-        return new ApiResponse<>(service.list(regionCode, categoryCode, typeCode, query));
+        return new ApiResponse<>(service.list(productCode, regionCode, categoryCode, typeCode, query));
     }
 
     @GetMapping("/api/v1/overview/sample-point-icons")
     ApiResponse<List<OverviewSamplePointIcon>> icons(
+            @RequestParam(required = false) String productCode,
             @RequestParam String regionCode,
             @RequestParam String categoryCode,
             @RequestParam(required = false) String typeCode) {
-        return new ApiResponse<>(service.icons(regionCode, categoryCode, typeCode));
+        return new ApiResponse<>(service.icons(productCode, regionCode, categoryCode, typeCode));
     }
 
     @GetMapping("/api/v1/overview/sample-points/{samplePointId}")
     ApiResponse<OverviewSamplePointDetail> detail(
             @PathVariable UUID samplePointId,
+            @RequestParam(required = false) String productCode,
             @RequestParam String regionCode) {
-        return new ApiResponse<>(service.detail(samplePointId, regionCode));
+        return new ApiResponse<>(service.detail(productCode, samplePointId, regionCode));
     }
 }

@@ -98,6 +98,10 @@ class ProductionImportRestIntegrationTest {
                 .doesNotContain("cultivarCode")
                 .doesNotContain("PROD_REPORTER_NAME", "PROTEIN", "OIL_YIELD",
                         "MILLING_YIELD", "BROWN_RICE_YIELD");
+        assertThat(template.labels().getFirst()).isEqualTo("所在地区");
+        assertThat(template.labels())
+                .contains("预计收获面积（亩）", "水分（%）", "地租（元/亩）")
+                .doesNotContain("所在地区代码");
     }
 
     @Test
@@ -111,7 +115,8 @@ class ProductionImportRestIntegrationTest {
         var template = template(downloaded, "产情", "CORN", "FARMER");
         java.util.ArrayList<String> row = new java.util.ArrayList<>(
                 java.util.Collections.nCopies(template.headers().size(), ""));
-        put(row, template.headers(), "regionCode", "230200");
+        put(row, template.headers(), "regionCode",
+                "齐齐哈尔市 / 梅里斯达斡尔族区");
         put(row, template.headers(), "PROD_CULTIVAR_NAME", "龙单86");
         put(row, template.headers(), "surveyDate", "2026-08-09");
         put(row, template.headers(), "cultivatedAreaMu", "100");
@@ -149,6 +154,9 @@ class ProductionImportRestIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].values.PROD_GROWTH_STAGE").value("灌浆期"))
                 .andExpect(jsonPath("$.data.items[0].values.MOISTURE").value("14.2000"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_REPORTER_NAME").value("产情测试员"));
+
+        assertThat(jdbc.sql("SELECT region_code FROM production.production_record")
+                .query(String.class).single()).isEqualTo("230208");
     }
 
     @Test

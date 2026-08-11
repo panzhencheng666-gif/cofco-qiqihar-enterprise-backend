@@ -140,6 +140,156 @@ class OverviewRestIntegrationTest {
     }
 
     @Test
+    void derivesReliableRegionSurplusFromLatestApprovedMutuallyExclusiveSources() throws Exception {
+        String productionId = UUID.randomUUID().toString();
+        String marketId = UUID.randomUUID().toString();
+        String samplePointId = UUID.randomUUID().toString();
+        jdbc.sql("""
+                INSERT INTO registry.sample_point(
+                  sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
+                  effective_from,created_by,updated_by)
+                VALUES(CAST(:id AS uuid),'SURVEY_SITE','余粮主体样本点','230208','APPROVED','MISSING',
+                  DATE '2026-01-01','production-tester','production-tester')
+                """).param("id", samplePointId).update();
+        jdbc.sql("""
+                INSERT INTO production.production_record(record_id,product_code,object_type_code,region_code,
+                  survey_date,reported_at,cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,version,
+                  sample_point_id)
+                VALUES(:id,'CORN','FARMER','230208',DATE '2026-08-10',
+                  '2026-08-10T10:00:00+08:00',1,1,'APPROVED','test',2,CAST(:samplePointId AS uuid))
+                """).param("id", productionId).param("samplePointId", samplePointId).update();
+        jdbc.sql("""
+                INSERT INTO production.production_record_submission_metadata(record_id,field_code,value)
+                VALUES(:id,'PROD_ENDING_INVENTORY','12'),
+                      (:id,'PROD_SURPLUS_SUBJECT_CODE','farmer-acceptance-1'),
+                      (:id,'PROD_SURPLUS_CUTOFF_DATE','2026-08-10')
+                """).param("id", productionId).update();
+        approvalEvent("PRODUCTION_RECORD", productionId, "PRODUCTION_RECORD_APPROVED",
+                "2026-08-10T10:00:00+08:00");
+
+        jdbc.sql("""
+                INSERT INTO market.market_record(record_id,product_code,object_type_code,region_code,trade_date,
+                  reported_at,purchase_base_price,sale_base_price,trade_direction,carriage_board_amount,
+                  freight_amount,status_code,last_modified_by,version)
+                VALUES(:id,'CORN','TRADER','230208',DATE '2026-08-10','2026-08-10T11:00:00+08:00',
+                  1,1,'BOTH',0,0,'APPROVED','test',2)
+                """).param("id", marketId).update();
+        jdbc.sql("""
+                INSERT INTO market.market_record_fact(record_id,fact_code,value,product_code,object_type_code)
+                VALUES(:id,'ENDING_INVENTORY',20,'CORN','TRADER')
+                """).param("id", marketId).update();
+        jdbc.sql("""
+                INSERT INTO market.market_record_core_value(
+                  record_id,product_code,field_code,domain_binding,value)
+                VALUES(:id,'CORN','MKT_INVENTORY_HOLDER_CODE','EXTENSION','enterprise-owner-1'),
+                      (:id,'CORN','MKT_INVENTORY_OWNERSHIP_TYPE','EXTENSION','OWNED'),
+                      (:id,'CORN','MKT_STORAGE_REGION_CODE','EXTENSION','230208'),
+                      (:id,'CORN','MKT_CARGO_OWNER_CODE','EXTENSION','enterprise-owner-1'),
+                      (:id,'CORN','MKT_INVENTORY_CUTOFF_DATE','EXTENSION','2026-08-10'),
+                      (:id,'CORN','MKT_INVENTORY_POLICY_ATTRIBUTE','EXTENSION','POLICY_AND_COMMERCIAL')
+                """).param("id", marketId).update();
+        approvalEvent("MARKET_RECORD", marketId, "MARKET_RECORD_APPROVED",
+                "2026-08-10T11:00:00+08:00");
+
+        mvc.perform(get("/api/v1/overview/dashboard")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", "230200")
+                        .queryParam("periodCode", "2026-Q3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].value")
+                        .value(org.hamcrest.Matchers.hasItem("32")))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].sourceCount")
+                        .value(org.hamcrest.Matchers.hasItem(2)))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].dataCutoff")
+                        .value(org.hamcrest.Matchers.hasItem("2026-08-10")))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].coverageStatus")
+                        .value(org.hamcrest.Matchers.hasItem("AVAILABLE")))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].calculationVersion")
+                        .value(org.hamcrest.Matchers.hasItem("REGION_SURPLUS_V1")))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].auditSources.length()")
+                        .value(org.hamcrest.Matchers.hasItem(2)))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].auditSources[*].subjectKey")
+                        .value(org.hamcrest.Matchers.hasItem("farmer-acceptance-1")));
+    }
+
+    @Test
+    void exposesUnavailableRegionSurplusInsteadOfAFalseZeroWhenCoverageIsIncomplete() throws Exception {
+        String productionId = UUID.randomUUID().toString();
+        String marketId = UUID.randomUUID().toString();
+        jdbc.sql("""
+                INSERT INTO production.production_record(record_id,product_code,object_type_code,region_code,
+                  survey_date,reported_at,cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,version)
+                VALUES(:id,'CORN','FARMER','230208',DATE '2026-08-10',
+                  '2026-08-10T10:00:00+08:00',1,1,'APPROVED','test',2)
+                """).param("id", productionId).update();
+        jdbc.sql("""
+                INSERT INTO production.production_record_submission_metadata(record_id,field_code,value)
+                VALUES(:id,'PROD_ENDING_INVENTORY','12'),
+                      (:id,'PROD_SURPLUS_SUBJECT_CODE','farmer-acceptance-1'),
+                      (:id,'PROD_SURPLUS_CUTOFF_DATE','2026-08-10')
+                """).param("id", productionId).update();
+        approvalEvent("PRODUCTION_RECORD", productionId, "PRODUCTION_RECORD_APPROVED",
+                "2026-08-10T10:00:00+08:00");
+
+        mvc.perform(get("/api/v1/overview/dashboard")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", "230200")
+                        .queryParam("periodCode", "2026-Q3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].value")
+                        .value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.nullValue())))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].sourceCount")
+                        .value(org.hamcrest.Matchers.hasItem(0)))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].coverageStatus")
+                        .value(org.hamcrest.Matchers.hasItem("INSUFFICIENT_COVERAGE")));
+
+        jdbc.sql("""
+                INSERT INTO market.market_record(record_id,product_code,object_type_code,region_code,trade_date,
+                  reported_at,purchase_base_price,sale_base_price,trade_direction,carriage_board_amount,
+                  freight_amount,status_code,last_modified_by,version)
+                VALUES(:id,'CORN','TRADER','230208',DATE '2026-08-10','2026-08-10T11:00:00+08:00',
+                  1,1,'BOTH',0,0,'APPROVED','test',2)
+                """).param("id", marketId).update();
+        jdbc.sql("""
+                INSERT INTO market.market_record_fact(record_id,fact_code,value,product_code,object_type_code)
+                VALUES(:id,'ENDING_INVENTORY',20,'CORN','TRADER')
+                """).param("id", marketId).update();
+        jdbc.sql("""
+                INSERT INTO market.market_record_core_value(
+                  record_id,product_code,field_code,domain_binding,value)
+                VALUES(:id,'CORN','MKT_INVENTORY_HOLDER_CODE','EXTENSION','enterprise-owner-1'),
+                      (:id,'CORN','MKT_INVENTORY_OWNERSHIP_TYPE','EXTENSION','OWNED'),
+                      (:id,'CORN','MKT_CARGO_OWNER_CODE','EXTENSION','enterprise-owner-1'),
+                      (:id,'CORN','MKT_INVENTORY_CUTOFF_DATE','EXTENSION','2026-08-10'),
+                      (:id,'CORN','MKT_INVENTORY_POLICY_ATTRIBUTE','EXTENSION','COMMERCIAL')
+                """).param("id", marketId).update();
+        approvalEvent("MARKET_RECORD", marketId, "MARKET_RECORD_APPROVED",
+                "2026-08-10T11:00:00+08:00");
+
+        mvc.perform(get("/api/v1/overview/dashboard")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", "230200")
+                        .queryParam("periodCode", "2026-Q3"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].value")
+                        .value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.nullValue())))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].coverageStatus")
+                        .value(org.hamcrest.Matchers.hasItem("UNRELIABLE_SOURCE_CONTRACT")));
+    }
+
+    private void approvalEvent(String aggregateType, String aggregateId, String actionCode, String occurredAt) {
+        jdbc.sql("""
+                INSERT INTO platform.business_event_outbox(
+                  event_id,aggregate_type,aggregate_id,action_code,actor_subject_id,work_unit_code,
+                  region_codes,product_code,occurred_at,detail)
+                VALUES(CAST(:eventId AS uuid),:aggregateType,:aggregateId,:actionCode,'test','TEST_UNIT',
+                  ARRAY['230208']::varchar(18)[],'CORN',CAST(:occurredAt AS timestamptz),'{}'::jsonb)
+                """).param("eventId", UUID.randomUUID().toString())
+                .param("aggregateType", aggregateType).param("aggregateId", aggregateId)
+                .param("actionCode", actionCode).param("occurredAt", occurredAt).update();
+    }
+
+    @Test
     void returnsVerifiedBoundaryGeometryWhenTheCockpitHasNoPeriodSelected() throws Exception {
         mvc.perform(get("/api/v1/overview/regions").queryParam("productCode", "CORN"))
                 .andExpect(status().isOk())

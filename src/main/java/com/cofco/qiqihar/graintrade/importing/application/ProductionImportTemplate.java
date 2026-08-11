@@ -34,7 +34,7 @@ public final class ProductionImportTemplate {
     public static final List<String> XLSX_CANONICAL_HEADERS = java.util.stream.Stream.of(
             List.of("productCode", "objectTypeCode", "PROD_REPORTER_NAME"), XLSX_HEADERS)
             .flatMap(List::stream).toList();
-    public static final List<String> XLSX_LABELS = List.of("所在地区代码", "具体品种", "调查日期",
+    public static final List<String> XLSX_LABELS = List.of("所在地区", "具体品种", "调查日期",
             "种植面积（亩）", "权威采用单产（公斤/亩）", "填报人联系方式", "填报对象联系方式",
             "纬度（度）", "经度（度）", "填报对象", "预计收获面积（亩）", "灾损面积（亩）",
             "当前长势", "生育阶段", "期初库存（吨）", "销售数量（吨）", "自用数量（吨）", "期末余粮（吨）",
@@ -70,7 +70,7 @@ public final class ProductionImportTemplate {
     }
 
     public static List<List<String>> canonicalXlsx(byte[] bytes) {
-        var sheet = BusinessImportWorkbook.read(bytes, DOMAIN, XLSX_HEADERS, XLSX_LABELS);
+        var sheet = readCompatible(bytes, XLSX_HEADERS, XLSX_LABELS, 5_000);
         java.util.ArrayList<List<String>> table = new java.util.ArrayList<>();
         table.add(XLSX_CANONICAL_HEADERS);
         for (List<String> row : sheet.rows()) {
@@ -94,7 +94,7 @@ public final class ProductionImportTemplate {
     public static List<List<String>> canonicalXlsx(
             byte[] bytes, ProductionImportDefinition definition, int maxDataRows) {
         BusinessImportWorkbook.Template template = workbook(definition);
-        var sheet = BusinessImportWorkbook.read(bytes, DOMAIN, template.headers(), template.labels(), maxDataRows);
+        var sheet = readCompatible(bytes, template.headers(), template.labels(), maxDataRows);
         List<String> canonicalHeaders = java.util.stream.Stream.concat(
                 java.util.stream.Stream.of("productCode", "objectTypeCode", "PROD_REPORTER_NAME"),
                 template.headers().stream()).toList();
@@ -111,5 +111,16 @@ public final class ProductionImportTemplate {
             table.add(canonicalHeaders.stream().map(header -> values.getOrDefault(header, "")).toList());
         }
         return List.copyOf(table);
+    }
+
+    private static BusinessImportWorkbook.ImportSheet readCompatible(
+            byte[] bytes, List<String> headers, List<String> labels, int maxDataRows) {
+        try {
+            return BusinessImportWorkbook.read(bytes, DOMAIN, headers, labels, maxDataRows);
+        } catch (IllegalArgumentException currentFailure) {
+            java.util.ArrayList<String> legacyLabels = new java.util.ArrayList<>(labels);
+            legacyLabels.set(0, "所在地区代码");
+            return BusinessImportWorkbook.read(bytes, DOMAIN, headers, legacyLabels, maxDataRows);
+        }
     }
 }

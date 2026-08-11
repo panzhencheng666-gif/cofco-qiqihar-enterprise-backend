@@ -121,10 +121,14 @@ public final class BusinessImportWorkbook {
         for (int index = 0; index < metadata.size(); index++) {
             xml.append(row(index + 1, metadata.get(index), 0, true));
         }
-        List<List<String>> instructions = List.of(
+        java.util.ArrayList<List<String>> instructions = new java.util.ArrayList<>(List.of(
                 List.of("填报说明", "请按字段名称填写，不得修改表头或隐藏的模板校验信息"),
-                List.of("填报人", "由登录账号自动记录，不得在模板中填写"),
-                List.of("处理方式", "5000 条以内即时处理；5001 至 50000 条转入后台任务处理"));
+                List.of("填报人", "由登录账号自动记录，不得在模板中填写")));
+        if ("PRODUCTION".equals(template.domainCode()) && template.headers().contains("regionCode")) {
+            instructions.add(List.of("所在地区",
+                    "请填写完整行政区划路径，如“齐齐哈尔市 / 梅里斯达斡尔族区 / 雅尔塞镇 / 音钦村”；旧模板可继续填写有效地区代码"));
+        }
+        instructions.add(List.of("处理方式", "5000 条以内即时处理；5001 至 50000 条转入后台任务处理"));
         for (int index = 0; index < instructions.size(); index++) {
             xml.append(row(index + 5, instructions.get(index), index == 0 ? 1 : 0, false));
         }

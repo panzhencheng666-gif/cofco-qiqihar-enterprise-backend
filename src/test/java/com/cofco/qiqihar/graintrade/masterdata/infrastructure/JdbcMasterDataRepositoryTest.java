@@ -74,12 +74,12 @@ class JdbcMasterDataRepositoryTest {
     @Test
     void filtersMarketAndProductionObjectTypesByExplicitProductApplicability() {
         assertThat(names(repository.findObjectTypes("SOYBEAN", "MARKET")))
-                .containsExactly("贸易商", "深加工", "批发市场", "承储企业")
+                .containsExactly("贸易商", "深加工企业", "批发市场", "承储企业")
                 .doesNotContain("米厂");
         assertThat(names(repository.findObjectTypes("RICE", "MARKET")))
-                .containsExactly("贸易商", "深加工", "批发市场", "承储企业", "米厂");
+                .containsExactly("贸易商", "深加工企业", "批发市场", "承储企业", "米厂");
         assertThat(names(repository.findObjectTypes("CORN", "MARKET")))
-                .containsExactly("贸易商", "深加工", "批发市场", "承储企业", "养殖厂", "饲料厂");
+                .containsExactly("贸易商", "深加工企业", "批发市场", "承储企业", "养殖场", "饲料厂");
         assertThat(names(repository.findObjectTypes("SOYBEAN", "PRODUCTION")))
                 .containsExactly("农户", "村委会", "农技站");
     }

@@ -140,7 +140,7 @@ public class JdbcMasterDataRepository implements MasterDataRepository {
         return jdbc.sql("""
                         SELECT object_type.code, object_type.name, object_type.business_domain
                         FROM platform.object_type object_type
-                        JOIN platform.product_object_type applicability
+                        JOIN platform.product_object_type_applicability applicability
                           ON applicability.object_type_code = object_type.code
                         WHERE applicability.product_code = :productCode
                           AND object_type.business_domain = :domain

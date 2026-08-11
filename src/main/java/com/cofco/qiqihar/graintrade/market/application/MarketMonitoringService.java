@@ -37,6 +37,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.BiConsumer;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -239,7 +240,10 @@ public class MarketMonitoringService {
 
     @Transactional
     public MarketRecordView approve(String id, long expectedVersion) {
-        return transition(id, expectedVersion, "BUSINESS_APPROVE", "MARKET_RECORD_APPROVED", MarketMonitoringRecord::approve);
+        return transition(id, expectedVersion, "BUSINESS_APPROVE", "MARKET_RECORD_APPROVED",
+                MarketMonitoringRecord::approve, (record, principal) -> repository.linkApprovedSamplePoint(
+                        record, repository.findExtensionCoreValues(record.id()),
+                        principal.subjectId(), clock.instant()));
     }
 
     @Transactional
@@ -249,6 +253,13 @@ public class MarketMonitoringService {
 
     private MarketRecordView transition(String id, long expectedVersion, String permissionCode, String auditAction,
             java.util.function.UnaryOperator<MarketMonitoringRecord> command) {
+        return transition(id, expectedVersion, permissionCode, auditAction, command,
+                (record, principal) -> { });
+    }
+
+    private MarketRecordView transition(String id, long expectedVersion, String permissionCode, String auditAction,
+            java.util.function.UnaryOperator<MarketMonitoringRecord> command,
+            BiConsumer<MarketMonitoringRecord, SecurityPrincipal> afterStateUpdate) {
         MarketMonitoringRecord existing = required(id);
         SecurityPrincipal principal = authorize(permissionCode, existing.regionCode());
         if (expectedVersion != existing.version()) throw stale();
@@ -264,6 +275,7 @@ public class MarketMonitoringService {
             }
             MarketMonitoringRecord updated = repository.updateState(
                     transitioned, expectedVersion, principal.subjectId(), clock.instant());
+            afterStateUpdate.accept(updated, principal);
             audit(principal, updated, auditAction);
             return view(updated, coreFields(updated.productCode()),
                     repository.findExtensionCoreValues(updated.id()));
@@ -287,6 +299,18 @@ public class MarketMonitoringService {
                 draft.productCode(), draft.objectTypeCode(), draft.facts().keySet())) {
             throw new ClientRequestException("INAPPLICABLE_MARKET_FACT",
                     "One or more facts are not applicable to this market context");
+        }
+        if (draft.facts().containsKey("ENDING_INVENTORY")) {
+            Set<String> requiredInventoryContract = Set.of(
+                    "MKT_INVENTORY_HOLDER_CODE", "MKT_INVENTORY_OWNERSHIP_TYPE",
+                    "MKT_STORAGE_REGION_CODE", "MKT_CARGO_OWNER_CODE",
+                    "MKT_INVENTORY_CUTOFF_DATE", "MKT_INVENTORY_POLICY_ATTRIBUTE");
+            if (!draft.extensions().keySet().containsAll(requiredInventoryContract)) {
+                throw invalid("Ending inventory ownership and storage contract is required");
+            }
+            if (!repository.isKnownRegion(draft.extensions().get("MKT_STORAGE_REGION_CODE"))) {
+                throw invalid("Unknown inventory storage region");
+            }
         }
     }
 
@@ -335,8 +359,8 @@ public class MarketMonitoringService {
                 case "PACKAGING_FORM" -> matches(
                         definition, "SELECT", "GENERIC", true);
                 case "EXTENSION" -> "GENERIC".equals(definition.capability())
-                        && ("TEXT".equals(definition.controlType())
-                            || "DECIMAL".equals(definition.controlType()));
+                        && Set.of("TEXT", "DECIMAL", "SELECT", "REGION_HIERARCHY", "DATE")
+                                .contains(definition.controlType());
                 default -> false;
             };
             boolean decimalMetadata = "DECIMAL".equals(definition.controlType())

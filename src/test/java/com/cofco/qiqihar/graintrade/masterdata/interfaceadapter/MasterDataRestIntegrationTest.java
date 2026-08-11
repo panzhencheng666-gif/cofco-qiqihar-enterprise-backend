@@ -58,7 +58,17 @@ class MasterDataRestIntegrationTest {
                         .queryParam("domain", "MARKET"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[*].name")
-                        .value(contains("贸易商", "深加工", "批发市场", "承储企业")));
+                        .value(contains("贸易商", "深加工企业", "批发市场", "承储企业")));
+
+        mockMvc.perform(get("/api/v1/master-data/object-types")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("domain", "MARKET"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[*].code").value(contains(
+                        "TRADER", "DEEP_PROCESSOR", "WHOLESALE_MARKET", "RESERVE_ENTERPRISE",
+                        "BREEDING_FACTORY", "FEED_MILL")))
+                .andExpect(jsonPath("$.data[*].name").value(contains(
+                        "贸易商", "深加工企业", "批发市场", "承储企业", "养殖场", "饲料厂")));
 
         mockMvc.perform(get("/api/v1/master-data/page-definitions")
                         .queryParam("productCode", "RICE")

@@ -45,7 +45,8 @@ class MarketMonitoringRestIntegrationTest {
     @BeforeEach
     void clearRecords() {
         JdbcClient.create(dataSource).sql(
-                "TRUNCATE platform.business_audit_event,market.market_record,evidence.evidence_photo CASCADE")
+                "TRUNCATE platform.business_audit_event,market.market_record,evidence.evidence_photo,"
+                        + "registry.sample_point,market.business_party CASCADE")
                 .update();
     }
     @AfterEach
@@ -54,14 +55,16 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test void createsAndTransitionsCornFeedMillWithBothObjectPrices() throws Exception {
-        String body = draftBody("CORN", "FEED_MILL", "MOISTURE", null);
+        String body = draftBody("CORN", "FEED_MILL", "MOISTURE", null)
+                .replace("\"MKT_SAMPLE_LATITUDE\":\"47.3543\"", "\"MKT_SAMPLE_LATITUDE\":\"47\"")
+                .replace("\"MKT_SAMPLE_LONGITUDE\":\"123.9182\"", "\"MKT_SAMPLE_LONGITUDE\":\"123\"");
         String id = mockMvc.perform(post("/api/v1/market-records").principal(() -> "market-tester")
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.coreValues.MKT_PURCHASE_BASE_PRICE").value("2300.0000"))
                 .andExpect(jsonPath("$.data.coreValues.MKT_SALE_BASE_PRICE").value("2300.0000"))
                 .andExpect(jsonPath("$.data.coreValues.MKT_REPORTER_NAME").value("市场测试员"))
-                .andExpect(jsonPath("$.data.coreValues.MKT_SAMPLE_LATITUDE").value("47.3543000"))
+                .andExpect(jsonPath("$.data.coreValues.MKT_SAMPLE_LATITUDE").value("47.0000000"))
                 .andExpect(jsonPath("$.data.facts.PURCHASE_VOLUME").value("12.0000"))
                 .andReturn().getResponse().getContentAsString()
                 .replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
@@ -76,6 +79,24 @@ class MarketMonitoringRestIntegrationTest {
                 SELECT count(*) FROM platform.business_audit_event
                 WHERE aggregate_type = 'MARKET_RECORD' AND aggregate_id = :id
                 """).param("id", id).query(Long.class).single()).isEqualTo(3L);
+        assertThat(JdbcClient.create(dataSource).sql("""
+                SELECT count(*)
+                FROM market.market_record record
+                JOIN market.business_party party ON party.party_id=record.party_id
+                JOIN registry.sample_point point ON point.sample_point_id=record.sample_point_id
+                WHERE record.record_id=:id
+                  AND party.current_name='齐齐哈尔第一粮店'
+                  AND point.owner_party_id=party.party_id
+                  AND point.canonical_name='齐齐哈尔第一粮店'
+                  AND point.region_code='230200'
+                  AND point.approval_state='APPROVED'
+                  AND point.location_state='VALID'
+                  AND point.effective_from=DATE '2026-08-01'
+                  AND point.created_by='market-tester'
+                  AND point.updated_by='production-tester'
+                  AND ST_Y(point.governed_point)=47
+                  AND ST_X(point.governed_point)=123
+                """).param("id", id).query(Long.class).single()).isEqualTo(1L);
     }
 
     @Test
@@ -104,6 +125,11 @@ class MarketMonitoringRestIntegrationTest {
                         .content("{\"version\":1}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("APPROVED"));
+        assertThat(JdbcClient.create(dataSource).sql("""
+                SELECT count(*) FROM market.market_record
+                WHERE record_id=:id AND status_code='APPROVED'
+                  AND party_id IS NULL AND sample_point_id IS NULL
+                """).param("id", id).query(Long.class).single()).isEqualTo(1L);
     }
 
     @Test
@@ -712,6 +738,17 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    void rejectsEndingInventoryWithoutTheOwnershipAndStorageContract() throws Exception {
+        mockMvc.perform(post("/api/v1/market-records")
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(singleFactDraft(
+                                "CORN", "FEED_MILL", "ENDING_INVENTORY", "20", false)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_MARKET_RECORD"));
+    }
+
+    @Test
     void filtersByExplicitSurveyPeriodAndRealDraftOrSubmissionTime() throws Exception {
         String id = create("CORN", "FEED_MILL", "MOISTURE");
         JdbcClient jdbc = JdbcClient.create(dataSource);
@@ -798,16 +835,32 @@ class MarketMonitoringRestIntegrationTest {
 
     private String singleFactDraft(
             String product, String objectType, String factCode, String value) {
+        return singleFactDraft(product, objectType, factCode, value, true);
+    }
+
+    private String singleFactDraft(
+            String product, String objectType, String factCode, String value,
+            boolean includeInventoryContract) {
+        String inventoryContract = factCode.equals("ENDING_INVENTORY") && includeInventoryContract
+                ? """
+                ,"MKT_INVENTORY_HOLDER_CODE":"fixture-owner-1",
+                 "MKT_INVENTORY_OWNERSHIP_TYPE":"OWNED",
+                 "MKT_STORAGE_REGION_CODE":"230200",
+                 "MKT_CARGO_OWNER_CODE":"fixture-owner-1",
+                 "MKT_INVENTORY_CUTOFF_DATE":"2026-08-01",
+                 "MKT_INVENTORY_POLICY_ATTRIBUTE":"COMMERCIAL"
+                """.strip()
+                : "";
         return """
                 {"productCode":"%s","coreValues":{
                  "MKT_OBJECT_TYPE":"%s","MKT_REGION":"230200",
                  "MKT_TRADE_DATE":"2026-08-01",
                  "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":"2300",
                  "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
-                 "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",%s},
+                 "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK"%s,%s},
                  "facts":{"%s":"%s"},"evidencePhotoIds":["%s"]}
                 """.formatted(
-                        product, objectType, submissionMetadata(), factCode, value,
+                        product, objectType, inventoryContract, submissionMetadata(), factCode, value,
                         stageEvidencePhoto());
     }
 

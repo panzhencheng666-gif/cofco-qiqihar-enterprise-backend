@@ -51,9 +51,63 @@ class OverviewSamplePointRestIntegrationTest {
     }
 
     @Test
+    void appliesOneProductContractToAggregatesListsDetailsIconsAndTypes() throws Exception {
+        mvc.perform(get("/api/v1/overview/sample-point-aggregates")
+                        .principal(() -> "production-tester")
+                        .queryParam("parentCode", TOWNSHIP)
+                        .queryParam("productCode", "SOYBEAN"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].samplePointCount").value(1))
+                .andExpect(jsonPath("$.data[0].unresolvedSourceCount").value(0));
+
+        mvc.perform(get("/api/v1/overview/sample-points")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "SOYBEAN"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalCount").value(1))
+                .andExpect(jsonPath("$.data.items[0].products.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].products[0].code").value("SOYBEAN"))
+                .andExpect(jsonPath("$.data.categories[?(@.code == 'MARKET')].count")
+                        .value(org.hamcrest.Matchers.hasItem(0)));
+
+        mvc.perform(get("/api/v1/overview/sample-points/{samplePointId}", SURVEY_POINT)
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "SOYBEAN"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.associations.length()").value(1))
+                .andExpect(jsonPath("$.data.associations[0].productCode").value("SOYBEAN"));
+
+        mvc.perform(get("/api/v1/overview/sample-point-icons")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("categoryCode", "PRODUCTION")
+                        .queryParam("productCode", "SOYBEAN"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1));
+
+        mvc.perform(get("/api/v1/overview/sample-points")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
+                        .queryParam("categoryCode", "MARKET")
+                        .queryParam("typeCode", "RICE_MILL"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_OVERVIEW_SAMPLE_POINT_QUERY"));
+
+        mvc.perform(get("/api/v1/overview/sample-points")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_OVERVIEW_SAMPLE_POINT_QUERY"));
+    }
+
+    @Test
     void keepsAdministrativeAggregatesIndependentFromListFilters() throws Exception {
         mvc.perform(get("/api/v1/overview/sample-point-aggregates")
                         .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
                         .queryParam("parentCode", TOWNSHIP))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(1))
@@ -67,6 +121,7 @@ class OverviewSamplePointRestIntegrationTest {
 
         mvc.perform(get("/api/v1/overview/sample-point-aggregates")
                         .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
                         .queryParam("parentCode", TOWNSHIP)
                         .queryParam("categoryCode", "MARKET")
                         .queryParam("typeCode", "TRADER"))
@@ -79,6 +134,7 @@ class OverviewSamplePointRestIntegrationTest {
     void filtersListsButExposesGeometryOnlyForCategorizedVillageIcons() throws Exception {
         mvc.perform(get("/api/v1/overview/sample-points")
                         .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
                         .queryParam("regionCode", VILLAGE)
                         .queryParam("categoryCode", "PRODUCTION")
                         .queryParam("typeCode", "FARMER")
@@ -93,12 +149,13 @@ class OverviewSamplePointRestIntegrationTest {
                         .value(org.hamcrest.Matchers.hasItem("农户")))
                 .andExpect(jsonPath("$.data.items.length()").value(1))
                 .andExpect(jsonPath("$.data.items[0].samplePointId").value(SURVEY_POINT))
-                .andExpect(jsonPath("$.data.items[0].products.length()").value(3))
+                .andExpect(jsonPath("$.data.items[0].products.length()").value(1))
                 .andExpect(jsonPath("$.data.items[0].longitude").doesNotExist())
                 .andExpect(jsonPath("$.data.items[0].pointGeometry").doesNotExist());
 
         mvc.perform(get("/api/v1/overview/sample-point-icons")
                         .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
                         .queryParam("regionCode", VILLAGE)
                         .queryParam("categoryCode", "PRODUCTION"))
                 .andExpect(status().isOk())
@@ -109,6 +166,7 @@ class OverviewSamplePointRestIntegrationTest {
 
         mvc.perform(get("/api/v1/overview/sample-point-icons")
                         .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
                         .queryParam("regionCode", VILLAGE)
                         .queryParam("categoryCode", "LOGISTICS")
                         .queryParam("typeCode", "RAIL_NODE"))
@@ -118,6 +176,7 @@ class OverviewSamplePointRestIntegrationTest {
 
         mvc.perform(get("/api/v1/overview/sample-point-icons")
                         .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
                         .queryParam("regionCode", TOWNSHIP)
                         .queryParam("categoryCode", "PRODUCTION"))
                 .andExpect(status().isBadRequest())
@@ -125,6 +184,7 @@ class OverviewSamplePointRestIntegrationTest {
 
         mvc.perform(get("/api/v1/overview/sample-point-icons")
                         .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
                         .queryParam("regionCode", VILLAGE))
                 .andExpect(status().isBadRequest());
     }
@@ -133,14 +193,15 @@ class OverviewSamplePointRestIntegrationTest {
     void returnsOneAuthorizedDetailWithAllApprovedAssociationsAndNoMapCommand() throws Exception {
         mvc.perform(get("/api/v1/overview/sample-points/{samplePointId}", SURVEY_POINT)
                         .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
                         .queryParam("regionCode", VILLAGE))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.samplePointId").value(SURVEY_POINT))
                 .andExpect(jsonPath("$.data.name").value("同一跨产品样本点"))
                 .andExpect(jsonPath("$.data.locationState").value("VALID"))
-                .andExpect(jsonPath("$.data.associations.length()").value(4))
+                .andExpect(jsonPath("$.data.associations.length()").value(2))
                 .andExpect(jsonPath("$.data.associations[?(@.categoryCode == 'PRODUCTION')].productCode")
-                        .value(org.hamcrest.Matchers.hasSize(3)))
+                        .value(org.hamcrest.Matchers.hasSize(1)))
                 .andExpect(jsonPath("$.data.associations[?(@.categoryCode == 'MARKET')].typeName")
                         .value(org.hamcrest.Matchers.hasItem("贸易商")))
                 .andExpect(jsonPath("$.data.associations[?(@.categoryCode == 'PRODUCTION' && @.productCode == 'CORN')].businessValues.CONTACT.value")
@@ -154,6 +215,7 @@ class OverviewSamplePointRestIntegrationTest {
 
         mvc.perform(get("/api/v1/overview/sample-points/{samplePointId}", DRAFT_POINT)
                         .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
                         .queryParam("regionCode", VILLAGE))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.error.code").value("OVERVIEW_SAMPLE_POINT_NOT_FOUND"));
@@ -170,6 +232,7 @@ class OverviewSamplePointRestIntegrationTest {
 
         mvc.perform(get("/api/v1/overview/sample-points")
                         .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
                         .queryParam("regionCode", VILLAGE))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalCount").value(3))
@@ -177,6 +240,7 @@ class OverviewSamplePointRestIntegrationTest {
 
         mvc.perform(get("/api/v1/overview/sample-points")
                         .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
                         .queryParam("regionCode", "230281"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalCount").value(0))
@@ -195,9 +259,10 @@ class OverviewSamplePointRestIntegrationTest {
 
         mvc.perform(get("/api/v1/overview/sample-points/{samplePointId}", SURVEY_POINT)
                         .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
                         .queryParam("regionCode", VILLAGE))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.associations.length()").value(4));
+                .andExpect(jsonPath("$.data.associations.length()").value(2));
     }
 
     @Test
@@ -210,12 +275,14 @@ class OverviewSamplePointRestIntegrationTest {
 
         mvc.perform(get("/api/v1/overview/sample-points")
                         .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
                         .queryParam("regionCode", "230281"))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
 
         mvc.perform(get("/api/v1/overview/sample-points")
                         .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
                         .queryParam("regionCode", VILLAGE)
                         .queryParam("categoryCode", "PRODUCTION")
                         .queryParam("typeCode", "TRADER"))
@@ -241,9 +308,10 @@ class OverviewSamplePointRestIntegrationTest {
 
                 mvc.perform(get("/api/v1/overview/sample-points/{samplePointId}", SURVEY_POINT)
                                 .principal(() -> "production-tester")
+                                .queryParam("productCode", "CORN")
                                 .queryParam("regionCode", VILLAGE))
                         .andExpect(status().isOk())
-                        .andExpect(jsonPath("$.data.associations.length()").value(4));
+                        .andExpect(jsonPath("$.data.associations.length()").value(2));
             } finally {
                 connection.rollback();
             }
