@@ -72,11 +72,15 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                   JOIN descendants ON region.parent_code=descendants.code
                 ), scoped_source AS (
                   SELECT source.*,
-                         COALESCE(source.governed_region_code,source.source_region_code) effective_region_code
+                         COALESCE(
+                           CASE WHEN source.point_approval_state='APPROVED'
+                             THEN source.governed_region_code END,
+                           source.source_region_code) effective_region_code
                   FROM overview.sample_point_query_source source
                   WHERE :unrestricted OR (
                     source.source_region_code IN (:authorizedRegions)
-                    AND (source.governed_region_code IS NULL
+                    AND (source.point_approval_state IS DISTINCT FROM 'APPROVED'
+                      OR source.governed_region_code IS NULL
                       OR source.governed_region_code IN (:authorizedRegions))
                     AND (source.category_code<>'LOGISTICS' OR EXISTS(
                       SELECT 1 FROM logistics.route_event event
@@ -182,7 +186,8 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                   SELECT child.code FROM platform.region child
                   JOIN descendants parent ON child.parent_code=parent.code
                 )
-                SELECT source.sample_point_id,
+                SELECT CASE WHEN source.point_approval_state='APPROVED'
+                         THEN source.sample_point_id END sample_point_id,
                        source.category_code,
                        source.category_name,
                        source.source_record_id,
@@ -192,22 +197,31 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                        source.occurrence_date,
                        source.source_version,
                        source.source_region_code,
-                       source.governed_region_code,
-                       source.governed_region_name,
+                       CASE WHEN source.point_approval_state='APPROVED'
+                         THEN source.governed_region_code END governed_region_code,
+                       CASE WHEN source.point_approval_state='APPROVED'
+                         THEN source.governed_region_name END governed_region_name,
                        source.type_code,
                        source.type_name,
                        source.type_sort_order,
-                       source.canonical_name,
-                       source.point_approval_state,
-                       source.location_state,
+                       CASE WHEN source.point_approval_state='APPROVED'
+                         THEN source.canonical_name END canonical_name,
+                       CASE WHEN source.point_approval_state='APPROVED'
+                         THEN source.point_approval_state END point_approval_state,
+                       CASE WHEN source.point_approval_state='APPROVED'
+                         THEN source.location_state END location_state,
                        source.unresolved_reason,
                        ST_X(source.point_geometry) longitude,
                        ST_Y(source.point_geometry) latitude
                 FROM overview.sample_point_query_source source
-                WHERE COALESCE(source.governed_region_code,source.source_region_code) IN (SELECT code FROM descendants)
+                WHERE COALESCE(
+                        CASE WHEN source.point_approval_state='APPROVED'
+                          THEN source.governed_region_code END,
+                        source.source_region_code) IN (SELECT code FROM descendants)
                   AND (:unrestricted OR (
                     source.source_region_code IN (:authorizedRegions)
-                    AND (source.governed_region_code IS NULL
+                    AND (source.point_approval_state IS DISTINCT FROM 'APPROVED'
+                      OR source.governed_region_code IS NULL
                       OR source.governed_region_code IN (:authorizedRegions))
                     AND (source.category_code<>'LOGISTICS' OR EXISTS(
                       SELECT 1 FROM logistics.route_event event

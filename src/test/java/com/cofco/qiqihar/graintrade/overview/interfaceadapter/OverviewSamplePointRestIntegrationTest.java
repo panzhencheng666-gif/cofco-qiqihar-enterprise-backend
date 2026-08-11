@@ -160,6 +160,30 @@ class OverviewSamplePointRestIntegrationTest {
     }
 
     @Test
+    void doesNotUseDraftPointRegionToPlaceAnApprovedBusinessSource() throws Exception {
+        jdbc.sql("""
+                UPDATE registry.sample_point
+                SET region_code='230281',location_state='MISSING',governed_point=NULL,
+                    containment_boundary_sha256=NULL,containment_boundary_revision=NULL
+                WHERE sample_point_id=CAST(:point AS uuid)
+                """).param("point", DRAFT_POINT).update();
+
+        mvc.perform(get("/api/v1/overview/sample-points")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalCount").value(3))
+                .andExpect(jsonPath("$.data.unresolvedSourceCount").value(3));
+
+        mvc.perform(get("/api/v1/overview/sample-points")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", "230281"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalCount").value(0))
+                .andExpect(jsonPath("$.data.unresolvedSourceCount").value(0));
+    }
+
+    @Test
     void excludesAssociationsWhoseBusinessSourceRegionIsOutsideTheReaderScope() throws Exception {
         insertProductionAtRegion("94000000-0000-0000-0000-000000000108", "CORN", "APPROVED",
                 SURVEY_POINT, "230281");
