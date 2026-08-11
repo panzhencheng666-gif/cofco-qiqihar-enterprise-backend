@@ -144,12 +144,11 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
 
     @Override
     public List<OverviewSamplePointIcon> icons(String productCode, String regionCode, String categoryCode, String typeCode,
-            Set<String> authorizedRegionCodes) {
+            String query, Set<String> authorizedRegionCodes) {
         Map<UUID, List<SourceRow>> byPoint = sourceRows(productCode, regionCode, authorizedRegionCodes).stream()
                 .filter(SourceRow::approvedPoint)
                 .filter(row -> row.unresolvedReason() == null && row.longitude() != null && row.latitude() != null)
-                .filter(row -> row.categoryCode().equals(categoryCode))
-                .filter(row -> typeCode == null || row.typeCode().equals(typeCode))
+                .filter(row -> matchesFilter(row, categoryCode, typeCode, query))
                 .collect(Collectors.groupingBy(SourceRow::samplePointId, LinkedHashMap::new, Collectors.toList()));
         return byPoint.values().stream()
                 .map(this::icon)
@@ -160,10 +159,11 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
 
     @Override
     public Optional<OverviewSamplePointDetail> detail(String productCode, UUID samplePointId, String regionCode,
-            Set<String> authorizedRegionCodes) {
+            String categoryCode, String typeCode, Set<String> authorizedRegionCodes) {
         List<SourceRow> rows = sourceRows(productCode, regionCode, authorizedRegionCodes).stream()
                 .filter(SourceRow::approvedPoint)
                 .filter(row -> row.samplePointId().equals(samplePointId))
+                .filter(row -> matchesFilter(row, categoryCode, typeCode, null))
                 .toList();
         if (rows.isEmpty()) return Optional.empty();
         SourceRow identity = rows.getFirst();

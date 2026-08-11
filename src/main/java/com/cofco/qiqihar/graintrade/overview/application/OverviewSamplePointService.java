@@ -27,7 +27,8 @@ public class OverviewSamplePointService {
     @Transactional(readOnly = true)
     public List<OverviewSamplePointAggregate> aggregates(String productCode, String parentCode) {
         validateProduct(productCode);
-        if (!blank(parentCode) && !overview.knownRegion(parentCode)) throw invalid();
+        if (!blank(parentCode) && (!overview.knownRegion(parentCode)
+                || !"PREFECTURE".equals(samplePoints.regionLevel(parentCode)))) throw invalid();
         AuthorizedReadScope scope = accessControl.requireReadScope();
         if (scope.regionCodes().isEmpty()) return List.of();
         authorizeNavigation(parentCode, scope);
@@ -44,21 +45,26 @@ public class OverviewSamplePointService {
     }
 
     @Transactional(readOnly = true)
-    public List<OverviewSamplePointIcon> icons(String productCode, String regionCode, String categoryCode, String typeCode) {
+    public List<OverviewSamplePointIcon> icons(String productCode, String regionCode, String categoryCode,
+            String typeCode, String query) {
         validateFilter(productCode, regionCode, categoryCode, typeCode);
-        if (blank(categoryCode) || !"VILLAGE".equals(samplePoints.regionLevel(regionCode))) throw invalid();
+        if (blank(categoryCode) || !iconRegionLevel(samplePoints.regionLevel(regionCode))) throw invalid();
+        String normalizedQuery = normalizeQuery(query);
         AuthorizedReadScope scope = accessControl.requireReadScope();
-        scope.requireRegion(regionCode);
-        return samplePoints.icons(productCode, regionCode, categoryCode, typeCode, scope.regionCodes());
+        authorizeNavigation(regionCode, scope);
+        return samplePoints.icons(productCode, regionCode, categoryCode, typeCode, normalizedQuery,
+                scope.regionCodes());
     }
 
     @Transactional(readOnly = true)
-    public OverviewSamplePointDetail detail(String productCode, UUID samplePointId, String regionCode) {
-        validateProduct(productCode);
-        if (samplePointId == null || blank(regionCode) || !overview.knownRegion(regionCode)) throw invalid();
+    public OverviewSamplePointDetail detail(String productCode, UUID samplePointId, String regionCode,
+            String categoryCode, String typeCode) {
+        validateFilter(productCode, regionCode, categoryCode, typeCode);
+        if (samplePointId == null) throw invalid();
         AuthorizedReadScope scope = accessControl.requireReadScope();
         authorizeNavigation(regionCode, scope);
-        return samplePoints.detail(productCode, samplePointId, regionCode, scope.regionCodes())
+        return samplePoints.detail(productCode, samplePointId, regionCode, categoryCode, typeCode,
+                        scope.regionCodes())
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "OVERVIEW_SAMPLE_POINT_NOT_FOUND", "Sample point was not found"));
     }
@@ -87,6 +93,10 @@ public class OverviewSamplePointService {
         String normalized = query.trim();
         if (normalized.length() > MAX_QUERY_LENGTH) throw invalid();
         return normalized;
+    }
+
+    private static boolean iconRegionLevel(String level) {
+        return "COUNTY".equals(level) || "TOWNSHIP".equals(level) || "VILLAGE".equals(level);
     }
 
     private static boolean blank(String value) { return value == null || value.isBlank(); }

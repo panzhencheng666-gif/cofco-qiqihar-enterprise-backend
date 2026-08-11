@@ -23,6 +23,8 @@ import org.springframework.test.web.servlet.MockMvc;
 @AutoConfigureMockMvc
 @UsesProtectedTestDatabase
 class OverviewSamplePointRestIntegrationTest {
+    private static final String PREFECTURE = "230200";
+    private static final String COUNTY = "230202";
     private static final String TOWNSHIP = "230202997";
     private static final String VILLAGE = "230202997001";
     private static final String SURVEY_POINT = "94000000-0000-0000-0000-000000000001";
@@ -54,11 +56,13 @@ class OverviewSamplePointRestIntegrationTest {
     void appliesOneProductContractToAggregatesListsDetailsIconsAndTypes() throws Exception {
         mvc.perform(get("/api/v1/overview/sample-point-aggregates")
                         .principal(() -> "production-tester")
-                        .queryParam("parentCode", TOWNSHIP)
+                        .queryParam("parentCode", PREFECTURE)
                         .queryParam("productCode", "SOYBEAN"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].samplePointCount").value(1))
-                .andExpect(jsonPath("$.data[0].unresolvedSourceCount").value(0));
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].samplePointCount")
+                        .value(org.hamcrest.Matchers.hasItem(1)))
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].unresolvedSourceCount")
+                        .value(org.hamcrest.Matchers.hasItem(0)));
 
         mvc.perform(get("/api/v1/overview/sample-points")
                         .principal(() -> "production-tester")
@@ -107,31 +111,49 @@ class OverviewSamplePointRestIntegrationTest {
     void keepsAdministrativeAggregatesIndependentFromListFilters() throws Exception {
         mvc.perform(get("/api/v1/overview/sample-point-aggregates")
                         .principal(() -> "production-tester")
-                        .queryParam("productCode", "CORN")
-                        .queryParam("parentCode", TOWNSHIP))
+                        .queryParam("productCode", "CORN"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(1))
-                .andExpect(jsonPath("$.data[0].regionCode").value(VILLAGE))
-                .andExpect(jsonPath("$.data[0].regionName").value("契约测试村"))
-                .andExpect(jsonPath("$.data[0].regionLevel").value("VILLAGE"))
-                .andExpect(jsonPath("$.data[0].samplePointCount").value(3))
-                .andExpect(jsonPath("$.data[0].unresolvedSourceCount").value(3))
-                .andExpect(jsonPath("$.data[0].categoryCode").doesNotExist())
-                .andExpect(jsonPath("$.data[0].pointGeometry").doesNotExist());
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230200')].samplePointCount")
+                        .value(org.hamcrest.Matchers.hasItem(3)));
 
         mvc.perform(get("/api/v1/overview/sample-point-aggregates")
                         .principal(() -> "production-tester")
                         .queryParam("productCode", "CORN")
-                        .queryParam("parentCode", TOWNSHIP)
+                        .queryParam("parentCode", PREFECTURE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].regionName")
+                        .value(org.hamcrest.Matchers.hasItem("龙沙区")))
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].regionLevel")
+                        .value(org.hamcrest.Matchers.hasItem("COUNTY")))
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].samplePointCount")
+                        .value(org.hamcrest.Matchers.hasItem(3)))
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].unresolvedSourceCount")
+                        .value(org.hamcrest.Matchers.hasItem(3)))
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].categoryCode").doesNotExist())
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].pointGeometry").doesNotExist());
+
+        mvc.perform(get("/api/v1/overview/sample-point-aggregates")
+                        .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("parentCode", PREFECTURE)
                         .queryParam("categoryCode", "MARKET")
                         .queryParam("typeCode", "TRADER"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].samplePointCount").value(3))
-                .andExpect(jsonPath("$.data[0].unresolvedSourceCount").value(3));
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].samplePointCount")
+                        .value(org.hamcrest.Matchers.hasItem(3)))
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].unresolvedSourceCount")
+                        .value(org.hamcrest.Matchers.hasItem(3)));
+
+        mvc.perform(get("/api/v1/overview/sample-point-aggregates")
+                        .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("parentCode", COUNTY))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_OVERVIEW_SAMPLE_POINT_QUERY"));
     }
 
     @Test
-    void filtersListsButExposesGeometryOnlyForCategorizedVillageIcons() throws Exception {
+    void filtersListsAndExposesGeometryForCategorizedCountyAndDeeperIcons() throws Exception {
         mvc.perform(get("/api/v1/overview/sample-points")
                         .principal(() -> "production-tester")
                         .queryParam("productCode", "CORN")
@@ -156,13 +178,33 @@ class OverviewSamplePointRestIntegrationTest {
         mvc.perform(get("/api/v1/overview/sample-point-icons")
                         .principal(() -> "production-tester")
                         .queryParam("productCode", "CORN")
-                        .queryParam("regionCode", VILLAGE)
-                        .queryParam("categoryCode", "PRODUCTION"))
+                        .queryParam("regionCode", COUNTY)
+                        .queryParam("categoryCode", "PRODUCTION")
+                        .queryParam("query", "同一跨产品"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(1))
                 .andExpect(jsonPath("$.data[0].samplePointId").value(SURVEY_POINT))
                 .andExpect(jsonPath("$.data[0].longitude").isNumber())
                 .andExpect(jsonPath("$.data[0].latitude").isNumber());
+
+        mvc.perform(get("/api/v1/overview/sample-point-icons")
+                        .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", TOWNSHIP)
+                        .queryParam("categoryCode", "PRODUCTION")
+                        .queryParam("query", "同一跨产品"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].samplePointId").value(SURVEY_POINT));
+
+        mvc.perform(get("/api/v1/overview/sample-point-icons")
+                        .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("categoryCode", "PRODUCTION")
+                        .queryParam("query", "不存在的样本点"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(0));
 
         mvc.perform(get("/api/v1/overview/sample-point-icons")
                         .principal(() -> "production-tester")
@@ -177,7 +219,7 @@ class OverviewSamplePointRestIntegrationTest {
         mvc.perform(get("/api/v1/overview/sample-point-icons")
                         .principal(() -> "production-tester")
                         .queryParam("productCode", "CORN")
-                        .queryParam("regionCode", TOWNSHIP)
+                        .queryParam("regionCode", PREFECTURE)
                         .queryParam("categoryCode", "PRODUCTION"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("INVALID_OVERVIEW_SAMPLE_POINT_QUERY"));
@@ -212,6 +254,25 @@ class OverviewSamplePointRestIntegrationTest {
                         .value(org.hamcrest.Matchers.hasItem("80")))
                 .andExpect(jsonPath("$.data.longitude").doesNotExist())
                 .andExpect(jsonPath("$.data.pointGeometry").doesNotExist());
+
+        mvc.perform(get("/api/v1/overview/sample-points/{samplePointId}", SURVEY_POINT)
+                        .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", COUNTY)
+                        .queryParam("categoryCode", "PRODUCTION")
+                        .queryParam("typeCode", "FARMER"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.associations.length()").value(1))
+                .andExpect(jsonPath("$.data.associations[0].categoryCode").value("PRODUCTION"))
+                .andExpect(jsonPath("$.data.associations[0].typeCode").value("FARMER"));
+
+        mvc.perform(get("/api/v1/overview/sample-points/{samplePointId}", SURVEY_POINT)
+                        .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", COUNTY)
+                        .queryParam("categoryCode", "LOGISTICS"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("OVERVIEW_SAMPLE_POINT_NOT_FOUND"));
 
         mvc.perform(get("/api/v1/overview/sample-points/{samplePointId}", DRAFT_POINT)
                         .principal(() -> "production-tester")
@@ -288,6 +349,15 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("typeCode", "TRADER"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("INVALID_OVERVIEW_SAMPLE_POINT_QUERY"));
+
+        mvc.perform(get("/api/v1/overview/sample-point-icons")
+                        .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", COUNTY)
+                        .queryParam("categoryCode", "PRODUCTION"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].samplePointId").value(SURVEY_POINT));
     }
 
     @Test

@@ -14,7 +14,9 @@ public interface OverviewSamplePointRepository {
     OverviewSamplePointList list(String productCode, String regionCode, String categoryCode, String typeCode, String query,
             Set<String> authorizedRegionCodes);
     List<OverviewSamplePointIcon> icons(String productCode, String regionCode, String categoryCode, String typeCode,
+            String query,
             Set<String> authorizedRegionCodes);
     Optional<OverviewSamplePointDetail> detail(String productCode, UUID samplePointId, String regionCode,
+            String categoryCode, String typeCode,
             Set<String> authorizedRegionCodes);
 }
