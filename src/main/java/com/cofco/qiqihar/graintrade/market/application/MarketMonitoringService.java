@@ -627,7 +627,8 @@ public class MarketMonitoringService {
         if (audit != null) {
             audit.record(principal, "MARKET_RECORD", record.id(), actionCode, clock.instant(),
                     "{\"regionCode\":\"" + record.regionCode() + "\",\"productCode\":\""
-                            + record.productCode() + "\"}");
+                            + record.productCode() + "\",\"surveyYear\":"
+                            + record.tradeDate().getYear() + "}");
         }
     }
 

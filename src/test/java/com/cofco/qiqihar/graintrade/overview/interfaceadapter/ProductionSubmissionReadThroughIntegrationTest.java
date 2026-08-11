@@ -1,5 +1,7 @@
 package com.cofco.qiqihar.graintrade.overview.interfaceadapter;
 
+import static org.hamcrest.Matchers.contains;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -53,7 +55,7 @@ class ProductionSubmissionReadThroughIntegrationTest {
                 .andReturn().getResponse().getContentAsString();
         String recordId = createResponse.replaceFirst("(?s).*?\"id\":\"([^\"]+)\".*", "$1");
 
-        expectProductionMetrics("0", "0", 0);
+        expectProductionMetrics(null, null, 0);
 
         mvc.perform(post("/api/v1/production-records/{id}/submit", recordId)
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
@@ -63,6 +65,13 @@ class ProductionSubmissionReadThroughIntegrationTest {
                         .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"version\":1}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("APPROVED"));
+
+        boolean preservesLeafRegionAuthorizationScope = JdbcClient.create(dataSource).sql("""
+                SELECT region_codes=ARRAY['230208']::varchar(18)[]
+                FROM platform.business_event_outbox
+                WHERE aggregate_id=:recordId AND action_code='PRODUCTION_RECORD_APPROVED'
+                """).param("recordId", recordId).query(Boolean.class).single();
+        assertThat(preservesLeafRegionAuthorizationScope).isTrue();
 
         mvc.perform(get("/api/v1/production-records/{id}", recordId)
                         .principal(() -> "production-tester"))
@@ -77,13 +86,15 @@ class ProductionSubmissionReadThroughIntegrationTest {
         mvc.perform(get("/api/v1/overview/dashboard")
                         .principal(() -> "production-tester")
                         .queryParam("productCode", "CORN")
-                        .queryParam("periodCode", "2026-W32")
+                        .queryParam("year", "2026")
                         .queryParam("regionCode", "230200"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].value").value(area))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].value")
+                        .value(contains(area)))
                 .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].sourceCount")
                         .value(sourceCount))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_ESTIMATED_OUTPUT')].value").value(output))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_ESTIMATED_OUTPUT')].value")
+                        .value(contains(output)))
                 .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_ESTIMATED_OUTPUT')].sourceCount")
                         .value(sourceCount));
     }

@@ -329,7 +329,8 @@ public class ProductionRecordService implements ProductionImportPort {
         if (audit != null) {
             audit.record(principal, "PRODUCTION_RECORD", record.id(), actionCode, clock.instant(),
                     "{\"regionCode\":\"" + record.regionCode() + "\",\"productCode\":\""
-                            + record.productCode() + "\"}");
+                            + record.productCode() + "\",\"surveyYear\":"
+                            + record.surveyDate().getYear() + "}");
         }
     }
 

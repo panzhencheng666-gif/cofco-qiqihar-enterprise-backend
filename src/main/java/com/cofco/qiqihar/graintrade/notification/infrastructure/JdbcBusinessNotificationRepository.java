@@ -20,7 +20,26 @@ import org.springframework.stereotype.Repository;
 public class JdbcBusinessNotificationRepository implements BusinessNotificationRepository {
     private static final String SELECT = """
             SELECT event.event_id,event.event_sequence,event.aggregate_type,event.aggregate_id,
-                   event.action_code,event.product_code,event.region_codes,event.occurred_at,
+                   event.action_code,event.product_code,
+                   ARRAY(
+                     WITH RECURSIVE affected_region(code,parent_code) AS (
+                       SELECT region.code,region.parent_code
+                       FROM platform.region region
+                       WHERE region.code=ANY(event.region_codes)
+                       UNION
+                       SELECT parent.code,parent.parent_code
+                       FROM platform.region parent
+                       JOIN affected_region child ON parent.code=child.parent_code
+                     )
+                     SELECT DISTINCT affected.code
+                     FROM (
+                       SELECT unnest(event.region_codes) AS code
+                       UNION ALL
+                       SELECT code FROM affected_region
+                     ) affected
+                     ORDER BY affected.code
+                   ) region_codes,event.occurred_at,
+                   NULLIF(event.detail->>'surveyYear','')::integer survey_year,
                    receipt.event_id IS NOT NULL AS is_read
             FROM platform.business_event_outbox event
             LEFT JOIN platform.notification_read_receipt receipt
@@ -123,6 +142,7 @@ public class JdbcBusinessNotificationRepository implements BusinessNotificationR
                 row.getObject("event_id", UUID.class), row.getLong("event_sequence"),
                 row.getString("aggregate_type"), row.getString("aggregate_id"),
                 row.getString("action_code"), row.getString("product_code"),
+                row.getObject("survey_year", Integer.class),
                 Arrays.asList(regions), row.getTimestamp("occurred_at").toInstant(),
                 row.getBoolean("is_read"));
     }

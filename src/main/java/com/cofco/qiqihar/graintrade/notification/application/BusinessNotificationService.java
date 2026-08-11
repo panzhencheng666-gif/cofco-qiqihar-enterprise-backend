@@ -43,7 +43,7 @@ public class BusinessNotificationService {
         repository.markRead(eventId, principal.subjectId(), clock.instant());
         return new BusinessNotification(
                 visible.id(), visible.sequence(), visible.aggregateType(), visible.aggregateId(),
-                visible.actionCode(), visible.productCode(), visible.regionCodes(),
+                visible.actionCode(), visible.productCode(), visible.surveyYear(), visible.regionCodes(),
                 visible.occurredAt(), true);
     }
 }

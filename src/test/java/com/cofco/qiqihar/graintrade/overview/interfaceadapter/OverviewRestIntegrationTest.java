@@ -70,6 +70,54 @@ class OverviewRestIntegrationTest {
     @AfterEach void cleanAfterEach() { clean(); }
 
     @Test
+    void exposesOnlyAuditedSurveyYearsAndKeepsAnnualDashboardValuesIsolated() throws Exception {
+        jdbc.sql("""
+                INSERT INTO production.production_record(record_id,product_code,object_type_code,region_code,survey_date,
+                  reported_at,cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by)
+                VALUES(:corn2025,'CORN','FARMER','230208',DATE '2025-08-01',now(),10,2,'APPROVED','test'),
+                      (:soy2025,'SOYBEAN','FARMER','230208',DATE '2025-08-01',now(),30,2,'APPROVED','test'),
+                      (:corn2026,'CORN','FARMER','230208',DATE '2026-08-01',now(),20,2,'APPROVED','test'),
+                      (:draft2024,'CORN','FARMER','230208',DATE '2024-08-01',now(),999,2,'DRAFT','test')
+                """).param("corn2025", UUID.randomUUID().toString())
+                .param("soy2025", UUID.randomUUID().toString())
+                .param("corn2026", UUID.randomUUID().toString())
+                .param("draft2024", UUID.randomUUID().toString()).update();
+
+        mvc.perform(get("/api/v1/overview/options"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.years[0]").value(2026))
+                .andExpect(jsonPath("$.data.years[1]").value(2025))
+                .andExpect(jsonPath("$.data.years[?(@ == 2024)]").isEmpty());
+        mvc.perform(get("/api/v1/overview/dashboard")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", "230200")
+                        .queryParam("year", "2025"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].value")
+                        .value(org.hamcrest.Matchers.hasItem("10")))
+                .andExpect(jsonPath("$.data.productStructure.length()").value(1))
+                .andExpect(jsonPath("$.data.productStructure[0].productCode").value("CORN"));
+
+        mvc.perform(get("/api/v1/overview/dashboard")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", "230200")
+                        .queryParam("year", "2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].value")
+                        .value(org.hamcrest.Matchers.hasItem("20")));
+
+        mvc.perform(get("/api/v1/overview/dashboard")
+                        .queryParam("productCode", "RICE")
+                        .queryParam("regionCode", "230200")
+                        .queryParam("year", "2025"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].value")
+                        .value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.nullValue())))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].sourceCount")
+                        .value(org.hamcrest.Matchers.hasItem(0)));
+    }
+
+    @Test
     void aggregatesOnlyApprovedFactsAcrossTheSelectedRegionHierarchy() throws Exception {
         jdbc.sql("""
                 INSERT INTO production.production_record(record_id,product_code,object_type_code,region_code,survey_date,
@@ -134,9 +182,10 @@ class OverviewRestIntegrationTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].value").value("10"))
                 .andExpect(jsonPath("$.data[1].value").value("200"))
                 .andExpect(jsonPath("$.data[2].value").value("2050"))
-                .andExpect(jsonPath("$.data[3].value").value("20000"))
+                .andExpect(jsonPath("$.data[3].value").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.data[3].sourceCount").value(0))
                 .andExpect(jsonPath("$.data[0].sourceCount").value(1))
-                .andExpect(jsonPath("$.data[5].value").value("0"));
+                .andExpect(jsonPath("$.data[5].value").value(org.hamcrest.Matchers.nullValue()));
     }
 
     @Test
@@ -290,8 +339,9 @@ class OverviewRestIntegrationTest {
     }
 
     @Test
-    void returnsVerifiedBoundaryGeometryWhenTheCockpitHasNoPeriodSelected() throws Exception {
-        mvc.perform(get("/api/v1/overview/regions").queryParam("productCode", "CORN"))
+    void returnsVerifiedBoundaryGeometryForTheSelectedYear() throws Exception {
+        mvc.perform(get("/api/v1/overview/regions").queryParam("productCode", "CORN")
+                        .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].code").value("230200"))
                 .andExpect(jsonPath("$.data[0].boundaryGeoJson").isString())
@@ -310,24 +360,29 @@ class OverviewRestIntegrationTest {
                 VALUES('FORMAL_BUSINESS','230281999',true),('FORMAL_BUSINESS','230281999001',true)
                 """).update();
 
-        mvc.perform(get("/api/v1/overview/dashboard").queryParam("productCode", "CORN"))
+        mvc.perform(get("/api/v1/overview/dashboard").queryParam("productCode", "CORN")
+                        .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.scope.villageCount").value(1));
         mvc.perform(get("/api/v1/overview/dashboard")
-                        .queryParam("productCode", "CORN").queryParam("regionCode", "230200"))
+                        .queryParam("productCode", "CORN").queryParam("regionCode", "230200")
+                        .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.scope.villageCount").value(1));
         mvc.perform(get("/api/v1/overview/dashboard")
-                        .queryParam("productCode", "CORN").queryParam("regionCode", "230281"))
+                        .queryParam("productCode", "CORN").queryParam("regionCode", "230281")
+                        .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.scope.villageCount").value(1));
         mvc.perform(get("/api/v1/overview/dashboard")
-                        .queryParam("productCode", "CORN").queryParam("regionCode", "230281999"))
+                        .queryParam("productCode", "CORN").queryParam("regionCode", "230281999")
+                        .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.scope.townshipCount").value(1))
                 .andExpect(jsonPath("$.data.scope.villageCount").value(1));
         mvc.perform(get("/api/v1/overview/dashboard")
-                        .queryParam("productCode", "CORN").queryParam("regionCode", "230281999001"))
+                        .queryParam("productCode", "CORN").queryParam("regionCode", "230281999001")
+                        .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.scope.townshipCount").value(0))
                 .andExpect(jsonPath("$.data.scope.villageCount").value(1));
@@ -544,12 +599,14 @@ class OverviewRestIntegrationTest {
                 .query(Object.class).single();
 
         mvc.perform(get("/api/v1/overview/regions").queryParam("productCode", "CORN")
+                        .queryParam("year", "2026")
                         .queryParam("parentCode", "230281"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.code == '230281999')].boundaryGeoJson").value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.containsString("Polygon"))))
                 .andExpect(jsonPath("$.data[?(@.code == '230281999')].locationGeoJson").value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.containsString("Point"))))
                 .andExpect(jsonPath("$.data[?(@.code == '230281999')].locationReviewStatus").value(org.hamcrest.Matchers.hasItem("DERIVED_FROM_VILLAGE_POINTS")));
         mvc.perform(get("/api/v1/overview/regions").queryParam("productCode", "CORN")
+                        .queryParam("year", "2026")
                         .queryParam("parentCode", "230281999"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].code").value("230281999001"))
@@ -557,12 +614,14 @@ class OverviewRestIntegrationTest {
                 .andExpect(jsonPath("$.data[0].locationGeoJson").value(org.hamcrest.Matchers.containsString("Point")))
                 .andExpect(jsonPath("$.data[0].locationReviewStatus").value("AUTO_MATCHED_PENDING_SPATIAL_QA"));
         mvc.perform(get("/api/v1/overview/locations").queryParam("productCode", "CORN")
+                        .queryParam("year", "2026")
                         .queryParam("ancestorCode", "230281")
                         .queryParam("level", "TOWNSHIP"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.code == '230281999')].locationReviewStatus")
                         .value(org.hamcrest.Matchers.hasItem("DERIVED_FROM_VILLAGE_POINTS")));
         mvc.perform(get("/api/v1/overview/locations").queryParam("productCode", "CORN")
+                        .queryParam("year", "2026")
                         .queryParam("ancestorCode", "230281999")
                         .queryParam("level", "VILLAGE"))
                 .andExpect(status().isOk())
@@ -570,12 +629,14 @@ class OverviewRestIntegrationTest {
                 .andExpect(jsonPath("$.data[0].locationReviewStatus").value("AUTO_MATCHED_PENDING_SPATIAL_QA"));
         mvc.perform(get("/api/v1/overview/dashboard")
                         .queryParam("productCode", "CORN")
+                        .queryParam("year", "2026")
                         .queryParam("regionCode", "230281999"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.scope.townshipCount").value(1))
                 .andExpect(jsonPath("$.data.scope.villageCount").value(1));
         mvc.perform(get("/api/v1/overview/dashboard")
                         .queryParam("productCode", "CORN")
+                        .queryParam("year", "2026")
                         .queryParam("regionCode", "230281999001"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.scope.townshipCount").value(0))
@@ -629,12 +690,12 @@ class OverviewRestIntegrationTest {
                 .andExpect(jsonPath("$.data.priceTrend[0].periodLabel").value("2026-08"))
                 .andExpect(jsonPath("$.data.productStructure[?(@.productCode == 'CORN')].value").value("200"))
                 .andExpect(jsonPath("$.data.regionActivity[?(@.regionCode == '230208')].approvedCount").value(2))
-                .andExpect(jsonPath("$.data.regionActivity[?(@.regionCode == '230208')].totalCount").value(3))
+                .andExpect(jsonPath("$.data.regionActivity[?(@.regionCode == '230208')].totalCount").value(2))
                 .andExpect(jsonPath("$.data.cultivatedAreaYoY[0].regionCode").value("230208"))
                 .andExpect(jsonPath("$.data.cultivatedAreaYoY[0].currentValue").value("10"))
                 .andExpect(jsonPath("$.data.cultivatedAreaYoY[0].previousValue").value("5"))
                 .andExpect(jsonPath("$.data.outputYoY[0].currentValue").value("200"))
                 .andExpect(jsonPath("$.data.outputYoY[0].previousValue").value("50"))
-                .andExpect(jsonPath("$.data.alerts[0].message").value("1条填报记录退回补充"));
+                .andExpect(jsonPath("$.data.alerts.length()").value(0));
     }
 }

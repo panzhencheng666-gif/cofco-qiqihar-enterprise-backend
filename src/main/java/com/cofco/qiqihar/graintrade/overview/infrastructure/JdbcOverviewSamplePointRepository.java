@@ -47,21 +47,18 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
     }
 
     @Override
-    public boolean knownType(String productCode, String categoryCode, String typeCode) {
+    public boolean knownType(String categoryCode, String typeCode) {
         return Boolean.TRUE.equals(jdbc.sql("""
                 SELECT EXISTS(
                   SELECT 1 FROM platform.object_type object_type
-                  JOIN platform.product_object_type_applicability applicability
-                    ON applicability.object_type_code=object_type.code
-                  WHERE applicability.product_code=:product
-                    AND object_type.business_domain=:category AND object_type.code=:type)
-                """).param("product", productCode).param("category", categoryCode).param("type", typeCode)
+                  WHERE object_type.business_domain=:category AND object_type.code=:type)
+                """).param("category", categoryCode).param("type", typeCode)
                 .query(Boolean.class).single());
     }
 
     @Override
     public List<OverviewSamplePointAggregate> aggregates(
-            String productCode, String parentCode, Set<String> authorizedRegionCodes) {
+            int year, String parentCode, Set<String> authorizedRegionCodes) {
         return jdbc.sql("""
                 WITH RECURSIVE children AS (
                   SELECT code,name,administrative_level,sort_order
@@ -80,7 +77,22 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                              THEN source.governed_region_code END,
                            source.source_region_code) effective_region_code
                   FROM overview.sample_point_query_source source
-                  WHERE source.product_code=:product
+                  WHERE (
+                    source.category_code='PRODUCTION' AND EXISTS(
+                      SELECT 1 FROM production.production_record record
+                      WHERE record.record_id=source.source_record_id
+                        AND record.survey_year=:year
+                        AND record.survey_period_governance_state='CONFIRMED')
+                    OR source.category_code='MARKET' AND EXISTS(
+                      SELECT 1 FROM market.market_record record
+                      WHERE record.record_id=source.source_record_id
+                        AND record.survey_year=:year
+                        AND record.survey_period_governance_state='CONFIRMED')
+                    OR source.category_code='LOGISTICS' AND EXISTS(
+                      SELECT 1 FROM logistics.route_event event
+                      WHERE event.event_id::text=source.source_record_id
+                        AND event.survey_year=:year
+                        AND event.survey_period_governance_state='CONFIRMED'))
                     AND (:unrestricted OR (
                     source.source_region_code IN (:authorizedRegions)
                     AND (source.point_approval_state IS DISTINCT FROM 'APPROVED'
@@ -108,7 +120,7 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                 GROUP BY child.code,child.name,child.administrative_level,child.sort_order
                 ORDER BY child.sort_order,child.code
                 """).param("parent", parentCode)
-                .param("product", productCode)
+                .param("year", year)
                 .param("unrestricted", unrestricted(authorizedRegionCodes))
                 .param("authorizedRegions", authorizedRegionCodes)
                 .query((row, index) -> new OverviewSamplePointAggregate(
@@ -121,9 +133,9 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
     }
 
     @Override
-    public OverviewSamplePointList list(String productCode, String regionCode, String categoryCode, String typeCode,
+    public OverviewSamplePointList list(int year, String regionCode, String categoryCode, String typeCode,
             String query, Set<String> authorizedRegionCodes) {
-        List<SourceRow> rows = sourceRows(productCode, regionCode, authorizedRegionCodes);
+        List<SourceRow> rows = sourceRows(year, regionCode, authorizedRegionCodes);
         List<SourceRow> eligible = rows.stream().filter(SourceRow::approvedPoint).toList();
         long unresolvedSourceCount = rows.stream().filter(row -> row.unresolvedReason() != null).count();
         Set<UUID> matchingIds = eligible.stream()
@@ -139,13 +151,13 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                         .thenComparing(item -> item.samplePointId().toString()))
                 .toList();
         return new OverviewSamplePointList(regionCode, matchingIds.size(), unresolvedSourceCount,
-                categories(productCode, eligible), items);
+                categories(eligible), items);
     }
 
     @Override
-    public List<OverviewSamplePointIcon> icons(String productCode, String regionCode, String categoryCode, String typeCode,
+    public List<OverviewSamplePointIcon> icons(int year, String regionCode, String categoryCode, String typeCode,
             String query, Set<String> authorizedRegionCodes) {
-        Map<UUID, List<SourceRow>> byPoint = sourceRows(productCode, regionCode, authorizedRegionCodes).stream()
+        Map<UUID, List<SourceRow>> byPoint = sourceRows(year, regionCode, authorizedRegionCodes).stream()
                 .filter(SourceRow::approvedPoint)
                 .filter(row -> row.unresolvedReason() == null && row.longitude() != null && row.latitude() != null)
                 .filter(row -> matchesFilter(row, categoryCode, typeCode, query))
@@ -158,9 +170,9 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
     }
 
     @Override
-    public Optional<OverviewSamplePointDetail> detail(String productCode, UUID samplePointId, String regionCode,
+    public Optional<OverviewSamplePointDetail> detail(int year, UUID samplePointId, String regionCode,
             String categoryCode, String typeCode, Set<String> authorizedRegionCodes) {
-        List<SourceRow> rows = sourceRows(productCode, regionCode, authorizedRegionCodes).stream()
+        List<SourceRow> rows = sourceRows(year, regionCode, authorizedRegionCodes).stream()
                 .filter(SourceRow::approvedPoint)
                 .filter(row -> row.samplePointId().equals(samplePointId))
                 .filter(row -> matchesFilter(row, categoryCode, typeCode, null))
@@ -183,7 +195,7 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                 identity.governedRegionCode(), identity.governedRegionName(), identity.locationState(), associations));
     }
 
-    private List<SourceRow> sourceRows(String productCode, String regionCode, Set<String> authorizedRegionCodes) {
+    private List<SourceRow> sourceRows(int year, String regionCode, Set<String> authorizedRegionCodes) {
         return jdbc.sql("""
                 WITH RECURSIVE descendants(code) AS (
                   SELECT code FROM platform.region WHERE code=:region
@@ -219,7 +231,22 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                        ST_X(source.point_geometry) longitude,
                        ST_Y(source.point_geometry) latitude
                 FROM overview.sample_point_query_source source
-                WHERE source.product_code=:product
+                WHERE (
+                    source.category_code='PRODUCTION' AND EXISTS(
+                      SELECT 1 FROM production.production_record record
+                      WHERE record.record_id=source.source_record_id
+                        AND record.survey_year=:year
+                        AND record.survey_period_governance_state='CONFIRMED')
+                    OR source.category_code='MARKET' AND EXISTS(
+                      SELECT 1 FROM market.market_record record
+                      WHERE record.record_id=source.source_record_id
+                        AND record.survey_year=:year
+                        AND record.survey_period_governance_state='CONFIRMED')
+                    OR source.category_code='LOGISTICS' AND EXISTS(
+                      SELECT 1 FROM logistics.route_event event
+                      WHERE event.event_id::text=source.source_record_id
+                        AND event.survey_year=:year
+                        AND event.survey_period_governance_state='CONFIRMED'))
                   AND COALESCE(
                         CASE WHEN source.point_approval_state='APPROVED'
                           THEN source.governed_region_code END,
@@ -236,7 +263,7 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                         AND event.destination_region_code IN (:authorizedRegions)))))
                 ORDER BY source.type_sort_order,source.canonical_name,source.sample_point_id,
                          source.product_code,source.source_role
-                """).param("product", productCode).param("region", regionCode)
+                """).param("year", year).param("region", regionCode)
                 .param("unrestricted", unrestricted(authorizedRegionCodes))
                 .param("authorizedRegions", authorizedRegionCodes)
                 .query((row, index) -> new SourceRow(
@@ -353,8 +380,8 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
         return value == null ? null : value.stripTrailingZeros().toPlainString();
     }
 
-    private List<OverviewSamplePointList.Category> categories(String productCode, List<SourceRow> eligible) {
-        Map<String, List<TypeDefinition>> formalTypes = formalTypes(productCode).stream()
+    private List<OverviewSamplePointList.Category> categories(List<SourceRow> eligible) {
+        Map<String, List<TypeDefinition>> formalTypes = formalTypes().stream()
                 .collect(Collectors.groupingBy(TypeDefinition::categoryCode, LinkedHashMap::new, Collectors.toList()));
         List<OverviewSamplePointList.Category> result = new ArrayList<>();
         for (CategoryDefinition category : CATEGORIES) {
@@ -371,16 +398,13 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
         return result;
     }
 
-    private List<TypeDefinition> formalTypes(String productCode) {
+    private List<TypeDefinition> formalTypes() {
         return jdbc.sql("""
                 SELECT object_type.business_domain,object_type.code,object_type.name,object_type.sort_order
                 FROM platform.object_type object_type
-                JOIN platform.product_object_type_applicability applicability
-                  ON applicability.object_type_code=object_type.code
-                WHERE applicability.product_code=:product
-                  AND object_type.business_domain IN ('PRODUCTION','MARKET','LOGISTICS')
+                WHERE object_type.business_domain IN ('PRODUCTION','MARKET','LOGISTICS')
                 ORDER BY object_type.sort_order,object_type.code
-                """).param("product", productCode).query((row, index) -> new TypeDefinition(
+                """).query((row, index) -> new TypeDefinition(
                         row.getString("business_domain"), row.getString("code"),
                         row.getString("name"), row.getInt("sort_order")))
                 .list();

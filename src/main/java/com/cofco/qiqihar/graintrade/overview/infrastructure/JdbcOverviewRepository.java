@@ -38,7 +38,22 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 .query((row, index) -> new OverviewPeriodOption(row.getString("code"), row.getString("name"),
                         row.getObject("starts_on", LocalDate.class).toString(),
                         row.getObject("ends_on", LocalDate.class).toString())).list();
-        return new OverviewOptions(products, periods);
+        List<Integer> years = jdbc.sql("""
+                SELECT survey_year FROM production.production_record
+                WHERE status_code='APPROVED' AND survey_period_governance_state='CONFIRMED'
+                UNION
+                SELECT survey_year FROM market.market_record
+                WHERE status_code='APPROVED' AND survey_period_governance_state='CONFIRMED'
+                UNION
+                SELECT survey_year FROM logistics.route_event
+                WHERE status_code='APPROVED' AND survey_period_governance_state='CONFIRMED'
+                UNION
+                SELECT survey_year::integer FROM supply.calculation_run
+                WHERE result_state='PUBLISHED' AND temporal_governance_state='CONFIRMED'
+                  AND survey_year IS NOT NULL
+                ORDER BY survey_year DESC
+                """).query(Integer.class).list();
+        return new OverviewOptions(products, periods, years);
     }
 
     @Override
@@ -145,7 +160,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
 
     @Override
     public List<OverviewRegion> regions(
-            String parentCode, String productCode, String periodCode, Set<String> authorizedRegionCodes) {
+            String parentCode, String productCode, int year, Set<String> authorizedRegionCodes) {
         return jdbc.sql("""
                 WITH RECURSIVE authorized_region(code,parent_code) AS (
                   SELECT code,parent_code FROM platform.region
@@ -155,18 +170,20 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   UNION
                   SELECT parent.code,parent.parent_code FROM platform.region parent
                   JOIN navigable_region child ON child.parent_code=parent.code
-                ), period AS (SELECT starts_on,ends_on FROM platform.business_period WHERE code=CAST(:period AS varchar)),
-                approved AS (
-                  SELECT region_code,record_id FROM production.production_record,period
-                    WHERE product_code=:product AND status_code='APPROVED' AND survey_date BETWEEN starts_on AND ends_on
+                ), approved AS (
+                  SELECT region_code,record_id FROM production.production_record
+                    WHERE product_code=:product AND status_code='APPROVED' AND survey_year=:year
+                      AND survey_period_governance_state='CONFIRMED'
                       AND (:unrestricted OR region_code IN (:authorizedRegions))
                   UNION ALL
-                  SELECT region_code,record_id FROM market.market_record,period
-                    WHERE product_code=:product AND status_code='APPROVED' AND trade_date BETWEEN starts_on AND ends_on
+                  SELECT region_code,record_id FROM market.market_record
+                    WHERE product_code=:product AND status_code='APPROVED' AND survey_year=:year
+                      AND survey_period_governance_state='CONFIRMED'
                       AND (:unrestricted OR region_code IN (:authorizedRegions))
                   UNION ALL
-                  SELECT destination_region_code,event_id::text FROM logistics.route_event,period
-                    WHERE product_code=:product AND status_code='APPROVED' AND collection_date BETWEEN starts_on AND ends_on
+                  SELECT destination_region_code,event_id::text FROM logistics.route_event
+                    WHERE product_code=:product AND status_code='APPROVED' AND survey_year=:year
+                      AND survey_period_governance_state='CONFIRMED'
                       AND (:unrestricted OR (origin_region_code IN (:authorizedRegions)
                         AND destination_region_code IN (:authorizedRegions)))
                 ), candidate_region AS (
@@ -206,7 +223,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   region.context_boundary_geo_json,region.map_context_only,boundary_render.geo_json,
                   location.region_code,location.wgs84_coordinate,location.review_status,derived_location.geometry
                 ORDER BY region.sort_order,region.name
-                """).param("period", periodCode).param("product", productCode).param("parent", parentCode)
+                """).param("year", year).param("product", productCode).param("parent", parentCode)
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
                 .param("authorizedRegions", authorizedRegionCodes)
                 .query((row, index) -> new OverviewRegion(row.getString("code"), row.getString("name"),
@@ -216,7 +233,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
     }
 
     @Override
-    public List<OverviewRegion> locations(String ancestorCode, String level, String productCode, String periodCode,
+    public List<OverviewRegion> locations(String ancestorCode, String level, String productCode, int year,
             Set<String> authorizedRegionCodes) {
         return jdbc.sql("""
                 WITH RECURSIVE monitoring_scope AS (
@@ -228,17 +245,18 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   WHERE region.code=CAST(:ancestor AS varchar)
                   UNION ALL
                   SELECT child.code FROM platform.region child JOIN descendants parent ON child.parent_code=parent.code
-                ), period AS (
-                  SELECT starts_on,ends_on FROM platform.business_period WHERE code=CAST(:period AS varchar)
                 ), approved AS (
-                  SELECT region_code,record_id FROM production.production_record,period
-                    WHERE product_code=:product AND status_code='APPROVED' AND survey_date BETWEEN starts_on AND ends_on
+                  SELECT region_code,record_id FROM production.production_record
+                    WHERE product_code=:product AND status_code='APPROVED' AND survey_year=:year
+                      AND survey_period_governance_state='CONFIRMED'
                   UNION ALL
-                  SELECT region_code,record_id FROM market.market_record,period
-                    WHERE product_code=:product AND status_code='APPROVED' AND trade_date BETWEEN starts_on AND ends_on
+                  SELECT region_code,record_id FROM market.market_record
+                    WHERE product_code=:product AND status_code='APPROVED' AND survey_year=:year
+                      AND survey_period_governance_state='CONFIRMED'
                   UNION ALL
-                  SELECT destination_region_code,event_id::text FROM logistics.route_event,period
-                    WHERE product_code=:product AND status_code='APPROVED' AND collection_date BETWEEN starts_on AND ends_on
+                  SELECT destination_region_code,event_id::text FROM logistics.route_event
+                    WHERE product_code=:product AND status_code='APPROVED' AND survey_year=:year
+                      AND survey_period_governance_state='CONFIRMED'
                 )
                 SELECT region.code,region.name,region.parent_code,region.administrative_level,
                   COUNT(approved.record_id) approved_count,
@@ -264,7 +282,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   location.region_code,location.wgs84_coordinate,location.review_status,derived_location.geometry
                 ORDER BY region.sort_order,region.code
                 """).param("ancestor", ancestorCode).param("level", level)
-                .param("period", periodCode).param("product", productCode)
+                .param("year", year).param("product", productCode)
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
                 .param("authorizedRegions", authorizedRegionCodes)
                 .query((row, index) -> new OverviewRegion(row.getString("code"), row.getString("name"),
@@ -274,8 +292,8 @@ public class JdbcOverviewRepository implements OverviewRepository {
     }
 
     @Override
-    public List<OverviewIndicator> indicators(String productCode, String regionCode, String periodCode,
-            String marketingYear, Set<String> authorizedRegionCodes) {
+    public List<OverviewIndicator> indicators(String productCode, String regionCode, int year,
+            Set<String> authorizedRegionCodes) {
         return jdbc.sql("""
                 WITH RECURSIVE monitoring_scope AS (
                   SELECT region_code FROM platform.monitoring_scope_region
@@ -288,33 +306,33 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   SELECT child.code FROM platform.region child
                   JOIN scope parent ON child.parent_code=parent.code
                   JOIN monitoring_scope ON monitoring_scope.region_code=child.code
-                ), period AS (SELECT starts_on,ends_on FROM platform.business_period WHERE code=:period),
-                latest_supply AS (
+                ), latest_supply AS (
                   SELECT DISTINCT ON (run.region_code) run.* FROM supply.calculation_run run JOIN scope ON scope.code=run.region_code
-                  WHERE run.product_code=:product AND run.marketing_year=:year AND run.result_state='FORMAL'
+                  WHERE run.product_code=:product AND run.survey_year=:year
+                    AND run.result_state='PUBLISHED' AND run.temporal_governance_state='CONFIRMED'
                   ORDER BY run.region_code,run.created_at DESC,run.calculation_run_id DESC
                 )
                 SELECT definition.code,definition.name,definition.unit_code,definition.source_domain,
                   CASE definition.code
-                    WHEN 'PRODUCTION_CULTIVATED_AREA' THEN (SELECT COALESCE(SUM(record.cultivated_area_mu),0) FROM production.production_record record,period WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.region_code IN(SELECT code FROM scope) AND record.survey_date BETWEEN period.starts_on AND period.ends_on)
-                    WHEN 'PRODUCTION_ESTIMATED_OUTPUT' THEN (SELECT COALESCE(SUM(record.estimated_output_kg),0) FROM production.production_record record,period WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.region_code IN(SELECT code FROM scope) AND record.survey_date BETWEEN period.starts_on AND period.ends_on)
-                    WHEN 'MARKET_AVERAGE_TRADE_PRICE' THEN (SELECT COALESCE(AVG(record.actual_trade_price),0) FROM market.market_record record,period WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.region_code IN(SELECT code FROM scope) AND record.trade_date BETWEEN period.starts_on AND period.ends_on)
-                    WHEN 'LOGISTICS_INFLOW_VOLUME' THEN (SELECT COALESCE(SUM(CASE fact.unit_code WHEN '吨' THEN fact.value WHEN '万吨' THEN fact.value*10000 ELSE 0 END),0) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id,period WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.origin_region_code IN(SELECT region_code FROM monitoring_scope) AND event.destination_region_code IN(SELECT code FROM scope) AND event.collection_date BETWEEN period.starts_on AND period.ends_on AND fact.fact_code='ROUTE_VOLUME')
-                    WHEN 'LOGISTICS_OUTFLOW_VOLUME' THEN (SELECT COALESCE(SUM(CASE fact.unit_code WHEN '吨' THEN fact.value WHEN '万吨' THEN fact.value*10000 ELSE 0 END),0) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id,period WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.origin_region_code IN(SELECT code FROM scope) AND event.destination_region_code IN(SELECT region_code FROM monitoring_scope) AND event.collection_date BETWEEN period.starts_on AND period.ends_on AND fact.fact_code='ROUTE_VOLUME')
-                    WHEN 'SUPPLY_TOTAL_SUPPLY' THEN (SELECT COALESCE(SUM(total_supply),0) FROM latest_supply)
-                    WHEN 'SUPPLY_TOTAL_USE' THEN (SELECT COALESCE(SUM(total_use),0) FROM latest_supply)
-                    WHEN 'SUPPLY_ADOPTED_ENDING_INVENTORY' THEN (SELECT COALESCE(SUM(adopted_ending_inventory),0) FROM latest_supply)
+                    WHEN 'PRODUCTION_CULTIVATED_AREA' THEN (SELECT SUM(record.cultivated_area_mu) FROM production.production_record record WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.survey_period_governance_state='CONFIRMED' AND record.region_code IN(SELECT code FROM scope) AND record.survey_year=:year)
+                    WHEN 'PRODUCTION_ESTIMATED_OUTPUT' THEN (SELECT SUM(record.estimated_output_kg) FROM production.production_record record WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.survey_period_governance_state='CONFIRMED' AND record.region_code IN(SELECT code FROM scope) AND record.survey_year=:year)
+                    WHEN 'MARKET_AVERAGE_TRADE_PRICE' THEN (SELECT AVG(record.actual_trade_price) FROM market.market_record record WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.survey_period_governance_state='CONFIRMED' AND record.region_code IN(SELECT code FROM scope) AND record.survey_year=:year)
+                    WHEN 'LOGISTICS_INFLOW_VOLUME' THEN (SELECT SUM(CASE fact.unit_code WHEN '吨' THEN fact.value WHEN '万吨' THEN fact.value*10000 END) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND event.origin_region_code IN(SELECT region_code FROM monitoring_scope) AND event.destination_region_code IN(SELECT code FROM scope) AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
+                    WHEN 'LOGISTICS_OUTFLOW_VOLUME' THEN (SELECT SUM(CASE fact.unit_code WHEN '吨' THEN fact.value WHEN '万吨' THEN fact.value*10000 END) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND event.origin_region_code IN(SELECT code FROM scope) AND event.destination_region_code IN(SELECT region_code FROM monitoring_scope) AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
+                    WHEN 'SUPPLY_TOTAL_SUPPLY' THEN (SELECT SUM(total_supply) FROM latest_supply)
+                    WHEN 'SUPPLY_TOTAL_USE' THEN (SELECT SUM(total_use) FROM latest_supply)
+                    WHEN 'SUPPLY_ADOPTED_ENDING_INVENTORY' THEN (SELECT SUM(adopted_ending_inventory) FROM latest_supply)
                   END AS value,
                   CASE definition.code
-                    WHEN 'PRODUCTION_CULTIVATED_AREA' THEN (SELECT COUNT(*) FROM production.production_record record,period WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.region_code IN(SELECT code FROM scope) AND record.survey_date BETWEEN period.starts_on AND period.ends_on)
-                    WHEN 'PRODUCTION_ESTIMATED_OUTPUT' THEN (SELECT COUNT(*) FROM production.production_record record,period WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.region_code IN(SELECT code FROM scope) AND record.survey_date BETWEEN period.starts_on AND period.ends_on)
-                    WHEN 'MARKET_AVERAGE_TRADE_PRICE' THEN (SELECT COUNT(*) FROM market.market_record record,period WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.region_code IN(SELECT code FROM scope) AND record.trade_date BETWEEN period.starts_on AND period.ends_on)
-                    WHEN 'LOGISTICS_INFLOW_VOLUME' THEN (SELECT COUNT(*) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id,period WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.origin_region_code IN(SELECT region_code FROM monitoring_scope) AND event.destination_region_code IN(SELECT code FROM scope) AND event.collection_date BETWEEN period.starts_on AND period.ends_on AND fact.fact_code='ROUTE_VOLUME')
-                    WHEN 'LOGISTICS_OUTFLOW_VOLUME' THEN (SELECT COUNT(*) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id,period WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.origin_region_code IN(SELECT code FROM scope) AND event.destination_region_code IN(SELECT region_code FROM monitoring_scope) AND event.collection_date BETWEEN period.starts_on AND period.ends_on AND fact.fact_code='ROUTE_VOLUME')
+                    WHEN 'PRODUCTION_CULTIVATED_AREA' THEN (SELECT COUNT(*) FROM production.production_record record WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.survey_period_governance_state='CONFIRMED' AND record.region_code IN(SELECT code FROM scope) AND record.survey_year=:year)
+                    WHEN 'PRODUCTION_ESTIMATED_OUTPUT' THEN (SELECT COUNT(*) FROM production.production_record record WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.survey_period_governance_state='CONFIRMED' AND record.region_code IN(SELECT code FROM scope) AND record.survey_year=:year)
+                    WHEN 'MARKET_AVERAGE_TRADE_PRICE' THEN (SELECT COUNT(*) FROM market.market_record record WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.survey_period_governance_state='CONFIRMED' AND record.region_code IN(SELECT code FROM scope) AND record.survey_year=:year)
+                    WHEN 'LOGISTICS_INFLOW_VOLUME' THEN (SELECT COUNT(*) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND event.origin_region_code IN(SELECT region_code FROM monitoring_scope) AND event.destination_region_code IN(SELECT code FROM scope) AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
+                    WHEN 'LOGISTICS_OUTFLOW_VOLUME' THEN (SELECT COUNT(*) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND event.origin_region_code IN(SELECT code FROM scope) AND event.destination_region_code IN(SELECT region_code FROM monitoring_scope) AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
                     ELSE (SELECT COUNT(*) FROM latest_supply)
                   END AS source_count
                 FROM overview.indicator_definition definition ORDER BY definition.sort_order
-                """).param("region", regionCode).param("period", periodCode).param("product", productCode).param("year", marketingYear)
+                """).param("region", regionCode).param("product", productCode).param("year", year)
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
                 .param("authorizedRegions", authorizedRegionCodes)
                 .query((row, index) -> new OverviewIndicator(row.getString("code"), row.getString("name"),
@@ -324,18 +342,18 @@ public class JdbcOverviewRepository implements OverviewRepository {
 
     @Override
     public OverviewDashboard dashboard(
-            String productCode, String periodCode, String regionCode, String marketingYear,
+            String productCode, int year, String regionCode,
             Set<String> authorizedRegionCodes) {
-        OverviewDashboard.Scope scope = dashboardScope(productCode, periodCode, regionCode, authorizedRegionCodes);
-        DashboardYoYData yearOnYear = dashboardYearOnYear(productCode, periodCode, regionCode, authorizedRegionCodes);
+        OverviewDashboard.Scope scope = dashboardScope(productCode, year, regionCode, authorizedRegionCodes);
+        DashboardYoYData yearOnYear = dashboardYearOnYear(productCode, year, regionCode, authorizedRegionCodes);
         return new OverviewDashboard(
                 scope,
-                dashboardMetrics(productCode, periodCode, regionCode, marketingYear, authorizedRegionCodes),
+                dashboardMetrics(productCode, year, regionCode, authorizedRegionCodes),
                 dashboardRegionPath(regionCode),
-                dashboardPriceTrend(productCode, periodCode, regionCode, authorizedRegionCodes),
-                dashboardProductStructure(periodCode, regionCode, authorizedRegionCodes),
-                dashboardRegionActivity(productCode, periodCode, regionCode, authorizedRegionCodes),
-                dashboardAlerts(productCode, periodCode, regionCode, authorizedRegionCodes),
+                dashboardPriceTrend(productCode, year, regionCode, authorizedRegionCodes),
+                dashboardProductStructure(productCode, year, regionCode, authorizedRegionCodes),
+                dashboardRegionActivity(productCode, year, regionCode, authorizedRegionCodes),
+                List.of(),
                 yearOnYear.cultivatedArea(),
                 yearOnYear.output());
     }
@@ -393,7 +411,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
     }
 
     private OverviewDashboard.Scope dashboardScope(
-            String productCode, String periodCode, String regionCode, Set<String> authorizedRegionCodes) {
+            String productCode, int year, String regionCode, Set<String> authorizedRegionCodes) {
         return jdbc.sql("""
                 WITH RECURSIVE monitoring_scope AS (
                   SELECT region_code FROM platform.monitoring_scope_region
@@ -407,23 +425,21 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   SELECT child.code FROM platform.region child
                   JOIN scope parent ON child.parent_code=parent.code
                   JOIN monitoring_scope ON monitoring_scope.region_code=child.code
-                ), period AS (
-                  SELECT starts_on,ends_on FROM platform.business_period WHERE code=CAST(:period AS varchar)
                 ), business_record AS (
                   SELECT record.record_id,record.region_code,record.status_code,record.reported_at,record.last_modified_by
-                  FROM production.production_record record,period
+                  FROM production.production_record record
                   WHERE record.product_code=:product AND record.region_code IN(SELECT code FROM scope)
-                    AND record.survey_date BETWEEN period.starts_on AND period.ends_on
+                    AND record.survey_year=:year AND record.survey_period_governance_state='CONFIRMED'
                   UNION ALL
                   SELECT record.record_id,record.region_code,record.status_code,record.reported_at,record.last_modified_by
-                  FROM market.market_record record,period
+                  FROM market.market_record record
                   WHERE record.product_code=:product AND record.region_code IN(SELECT code FROM scope)
-                    AND record.trade_date BETWEEN period.starts_on AND period.ends_on
+                    AND record.survey_year=:year AND record.survey_period_governance_state='CONFIRMED'
                   UNION ALL
                   SELECT event.event_id::text,event.destination_region_code,event.status_code,event.reported_at,event.last_modified_by
-                  FROM logistics.route_event event,period
+                  FROM logistics.route_event event
                   WHERE event.product_code=:product AND event.destination_region_code IN(SELECT code FROM scope)
-                    AND event.collection_date BETWEEN period.starts_on AND period.ends_on
+                    AND event.survey_year=:year AND event.survey_period_governance_state='CONFIRMED'
                 )
                 SELECT
                   COUNT(*) FILTER(WHERE region.administrative_level='COUNTY') county_count,
@@ -436,7 +452,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   (SELECT COUNT(*) FROM business_record WHERE status_code='APPROVED') approved_record_count,
                   (SELECT MAX(reported_at) FROM business_record WHERE status_code='APPROVED') latest_updated_at
                 FROM scope JOIN platform.region region ON region.code=scope.code
-                """).param("region", regionCode).param("period", periodCode).param("product", productCode)
+                """).param("region", regionCode).param("year", year).param("product", productCode)
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
                 .param("authorizedRegions", authorizedRegionCodes)
                 .query((row, index) -> {
@@ -449,10 +465,10 @@ public class JdbcOverviewRepository implements OverviewRepository {
     }
 
     private List<OverviewDashboard.Metric> dashboardMetrics(
-            String productCode, String periodCode, String regionCode, String marketingYear,
+            String productCode, int year, String regionCode,
             Set<String> authorizedRegionCodes) {
         List<OverviewDashboard.Metric> metrics = new java.util.ArrayList<>(indicators(
-                productCode, regionCode, periodCode, marketingYear, authorizedRegionCodes).stream()
+                productCode, regionCode, year, authorizedRegionCodes).stream()
                 .filter(indicator -> switch (indicator.code()) {
                     case "PRODUCTION_CULTIVATED_AREA", "PRODUCTION_ESTIMATED_OUTPUT",
                             "MARKET_AVERAGE_TRADE_PRICE", "SUPPLY_TOTAL_SUPPLY",
@@ -461,10 +477,10 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 })
                 .map(indicator -> new OverviewDashboard.Metric(
                         indicator.code(), indicator.name(), indicator.unitCode(),
-                        indicator.value(), indicator.sourceCount()))
+                        indicator.sourceCount() == 0 ? null : indicator.value(), indicator.sourceCount()))
                 .toList());
         RegionSurplusCalculation surplus = new RegionSurplusCalculator().calculate(
-                regionSurplusSources(productCode, periodCode, regionCode, authorizedRegionCodes));
+                regionSurplusSources(productCode, year, regionCode, authorizedRegionCodes));
         metrics.add(new OverviewDashboard.Metric(
                 "REGION_SURPLUS", "地区余粮", "吨",
                 surplus.valueTonnes() == null ? null : decimal(surplus.valueTonnes()),
@@ -475,7 +491,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
     }
 
     private List<RegionSurplusSource> regionSurplusSources(
-            String productCode, String periodCode, String regionCode,
+            String productCode, int year, String regionCode,
             Set<String> authorizedRegionCodes) {
         return jdbc.sql("""
                 WITH RECURSIVE monitoring_scope AS (
@@ -490,9 +506,6 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   SELECT child.code FROM platform.region child
                   JOIN scope parent ON child.parent_code=parent.code
                   JOIN monitoring_scope ON monitoring_scope.region_code=child.code
-                ), period AS (
-                  SELECT starts_on,ends_on FROM platform.business_period
-                  WHERE code=CAST(:period AS varchar)
                 ), production_metadata AS (
                   SELECT metadata.record_id,
                     max(metadata.value) FILTER(WHERE metadata.field_code='PROD_ENDING_INVENTORY') ending_value,
@@ -525,7 +538,6 @@ public class JdbcOverviewRepository implements OverviewRepository {
                     approval.occurred_at approved_at,NULL::varchar contract_issue
                   FROM production.production_record record
                   JOIN production_metadata metadata ON metadata.record_id=record.record_id
-                  JOIN period ON record.survey_date BETWEEN period.starts_on AND period.ends_on
                   LEFT JOIN LATERAL (
                     SELECT event.occurred_at FROM platform.business_event_outbox event
                     WHERE event.aggregate_type='PRODUCTION_RECORD'
@@ -534,6 +546,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                     ORDER BY event.event_sequence DESC LIMIT 1
                   ) approval ON true
                   WHERE record.product_code=:product AND record.status_code='APPROVED'
+                    AND record.survey_year=:year AND record.survey_period_governance_state='CONFIRMED'
                     AND record.region_code IN(SELECT code FROM scope)
                     AND metadata.ending_value IS NOT NULL
                   UNION ALL
@@ -545,7 +558,6 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   JOIN market.market_record_fact fact ON fact.record_id=record.record_id
                     AND fact.fact_code='ENDING_INVENTORY'
                   LEFT JOIN market_context context ON context.record_id=record.record_id
-                  JOIN period ON record.trade_date BETWEEN period.starts_on AND period.ends_on
                   LEFT JOIN LATERAL (
                     SELECT event.occurred_at FROM platform.business_event_outbox event
                     WHERE event.aggregate_type='MARKET_RECORD'
@@ -554,11 +566,12 @@ public class JdbcOverviewRepository implements OverviewRepository {
                     ORDER BY event.event_sequence DESC LIMIT 1
                   ) approval ON true
                   WHERE record.product_code=:product AND record.status_code='APPROVED'
+                    AND record.survey_year=:year AND record.survey_period_governance_state='CONFIRMED'
                     AND (context.storage_region_code IN(SELECT code FROM scope)
                       OR (context.storage_region_code IS NULL AND record.region_code IN(SELECT code FROM scope)))
                 )
                 SELECT * FROM sources ORDER BY source_domain,source_record_id
-                """).param("region", regionCode).param("period", periodCode).param("product", productCode)
+                """).param("region", regionCode).param("year", year).param("product", productCode)
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
                 .param("authorizedRegions", authorizedRegionCodes)
                 .query(this::regionSurplusSource).list();
@@ -606,7 +619,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
     }
 
     private List<OverviewDashboard.PriceTrendPoint> dashboardPriceTrend(
-            String productCode, String periodCode, String regionCode, Set<String> authorizedRegionCodes) {
+            String productCode, int year, String regionCode, Set<String> authorizedRegionCodes) {
         return jdbc.sql("""
                 WITH RECURSIVE monitoring_scope AS (
                   SELECT region_code FROM platform.monitoring_scope_region
@@ -618,16 +631,16 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   UNION
                   SELECT child.code FROM platform.region child JOIN scope parent ON child.parent_code=parent.code
                   JOIN monitoring_scope ON monitoring_scope.region_code=child.code
-                ), period AS (SELECT starts_on,ends_on FROM platform.business_period WHERE code=CAST(:period AS varchar))
+                )
                 SELECT to_char(date_trunc('month',record.trade_date),'YYYY-MM') period_label,
                        AVG(record.actual_trade_price) value,COUNT(*) source_count
-                FROM market.market_record record,period
+                FROM market.market_record record
                 WHERE record.product_code=:product AND record.status_code='APPROVED'
                   AND record.region_code IN(SELECT code FROM scope)
-                  AND record.trade_date BETWEEN period.starts_on AND period.ends_on
+                  AND record.survey_year=:year AND record.survey_period_governance_state='CONFIRMED'
                 GROUP BY date_trunc('month',record.trade_date)
                 ORDER BY date_trunc('month',record.trade_date) DESC LIMIT 12
-                """).param("region", regionCode).param("period", periodCode).param("product", productCode)
+                """).param("region", regionCode).param("year", year).param("product", productCode)
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
                 .param("authorizedRegions", authorizedRegionCodes)
                 .query((row, index) -> new OverviewDashboard.PriceTrendPoint(
@@ -636,7 +649,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
     }
 
     private List<OverviewDashboard.ProductShare> dashboardProductStructure(
-            String periodCode, String regionCode, Set<String> authorizedRegionCodes) {
+            String productCode, int year, String regionCode, Set<String> authorizedRegionCodes) {
         return jdbc.sql("""
                 WITH RECURSIVE monitoring_scope AS (
                   SELECT region_code FROM platform.monitoring_scope_region
@@ -648,14 +661,16 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   UNION
                   SELECT child.code FROM platform.region child JOIN scope parent ON child.parent_code=parent.code
                   JOIN monitoring_scope ON monitoring_scope.region_code=child.code
-                ), period AS (SELECT starts_on,ends_on FROM platform.business_period WHERE code=CAST(:period AS varchar))
+                )
                 SELECT product.code product_code,product.name product_name,SUM(record.estimated_output_kg) value,
                        COUNT(*) source_count
-                FROM production.production_record record JOIN platform.product product ON product.code=record.product_code,period
-                WHERE record.status_code='APPROVED' AND record.region_code IN(SELECT code FROM scope)
-                  AND record.survey_date BETWEEN period.starts_on AND period.ends_on
+                FROM production.production_record record
+                JOIN platform.product product ON product.code=record.product_code
+                WHERE record.product_code=:product AND record.status_code='APPROVED'
+                  AND record.region_code IN(SELECT code FROM scope)
+                  AND record.survey_year=:year AND record.survey_period_governance_state='CONFIRMED'
                 GROUP BY product.code,product.name,product.sort_order ORDER BY product.sort_order
-                """).param("region", regionCode).param("period", periodCode)
+                """).param("region", regionCode).param("year", year).param("product", productCode)
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
                 .param("authorizedRegions", authorizedRegionCodes)
                 .query((row, index) -> new OverviewDashboard.ProductShare(
@@ -664,7 +679,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
     }
 
     private List<OverviewDashboard.RegionActivity> dashboardRegionActivity(
-            String productCode, String periodCode, String regionCode, Set<String> authorizedRegionCodes) {
+            String productCode, int year, String regionCode, Set<String> authorizedRegionCodes) {
         if (regionCode == null) return List.of();
         return jdbc.sql("""
                 WITH RECURSIVE monitoring_scope AS (
@@ -680,25 +695,27 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   SELECT descendants.root_code,child.code FROM platform.region child
                   JOIN descendants ON child.parent_code=descendants.code
                   JOIN monitoring_scope ON monitoring_scope.region_code=child.code
-                ), period AS (SELECT starts_on,ends_on FROM platform.business_period WHERE code=CAST(:period AS varchar)),
-                business_record AS (
-                  SELECT record.record_id,record.region_code,record.status_code FROM production.production_record record,period
-                  WHERE record.product_code=:product AND record.survey_date BETWEEN period.starts_on AND period.ends_on
+                ), business_record AS (
+                  SELECT record.record_id,record.region_code FROM production.production_record record
+                  WHERE record.product_code=:product AND record.survey_year=:year
+                    AND record.status_code='APPROVED' AND record.survey_period_governance_state='CONFIRMED'
                   UNION ALL
-                  SELECT record.record_id,record.region_code,record.status_code FROM market.market_record record,period
-                  WHERE record.product_code=:product AND record.trade_date BETWEEN period.starts_on AND period.ends_on
+                  SELECT record.record_id,record.region_code FROM market.market_record record
+                  WHERE record.product_code=:product AND record.survey_year=:year
+                    AND record.status_code='APPROVED' AND record.survey_period_governance_state='CONFIRMED'
                   UNION ALL
-                  SELECT event.event_id::text,event.destination_region_code,event.status_code FROM logistics.route_event event,period
-                  WHERE event.product_code=:product AND event.collection_date BETWEEN period.starts_on AND period.ends_on
+                  SELECT event.event_id::text,event.destination_region_code FROM logistics.route_event event
+                  WHERE event.product_code=:product AND event.survey_year=:year
+                    AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED'
                 )
                 SELECT children.code region_code,children.name region_name,
-                       COUNT(record.record_id) FILTER(WHERE record.status_code='APPROVED') approved_count,
+                       COUNT(record.record_id) approved_count,
                        COUNT(record.record_id) total_count
                 FROM children JOIN descendants ON descendants.root_code=children.code
                 LEFT JOIN business_record record ON record.region_code=descendants.code
                 GROUP BY children.code,children.name,children.sort_order
                 HAVING COUNT(record.record_id)>0 ORDER BY children.sort_order
-                """).param("region", regionCode).param("period", periodCode).param("product", productCode)
+                """).param("region", regionCode).param("year", year).param("product", productCode)
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
                 .param("authorizedRegions", authorizedRegionCodes)
                 .query((row, index) -> new OverviewDashboard.RegionActivity(
@@ -706,48 +723,8 @@ public class JdbcOverviewRepository implements OverviewRepository {
                         row.getLong("approved_count"), row.getLong("total_count"))).list();
     }
 
-    private List<OverviewDashboard.Alert> dashboardAlerts(
-            String productCode, String periodCode, String regionCode, Set<String> authorizedRegionCodes) {
-        return jdbc.sql("""
-                WITH RECURSIVE monitoring_scope AS (
-                  SELECT region_code FROM platform.monitoring_scope_region
-                  WHERE scope_code='FORMAL_BUSINESS' AND included
-                    AND (:unrestricted OR region_code IN (:authorizedRegions))
-                ), scope(code) AS (
-                  SELECT region.code FROM platform.region region JOIN monitoring_scope ON monitoring_scope.region_code=region.code
-                  WHERE CAST(:region AS varchar) IS NULL OR region.code=CAST(:region AS varchar)
-                  UNION
-                  SELECT child.code FROM platform.region child JOIN scope parent ON child.parent_code=parent.code
-                  JOIN monitoring_scope ON monitoring_scope.region_code=child.code
-                ), period AS (SELECT starts_on,ends_on FROM platform.business_period WHERE code=CAST(:period AS varchar)),
-                returned_record AS (
-                  SELECT record.region_code,record.survey_date occurred_on FROM production.production_record record,period
-                  WHERE record.product_code=:product AND record.status_code='RETURNED'
-                    AND record.region_code IN(SELECT code FROM scope) AND record.survey_date BETWEEN period.starts_on AND period.ends_on
-                  UNION ALL
-                  SELECT record.region_code,record.trade_date FROM market.market_record record,period
-                  WHERE record.product_code=:product AND record.status_code='RETURNED'
-                    AND record.region_code IN(SELECT code FROM scope) AND record.trade_date BETWEEN period.starts_on AND period.ends_on
-                  UNION ALL
-                  SELECT event.destination_region_code,event.collection_date FROM logistics.route_event event,period
-                  WHERE event.product_code=:product AND event.status_code='RETURNED'
-                    AND event.destination_region_code IN(SELECT code FROM scope)
-                    AND event.collection_date BETWEEN period.starts_on AND period.ends_on
-                )
-                SELECT 'RETURNED_RECORD' code,'WARNING' severity,region.name region_name,
-                       COUNT(*)::text||'条填报记录退回补充' message,MAX(returned.occurred_on)::text occurred_on
-                FROM returned_record returned JOIN platform.region region ON region.code=returned.region_code
-                GROUP BY region.code,region.name ORDER BY MAX(returned.occurred_on) DESC,region.code LIMIT 5
-                """).param("region", regionCode).param("period", periodCode).param("product", productCode)
-                .param("unrestricted", authorizedRegionCodes.contains("*"))
-                .param("authorizedRegions", authorizedRegionCodes)
-                .query((row, index) -> new OverviewDashboard.Alert(
-                        row.getString("code"), row.getString("severity"), row.getString("region_name"),
-                        row.getString("message"), row.getString("occurred_on"))).list();
-    }
-
     private DashboardYoYData dashboardYearOnYear(
-            String productCode, String periodCode, String regionCode, Set<String> authorizedRegionCodes) {
+            String productCode, int year, String regionCode, Set<String> authorizedRegionCodes) {
         if (regionCode == null) return new DashboardYoYData(List.of(), List.of());
         List<YoYRow> rows = jdbc.sql("""
                 WITH RECURSIVE monitoring_scope AS (
@@ -763,28 +740,27 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   SELECT descendants.root_code,child.code FROM platform.region child
                   JOIN descendants ON child.parent_code=descendants.code
                   JOIN monitoring_scope ON monitoring_scope.region_code=child.code
-                ), period AS (SELECT starts_on,ends_on FROM platform.business_period WHERE code=CAST(:period AS varchar)),
-                production_record AS (
+                ), production_record AS (
                   SELECT record.*,
-                    CASE WHEN record.survey_date BETWEEN period.starts_on AND period.ends_on THEN 'CURRENT' ELSE 'PREVIOUS' END comparison_period
-                  FROM production.production_record record,period
+                    CASE WHEN record.survey_year=:year THEN 'CURRENT' ELSE 'PREVIOUS' END comparison_period
+                  FROM production.production_record record
                   WHERE record.product_code=:product AND record.status_code='APPROVED'
-                    AND (record.survey_date BETWEEN period.starts_on AND period.ends_on
-                      OR record.survey_date BETWEEN (period.starts_on - INTERVAL '1 year')::date
-                                                AND (period.ends_on - INTERVAL '1 year')::date)
+                    AND record.survey_period_governance_state='CONFIRMED'
+                    AND record.survey_year IN (:year,:previousYear)
                 )
                 SELECT children.code region_code,children.name region_name,
-                  COALESCE(SUM(record.cultivated_area_mu) FILTER(WHERE record.comparison_period='CURRENT'),0) current_area,
-                  COALESCE(SUM(record.cultivated_area_mu) FILTER(WHERE record.comparison_period='PREVIOUS'),0) previous_area,
-                  COALESCE(SUM(record.estimated_output_kg) FILTER(WHERE record.comparison_period='CURRENT'),0) current_output,
-                  COALESCE(SUM(record.estimated_output_kg) FILTER(WHERE record.comparison_period='PREVIOUS'),0) previous_output,
+                  SUM(record.cultivated_area_mu) FILTER(WHERE record.comparison_period='CURRENT') current_area,
+                  SUM(record.cultivated_area_mu) FILTER(WHERE record.comparison_period='PREVIOUS') previous_area,
+                  SUM(record.estimated_output_kg) FILTER(WHERE record.comparison_period='CURRENT') current_output,
+                  SUM(record.estimated_output_kg) FILTER(WHERE record.comparison_period='PREVIOUS') previous_output,
                   COUNT(record.record_id) FILTER(WHERE record.comparison_period='CURRENT') current_count,
                   COUNT(record.record_id) FILTER(WHERE record.comparison_period='PREVIOUS') previous_count
                 FROM children JOIN descendants ON descendants.root_code=children.code
                 LEFT JOIN production_record record ON record.region_code=descendants.code
                 GROUP BY children.code,children.name,children.sort_order
                 HAVING COUNT(record.record_id)>0 ORDER BY children.sort_order
-                """).param("region", regionCode).param("period", periodCode).param("product", productCode)
+                """).param("region", regionCode).param("year", year).param("previousYear", year - 1)
+                .param("product", productCode)
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
                 .param("authorizedRegions", authorizedRegionCodes)
                 .query((row, index) -> new YoYRow(
@@ -814,7 +790,9 @@ public class JdbcOverviewRepository implements OverviewRepository {
             List<OverviewDashboard.YoYComparison> output) {}
 
     private boolean exists(String sql, String value) { return Boolean.TRUE.equals(jdbc.sql(sql).param("value", value).query(Boolean.class).single()); }
-    private static String decimal(BigDecimal value) { return value == null ? "0" : value.stripTrailingZeros().toPlainString(); }
+    private static String decimal(BigDecimal value) {
+        return value == null ? null : value.stripTrailingZeros().toPlainString();
+    }
     private static String sourcePath(String domain) {
         return switch (domain) {
             case "PRODUCTION" -> "/api/v1/production-records";

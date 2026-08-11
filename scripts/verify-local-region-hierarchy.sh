@@ -84,10 +84,28 @@ if failures:
 print("[OK] formal master-data hierarchy covers Qiqihar, Heihe and Hulunbuir through villages")
 PY
 
+fetch "/api/v1/overview/options" >"$payload_file"
+overview_year="$($python_bin - "$payload_file" <<'PY'
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as source:
+        years = json.load(source)["data"]["years"]
+    year = years[0]
+    if not isinstance(year, int):
+        raise TypeError("year must be an integer")
+except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
+    raise SystemExit(f"[FAIL] no authoritative overview year is available: {exc}")
+
+print(year)
+PY
+)"
+
 verify_overview_children() {
   local parent_code="$1"
   local expected_spec="$2"
-  local query="/api/v1/overview/regions?productCode=CORN"
+  local query="/api/v1/overview/regions?productCode=CORN&year=${overview_year}"
   if [[ -n "$parent_code" ]]; then
     query="${query}&parentCode=${parent_code}"
   fi

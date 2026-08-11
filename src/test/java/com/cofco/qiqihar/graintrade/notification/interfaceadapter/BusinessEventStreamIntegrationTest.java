@@ -7,6 +7,8 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.classic.spi.ThrowableProxyUtil;
 import ch.qos.logback.core.read.ListAppender;
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
+import com.cofco.qiqihar.graintrade.notification.application.BusinessNotificationRepository;
+import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
@@ -19,6 +21,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
@@ -38,7 +41,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 class BusinessEventStreamIntegrationTest {
     private static final String READER = "business-event-reader";
     private static final String WORK_UNIT = "BUSINESS_EVENT_STREAM_TEST";
-    private static final String VISIBLE_REGION = "230200";
+    private static final String VISIBLE_REGION = "230208";
     private static final String HIDDEN_REGION = "231100";
     private static final UUID FIRST_VISIBLE = UUID.fromString("00000000-0000-0000-0000-000000000073");
     private static final UUID HIDDEN = UUID.fromString("00000000-0000-0000-0000-000000000074");
@@ -47,6 +50,7 @@ class BusinessEventStreamIntegrationTest {
 
     @LocalServerPort int port;
     @Autowired DataSource dataSource;
+    @Autowired BusinessNotificationRepository notifications;
     private JdbcClient jdbc;
 
     @BeforeEach
@@ -83,7 +87,7 @@ class BusinessEventStreamIntegrationTest {
                   work_unit_code,region_codes,product_code,occurred_at,detail)
                 VALUES(:id,'MARKET_RECORD',:aggregateId,'MARKET_RECORD_CREATED',
                   'market-tester',:unit,ARRAY[:regionCode],'CORN',now(),
-                  jsonb_build_object('regionCode',:regionCode))
+                  jsonb_build_object('regionCode',:regionCode,'productCode','CORN','surveyYear',2026))
                 """).param("id", id).param("aggregateId", aggregateId)
                 .param("unit", WORK_UNIT).param("regionCode", regionCode).update();
     }
@@ -126,10 +130,25 @@ class BusinessEventStreamIntegrationTest {
                     .contains("\"id\":\"" + SECOND_VISIBLE + "\"")
                     .contains("\"aggregateId\":\"stream-market-second\"")
                     .contains("\"productCode\":\"CORN\"")
+                    .contains("\"surveyYear\":2026")
+                    .contains("\"regionCodes\":[\"230200\",\"230208\"]")
                     .doesNotContain(FIRST_VISIBLE.toString())
                     .doesNotContain(HIDDEN.toString())
                     .doesNotContain("stream-market-hidden");
         }
+    }
+
+    @Test
+    void ancestorRefreshProjectionDoesNotWidenStoredRegionAuthorization() {
+        assertThat(notifications.findVisible(
+                        new AuthorizedReadScope(READER, Set.of("230200")), READER, 20))
+                .noneMatch(notification -> notification.id().equals(FIRST_VISIBLE));
+        assertThat(notifications.findVisible(
+                        new AuthorizedReadScope(READER, Set.of(VISIBLE_REGION)), READER, 20))
+                .filteredOn(notification -> notification.id().equals(FIRST_VISIBLE))
+                .singleElement()
+                .satisfies(notification -> assertThat(notification.regionCodes())
+                        .containsExactly("230200", VISIBLE_REGION));
     }
 
     @Test

@@ -42,7 +42,8 @@ class LocalSecurityBootstrapOverviewIntegrationTest {
 
         mockMvc.perform(get("/api/v1/overview/regions")
                         .header("X-Actor", "wang-yang")
-                        .queryParam("productCode", "CORN"))
+                        .queryParam("productCode", "CORN")
+                        .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[*].code").value(org.hamcrest.Matchers.contains(
                         "230200", "231100", "150700")));
@@ -56,6 +57,7 @@ class LocalSecurityBootstrapOverviewIntegrationTest {
         mockMvc.perform(get("/api/v1/overview/regions")
                         .header("X-Actor", "wang-yang")
                         .queryParam("productCode", "CORN")
+                        .queryParam("year", "2026")
                         .queryParam("parentCode", parentCode))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[*].code").value(org.hamcrest.Matchers.hasItem(childCode)));

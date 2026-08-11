@@ -163,9 +163,11 @@ public class SupplyAccountService {
                 current,
                 now,
                 decisionVersion));
-        audit(principal, "SUPPLY_ACCOUNT", persisted.id(), "SUPPLY_ACCOUNT_CALCULATED", command.regionCode());
+        audit(principal, "SUPPLY_ACCOUNT", persisted.id(), "SUPPLY_ACCOUNT_CALCULATED",
+                command.productCode(), command.regionCode(), temporalContext.surveyYear());
         if (formal) {
-            audit(principal, "SUPPLY_ACCOUNT", persisted.id(), "SUPPLY_ACCOUNT_PUBLISHED", command.regionCode());
+            audit(principal, "SUPPLY_ACCOUNT", persisted.id(), "SUPPLY_ACCOUNT_PUBLISHED",
+                    command.productCode(), command.regionCode(), temporalContext.surveyYear());
         }
         return persisted;
     }
@@ -193,7 +195,8 @@ public class SupplyAccountService {
                 .multiply(material.mapping().conversionFactor()).setScale(4, RoundingMode.HALF_UP);
         SupplyReleaseView persisted = repository.persistSourceRelease(new SupplySourceReleasePersistence(
                 command, temporalContext, material, value, digest(command, value), current, clock.instant()));
-        audit(principal, "SUPPLY_SOURCE_RELEASE", persisted.id(), "SUPPLY_SOURCE_RELEASED", command.regionCode());
+        audit(principal, "SUPPLY_SOURCE_RELEASE", persisted.id(), "SUPPLY_SOURCE_RELEASED",
+                command.productCode(), command.regionCode(), temporalContext.surveyYear());
         return persisted;
     }
 
@@ -213,7 +216,8 @@ public class SupplyAccountService {
         long version = material.decisionExists() ? material.currentVersion() + 1 : 0;
         SupplyReleaseView persisted = repository.persistManualDecision(new SupplyManualDecisionPersistence(
                 command, temporalContext, material.mapping(), version, digest(command, command.value()), current, clock.instant()));
-        audit(principal, "SUPPLY_MANUAL_INPUT", persisted.id(), "SUPPLY_MANUAL_INPUT_APPROVED", command.regionCode());
+        audit(principal, "SUPPLY_MANUAL_INPUT", persisted.id(), "SUPPLY_MANUAL_INPUT_APPROVED",
+                command.productCode(), command.regionCode(), temporalContext.surveyYear());
         return persisted;
     }
 
@@ -245,7 +249,8 @@ public class SupplyAccountService {
         }
         SupplyInputSetView persisted = repository.persistInputSet(new SupplyInputSetPersistence(
                 command, temporalContext, material.currentVersion() + 1, material.selectedSources(), current, clock.instant()));
-        audit(principal, "SUPPLY_INPUT_SET", persisted.id(), "SUPPLY_INPUT_SET_CREATED", command.regionCode());
+        audit(principal, "SUPPLY_INPUT_SET", persisted.id(), "SUPPLY_INPUT_SET_CREATED",
+                command.productCode(), command.regionCode(), temporalContext.surveyYear());
         return persisted;
     }
 
@@ -312,10 +317,11 @@ public class SupplyAccountService {
     }
 
     private void audit(SecurityPrincipal principal, String aggregateType, String aggregateId,
-            String actionCode, String regionCode) {
+            String actionCode, String productCode, String regionCode, int surveyYear) {
         if (audit != null) {
             audit.record(principal, aggregateType, aggregateId, actionCode, clock.instant(),
-                    "{\"regionCode\":\"" + regionCode + "\"}");
+                    "{\"regionCode\":\"" + regionCode + "\",\"productCode\":\""
+                            + productCode + "\",\"surveyYear\":" + surveyYear + "}");
         }
     }
 

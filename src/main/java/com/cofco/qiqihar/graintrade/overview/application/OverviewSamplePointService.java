@@ -25,62 +25,65 @@ public class OverviewSamplePointService {
     }
 
     @Transactional(readOnly = true)
-    public List<OverviewSamplePointAggregate> aggregates(String productCode, String parentCode) {
-        validateProduct(productCode);
+    public List<OverviewSamplePointAggregate> aggregates(Integer year, String parentCode) {
+        int effectiveYear = effectiveYear(year);
         if (!blank(parentCode) && (!overview.knownRegion(parentCode)
                 || !"PREFECTURE".equals(samplePoints.regionLevel(parentCode)))) throw invalid();
         AuthorizedReadScope scope = accessControl.requireReadScope();
         if (scope.regionCodes().isEmpty()) return List.of();
         authorizeNavigation(parentCode, scope);
-        return samplePoints.aggregates(productCode, parentCode, scope.regionCodes());
+        return samplePoints.aggregates(effectiveYear, parentCode, scope.regionCodes());
     }
 
     @Transactional(readOnly = true)
-    public OverviewSamplePointList list(String productCode, String regionCode, String categoryCode, String typeCode, String query) {
-        validateFilter(productCode, regionCode, categoryCode, typeCode);
+    public OverviewSamplePointList list(Integer year, String regionCode, String categoryCode, String typeCode, String query) {
+        int effectiveYear = effectiveYear(year);
+        validateFilter(regionCode, categoryCode, typeCode);
         String normalizedQuery = normalizeQuery(query);
         AuthorizedReadScope scope = accessControl.requireReadScope();
         authorizeNavigation(regionCode, scope);
-        return samplePoints.list(productCode, regionCode, categoryCode, typeCode, normalizedQuery, scope.regionCodes());
+        return samplePoints.list(effectiveYear, regionCode, categoryCode, typeCode, normalizedQuery, scope.regionCodes());
     }
 
     @Transactional(readOnly = true)
-    public List<OverviewSamplePointIcon> icons(String productCode, String regionCode, String categoryCode,
+    public List<OverviewSamplePointIcon> icons(Integer year, String regionCode, String categoryCode,
             String typeCode, String query) {
-        validateFilter(productCode, regionCode, categoryCode, typeCode);
+        int effectiveYear = effectiveYear(year);
+        validateFilter(regionCode, categoryCode, typeCode);
         if (blank(categoryCode) || !iconRegionLevel(samplePoints.regionLevel(regionCode))) throw invalid();
         String normalizedQuery = normalizeQuery(query);
         AuthorizedReadScope scope = accessControl.requireReadScope();
         authorizeNavigation(regionCode, scope);
-        return samplePoints.icons(productCode, regionCode, categoryCode, typeCode, normalizedQuery,
+        return samplePoints.icons(effectiveYear, regionCode, categoryCode, typeCode, normalizedQuery,
                 scope.regionCodes());
     }
 
     @Transactional(readOnly = true)
-    public OverviewSamplePointDetail detail(String productCode, UUID samplePointId, String regionCode,
+    public OverviewSamplePointDetail detail(Integer year, UUID samplePointId, String regionCode,
             String categoryCode, String typeCode) {
-        validateFilter(productCode, regionCode, categoryCode, typeCode);
+        int effectiveYear = effectiveYear(year);
+        validateFilter(regionCode, categoryCode, typeCode);
         if (samplePointId == null) throw invalid();
         AuthorizedReadScope scope = accessControl.requireReadScope();
         authorizeNavigation(regionCode, scope);
-        return samplePoints.detail(productCode, samplePointId, regionCode, categoryCode, typeCode,
+        return samplePoints.detail(effectiveYear, samplePointId, regionCode, categoryCode, typeCode,
                         scope.regionCodes())
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "OVERVIEW_SAMPLE_POINT_NOT_FOUND", "Sample point was not found"));
     }
 
-    private void validateFilter(String productCode, String regionCode, String categoryCode, String typeCode) {
-        validateProduct(productCode);
+    private void validateFilter(String regionCode, String categoryCode, String typeCode) {
         if (blank(regionCode) || !overview.knownRegion(regionCode)) throw invalid();
         if (!blank(categoryCode) && !samplePoints.knownCategory(categoryCode)) throw invalid();
         if (!blank(typeCode) && (blank(categoryCode)
-                || !samplePoints.knownType(productCode, categoryCode, typeCode))) {
+                || !samplePoints.knownType(categoryCode, typeCode))) {
             throw invalid();
         }
     }
 
-    private void validateProduct(String productCode) {
-        if (blank(productCode) || !overview.knownProduct(productCode)) throw invalid();
+    private int effectiveYear(Integer year) {
+        if (year == null || year < 1900 || year > 2200) throw invalid();
+        return year;
     }
 
     private void authorizeNavigation(String regionCode, AuthorizedReadScope scope) {

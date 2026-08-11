@@ -15,11 +15,11 @@ public interface OverviewRepository {
     List<AnnualComparisonDefinition> annualComparisonDefinitions(String sourceDomain, String productCode);
     Optional<AnnualComparisonDefinition> annualComparisonDefinition(String indicatorCode);
     boolean canNavigateRegion(String regionCode, Set<String> authorizedRegionCodes);
-    List<OverviewRegion> regions(String parentCode, String productCode, String periodCode, Set<String> authorizedRegionCodes);
-    List<OverviewRegion> locations(String ancestorCode, String level, String productCode, String periodCode, Set<String> authorizedRegionCodes);
-    List<OverviewIndicator> indicators(String productCode, String regionCode, String periodCode, String marketingYear,
+    List<OverviewRegion> regions(String parentCode, String productCode, int year, Set<String> authorizedRegionCodes);
+    List<OverviewRegion> locations(String ancestorCode, String level, String productCode, int year, Set<String> authorizedRegionCodes);
+    List<OverviewIndicator> indicators(String productCode, String regionCode, int year,
             Set<String> authorizedRegionCodes);
-    OverviewDashboard dashboard(String productCode, String periodCode, String regionCode, String marketingYear,
+    OverviewDashboard dashboard(String productCode, int year, String regionCode,
             Set<String> authorizedRegionCodes);
     List<AnnualComparisonPoint> annualComparison(String productCode, String cultivarCode, String regionCode,
             int surveyYear, AnnualComparisonDefinition definition, Set<String> authorizedRegionCodes);

@@ -27,21 +27,25 @@ public class OverviewController {
 
     @GetMapping("/api/v1/overview/regions")
     ApiResponse<List<OverviewRegion>> regions(@RequestParam(required = false) String parentCode,
-            @RequestParam String productCode, @RequestParam(required = false) String periodCode) {
-        return new ApiResponse<>(service.regions(parentCode, productCode, periodCode));
+            @RequestParam String productCode, @RequestParam(required = false) Integer year,
+            @RequestParam(required = false) String periodCode) {
+        return new ApiResponse<>(service.regions(parentCode, productCode, year, periodCode));
     }
 
     @GetMapping("/api/v1/overview/locations")
     ApiResponse<List<OverviewRegion>> locations(@RequestParam(required = false) String ancestorCode,
             @RequestParam String level,
-            @RequestParam String productCode, @RequestParam(required = false) String periodCode) {
-        return new ApiResponse<>(service.locations(ancestorCode, level, productCode, periodCode));
+            @RequestParam String productCode, @RequestParam(required = false) Integer year,
+            @RequestParam(required = false) String periodCode) {
+        return new ApiResponse<>(service.locations(ancestorCode, level, productCode, year, periodCode));
     }
 
     @GetMapping("/api/v1/overview/indicators")
     ApiResponse<List<OverviewIndicator>> indicators(@RequestParam String productCode, @RequestParam String regionCode,
-            @RequestParam String periodCode, @RequestParam(required = false) String marketingYear) {
-        return new ApiResponse<>(service.indicators(productCode, regionCode, periodCode, marketingYear));
+            @RequestParam(required = false) Integer year,
+            @RequestParam(required = false) String periodCode,
+            @RequestParam(required = false) String marketingYear) {
+        return new ApiResponse<>(service.indicators(productCode, regionCode, year, periodCode));
     }
 
     @GetMapping("/api/v1/overview/annual-comparisons")
@@ -63,9 +67,10 @@ public class OverviewController {
     @GetMapping("/api/v1/overview/dashboard")
     ApiResponse<OverviewDashboard> dashboard(
             @RequestParam String productCode,
+            @RequestParam(required = false) Integer year,
             @RequestParam(required = false) String periodCode,
             @RequestParam(required = false) String regionCode,
             @RequestParam(required = false) String marketingYear) {
-        return new ApiResponse<>(service.dashboard(productCode, periodCode, regionCode, marketingYear));
+        return new ApiResponse<>(service.dashboard(productCode, year, periodCode, regionCode));
     }
 }

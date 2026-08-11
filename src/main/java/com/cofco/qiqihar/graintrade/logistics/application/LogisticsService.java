@@ -128,8 +128,11 @@ public class LogisticsService {
         if(audit==null)return;
         String regions=repository.regionsForRecord(record.id()).stream().sorted()
                 .map(region->"\""+region+"\"").collect(java.util.stream.Collectors.joining(","));
+        String surveyYear=record.values().get("LOG_SURVEY_YEAR");
+        if(blank(surveyYear))throw new IllegalStateException("Logistics survey year is missing");
         audit.record(principal,"LOGISTICS_RECORD",record.id(),action,clock.instant(),
-                "{\"regionCodes\":["+regions+"],\"productCode\":\""+record.productCode()+"\"}");
+                "{\"regionCodes\":["+regions+"],\"productCode\":\""+record.productCode()
+                        +"\",\"surveyYear\":"+surveyYear+"}");
     }
     private LogisticsRecordView required(String id){LogisticsRecordView value=repository.find(id); if(value==null) throw new ResourceNotFoundException("LOGISTICS_RECORD_NOT_FOUND","Logistics record was not found"); return value;}
     private LogisticsDraft securedImportDraft(LogisticsDraft draft) {

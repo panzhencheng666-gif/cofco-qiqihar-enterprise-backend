@@ -11,6 +11,7 @@ public record BusinessNotification(
         String aggregateId,
         String actionCode,
         String productCode,
+        Integer surveyYear,
         List<String> regionCodes,
         Instant occurredAt,
         boolean read) {
