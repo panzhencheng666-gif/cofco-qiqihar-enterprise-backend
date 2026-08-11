@@ -90,7 +90,7 @@ wait_for_stack() {
       "http://127.0.0.1:${backend_port}/actuator/health" &&
       owned_service_is_ready \
         "business frontend" "${runtime_root}/pids/business.pid" "$business_port" \
-        "http://127.0.0.1:${business_port}/prototype.html" &&
+        "http://127.0.0.1:${business_port}/" &&
       owned_service_is_ready \
         "overview frontend" "${runtime_root}/pids/overview.pid" "$overview_port" \
         "http://127.0.0.1:${overview_port}/"; then
@@ -243,7 +243,7 @@ status_agent() {
   print_service_status "backend" "${runtime_root}/pids/backend.pid" "$backend_port" \
     "http://127.0.0.1:${backend_port}/actuator/health" || ok=0
   print_service_status "business" "${runtime_root}/pids/business.pid" "$business_port" \
-    "http://127.0.0.1:${business_port}/prototype.html" || ok=0
+    "http://127.0.0.1:${business_port}/" || ok=0
   print_service_status "overview" "${runtime_root}/pids/overview.pid" "$overview_port" \
     "http://127.0.0.1:${overview_port}/" || ok=0
   echo "Logs: ${runtime_root}/logs and ${launchd_log_dir}"

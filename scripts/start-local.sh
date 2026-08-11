@@ -287,7 +287,7 @@ start_business() {
     return 1
   fi
 
-  if service_state "$business_pid_file" "$business_port" "business frontend" "http://127.0.0.1:${business_port}/prototype.html"; then
+  if service_state "$business_pid_file" "$business_port" "business frontend" "http://127.0.0.1:${business_port}/"; then
     return
   else
     service_state=$?
@@ -309,14 +309,14 @@ start_business() {
     VITE_OVERVIEW_MAP_PORT="$overview_port" \
     npm \
     run \
-    prototype \
+    dev \
     -- --host \
     127.0.0.1 \
     --port \
     "$business_port" \
     --strictPort
   business_pid=$!
-  if ! wait_for_ready "business frontend" "http://127.0.0.1:${business_port}/prototype.html" 30 "$business_stderr_log"; then
+  if ! wait_for_ready "business frontend" "http://127.0.0.1:${business_port}/" 30 "$business_stderr_log"; then
     log "Business frontend did not become ready; no unverified listener was signalled."
     return 1
   fi
@@ -336,8 +336,8 @@ start_business
 "$region_verify_script"
 
 log "Started services."
-log "Business: http://$local_access_host:${business_port}/prototype.html"
-log "Overview: http://$local_access_host:${overview_port}/"
+log "Business（唯一验收入口）: http://$local_access_host:${business_port}/"
+log "Overview renderer（内部）: http://$local_access_host:${overview_port}/"
 log "Backend（仅本机）:  http://127.0.0.1:${backend_port}/actuator/health"
 log "Logs: $log_dir"
 

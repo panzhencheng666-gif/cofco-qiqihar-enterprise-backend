@@ -14,7 +14,7 @@ if grep -Fq "cofco-qiqihar-dashboard" "$launcher"; then
 fi
 
 required_fragments=(
-  "/Users/federal/Desktop/cofco-qiqihar-enterprise-backend"
+  "/Users/federal/Library/Application Support/COFCO Qiqihar Enterprise/runtime/cofco-qiqihar-enterprise-backend"
   "scripts/local-runtime.sh"
   "install"
   "scripts/verify-local-region-hierarchy.sh"
@@ -23,6 +23,16 @@ required_fragments=(
   "http://127.0.0.1:8090/actuator/health"
   "com.cofco.qiqihar.enterprise.local-stack"
 )
+
+for forbidden_fragment in \
+  "/Users/federal/Desktop/cofco-qiqihar-enterprise-backend" \
+  "prototype.html" \
+  "64185"; do
+  if grep -Fq "$forbidden_fragment" "$launcher"; then
+    echo "[FAIL] desktop launcher contains a forbidden entry: $forbidden_fragment" >&2
+    exit 1
+  fi
+done
 
 for fragment in "${required_fragments[@]}"; do
   if ! grep -Fq "$fragment" "$launcher"; then

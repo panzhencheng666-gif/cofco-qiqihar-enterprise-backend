@@ -17,7 +17,7 @@ declare -a checks=("backend|http://127.0.0.1:${backend_port}/actuator/health|后
 
 if [[ "$runtime_profile" == "local" ]]; then
   checks+=(
-    "business|http://127.0.0.1:${business_port}/prototype.html|业务前端"
+    "business|http://127.0.0.1:${business_port}/|业务前端唯一验收入口"
     "overview|http://127.0.0.1:${overview_port}/|总览前端"
     "business API proxy|http://127.0.0.1:${business_port}/api/v1/master-data/products|业务前端本地身份代理"
     "overview API proxy|http://127.0.0.1:${overview_port}/api/v1/master-data/products|总览前端本地身份代理"
@@ -58,7 +58,7 @@ echo
 echo "运行模式: $runtime_profile"
 if [[ "$runtime_profile" == "local" ]]; then
   echo "建议访问入口:"
-  echo "http://$host:${business_port}/prototype.html?page=overview&section=map"
+  echo "http://$host:${business_port}/"
 fi
 echo "日志路径: $log_dir"
 

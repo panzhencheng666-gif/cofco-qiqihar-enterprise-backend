@@ -27,7 +27,33 @@ class LocalLauncherSecurityContractTest {
         assertThat(normalized)
                 .doesNotContain("--host 0.0.0.0");
         assertThat(occurrences(normalized, "--host 127.0.0.1")).isEqualTo(2);
-        assertThat(normalized).contains("npm run dev", "npm run prototype");
+        assertThat(occurrences(normalized, "npm run dev")).isEqualTo(2);
+        assertThat(normalized).doesNotContain("npm run prototype");
+    }
+
+    @Test
+    void businessRuntimeUsesOnlyTheCanonicalRootEntry() throws IOException {
+        String runtime = String.join("\n",
+                java.nio.file.Files.readString(START_SCRIPT),
+                java.nio.file.Files.readString(Path.of("scripts/local-runtime.sh")),
+                java.nio.file.Files.readString(HEALTHCHECK),
+                java.nio.file.Files.readString(LINK_VERIFIER),
+                java.nio.file.Files.readString(Path.of("LOCAL_RUNBOOK.md")),
+                java.nio.file.Files.readString(Path.of("docs/operations/local-launchd-runtime.md")));
+
+        assertThat(runtime).doesNotContain("prototype.html", "64185", "vite.prototype.config.ts");
+        assertThat(runtime).doesNotContain("/Users/federal/Desktop/cofco-qiqihar-enterprise-backend");
+        assertThat(runtime).contains("http://127.0.0.1:${business_port}/");
+    }
+
+    @Test
+    void desktopLauncherContractRequiresTheFormalRuntimeRepository() throws IOException {
+        String verifier = java.nio.file.Files.readString(Path.of("scripts/verify-desktop-launcher-contract.sh"));
+
+        assertThat(verifier)
+                .contains("/Users/federal/Library/Application Support/COFCO Qiqihar Enterprise/runtime/cofco-qiqihar-enterprise-backend")
+                .contains("prototype.html", "64185")
+                .contains("/Users/federal/Desktop/cofco-qiqihar-enterprise-backend");
     }
 
     @Test
@@ -84,7 +110,7 @@ class LocalLauncherSecurityContractTest {
 
         assertThat(script).contains("overview_frontend_root", "business_frontend_root");
         assertThat(script).contains("${overview_frontend_root}/package.json", "${overview_frontend_root}/vite.config.ts");
-        assertThat(script).contains("${business_frontend_root}/package.json", "${business_frontend_root}/vite.prototype.config.ts");
+        assertThat(script).contains("${business_frontend_root}/package.json", "${business_frontend_root}/vite.config.ts");
     }
 
     @Test

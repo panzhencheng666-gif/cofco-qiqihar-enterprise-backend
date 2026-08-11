@@ -8,7 +8,7 @@
 ## 安装与管理
 
 ```bash
-cd /Users/federal/Desktop/cofco-qiqihar-enterprise-backend
+cd "/Users/federal/Library/Application Support/COFCO Qiqihar Enterprise/runtime/cofco-qiqihar-enterprise-backend"
 ./scripts/local-runtime.sh install
 ./scripts/local-runtime.sh start
 ./scripts/local-runtime.sh stop
@@ -21,13 +21,13 @@ cd /Users/federal/Desktop/cofco-qiqihar-enterprise-backend
 LaunchAgent 并停止所有权记录匹配的组件，但保留 plist；`uninstall` 还会删除 plist。
 `status` 报告监督者 PID，以及每项服务的 listener PID、端口、HTTP 状态和所有权。
 
-macOS 不允许普通 LaunchAgent 直接读取 `Desktop`。因此安装命令使用 APFS clonefile
-把三个工作树的当前内容复制到：
+LaunchAgent 只读取正式 runtime 三仓。安装命令使用 APFS clonefile 把当前正式候选
+复制到隔离的临时目录后原子替换运行快照：
 
 `~/Library/Application Support/COFCO Qiqihar Enterprise/runtime`
 
-后台进程只读取该运行副本，不回写或覆盖工作树。工作树有新代码后再次执行
-`install` 即可刷新；异常恢复无需访问 `Desktop`。
+后台进程只读取该运行快照，不回写或覆盖候选仓库。候选有新代码后再次执行
+`install` 即可刷新；异常恢复不访问 Desktop 下的同名仓库。
 
 ## 健康检查与日志
 

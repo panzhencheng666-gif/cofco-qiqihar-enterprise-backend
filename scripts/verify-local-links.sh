@@ -17,8 +17,8 @@ overview_port="${COFCO_ENTERPRISE_OVERVIEW_PORT:-63200}"
 
 declare -a checks=(
   "backend|http://127.0.0.1:${backend_port}/actuator/health|后端健康检查"
-  "business|http://${host}:${business_port}/prototype.html|业务前端"
-  "overview|http://${host}:${overview_port}/|总览前端"
+  "business|http://${host}:${business_port}/|业务前端唯一验收入口"
+  "overview|http://${host}:${overview_port}/|内部总揽渲染器"
   "business API proxy|http://${host}:${business_port}/api/v1/master-data/products|业务前端本地身份代理"
   "overview API proxy|http://${host}:${overview_port}/api/v1/master-data/products|总览前端本地身份代理"
 )
@@ -51,7 +51,7 @@ runtime_files=(
   "${overview_frontend_root}/package.json" \
   "${overview_frontend_root}/vite.config.ts" \
   "${business_frontend_root}/package.json" \
-  "${business_frontend_root}/vite.prototype.config.ts" \
+  "${business_frontend_root}/vite.config.ts" \
   "$launcher"
 )
 if grep -Fq -- "$legacy_project" "${runtime_files[@]}"; then
@@ -61,8 +61,8 @@ fi
 
 echo
 echo "仅限本机访问:"
-echo "业务入口: http://$host:${business_port}/prototype.html?page=overview&section=map"
-echo "总览入口: http://$host:${overview_port}/"
+echo "业务唯一验收入口: http://$host:${business_port}/"
+echo "内部总揽渲染器（非用户入口）: http://$host:${overview_port}/"
 
 if [[ "$all_ok" -ne 1 ]]; then
   echo "建议执行: ./scripts/healthcheck-local.sh"
