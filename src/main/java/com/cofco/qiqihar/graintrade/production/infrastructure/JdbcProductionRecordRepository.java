@@ -10,9 +10,11 @@ import com.cofco.qiqihar.graintrade.production.domain.ProductionStatus;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -20,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import javax.sql.DataSource;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
@@ -333,6 +336,95 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
                         """).param("id", record.id()).param("code", code).param("value", value).update());
     }
 
+    @Override
+    public void linkApprovedSamplePoint(
+            ProductionRecord record, String approvingActorId, Instant approvedAt) {
+        String subjectId = record.submissionMetadata().get("PROD_SAMPLE_SUBJECT_CODE");
+        String canonicalName = record.submissionMetadata().get("PROD_SAMPLE_NAME");
+        String latitudeValue = record.submissionMetadata().get("PROD_SAMPLE_LATITUDE");
+        String longitudeValue = record.submissionMetadata().get("PROD_SAMPLE_LONGITUDE");
+        if (subjectId == null || subjectId.isBlank()
+                || canonicalName == null || canonicalName.isBlank()
+                || latitudeValue == null || longitudeValue == null) return;
+        subjectId = subjectId.trim();
+        BigDecimal latitude = new BigDecimal(latitudeValue);
+        BigDecimal longitude = new BigDecimal(longitudeValue);
+        boolean contained = jdbc.sql("""
+                SELECT EXISTS(
+                  SELECT 1 FROM overview.administrative_boundary
+                  WHERE region_code=:regionCode
+                    AND ST_Covers(geometry,ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326)))
+                """).param("regionCode", record.regionCode()).param("longitude", longitude)
+                .param("latitude", latitude).query(Boolean.class).single();
+        if (!contained) return;
+
+        jdbc.sql("SELECT pg_advisory_xact_lock(hashtextextended(:identity,0))")
+                .param("identity", "PRODUCTION:" + subjectId)
+                .query((row, index) -> Boolean.TRUE).single();
+        Optional<ExistingSamplePoint> existing = jdbc.sql("""
+                SELECT point.sample_point_id,point.region_code,
+                       ST_X(point.governed_point) longitude,ST_Y(point.governed_point) latitude,
+                       (SELECT count(DISTINCT linked.object_type_code)=1
+                                  AND min(linked.object_type_code)=:objectTypeCode
+                        FROM production.production_record linked
+                        WHERE linked.sample_point_id=point.sample_point_id) object_type_matches
+                FROM registry.sample_point_subject_identity identity
+                JOIN registry.sample_point point ON point.sample_point_id=identity.sample_point_id
+                WHERE identity.business_domain='PRODUCTION' AND identity.subject_id=:subjectId
+                """).param("subjectId", subjectId)
+                .param("objectTypeCode", record.objectTypeCode())
+                .query((row, index) -> new ExistingSamplePoint(
+                        row.getObject("sample_point_id", UUID.class), row.getString("region_code"),
+                        row.getBigDecimal("longitude"), row.getBigDecimal("latitude"),
+                        row.getBoolean("object_type_matches")))
+                .optional();
+        if (existing.isPresent()) {
+            ExistingSamplePoint point = existing.get();
+            if (!point.objectTypeMatches() || !point.regionCode().equals(record.regionCode())
+                    || point.longitude().compareTo(longitude) != 0
+                    || point.latitude().compareTo(latitude) != 0) return;
+            int linked = jdbc.sql("""
+                    UPDATE production.production_record SET sample_point_id=:samplePointId
+                    WHERE record_id=:recordId AND status_code='APPROVED' AND sample_point_id IS NULL
+                    """).param("samplePointId", point.samplePointId())
+                    .param("recordId", record.id()).update();
+            requireUpdated(linked);
+            return;
+        }
+
+        String submittingActorId = jdbc.sql("""
+                SELECT actor_subject_id FROM platform.business_event_outbox
+                WHERE aggregate_type='PRODUCTION_RECORD' AND aggregate_id=:recordId
+                  AND action_code='PRODUCTION_RECORD_SUBMITTED'
+                ORDER BY event_sequence DESC LIMIT 1
+                """).param("recordId", record.id()).query(String.class).single();
+        UUID samplePointId = UUID.randomUUID();
+        OffsetDateTime approvedTime = OffsetDateTime.ofInstant(approvedAt, ZoneOffset.UTC);
+        jdbc.sql("""
+                INSERT INTO registry.sample_point(
+                  sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
+                  governed_point,effective_from,version,created_by,created_at,updated_by,updated_at)
+                VALUES(:samplePointId,'SURVEY_SITE',:canonicalName,:regionCode,'APPROVED','VALID',
+                  ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326),:effectiveFrom,0,
+                  :submittingActorId,:approvedAt,:approvingActorId,:approvedAt)
+                """).param("samplePointId", samplePointId).param("canonicalName", canonicalName)
+                .param("regionCode", record.regionCode()).param("longitude", longitude)
+                .param("latitude", latitude).param("effectiveFrom", record.surveyDate())
+                .param("submittingActorId", submittingActorId).param("approvedAt", approvedTime)
+                .param("approvingActorId", approvingActorId).update();
+        jdbc.sql("""
+                INSERT INTO registry.sample_point_subject_identity(
+                  business_domain,subject_id,sample_point_id,created_at,created_by)
+                VALUES('PRODUCTION',:subjectId,:samplePointId,:approvedAt,:approvingActorId)
+                """).param("subjectId", subjectId).param("samplePointId", samplePointId)
+                .param("approvedAt", approvedTime).param("approvingActorId", approvingActorId).update();
+        int linked = jdbc.sql("""
+                UPDATE production.production_record SET sample_point_id=:samplePointId
+                WHERE record_id=:recordId AND status_code='APPROVED' AND sample_point_id IS NULL
+                """).param("samplePointId", samplePointId).param("recordId", record.id()).update();
+        requireUpdated(linked);
+    }
+
     private void replaceValues(String table, String codeColumn, String recordId, Map<String, BigDecimal> values) {
         jdbc.sql("DELETE FROM " + table + " WHERE record_id = :recordId").param("recordId", recordId).update();
         values.forEach((code, value) -> jdbc.sql("INSERT INTO " + table
@@ -430,6 +522,9 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
     private record FactRow(String category, String code, BigDecimal value) { }
     private record PageFactRow(String recordId, String code, BigDecimal value) { }
     private record SubmissionMetadataRow(String recordId, String code, String value) { }
+    private record ExistingSamplePoint(
+            UUID samplePointId, String regionCode, BigDecimal longitude, BigDecimal latitude,
+            boolean objectTypeMatches) { }
     private record ListRow(String id, String productCode, String objectTypeName, String regionName,
             String cultivarName, LocalDate surveyDate, OffsetDateTime reportedAt, int surveyYear, Integer surveyMonth,
             String surveyPeriodPrecision, String surveyPeriodGovernanceState,

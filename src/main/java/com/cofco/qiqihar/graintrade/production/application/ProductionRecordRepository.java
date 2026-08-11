@@ -3,6 +3,7 @@ package com.cofco.qiqihar.graintrade.production.application;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecord;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecordQuery;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
+import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -20,4 +21,5 @@ public interface ProductionRecordRepository {
     ProductionRecord insert(ProductionRecord record, String actorId);
     ProductionRecord updateFacts(ProductionRecord record, long expectedVersion, String actorId);
     ProductionRecord updateState(ProductionRecord record, long expectedVersion, String actorId);
+    void linkApprovedSamplePoint(ProductionRecord record, String approvingActorId, Instant approvedAt);
 }

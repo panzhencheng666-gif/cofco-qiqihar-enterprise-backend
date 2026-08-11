@@ -287,10 +287,13 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
     public void linkApprovedSamplePoint(MarketMonitoringRecord record,
             Map<String, String> extensionCoreValues, String approvingActorId, Instant approvedAt) {
         String canonicalName = extensionCoreValues.get("MKT_SAMPLE_NAME");
+        String subjectId = extensionCoreValues.get("MKT_SAMPLE_SUBJECT_CODE");
         String latitudeValue = extensionCoreValues.get("MKT_SAMPLE_LATITUDE");
         String longitudeValue = extensionCoreValues.get("MKT_SAMPLE_LONGITUDE");
-        if (canonicalName == null || canonicalName.isBlank()
+        if (subjectId == null || subjectId.isBlank()
+                || canonicalName == null || canonicalName.isBlank()
                 || latitudeValue == null || longitudeValue == null) return;
+        subjectId = subjectId.trim();
         BigDecimal latitude = new BigDecimal(latitudeValue);
         BigDecimal longitude = new BigDecimal(longitudeValue);
         boolean contained = jdbc.sql("""
@@ -302,6 +305,46 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                         """).param("regionCode", record.regionCode()).param("longitude", longitude)
                 .param("latitude", latitude).query(Boolean.class).single();
         if (!contained) return;
+        String identityLock = "MARKET:" + subjectId;
+        jdbc.sql("SELECT pg_advisory_xact_lock(hashtextextended(:identity,0))")
+                .param("identity", identityLock)
+                .query((row, index) -> Boolean.TRUE).single();
+        Optional<ExistingSamplePoint> existing = jdbc.sql("""
+                        SELECT point.sample_point_id,point.owner_party_id,point.region_code,
+                               ST_X(point.governed_point) longitude,ST_Y(point.governed_point) latitude,
+                               (SELECT count(DISTINCT linked.object_type_code)=1
+                                          AND min(linked.object_type_code)=:objectTypeCode
+                                FROM market.market_record linked
+                                WHERE linked.sample_point_id=point.sample_point_id) object_type_matches
+                        FROM registry.sample_point_subject_identity identity
+                        JOIN registry.sample_point point
+                          ON point.sample_point_id=identity.sample_point_id
+                        WHERE identity.business_domain='MARKET' AND identity.subject_id=:subjectId
+                        """).param("subjectId", subjectId)
+                .param("objectTypeCode", record.objectTypeCode())
+                .query((row, index) -> new ExistingSamplePoint(
+                        row.getObject("sample_point_id", UUID.class),
+                        row.getObject("owner_party_id", UUID.class), row.getString("region_code"),
+                        row.getBigDecimal("longitude"), row.getBigDecimal("latitude"),
+                        row.getBoolean("object_type_matches")))
+                .optional();
+        if (existing.isPresent()) {
+            ExistingSamplePoint point = existing.get();
+            if (point.partyId() == null || !point.objectTypeMatches()
+                    || !point.regionCode().equals(record.regionCode())
+                    || point.longitude().compareTo(longitude) != 0
+                    || point.latitude().compareTo(latitude) != 0) return;
+            int linked = jdbc.sql("""
+                            UPDATE market.market_record
+                            SET party_id=:partyId,sample_point_id=:samplePointId
+                            WHERE record_id=:recordId AND status_code='APPROVED'
+                              AND party_id IS NULL AND sample_point_id IS NULL
+                            """).param("partyId", point.partyId())
+                    .param("samplePointId", point.samplePointId())
+                    .param("recordId", record.id()).update();
+            requireUpdated(linked);
+            return;
+        }
         String submittingActorId = jdbc.sql("""
                         SELECT actor_subject_id
                         FROM platform.business_event_outbox
@@ -334,6 +377,12 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                 .param("longitude", longitude).param("latitude", latitude)
                 .param("effectiveFrom", record.tradeDate()).param("submittingActorId", submittingActorId)
                 .param("approvedAt", approvedTime).param("approvingActorId", approvingActorId).update();
+        jdbc.sql("""
+                        INSERT INTO registry.sample_point_subject_identity(
+                            business_domain,subject_id,sample_point_id,created_at,created_by)
+                        VALUES('MARKET',:subjectId,:samplePointId,:approvedAt,:approvingActorId)
+                        """).param("subjectId", subjectId).param("samplePointId", samplePointId)
+                .param("approvedAt", approvedTime).param("approvingActorId", approvingActorId).update();
         int linked = jdbc.sql("""
                         UPDATE market.market_record
                         SET party_id=:partyId,sample_point_id=:samplePointId
@@ -343,6 +392,10 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                 .param("recordId", record.id()).update();
         requireUpdated(linked);
     }
+
+    private record ExistingSamplePoint(
+            UUID samplePointId, UUID partyId, String regionCode,
+            BigDecimal longitude, BigDecimal latitude, boolean objectTypeMatches) {}
 
     private Map<String, List<MarketFieldOption>> coreOptions(String productCode) {
         Map<String, List<MarketFieldOption>> options = new LinkedHashMap<>();

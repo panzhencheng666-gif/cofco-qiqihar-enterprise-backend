@@ -6,9 +6,10 @@ import java.util.UUID;
 public record OverviewSamplePointIcon(
         UUID samplePointId,
         String name,
+        String iconKey,
         List<TypeRef> types,
         double longitude,
         double latitude) {
     public OverviewSamplePointIcon { types = List.copyOf(types); }
-    public record TypeRef(String code, String name) {}
+    public record TypeRef(String code, String name, String iconKey) {}
 }

@@ -19,6 +19,7 @@ public record ProductionSubmissionMetadata(
     private static final Set<String> ALLOWED_KEYS = Set.of(
             "PROD_REPORTER_NAME", "PROD_REPORTER_PHONE", "PROD_SAMPLE_CONTACT",
             "PROD_SAMPLE_LATITUDE", "PROD_SAMPLE_LONGITUDE", "PROD_SAMPLE_NAME",
+            "PROD_SAMPLE_SUBJECT_CODE",
             "PROD_CULTIVAR_NAME",
             "PROD_HARVEST_AREA_MU", "PROD_AFFECTED_AREA_MU", "PROD_GROWTH_STATUS",
             "PROD_GROWTH_STAGE", "PROD_OPENING_INVENTORY", "PROD_SALES_VOLUME",

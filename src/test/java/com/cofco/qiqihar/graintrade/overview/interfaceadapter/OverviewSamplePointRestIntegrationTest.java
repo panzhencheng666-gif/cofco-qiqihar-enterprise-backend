@@ -9,6 +9,10 @@ import com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabaseConfigurati
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -18,6 +22,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.web.servlet.MockMvc;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 @SpringBootTest(classes = GrainTradeApplication.class)
 @AutoConfigureMockMvc
@@ -34,6 +40,7 @@ class OverviewSamplePointRestIntegrationTest {
 
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
+    @Autowired ObjectMapper objectMapper;
     private JdbcClient jdbc;
 
     @BeforeEach
@@ -60,7 +67,7 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].samplePointCount")
-                        .value(org.hamcrest.Matchers.hasItem(3)))
+                        .value(org.hamcrest.Matchers.hasItem(2)))
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].unresolvedSourceCount")
                         .value(org.hamcrest.Matchers.hasItem(3)));
 
@@ -69,7 +76,7 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("regionCode", VILLAGE)
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.totalCount").value(3))
+                .andExpect(jsonPath("$.data.totalCount").value(2))
                 .andExpect(jsonPath("$.data.items[?(@.samplePointId == '" + SURVEY_POINT
                         + "')].products.length()").value(org.hamcrest.Matchers.hasItem(3)))
                 .andExpect(jsonPath("$.data.categories[?(@.code == 'MARKET')].count")
@@ -97,7 +104,8 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("year", "2026")
                         .queryParam("categoryCode", "MARKET")
                         .queryParam("typeCode", "RICE_MILL"))
-                .andExpect(status().isOk());
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_OVERVIEW_SAMPLE_POINT_QUERY"));
 
         mvc.perform(get("/api/v1/overview/sample-points")
                         .principal(() -> "production-tester")
@@ -114,6 +122,116 @@ class OverviewSamplePointRestIntegrationTest {
     }
 
     @Test
+    void exposesTheCompleteAuthoritativeOverviewTypeMatrixWithUniqueIconKeys() throws Exception {
+        String response = mvc.perform(get("/api/v1/overview/sample-points")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("year", "2026"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        JsonNode categories = objectMapper.readTree(response).path("data").path("categories");
+        List<String> categoryCodes = new ArrayList<>();
+        List<String> typeCodes = new ArrayList<>();
+        Set<String> iconKeys = new HashSet<>();
+        categories.forEach(category -> {
+            categoryCodes.add(category.path("code").asText());
+            category.path("types").forEach(type -> {
+                typeCodes.add(type.path("code").asText());
+                iconKeys.add(type.path("iconKey").asText(null));
+            });
+        });
+
+        org.assertj.core.api.Assertions.assertThat(categoryCodes)
+                .containsExactly("PRODUCTION", "MARKET");
+        org.assertj.core.api.Assertions.assertThat(typeCodes).containsExactly(
+                "FARMER", "VILLAGE_COMMITTEE", "AGRICULTURAL_TECH_STATION",
+                "TRADER", "DEEP_PROCESSOR", "WHOLESALE_MARKET", "RESERVE_ENTERPRISE",
+                "BREEDING_FACTORY", "FEED_MILL");
+        org.assertj.core.api.Assertions.assertThat(iconKeys)
+                .doesNotContainNull()
+                .hasSize(typeCodes.size());
+    }
+
+    @Test
+    void closesFilteredEntityCountsAcrossListIconsAndEntityQualityIssues() throws Exception {
+        mvc.perform(get("/api/v1/overview/sample-points")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("year", "2026")
+                        .queryParam("categoryCode", "PRODUCTION"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalCount").value(2))
+                .andExpect(jsonPath("$.data.validCoordinateCount").value(1))
+                .andExpect(jsonPath("$.data.dataQualityIssueCount").value(1))
+                .andExpect(jsonPath("$.data.correctionSourceCount").value(2))
+                .andExpect(jsonPath("$.data.items.length()").value(2))
+                .andExpect(jsonPath("$.data.items[?(@.samplePointId == '" + MISSING_POINT
+                        + "')].dataQualityReason")
+                        .value(org.hamcrest.Matchers.hasItem("LOCATION_MISSING")));
+
+        mvc.perform(get("/api/v1/overview/sample-point-icons")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("year", "2026")
+                        .queryParam("categoryCode", "PRODUCTION"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1));
+    }
+
+    @Test
+    void rejectsUnverifiedCopiedCoordinatesButKeepsVerifiedColocatedEntitiesDistinct() throws Exception {
+        String first = "94000000-0000-0000-0000-000000000011";
+        String second = "94000000-0000-0000-0000-000000000012";
+        insertValidPoint(first, "SURVEY_SITE", "并址主体甲", "APPROVED");
+        insertValidPoint(second, "SURVEY_SITE", "并址主体乙", "APPROVED");
+        jdbc.sql("""
+                UPDATE registry.sample_point
+                SET governed_point=ST_Translate(governed_point,0.0005,0)
+                WHERE sample_point_id IN (CAST(:first AS uuid),CAST(:second AS uuid))
+                """).param("first", first).param("second", second).update();
+        insertProduction("94000000-0000-0000-0000-000000000113", "CORN", "APPROVED", first);
+        insertProduction("94000000-0000-0000-0000-000000000114", "SOYBEAN", "APPROVED", second);
+
+        mvc.perform(get("/api/v1/overview/sample-points")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("year", "2026")
+                        .queryParam("categoryCode", "PRODUCTION")
+                        .queryParam("query", "并址主体"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalCount").value(2))
+                .andExpect(jsonPath("$.data.dataQualityIssueCount").value(2))
+                .andExpect(jsonPath("$.data.items[*].dataQualityReason")
+                        .value(org.hamcrest.Matchers.everyItem(
+                                org.hamcrest.Matchers.is("DUPLICATE_COORDINATE_UNVERIFIED"))));
+        mvc.perform(get("/api/v1/overview/sample-point-icons")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("year", "2026")
+                        .queryParam("categoryCode", "PRODUCTION")
+                        .queryParam("query", "并址主体"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(0));
+
+        jdbc.sql("""
+                UPDATE registry.sample_point SET coordinate_shared_verified=true
+                WHERE sample_point_id IN (CAST(:first AS uuid),CAST(:second AS uuid))
+                """).param("first", first).param("second", second).update();
+
+        mvc.perform(get("/api/v1/overview/sample-point-icons")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("year", "2026")
+                        .queryParam("categoryCode", "PRODUCTION")
+                        .queryParam("query", "并址主体"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[*].samplePointId")
+                        .value(org.hamcrest.Matchers.containsInAnyOrder(first, second)));
+    }
+
+    @Test
     void keepsAdministrativeAggregatesIndependentFromListFilters() throws Exception {
         mvc.perform(get("/api/v1/overview/sample-point-aggregates")
                         .principal(() -> "production-tester")
@@ -121,7 +239,7 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("productCode", "CORN"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230200')].samplePointCount")
-                        .value(org.hamcrest.Matchers.hasItem(3)));
+                        .value(org.hamcrest.Matchers.hasItem(2)));
 
         mvc.perform(get("/api/v1/overview/sample-point-aggregates")
                         .principal(() -> "production-tester")
@@ -134,7 +252,7 @@ class OverviewSamplePointRestIntegrationTest {
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].regionLevel")
                         .value(org.hamcrest.Matchers.hasItem("COUNTY")))
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].samplePointCount")
-                        .value(org.hamcrest.Matchers.hasItem(3)))
+                        .value(org.hamcrest.Matchers.hasItem(2)))
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].unresolvedSourceCount")
                         .value(org.hamcrest.Matchers.hasItem(3)))
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].categoryCode").doesNotExist())
@@ -149,7 +267,7 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("typeCode", "TRADER"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].samplePointCount")
-                        .value(org.hamcrest.Matchers.hasItem(3)))
+                        .value(org.hamcrest.Matchers.hasItem(2)))
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].unresolvedSourceCount")
                         .value(org.hamcrest.Matchers.hasItem(3)));
 
@@ -175,7 +293,7 @@ class OverviewSamplePointRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.regionCode").value(VILLAGE))
                 .andExpect(jsonPath("$.data.totalCount").value(1))
-                .andExpect(jsonPath("$.data.unresolvedSourceCount").value(3))
+                .andExpect(jsonPath("$.data.unresolvedSourceCount").value(0))
                 .andExpect(jsonPath("$.data.categories[?(@.code == 'PRODUCTION')].name")
                         .value(org.hamcrest.Matchers.hasItem("产情类")))
                 .andExpect(jsonPath("$.data.categories[?(@.code == 'PRODUCTION')].types[?(@.code == 'FARMER')].name")
@@ -227,9 +345,8 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("regionCode", VILLAGE)
                         .queryParam("categoryCode", "LOGISTICS")
                         .queryParam("typeCode", "RAIL_NODE"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(1))
-                .andExpect(jsonPath("$.data[0].samplePointId").value(LOGISTICS_POINT));
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_OVERVIEW_SAMPLE_POINT_QUERY"));
 
         mvc.perform(get("/api/v1/overview/sample-point-icons")
                         .principal(() -> "production-tester")
@@ -291,8 +408,8 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("productCode", "CORN")
                         .queryParam("regionCode", COUNTY)
                         .queryParam("categoryCode", "LOGISTICS"))
-                .andExpect(status().isNotFound())
-                .andExpect(jsonPath("$.error.code").value("OVERVIEW_SAMPLE_POINT_NOT_FOUND"));
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_OVERVIEW_SAMPLE_POINT_QUERY"));
 
         mvc.perform(get("/api/v1/overview/sample-points/{samplePointId}", DRAFT_POINT)
                         .principal(() -> "production-tester")
@@ -318,7 +435,7 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("productCode", "CORN")
                         .queryParam("regionCode", VILLAGE))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.totalCount").value(3))
+                .andExpect(jsonPath("$.data.totalCount").value(2))
                 .andExpect(jsonPath("$.data.unresolvedSourceCount").value(3));
 
         mvc.perform(get("/api/v1/overview/sample-points")

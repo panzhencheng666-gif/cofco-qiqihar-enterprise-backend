@@ -11,6 +11,7 @@ public record OverviewSamplePointDetail(
         String regionCode,
         String regionName,
         String locationState,
+        String dataQualityReason,
         List<Association> associations) {
     public OverviewSamplePointDetail { associations = List.copyOf(associations); }
 

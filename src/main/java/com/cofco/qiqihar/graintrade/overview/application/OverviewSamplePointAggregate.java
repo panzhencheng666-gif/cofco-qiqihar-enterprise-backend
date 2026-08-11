@@ -5,4 +5,7 @@ public record OverviewSamplePointAggregate(
         String regionName,
         String regionLevel,
         long samplePointCount,
+        long validCoordinateCount,
+        long dataQualityIssueCount,
+        long correctionSourceCount,
         long unresolvedSourceCount) {}

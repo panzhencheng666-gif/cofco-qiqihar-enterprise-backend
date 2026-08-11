@@ -10,8 +10,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -64,7 +67,18 @@ class ProductionRecordRestIntegrationTest {
         jdbc.sql("TRUNCATE platform.business_audit_event").update();
         jdbc.sql(
                 "DELETE FROM production.production_record WHERE last_modified_by = 'production-tester'").update();
+        jdbc.sql("""
+                WITH deleted AS (
+                  DELETE FROM registry.sample_point_subject_identity
+                  WHERE business_domain='PRODUCTION' AND subject_id LIKE 'fixture-production-%'
+                  RETURNING sample_point_id)
+                DELETE FROM registry.sample_point
+                WHERE sample_point_id IN (SELECT sample_point_id FROM deleted)
+                """).update();
         jdbc.sql("TRUNCATE evidence.evidence_photo").update();
+        jdbc.sql("DELETE FROM overview.administrative_boundary "
+                        + "WHERE source_url='urn:test:production-sample-point'")
+                .update();
     }
 
     @Test
@@ -104,6 +118,59 @@ class ProductionRecordRestIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].values.PROD_SAMPLE_NAME").value("龙江县第一调查户"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_HARVEST_AREA_MU").value("96.5"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_GROWTH_STAGE").value("灌浆期"));
+    }
+
+    @Test
+    void reusesOneStableProductionSubjectAcrossProducts() throws Exception {
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        jdbc.sql("""
+                INSERT INTO overview.administrative_boundary(
+                  region_code,geometry,source_name,source_url,source_revision,source_license,
+                  source_feature_id,source_effective_on,geometry_sha256)
+                VALUES('230202',ST_Multi(ST_Buffer(ST_SetSRID(ST_MakePoint(123,47),4326),0.5)),
+                  'production sample-point contract fixture','urn:test:production-sample-point','test-v1',
+                  'Test fixture','230202',DATE '2026-08-11',repeat('8',64))
+                ON CONFLICT (region_code) DO NOTHING
+                """).update();
+        List<BigDecimal> coordinate = jdbc.sql("""
+                SELECT ST_X(ST_PointOnSurface(geometry)),ST_Y(ST_PointOnSurface(geometry))
+                FROM overview.administrative_boundary WHERE region_code='230202'
+                """).query((row, index) -> List.of(
+                        row.getBigDecimal(1).setScale(7, RoundingMode.HALF_UP),
+                        row.getBigDecimal(2).setScale(7, RoundingMode.HALF_UP))).single();
+        UUID secondEvidence = UUID.randomUUID();
+        jdbc.sql("""
+                INSERT INTO evidence.evidence_photo(photo_id,state_code,original_filename,media_type,
+                  original_bytes,watermarked_bytes,byte_length,sha256,captured_at,capture_latitude,
+                  capture_longitude,watermark_text,uploaded_by,uploaded_at)
+                VALUES(:id,'STAGED','fixture-2.png','image/png',decode('00','hex'),decode('01','hex'),
+                  1,repeat('b',64),now(),:latitude,:longitude,'测试水印','production-tester',now())
+                """).param("id", secondEvidence).param("latitude", coordinate.get(1))
+                .param("longitude", coordinate.get(0)).update();
+        String identityFields = "\"PROD_SAMPLE_SUBJECT_CODE\":\"fixture-production-subject-1\","
+                + "\"PROD_SAMPLE_NAME\":\"跨产品农户\"";
+        String corn = fullDraftBody("CORN", "FARMER", "MOISTURE", null)
+                .replace("\"PROD_SAMPLE_LONGITUDE\":\"123.9182\"",
+                        "\"PROD_SAMPLE_LONGITUDE\":\"" + coordinate.get(0) + "\"," + identityFields)
+                .replace("\"PROD_SAMPLE_LATITUDE\":\"47.3543\"",
+                        "\"PROD_SAMPLE_LATITUDE\":\"" + coordinate.get(1) + "\"");
+        String soybean = fullDraftBody("SOYBEAN", "FARMER", "PROTEIN", null)
+                .replace("\"PROD_SAMPLE_LONGITUDE\":\"123.9182\"",
+                        "\"PROD_SAMPLE_LONGITUDE\":\"" + coordinate.get(0) + "\"," + identityFields)
+                .replace("\"PROD_SAMPLE_LATITUDE\":\"47.3543\"",
+                        "\"PROD_SAMPLE_LATITUDE\":\"" + coordinate.get(1) + "\"")
+                .replace(EVIDENCE_PHOTO_ID.toString(), secondEvidence.toString());
+        String first = create(corn);
+        String second = create(soybean);
+        approve(first);
+        approve(second);
+
+        assertThat(jdbc.sql("""
+                SELECT count(*)=2 AND count(sample_point_id)=2
+                       AND count(DISTINCT sample_point_id)=1
+                FROM production.production_record WHERE record_id IN (:first,:second)
+                """).param("first", first).param("second", second)
+                .query(Boolean.class).single()).isTrue();
     }
 
     @Test
@@ -463,6 +530,17 @@ class ProductionRecordRestIntegrationTest {
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.data.reportedAt").exists())
                 .andReturn().getResponse().getContentAsString()
                 .replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+    }
+
+    private void approve(String id) throws Exception {
+        mockMvc.perform(post("/api/v1/production-records/{id}/submit", id)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0}"))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/v1/production-records/{id}/approve", id)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk());
     }
 
     private void expectDefinitionFacts(String product, String objectType, String qualityCode,

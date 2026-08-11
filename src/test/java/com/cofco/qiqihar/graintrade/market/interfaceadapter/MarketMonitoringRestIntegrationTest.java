@@ -44,10 +44,22 @@ class MarketMonitoringRestIntegrationTest {
     @Autowired DataSource dataSource;
     @BeforeEach
     void clearRecords() {
-        JdbcClient.create(dataSource).sql(
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        jdbc.sql(
                 "TRUNCATE platform.business_audit_event,market.market_record,evidence.evidence_photo,"
                         + "registry.sample_point,market.business_party CASCADE")
                 .update();
+        jdbc.sql("DELETE FROM overview.administrative_boundary WHERE source_url='urn:test:market-sample-point'")
+                .update();
+        jdbc.sql("""
+                INSERT INTO overview.administrative_boundary(
+                  region_code,geometry,source_name,source_url,source_revision,source_license,
+                  source_feature_id,source_effective_on,geometry_sha256)
+                VALUES('230200',ST_Multi(ST_Buffer(ST_SetSRID(ST_MakePoint(123,47),4326),0.5)),
+                  'market sample-point contract fixture','urn:test:market-sample-point','test-v1',
+                  'Test fixture','230200',DATE '2026-08-11',repeat('7',64))
+                ON CONFLICT (region_code) DO NOTHING
+                """).update();
     }
     @AfterEach
     void clearAuditEvents() {
@@ -97,6 +109,26 @@ class MarketMonitoringRestIntegrationTest {
                   AND ST_Y(point.governed_point)=47
                   AND ST_X(point.governed_point)=123
                 """).param("id", id).query(Long.class).single()).isEqualTo(1L);
+    }
+
+    @Test
+    void reusesOneStableSubjectAndSamplePointAcrossProducts() throws Exception {
+        String corn = draftBody("CORN", "TRADER", "MOISTURE", null)
+                .replace("\"MKT_SAMPLE_LATITUDE\":\"47.3543\"", "\"MKT_SAMPLE_LATITUDE\":\"47\"")
+                .replace("\"MKT_SAMPLE_LONGITUDE\":\"123.9182\"", "\"MKT_SAMPLE_LONGITUDE\":\"123\"");
+        String soybean = draftBody("SOYBEAN", "TRADER", "PROTEIN", null)
+                .replace("\"MKT_SAMPLE_LATITUDE\":\"47.3543\"", "\"MKT_SAMPLE_LATITUDE\":\"47\"")
+                .replace("\"MKT_SAMPLE_LONGITUDE\":\"123.9182\"", "\"MKT_SAMPLE_LONGITUDE\":\"123\"");
+        String first = create(corn);
+        String second = create(soybean);
+        approve(first);
+        approve(second);
+
+        assertThat(JdbcClient.create(dataSource).sql("""
+                SELECT count(DISTINCT sample_point_id)=1 AND count(DISTINCT party_id)=1
+                FROM market.market_record WHERE record_id IN (:first,:second)
+                """).param("first", first).param("second", second)
+                .query(Boolean.class).single()).isTrue();
     }
 
     @Test
@@ -273,7 +305,7 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(jsonPath("$.data.version").value(2))
                 .andExpect(jsonPath("$.data.coreValues.MKT_SOURCE_NOTE")
                         .value(org.hamcrest.Matchers.nullValue()));
-        org.assertj.core.api.Assertions.assertThat(extensionValueCount(id)).isEqualTo(6);
+        org.assertj.core.api.Assertions.assertThat(extensionValueCount(id)).isEqualTo(7);
 
         mockMvc.perform(put("/api/v1/market-records/{id}", id)
                         .principal(() -> "market-tester")
@@ -287,7 +319,7 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(jsonPath("$.data.coreValues.MKT_SOURCE_NOTE")
                         .value(org.hamcrest.Matchers.nullValue()))
                 .andExpect(jsonPath("$.data.facts.MOISTURE").value("14.6000"));
-        org.assertj.core.api.Assertions.assertThat(extensionValueCount(id)).isEqualTo(6);
+        org.assertj.core.api.Assertions.assertThat(extensionValueCount(id)).isEqualTo(7);
 
         mockMvc.perform(get("/api/v1/market-record-definitions")
                         .queryParam("productCode", "CORN").queryParam("objectTypeCode", "FEED_MILL"))
@@ -809,12 +841,27 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     private String create(String product, String objectType, String qualityCode) throws Exception {
+        return create(draftBody(product, objectType, qualityCode, null));
+    }
+
+    private String create(String body) throws Exception {
         return mockMvc.perform(post("/api/v1/market-records")
                         .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content(draftBody(product, objectType, qualityCode, null)))
+                        .content(body))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString()
                 .replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+    }
+
+    private void approve(String id) throws Exception {
+        mockMvc.perform(post("/api/v1/market-records/{id}/submit", id)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0}"))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/v1/market-records/{id}/approve", id)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk());
     }
 
     private String draftBody(String product, String objectType, String qualityCode, Long version) {
@@ -879,6 +926,7 @@ class MarketMonitoringRestIntegrationTest {
     private static String submissionMetadata() {
         return """
                 "MKT_REPORTER_NAME":"测试填报员","MKT_REPORTER_PHONE":"13800000000",
+                "MKT_SAMPLE_SUBJECT_CODE":"fixture-market-subject-1",
                 "MKT_SAMPLE_NAME":"齐齐哈尔第一粮店","MKT_SAMPLE_CONTACT":"13900000000",
                 "MKT_SAMPLE_LATITUDE":"47.3543",
                 "MKT_SAMPLE_LONGITUDE":"123.9182"

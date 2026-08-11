@@ -203,7 +203,9 @@ public class ProductionRecordService implements ProductionImportPort {
 
     @Transactional
     public ProductionRecordView approve(String id, long expectedVersion) {
-        return transition(id, expectedVersion, "BUSINESS_APPROVE", "PRODUCTION_RECORD_APPROVED", ProductionRecord::approve);
+        return transition(id, expectedVersion, "BUSINESS_APPROVE", "PRODUCTION_RECORD_APPROVED",
+                ProductionRecord::approve, (record, principal) -> repository.linkApprovedSamplePoint(
+                        record, principal.subjectId(), clock.instant()));
     }
 
     @Transactional
@@ -213,6 +215,12 @@ public class ProductionRecordService implements ProductionImportPort {
 
     private ProductionRecordView transition(String id, long expectedVersion, String permission, String auditAction,
             java.util.function.UnaryOperator<ProductionRecord> command) {
+        return transition(id, expectedVersion, permission, auditAction, command, (record, principal) -> { });
+    }
+
+    private ProductionRecordView transition(String id, long expectedVersion, String permission, String auditAction,
+            java.util.function.UnaryOperator<ProductionRecord> command,
+            java.util.function.BiConsumer<ProductionRecord, SecurityPrincipal> afterStateUpdate) {
         ProductionRecord existing = requiredRecord(id);
         SecurityPrincipal principal = authorize(permission, existing.regionCode());
         if (expectedVersion != existing.version()) throw stale();
@@ -227,6 +235,7 @@ public class ProductionRecordService implements ProductionImportPort {
                         "PRODUCTION_RECORD", id, "PRODUCTION_RECORD_SUBMITTED", principal);
             }
             ProductionRecord persisted = repository.updateState(transitioned, expectedVersion, principal.subjectId());
+            afterStateUpdate.accept(persisted, principal);
             audit(principal, persisted, auditAction);
             return view(persisted);
         } catch (ProductionValidationException exception) {
