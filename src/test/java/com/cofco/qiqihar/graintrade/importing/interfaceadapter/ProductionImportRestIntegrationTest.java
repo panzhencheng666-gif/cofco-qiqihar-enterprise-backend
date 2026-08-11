@@ -94,7 +94,8 @@ class ProductionImportRestIntegrationTest {
         assertThat(XlsxTable.parseWorksheet(workbook, 1, template.headers().size()))
                 .containsExactly(template.labels(), template.headers());
         assertThat(template.headers())
-                .contains("PROD_CULTIVAR_NAME", "PROD_OPENING_INVENTORY", "PROD_ENDING_INVENTORY", "MOISTURE", "TOXIN")
+                .contains("PROD_CULTIVAR_NAME", "PROD_OPENING_INVENTORY", "PROD_ENDING_INVENTORY",
+                        "PROD_SURPLUS_SUBJECT_CODE", "PROD_SURPLUS_CUTOFF_DATE", "MOISTURE", "TOXIN")
                 .doesNotContain("cultivarCode")
                 .doesNotContain("PROD_REPORTER_NAME", "PROTEIN", "OIL_YIELD",
                         "MILLING_YIELD", "BROWN_RICE_YIELD");
@@ -128,6 +129,9 @@ class ProductionImportRestIntegrationTest {
         put(row, template.headers(), "PROD_SAMPLE_NAME", "龙江县第一调查户");
         put(row, template.headers(), "PROD_HARVEST_AREA_MU", "96.5");
         put(row, template.headers(), "PROD_GROWTH_STAGE", "灌浆期");
+        put(row, template.headers(), "PROD_ENDING_INVENTORY", "12");
+        put(row, template.headers(), "PROD_SURPLUS_SUBJECT_CODE", "farmer-longjiang-xlsx-1");
+        put(row, template.headers(), "PROD_SURPLUS_CUTOFF_DATE", "2026-08-09");
         put(row, template.headers(), "MOISTURE", "14.2");
         put(row, template.headers(), "evidencePhotoId", PHOTO_ID);
         byte[] workbook = BusinessImportWorkbook.create(
@@ -152,11 +156,106 @@ class ProductionImportRestIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].values.PROD_SAMPLE_NAME").value("龙江县第一调查户"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_HARVEST_AREA_MU").value("96.5"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_GROWTH_STAGE").value("灌浆期"))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_SURPLUS_SUBJECT_CODE")
+                        .value("farmer-longjiang-xlsx-1"))
                 .andExpect(jsonPath("$.data.items[0].values.MOISTURE").value("14.2000"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_REPORTER_NAME").value("产情测试员"));
 
         assertThat(jdbc.sql("SELECT region_code FROM production.production_record")
                 .query(String.class).single()).isEqualTo("230208");
+    }
+
+    @Test
+    void reportsMissingConditionalSurplusFieldsAsARowErrorInsteadOfServerFailure() throws Exception {
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
+                        .param("format", "xlsx")
+                        .param("productCode", "CORN")
+                        .param("objectTypeCode", "FARMER")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        var template = template(downloaded, "产情", "CORN", "FARMER");
+        java.util.ArrayList<String> row = new java.util.ArrayList<>(
+                java.util.Collections.nCopies(template.headers().size(), ""));
+        put(row, template.headers(), "regionCode", "230208");
+        put(row, template.headers(), "PROD_CULTIVAR_NAME", "条件字段失败样例");
+        put(row, template.headers(), "surveyDate", "2026-08-09");
+        put(row, template.headers(), "cultivatedAreaMu", "100");
+        put(row, template.headers(), "yieldPerMuKilograms", "500");
+        put(row, template.headers(), "PROD_REPORTER_PHONE", "13800000000");
+        put(row, template.headers(), "PROD_SAMPLE_CONTACT", "13900000000");
+        put(row, template.headers(), "PROD_SAMPLE_LATITUDE", "47.3543");
+        put(row, template.headers(), "PROD_SAMPLE_LONGITUDE", "123.9182");
+        put(row, template.headers(), "PROD_ENDING_INVENTORY", "12");
+        put(row, template.headers(), "evidencePhotoId", PHOTO_ID);
+        byte[] workbook = BusinessImportWorkbook.create(template, java.util.List.of(row));
+
+        String response = mvc.perform(multipart("/api/v1/imports/production")
+                        .file(new MockMultipartFile("file", "missing-surplus-contract.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
+                        .param("productCode", "CORN")
+                        .param("objectTypeCode", "FARMER")
+                        .header("Idempotency-Key", "missing-surplus-contract")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.statusCode").value("COMPLETED_WITH_ERRORS"))
+                .andExpect(jsonPath("$.data.importedRows").value(0))
+                .andExpect(jsonPath("$.data.failedRows").value(1))
+                .andReturn().getResponse().getContentAsString();
+        String jobId = response.replaceFirst("(?s).*?\"id\":\"([^\"]+)\".*", "$1");
+
+        mvc.perform(get("/api/v1/imports/production/{jobId}/errors", jobId)
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("INVALID_PRODUCTION_RECORD")));
+
+        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
+                .query(Long.class).single()).isZero();
+    }
+
+    @Test
+    void reportsUnavailableEvidenceAsARowErrorInsteadOfServerFailure() throws Exception {
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
+                        .param("format", "xlsx")
+                        .param("productCode", "CORN")
+                        .param("objectTypeCode", "FARMER")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        var template = template(downloaded, "产情", "CORN", "FARMER");
+        java.util.ArrayList<String> row = new java.util.ArrayList<>(
+                java.util.Collections.nCopies(template.headers().size(), ""));
+        put(row, template.headers(), "regionCode", "230208");
+        put(row, template.headers(), "PROD_CULTIVAR_NAME", "照片失败样例");
+        put(row, template.headers(), "surveyDate", "2026-08-09");
+        put(row, template.headers(), "cultivatedAreaMu", "100");
+        put(row, template.headers(), "yieldPerMuKilograms", "500");
+        put(row, template.headers(), "PROD_REPORTER_PHONE", "13800000000");
+        put(row, template.headers(), "PROD_SAMPLE_CONTACT", "13900000000");
+        put(row, template.headers(), "PROD_SAMPLE_LATITUDE", "47.3543");
+        put(row, template.headers(), "PROD_SAMPLE_LONGITUDE", "123.9182");
+        put(row, template.headers(), "evidencePhotoId", "00000000-0000-0000-0000-000000000099");
+        byte[] workbook = BusinessImportWorkbook.create(template, java.util.List.of(row));
+
+        String response = mvc.perform(multipart("/api/v1/imports/production")
+                        .file(new MockMultipartFile("file", "missing-evidence.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
+                        .param("productCode", "CORN")
+                        .param("objectTypeCode", "FARMER")
+                        .header("Idempotency-Key", "missing-evidence")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.statusCode").value("COMPLETED_WITH_ERRORS"))
+                .andExpect(jsonPath("$.data.importedRows").value(0))
+                .andExpect(jsonPath("$.data.failedRows").value(1))
+                .andReturn().getResponse().getContentAsString();
+        String jobId = response.replaceFirst("(?s).*?\"id\":\"([^\"]+)\".*", "$1");
+
+        mvc.perform(get("/api/v1/imports/production/{jobId}/errors", jobId)
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("EVIDENCE_PHOTO_NOT_FOUND")));
+
+        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
+                .query(Long.class).single()).isZero();
     }
 
     @Test

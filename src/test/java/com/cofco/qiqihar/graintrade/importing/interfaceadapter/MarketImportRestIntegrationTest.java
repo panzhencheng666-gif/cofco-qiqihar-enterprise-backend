@@ -129,6 +129,13 @@ class MarketImportRestIntegrationTest {
         fields.put("MKT_SAMPLE_LONGITUDE", "123.9182");
         fields.put("PURCHASE_VOLUME", "12");
         fields.put("MOISTURE", "14.6");
+        fields.put("ENDING_INVENTORY", "20");
+        fields.put("MKT_INVENTORY_HOLDER_CODE", "feed-mill-qiqihar-xlsx-1");
+        fields.put("MKT_INVENTORY_OWNERSHIP_TYPE", "OWNED");
+        fields.put("MKT_STORAGE_REGION_CODE", "230200");
+        fields.put("MKT_CARGO_OWNER_CODE", "feed-mill-qiqihar-xlsx-1");
+        fields.put("MKT_INVENTORY_CUTOFF_DATE", "2026-08-01");
+        fields.put("MKT_INVENTORY_POLICY_ATTRIBUTE", "COMMERCIAL");
         fields.put(MarketImportTemplate.EVIDENCE_PHOTO_ID, photoId);
         List<String> values = template.headers().stream()
                 .map(header -> fields.getOrDefault(header, "")).toList();
@@ -151,7 +158,62 @@ class MarketImportRestIntegrationTest {
                         .queryParam("pageSize", "20")
                         .principal(() -> "market-tester"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[0].values.MKT_CULTIVAR_NAME").value("龙单86"));
+                .andExpect(jsonPath("$.data.items[0].values.MKT_CULTIVAR_NAME").value("龙单86"))
+                .andExpect(jsonPath("$.data.items[0].values.MKT_INVENTORY_HOLDER_CODE")
+                        .value("feed-mill-qiqihar-xlsx-1"));
+    }
+
+    @Test
+    void reportsMissingConditionalInventoryFieldsAsARowErrorInsteadOfServerFailure() throws Exception {
+        String photoId = uploadEvidence();
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/market/template")
+                        .param("format", "xlsx")
+                        .param("productCode", "CORN")
+                        .param("objectTypeCode", "FEED_MILL")
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        var template = template(downloaded, "CORN", "FEED_MILL");
+        java.util.Map<String, String> fields = new java.util.HashMap<>();
+        fields.put("MKT_REGION", "230200");
+        fields.put("MKT_TRADE_DATE", "2026-08-01");
+        fields.put("MKT_PURCHASE_BASE_PRICE", "2300");
+        fields.put("MKT_SALE_BASE_PRICE", "2380");
+        fields.put("MKT_CARRIAGE_BOARD_AMOUNT", "36");
+        fields.put("MKT_PACKAGING_AMOUNT", "12");
+        fields.put("MKT_FREIGHT_AMOUNT", "72");
+        fields.put("MKT_PACKAGING_FORM", "BULK");
+        fields.put("MKT_REPORTER_PHONE", "13800000000");
+        fields.put("MKT_SAMPLE_NAME", "条件字段失败粮店");
+        fields.put("MKT_SAMPLE_CONTACT", "13900000000");
+        fields.put("MKT_SAMPLE_LATITUDE", "47.3543");
+        fields.put("MKT_SAMPLE_LONGITUDE", "123.9182");
+        fields.put("ENDING_INVENTORY", "20");
+        fields.put(MarketImportTemplate.EVIDENCE_PHOTO_ID, photoId);
+        List<String> values = template.headers().stream()
+                .map(header -> fields.getOrDefault(header, "")).toList();
+        byte[] workbook = BusinessImportWorkbook.create(template, List.of(values));
+
+        String response = mvc.perform(multipart("/api/v1/imports/market")
+                        .file(new MockMultipartFile("file", "missing-inventory-contract.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
+                        .param("productCode", "CORN")
+                        .param("objectTypeCode", "FEED_MILL")
+                        .header("Idempotency-Key", "missing-inventory-contract")
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.statusCode").value("COMPLETED_WITH_ERRORS"))
+                .andExpect(jsonPath("$.data.importedRows").value(0))
+                .andExpect(jsonPath("$.data.failedRows").value(1))
+                .andReturn().getResponse().getContentAsString();
+        String jobId = response.replaceFirst("(?s).*?\"id\":\"([^\"]+)\".*", "$1");
+
+        mvc.perform(get("/api/v1/imports/market/{jobId}/errors", jobId)
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("INVALID_MARKET_RECORD")));
+
+        assertThat(jdbc.sql("SELECT count(*) FROM market.market_record")
+                .query(Long.class).single()).isZero();
     }
 
     @Test
@@ -200,6 +262,9 @@ class MarketImportRestIntegrationTest {
                 .contains("MKT_REGION", "MKT_TRADE_DATE", "MKT_SAMPLE_NAME", "MKT_CULTIVAR_NAME",
                         "MKT_PURCHASE_BASE_PRICE", "MKT_SALE_BASE_PRICE",
                         "OPENING_INVENTORY", "STOCK_OUTFLOW", "ENDING_INVENTORY",
+                        "MKT_INVENTORY_HOLDER_CODE", "MKT_INVENTORY_OWNERSHIP_TYPE",
+                        "MKT_STORAGE_REGION_CODE", "MKT_CARGO_OWNER_CODE",
+                        "MKT_INVENTORY_CUTOFF_DATE", "MKT_INVENTORY_POLICY_ATTRIBUTE",
                         MarketImportTemplate.EVIDENCE_PHOTO_ID)
                 .doesNotContain("MKT_REPORTER_NAME", "MKT_TRADE_DIRECTION", "MKT_ACTUAL_TRADE_PRICE",
                         "STOCK_INFLOW", "STORAGE_LOSS");

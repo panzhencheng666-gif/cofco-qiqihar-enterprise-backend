@@ -162,7 +162,9 @@ public class ProductionRecordService implements ProductionImportPort {
     }
 
     @Override
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, noRollbackFor = {
+            ClientRequestException.class, ConflictException.class, ResourceNotFoundException.class
+    })
     public void validateImportDraft(ProductionDraft draft) {
         SecurityPrincipal principal = authorize("BUSINESS_IMPORT", draft.regionCode());
         validateDraft(draft, canonicalSubmissionMetadata(

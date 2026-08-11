@@ -183,7 +183,9 @@ public class MarketMonitoringService {
     }
 
     /** Validates one import row before the import transaction writes any market record. */
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, noRollbackFor = {
+            ClientRequestException.class, ConflictException.class, ResourceNotFoundException.class
+    })
     public void validateImportDraft(MarketMonitoringDraft draft) {
         SecurityPrincipal principal = authorize("BUSINESS_IMPORT", null);
         MarketMonitoringDraft securedDraft = withReporter(draft, principal.displayName());

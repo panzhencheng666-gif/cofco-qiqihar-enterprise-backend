@@ -74,7 +74,9 @@ public class EvidencePhotoService {
         return new EvidenceContent(stored.view().mediaType(), stored.watermarkedBytes().clone());
     }
 
-    @Transactional(readOnly = true)
+    @Transactional(readOnly = true, noRollbackFor = {
+            ClientRequestException.class, ConflictException.class, ResourceNotFoundException.class
+    })
     public List<EvidencePhotoView> validateAvailable(List<UUID> ids, String subjectId) {
         if (ids == null || ids.isEmpty() || ids.size() > 5 || new LinkedHashSet<>(ids).size() != ids.size()) {
             throw invalid();
