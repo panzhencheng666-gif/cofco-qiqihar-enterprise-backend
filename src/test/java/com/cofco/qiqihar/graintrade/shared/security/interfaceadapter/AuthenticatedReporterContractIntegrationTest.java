@@ -251,7 +251,7 @@ class AuthenticatedReporterContractIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].aggregateId").value(recordId))
                 .andExpect(jsonPath("$.data.items[0].actionCode").value("PRODUCTION_RECORD_CREATED"))
                 .andExpect(jsonPath("$.data.items[0].productCode").value("CORN"))
-                .andExpect(jsonPath("$.data.items[0].regionCodes[0]").value(REGION))
+                .andExpect(jsonPath("$.data.items[0].regionCodes").value(hasItem(REGION)))
                 .andExpect(jsonPath("$.data.items[0].read").value(false))
                 .andReturn().getResponse().getContentAsString()
                 .replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");

@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
+import com.cofco.qiqihar.graintrade.workflow.application.WorkItemProjection;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -17,6 +18,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 @SpringBootTest(
@@ -47,6 +49,7 @@ class BusinessReadRegionIsolationIntegrationTest {
 
     @Autowired MockMvc mockMvc;
     @Autowired DataSource dataSource;
+    @MockitoBean WorkItemProjection workItemProjection;
     private JdbcClient jdbc;
 
     @BeforeEach
@@ -237,7 +240,8 @@ class BusinessReadRegionIsolationIntegrationTest {
                         .queryParam("periodCode", PERIOD)
                         .queryParam("marketingYear", "2026"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_OUTFLOW_VOLUME')].value").value("0"))
+                .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_OUTFLOW_VOLUME')].value")
+                        .value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.nullValue())))
                 .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_OUTFLOW_VOLUME')].sourceCount").value(0));
         mockMvc.perform(get("/api/v1/overview/indicators")
                         .principal(() -> READER_B)
@@ -246,7 +250,8 @@ class BusinessReadRegionIsolationIntegrationTest {
                         .queryParam("periodCode", PERIOD)
                         .queryParam("marketingYear", "2026"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_INFLOW_VOLUME')].value").value("0"))
+                .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_INFLOW_VOLUME')].value")
+                        .value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.nullValue())))
                 .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_INFLOW_VOLUME')].sourceCount").value(0));
 
         mockMvc.perform(get("/api/v1/production-records")

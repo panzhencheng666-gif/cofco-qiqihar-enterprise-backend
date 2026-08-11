@@ -378,11 +378,6 @@ class LocalLauncherOwnershipIntegrationTest {
         Files.writeString(fakeNpm, """
                 #!/usr/bin/env bash
                 set -euo pipefail
-                if [[ "$2" == "dev" ]]; then
-                  service="overview"
-                else
-                  service="business"
-                fi
                 port=""
                 while [[ $# -gt 0 ]]; do
                   if [[ "$1" == "--port" ]]; then
@@ -391,6 +386,11 @@ class LocalLauncherOwnershipIntegrationTest {
                   fi
                   shift
                 done
+                if [[ "$port" == "$COFCO_ENTERPRISE_OVERVIEW_PORT" ]]; then
+                  service="overview"
+                else
+                  service="business"
+                fi
                 printf '%s\\n' "$$" > "$COFCO_OWNERSHIP_CAPTURE_DIR/${service}.pid"
                 exec python3 -m http.server "$port" \\
                   --bind 127.0.0.1 --directory "$COFCO_OWNERSHIP_DOCROOT"

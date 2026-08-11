@@ -26,7 +26,7 @@ class ProductionV14MigrationTest {
             try (ResultSet row = statement.executeQuery(
                     "SELECT count(*) FROM platform.production_fact_definition")) {
                 row.next();
-                assertThat(row.getLong(1)).isEqualTo(31);
+                assertThat(row.getLong(1)).isEqualTo(34);
             }
             try (ResultSet row = statement.executeQuery(
                     "SELECT count(*) FROM production.production_record")) {

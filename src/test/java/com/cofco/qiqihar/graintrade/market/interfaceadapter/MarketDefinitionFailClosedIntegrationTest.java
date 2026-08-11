@@ -56,7 +56,7 @@ class MarketDefinitionFailClosedIntegrationTest {
         switch (fault) {
             case ILLEGAL_EXTENSION_CONTROL -> client.sql("""
                     UPDATE platform.market_core_field_definition
-                    SET control_type = 'REGION_HIERARCHY'
+                    SET control_type = 'READONLY_DATETIME'
                     WHERE code = 'MKT_SOURCE_NOTE'
                     """).update();
             case DUPLICATE_BINDING -> {

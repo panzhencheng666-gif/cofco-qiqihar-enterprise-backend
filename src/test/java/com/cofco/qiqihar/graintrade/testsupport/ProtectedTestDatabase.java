@@ -18,6 +18,10 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 public final class ProtectedTestDatabase {
 
     public static final String DATABASE_NAME = "qiqihar_enterprise_test";
+    private static final String[] APPLICATION_SCHEMAS = {
+        "platform", "production", "market", "logistics", "supply", "reporting",
+        "workflow", "overview", "evidence", "registry"
+    };
     private static final String DEFAULT_URL =
             "jdbc:postgresql://127.0.0.1:5432/" + DATABASE_NAME;
 
@@ -89,6 +93,20 @@ public final class ProtectedTestDatabase {
                 .dataSource(dataSource())
                 .target(MigrationVersion.fromVersion(targetVersion))
                 .load();
+    }
+
+    void resetForTestSession() {
+        try (Connection connection = openConnection();
+                Statement statement = connection.createStatement()) {
+            for (String schema : APPLICATION_SCHEMAS) {
+                statement.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
+            }
+            statement.execute("DROP TABLE IF EXISTS public.flyway_schema_history");
+        } catch (SQLException exception) {
+            throw new IllegalStateException(
+                    "Failed to reset the dedicated test database before the test session",
+                    exception);
+        }
     }
 
     private void dropRegistrySchemaWithoutV93History() {

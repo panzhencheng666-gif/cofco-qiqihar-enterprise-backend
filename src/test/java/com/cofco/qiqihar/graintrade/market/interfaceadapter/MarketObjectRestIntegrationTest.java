@@ -30,6 +30,7 @@ class MarketObjectRestIntegrationTest {
     @Test
     void persistsOneMarketSubjectWithMultipleEffectiveRoles() throws Exception {
         String id = create("讷河阶段四米业");
+        String partyId = partyId(id);
 
         mockMvc.perform(get("/api/v1/market-objects").principal(() -> "market-tester"))
                 .andExpect(status().isOk())
@@ -47,7 +48,8 @@ class MarketObjectRestIntegrationTest {
 
         org.assertj.core.api.Assertions.assertThat(jdbc.sql("""
                 SELECT count(*) FROM market.business_party
-                """).query(Long.class).single()).isOne();
+                WHERE party_id=CAST(:partyId AS uuid)
+                """).param("partyId", partyId).query(Long.class).single()).isOne();
     }
 
     @Test

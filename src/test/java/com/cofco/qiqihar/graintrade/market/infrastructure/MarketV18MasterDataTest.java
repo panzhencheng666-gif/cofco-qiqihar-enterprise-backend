@@ -36,7 +36,7 @@ class MarketV18MasterDataTest {
                 FROM platform.market_core_field_definition ORDER BY sort_order
                 """)).containsExactly(
                         "MKT_OBJECT_TYPE:对象类型:SELECT:10", "MKT_REGION:地区:REGION_HIERARCHY:20",
-                        "MKT_TRADE_DATE:交易日期:DATE:30", "MKT_REPORTED_AT:填报时间:READONLY_DATETIME:35",
+                        "MKT_TRADE_DATE:交易日期:DATE:30", "MKT_REPORTED_AT:最后保存时间（兼容字段）:READONLY_DATETIME:35",
                         "MKT_PURCHASE_BASE_PRICE:对象采购价格:DECIMAL:50", "MKT_SALE_BASE_PRICE:对象销售价格:DECIMAL:60",
                         "MKT_CARRIAGE_BOARD_AMOUNT:车板组成:DECIMAL:70", "MKT_PACKAGING_FORM:包装形态:SELECT:80",
                         "MKT_PACKAGING_AMOUNT:包装组成:DECIMAL:90", "MKT_FREIGHT_AMOUNT:运费组成:DECIMAL:100",
@@ -46,11 +46,23 @@ class MarketV18MasterDataTest {
                         "MKT_SAMPLE_LATITUDE:样本点纬度:DECIMAL:123",
                         "MKT_SAMPLE_LONGITUDE:样本点经度:DECIMAL:124",
                         "MKT_SAMPLE_NAME:填报对象/客户名称:TEXT:125",
-                        "MKT_CULTIVAR_NAME:具体品种:TEXT:126");
+                        "MKT_CULTIVAR_NAME:具体品种:TEXT:126",
+                        "MKT_SAMPLE_SUBJECT_CODE:样本主体唯一标识:TEXT:127",
+                        "MKT_INVENTORY_HOLDER_CODE:库存填报主体唯一标识:TEXT:140",
+                        "MKT_INVENTORY_OWNERSHIP_TYPE:库存权属:SELECT:141",
+                        "MKT_STORAGE_REGION_CODE:库存存放地区:REGION_HIERARCHY:142",
+                        "MKT_CARGO_OWNER_CODE:货主唯一标识:TEXT:143",
+                        "MKT_INVENTORY_CUTOFF_DATE:库存统计截止日:DATE:144",
+                        "MKT_INVENTORY_POLICY_ATTRIBUTE:库存政策属性:SELECT:145");
         assertThat(rows("""
                 SELECT field_code || ':' || value || ':' || label
                 FROM platform.market_core_field_option ORDER BY field_code, sort_order
                 """)).containsExactly(
+                        "MKT_INVENTORY_OWNERSHIP_TYPE:OWNED:自有库存",
+                        "MKT_INVENTORY_OWNERSHIP_TYPE:CUSTODIAL:代储库存",
+                        "MKT_INVENTORY_POLICY_ATTRIBUTE:COMMERCIAL:商品库存",
+                        "MKT_INVENTORY_POLICY_ATTRIBUTE:POLICY:政策性库存",
+                        "MKT_INVENTORY_POLICY_ATTRIBUTE:POLICY_AND_COMMERCIAL:政策与商品复合属性",
                         "MKT_PACKAGING_FORM:BAGGED:包粮", "MKT_PACKAGING_FORM:BULK:散粮");
     }
 
@@ -78,7 +90,7 @@ class MarketV18MasterDataTest {
                 SELECT code || ':' || label || ':' || control_type || ':' || sort_order
                 FROM platform.market_core_field_definition
                 WHERE code = 'MKT_REPORTED_AT'
-                """)).containsExactly("MKT_REPORTED_AT:填报时间:READONLY_DATETIME:35");
+                """)).containsExactly("MKT_REPORTED_AT:最后保存时间（兼容字段）:READONLY_DATETIME:35");
         assertThat(rows("""
                 SELECT field_code || ':' || coalesce(description, 'null')
                 FROM platform.page_column_group_field

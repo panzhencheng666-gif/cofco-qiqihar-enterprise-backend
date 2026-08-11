@@ -69,19 +69,24 @@ class MarketV21ConstraintTest {
     }
 
     @Test
-    void rejectsDuplicateTypedBindingsAndUnsupportedMetadataCombinations() {
+    void rejectsDuplicateTypedBindingsAndUnsupportedCapabilitiesWhileAllowingGovernedRegionExtensions()
+            throws SQLException {
         assertInsertRejected("""
                 INSERT INTO platform.market_core_field_definition
                     (code, label, control_type, sort_order, domain_binding, capability, required)
                 VALUES ('V21_DUP_REGION', '重复地区', 'REGION_HIERARCHY', 9101,
                         'REGION', 'GENERIC', true)
                 """);
-        assertInsertRejected("""
+        execute("""
                 INSERT INTO platform.market_core_field_definition
                     (code, label, control_type, sort_order, domain_binding, capability, required)
-                VALUES ('V21_REGION_EXTENSION', '非法地区扩展', 'REGION_HIERARCHY', 9102,
+                VALUES ('V21_REGION_EXTENSION', '地区扩展', 'REGION_HIERARCHY', 9102,
                         'EXTENSION', 'GENERIC', false)
                 """);
+        assertThat(rows("""
+                SELECT code FROM platform.market_core_field_definition
+                WHERE code = 'V21_REGION_EXTENSION'
+                """)).containsExactly("V21_REGION_EXTENSION");
         assertInsertRejected("""
                 INSERT INTO platform.market_core_field_definition
                     (code, label, control_type, sort_order, domain_binding, capability, required)
