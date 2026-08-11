@@ -87,18 +87,27 @@ public class JdbcMarketObjectRepository implements MarketObjectRepository {
     @Override
     public MarketObjectView insert(
             String objectId,
+            String partyId,
             MarketObjectDraft draft,
             String responsibleSubjectId,
             String responsiblePerson,
             Instant now) {
         jdbc.sql("""
+                INSERT INTO market.business_party(
+                    party_id,current_name,version,created_at,created_by,updated_at,updated_by)
+                VALUES(:party::uuid,:name,0,:now,:actor,:now,:actor)
+                """).param("party", partyId).param("name", draft.objectName().trim())
+                .param("now", Timestamp.from(now)).param("actor", responsibleSubjectId).update();
+        appendPartyRevision(
+                partyId, 0, "CREATED", draft.objectName().trim(), responsibleSubjectId, now);
+        jdbc.sql("""
                 INSERT INTO market.monitoring_object(
-                    object_id,object_name,object_type_code,region_code,source_channel_code,
+                    object_id,party_id,object_name,object_type_code,region_code,source_channel_code,
                     responsible_subject_id,responsible_person,effective_from,effective_to,
                     validity_status,version,created_at,updated_at,updated_by)
-                VALUES(:id::uuid,:name,:type,:region,:source,:subject,:person,:from,:to,
+                VALUES(:id::uuid,:party::uuid,:name,:type,:region,:source,:subject,:person,:from,:to,
                     :status,0,:now,:now,:subject)
-                """).param("id", objectId).param("name", draft.objectName().trim())
+                """).param("id", objectId).param("party", partyId).param("name", draft.objectName().trim())
                 .param("type", draft.objectTypeId()).param("region", draft.regionCode())
                 .param("source", draft.sourceChannelId()).param("subject", responsibleSubjectId)
                 .param("person", responsiblePerson).param("from", draft.effectiveFrom())
@@ -135,6 +144,18 @@ public class JdbcMarketObjectRepository implements MarketObjectRepository {
                 .param("updatedBy", updatedBy).param("id", objectId)
                 .param("version", expectedVersion).update();
         if (updated == 0) return Optional.empty();
+        int partyUpdated = jdbc.sql("""
+                UPDATE market.business_party
+                SET current_name=:name,version=version+1,updated_at=:now,updated_by=:updatedBy
+                WHERE party_id=:party::uuid AND version=:version
+                """).param("name", draft.objectName().trim()).param("now", Timestamp.from(now))
+                .param("updatedBy", updatedBy).param("party", draft.partyId())
+                .param("version", expectedVersion).update();
+        if (partyUpdated != 1) {
+            throw new IllegalStateException("Business party version diverged from market object version");
+        }
+        appendPartyRevision(
+                draft.partyId(), expectedVersion + 1, "UPDATED", draft.objectName().trim(), updatedBy, now);
         replaceChildren(objectId, draft);
         appendRevision(
                 objectId, expectedVersion + 1, draft,
@@ -144,11 +165,13 @@ public class JdbcMarketObjectRepository implements MarketObjectRepository {
 
     private MarketObjectView required(String objectId) {
         Header header = jdbc.sql("""
-                SELECT object.object_id::text,object.object_name,object.object_type_code,type.name,
+                SELECT object.object_id::text,object.party_id::text,party.current_name,
+                       object.object_type_code,type.name,
                        object.region_code,region.name,object.source_channel_code,source.name,
                        object.responsible_subject_id,object.responsible_person,
                        object.effective_from,object.effective_to,object.validity_status,object.version
                 FROM market.monitoring_object object
+                JOIN market.business_party party ON party.party_id=object.party_id
                 JOIN market.market_object_type_definition type ON type.code=object.object_type_code
                 JOIN platform.region region ON region.code=object.region_code
                 JOIN market.market_source_channel_definition source ON source.code=object.source_channel_code
@@ -156,8 +179,9 @@ public class JdbcMarketObjectRepository implements MarketObjectRepository {
                 """).param("id", objectId).query((row, index) -> new Header(
                         row.getString(1), row.getString(2), row.getString(3), row.getString(4),
                         row.getString(5), row.getString(6), row.getString(7), row.getString(8),
-                        row.getString(9), row.getString(10), row.getObject(11, LocalDate.class),
-                        row.getObject(12, LocalDate.class), row.getString(13), row.getLong(14))).single();
+                        row.getString(9), row.getString(10), row.getString(11),
+                        row.getObject(12, LocalDate.class), row.getObject(13, LocalDate.class),
+                        row.getString(14), row.getLong(15))).single();
         List<NamedCode> products = jdbc.sql("""
                 SELECT lower(product.code),product.name
                 FROM market.monitoring_object_product assignment
@@ -182,7 +206,7 @@ public class JdbcMarketObjectRepository implements MarketObjectRepository {
                         row.getString(1), row.getString(2), row.getObject(3, LocalDate.class),
                         row.getObject(4, LocalDate.class), row.getString(5))).list();
         return new MarketObjectView(
-                header.id(), header.name(), header.typeId(), header.typeLabel(),
+                header.id(), header.partyId(), header.name(), header.typeId(), header.typeLabel(),
                 header.regionCode(), header.regionName(),
                 products.stream().map(NamedCode::code).toList(),
                 products.stream().map(NamedCode::name).toList(),
@@ -240,6 +264,30 @@ public class JdbcMarketObjectRepository implements MarketObjectRepository {
         }
     }
 
+    private void appendPartyRevision(
+            String partyId,
+            long version,
+            String changeType,
+            String currentName,
+            String recordedBy,
+            Instant now) {
+        try {
+            String snapshot = objectMapper.writeValueAsString(new PartyRevisionSnapshot(
+                    partyId, currentName));
+            jdbc.sql("""
+                    INSERT INTO market.business_party_revision(
+                        revision_id,party_id,party_version,change_type,snapshot_json,recorded_at,recorded_by)
+                    VALUES(:revision::uuid,:party::uuid,:version,:changeType,
+                        CAST(:snapshot AS jsonb),:now,:actor)
+                    """).param("revision", UUID.randomUUID().toString()).param("party", partyId)
+                    .param("version", version).param("changeType", changeType)
+                    .param("snapshot", snapshot).param("now", Timestamp.from(now))
+                    .param("actor", recordedBy).update();
+        } catch (JacksonException exception) {
+            throw new IllegalStateException("Cannot serialize business party revision", exception);
+        }
+    }
+
     private long count(String sql, String parameter, String value) {
         return jdbc.sql(sql).param(parameter, value).query(Long.class).single();
     }
@@ -271,7 +319,7 @@ public class JdbcMarketObjectRepository implements MarketObjectRepository {
     }
 
     private record Header(
-            String id, String name, String typeId, String typeLabel,
+            String id, String partyId, String name, String typeId, String typeLabel,
             String regionCode, String regionName, String sourceId, String sourceLabel,
             String responsibleSubjectId, String responsiblePerson,
             LocalDate effectiveFrom, LocalDate effectiveTo, String status, long version) {
@@ -284,5 +332,8 @@ public class JdbcMarketObjectRepository implements MarketObjectRepository {
             MarketObjectDraft object,
             String responsibleSubjectId,
             String responsiblePerson) {
+    }
+
+    private record PartyRevisionSnapshot(String partyId, String currentName) {
     }
 }

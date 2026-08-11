@@ -15,7 +15,8 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 class SupplyTemporalMigrationTest {
     private static final ProtectedTestDatabase DATABASE = ProtectedTestDatabase.shared();
     private static final String[] BUSINESS_SCHEMAS = {
-        "platform", "production", "market", "logistics", "supply", "reporting", "workflow", "overview", "evidence"
+        "platform", "production", "market", "logistics", "supply", "reporting", "workflow", "overview", "evidence",
+        "registry"
     };
 
     @AfterEach
@@ -48,7 +49,7 @@ class SupplyTemporalMigrationTest {
                     """);
         }
 
-        MigrateResult existingReplay = DATABASE.flyway().migrate();
+        MigrateResult existingReplay = DATABASE.flywayToVersion("88").migrate();
 
         assertThat(existingReplay.migrationsExecuted).isEqualTo(2);
         assertThat(queryLong("SELECT count(*) FROM supply.source_release")).isOne();
@@ -70,10 +71,10 @@ class SupplyTemporalMigrationTest {
                 WHERE table_schema='platform' AND table_name='supply_survey_period'
                   AND column_name IN('starts_on','ends_on')
                 """)).isZero();
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isZero();
+        assertThat(DATABASE.flywayToVersion("88").migrate().migrationsExecuted).isZero();
 
         resetDatabase();
-        MigrateResult emptyReplay = DATABASE.flyway().migrate();
+        MigrateResult emptyReplay = DATABASE.flywayToVersion("88").migrate();
         assertThat(emptyReplay.migrationsExecuted).isGreaterThan(80);
         assertThat(queryString("SELECT max(version::integer)::text FROM public.flyway_schema_history WHERE success"))
                 .isEqualTo("88");

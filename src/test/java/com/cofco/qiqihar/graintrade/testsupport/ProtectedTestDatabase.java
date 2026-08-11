@@ -3,7 +3,9 @@ package com.cofco.qiqihar.graintrade.testsupport;
 import java.net.URI;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Properties;
@@ -77,14 +79,46 @@ public final class ProtectedTestDatabase {
     }
 
     public Flyway flyway() {
+        dropRegistrySchemaWithoutV93History();
         return Flyway.configure().dataSource(dataSource()).load();
     }
 
     public Flyway flywayToVersion(String targetVersion) {
+        dropRegistrySchemaWithoutV93History();
         return Flyway.configure()
                 .dataSource(dataSource())
                 .target(MigrationVersion.fromVersion(targetVersion))
                 .load();
+    }
+
+    private void dropRegistrySchemaWithoutV93History() {
+        try (Connection connection = openConnection();
+                Statement statement = connection.createStatement()) {
+            boolean historyExists;
+            try (ResultSet result = statement.executeQuery(
+                    "SELECT to_regclass('public.flyway_schema_history') IS NOT NULL")) {
+                result.next();
+                historyExists = result.getBoolean(1);
+            }
+            boolean v93Applied = false;
+            if (historyExists) {
+                try (ResultSet result = statement.executeQuery("""
+                        SELECT EXISTS(
+                          SELECT 1 FROM public.flyway_schema_history
+                          WHERE version='93' AND success)
+                        """)) {
+                    result.next();
+                    v93Applied = result.getBoolean(1);
+                }
+            }
+            if (!v93Applied) {
+                statement.execute("DROP SCHEMA IF EXISTS registry CASCADE");
+            }
+        } catch (SQLException exception) {
+            throw new IllegalStateException(
+                    "Failed to isolate the dedicated test database before migration replay",
+                    exception);
+        }
     }
 
     public String[] springApplicationArguments() {

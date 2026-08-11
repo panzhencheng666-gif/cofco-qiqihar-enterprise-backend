@@ -5,6 +5,7 @@ import java.util.List;
 
 public record MarketObjectView(
         String objectId,
+        String partyId,
         String objectName,
         String objectTypeId,
         String objectTypeLabel,

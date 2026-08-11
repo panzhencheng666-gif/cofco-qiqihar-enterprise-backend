@@ -13,6 +13,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.annotation.Rollback;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,6 +25,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Rollback
 class MarketObjectRestIntegrationTest {
     @Autowired MockMvc mockMvc;
+    @Autowired JdbcClient jdbc;
 
     @Test
     void persistsOneMarketSubjectWithMultipleEffectiveRoles() throws Exception {
@@ -33,6 +35,7 @@ class MarketObjectRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(1))
                 .andExpect(jsonPath("$.data[0].objectId").value(id))
+                .andExpect(jsonPath("$.data[0].partyId").isNotEmpty())
                 .andExpect(jsonPath("$.data[0].objectName").value("讷河阶段四米业"))
                 .andExpect(jsonPath("$.data[0].regionCode").value("230281"))
                 .andExpect(jsonPath("$.data[0].regionName").value("讷河市"))
@@ -41,6 +44,10 @@ class MarketObjectRestIntegrationTest {
                 .andExpect(jsonPath("$.data[0].roles.length()").value(2))
                 .andExpect(jsonPath("$.data[0].roles[?(@.roleId == 'rice-mill')]").exists())
                 .andExpect(jsonPath("$.data[0].roles[?(@.roleId == 'trader')]").exists());
+
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql("""
+                SELECT count(*) FROM market.business_party
+                """).query(Long.class).single()).isOne();
     }
 
     @Test
@@ -107,15 +114,87 @@ class MarketObjectRestIntegrationTest {
 
     @Test
     void doesNotMistakeANameForStablePartyIdentity() throws Exception {
-        create("跨地区唯一粮食企业");
+        String firstPartyId = partyId(create("同名粮食企业"));
 
         mockMvc.perform(post("/api/v1/market-objects")
                         .principal(() -> "market-tester")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(body("跨地区唯一粮食企业", null)
+                        .content(body("同名粮食企业", null)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.partyId")
+                        .value(org.hamcrest.Matchers.not(firstPartyId)))
+                .andExpect(jsonPath("$.data.regionCode").value("230281"));
+
+        mockMvc.perform(post("/api/v1/market-objects")
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("同名粮食企业", null)
                                 .replace("\"regionCode\":\"230281\"", "\"regionCode\":\"230221\"")))
                 .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.partyId")
+                        .value(org.hamcrest.Matchers.not(firstPartyId)))
                 .andExpect(jsonPath("$.data.regionCode").value("230221"));
+    }
+
+    @Test
+    void renameAndProductAssociationChangesPreserveTheStablePartyIdentity() throws Exception {
+        String objectId = create("主体更名前");
+        String partyId = partyId(objectId);
+
+        mockMvc.perform(put("/api/v1/market-objects/{id}", objectId)
+                        .principal(() -> "data-fault-test")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("主体更名后", 0)
+                                .replace("[\"corn\",\"paddy\"]", "[\"soybean\"]")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.partyId").value(partyId))
+                .andExpect(jsonPath("$.data.objectName").value("主体更名后"))
+                .andExpect(jsonPath("$.data.productIds.length()").value(1))
+                .andExpect(jsonPath("$.data.productIds[0]").value("soybean"))
+                .andExpect(jsonPath("$.data.responsibleUserId").value("market-tester"))
+                .andExpect(jsonPath("$.data.responsiblePerson").value("市场测试员"));
+
+        long partyRevisions = jdbc.sql("""
+                SELECT count(*) FROM market.business_party_revision
+                WHERE party_id=:id::uuid
+                """).param("id", partyId).query(Long.class).single();
+        org.assertj.core.api.Assertions.assertThat(partyRevisions).isEqualTo(2);
+        long linkedMonitoringRevisions = jdbc.sql("""
+                SELECT count(*) FROM market.monitoring_object_revision
+                WHERE object_id=:objectId::uuid
+                  AND snapshot_json #>> '{object,partyId}'=:partyId
+                """).param("objectId", objectId).param("partyId", partyId)
+                .query(Long.class).single();
+        org.assertj.core.api.Assertions.assertThat(linkedMonitoringRevisions).isEqualTo(2);
+    }
+
+    @Test
+    void rejectsClientSpecifiedPartyIdentityOnCreateOrUpdate() throws Exception {
+        mockMvc.perform(post("/api/v1/market-objects")
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("禁止指定主体", null).replaceFirst(
+                                "\\{", "{\"partyId\":\"92000000-0000-0000-0000-000000000098\",")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_BUSINESS_PARTY_IDENTITY"));
+
+        String objectId = create("禁止换绑主体");
+        String partyId = partyId(objectId);
+        mockMvc.perform(put("/api/v1/market-objects/{id}", objectId)
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("禁止换绑主体", 0).replaceFirst(
+                                "\\{", "{\"partyId\":\"" + partyId + "\",")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_BUSINESS_PARTY_IDENTITY"));
+
+        mockMvc.perform(put("/api/v1/market-objects/{id}", objectId)
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("禁止换绑主体", 0).replaceFirst(
+                                "\\{", "{\"partyId\":\"92000000-0000-0000-0000-000000000099\",")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_BUSINESS_PARTY_IDENTITY"));
     }
 
     @Test
@@ -141,6 +220,14 @@ class MarketObjectRestIntegrationTest {
                 .andExpect(jsonPath("$.data.version").value(0))
                 .andReturn().getResponse().getContentAsString()
                 .replaceFirst("(?s).*?\\\"objectId\\\":\\\"([^\\\"]+)\\\".*", "$1");
+    }
+
+    private String partyId(String objectId) throws Exception {
+        return mockMvc.perform(get("/api/v1/market-objects").principal(() -> "market-tester"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString()
+                .replaceFirst("(?s).*?\\\"objectId\\\":\\\"" + objectId
+                        + "\\\".*?\\\"partyId\\\":\\\"([^\\\"]+)\\\".*", "$1");
     }
 
     private static String body(String name, Integer version) {

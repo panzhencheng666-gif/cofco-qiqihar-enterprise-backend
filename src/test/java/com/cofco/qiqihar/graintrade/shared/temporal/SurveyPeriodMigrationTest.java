@@ -14,7 +14,8 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 class SurveyPeriodMigrationTest {
     private static final ProtectedTestDatabase DATABASE = ProtectedTestDatabase.shared();
     private static final String[] BUSINESS_SCHEMAS = {
-        "platform", "production", "market", "logistics", "supply", "reporting", "workflow", "overview", "evidence"
+        "platform", "production", "market", "logistics", "supply", "reporting", "workflow", "overview", "evidence",
+        "registry"
     };
 
     @AfterEach
@@ -84,7 +85,7 @@ class SurveyPeriodMigrationTest {
                     """);
         }
 
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isOne();
+        assertThat(DATABASE.flywayToVersion("88").migrate().migrationsExecuted).isOne();
 
         assertThat(queryString("""
                 SELECT survey_year || ':' || survey_month || ':' || survey_period_precision || ':' ||
@@ -113,7 +114,7 @@ class SurveyPeriodMigrationTest {
                 FROM platform.field_definition
                 WHERE code IN ('PROD_REPORTED_AT','MKT_REPORTED_AT','LOG_REPORTED_AT')
                 """)).isEqualTo("LOG_REPORTED_AT=物流最后保存时间（兼容字段）,MKT_REPORTED_AT=市场最后保存时间（兼容字段）,PROD_REPORTED_AT=产情最后保存时间（兼容字段）");
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isZero();
+        assertThat(DATABASE.flywayToVersion("88").migrate().migrationsExecuted).isZero();
     }
 
     private void resetDatabase() throws Exception {

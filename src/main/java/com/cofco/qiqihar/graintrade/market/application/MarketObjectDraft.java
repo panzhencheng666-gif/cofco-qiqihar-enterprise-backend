@@ -4,6 +4,7 @@ import java.time.LocalDate;
 import java.util.List;
 
 public record MarketObjectDraft(
+        String partyId,
         String objectName,
         String objectTypeId,
         String regionCode,

@@ -1,0 +1,8 @@
+package com.cofco.qiqihar.graintrade.overview.application;
+
+public record OverviewSamplePointAggregate(
+        String regionCode,
+        String regionName,
+        String regionLevel,
+        long samplePointCount,
+        long unresolvedSourceCount) {}

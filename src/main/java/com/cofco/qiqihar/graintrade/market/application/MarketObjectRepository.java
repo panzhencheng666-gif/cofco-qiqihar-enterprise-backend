@@ -14,6 +14,7 @@ public interface MarketObjectRepository {
 
     MarketObjectView insert(
             String objectId,
+            String partyId,
             MarketObjectDraft draft,
             String responsibleSubjectId,
             String responsiblePerson,

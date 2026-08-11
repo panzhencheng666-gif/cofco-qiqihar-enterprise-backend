@@ -47,6 +47,7 @@ public class MarketObjectController {
     }
 
     record Request(
+            String partyId,
             String objectName,
             String objectTypeId,
             String regionCode,
@@ -62,14 +63,14 @@ public class MarketObjectController {
             if (this == null) throw invalid();
             BoundedInput.requireAggregateSize("INVALID_MARKET_OBJECT", productIds, cultivarIds, roles);
             BoundedInput.requireText(
-                    "INVALID_MARKET_OBJECT", objectName, objectTypeId, regionCode,
+                    "INVALID_MARKET_OBJECT", partyId, objectName, objectTypeId, regionCode,
                     sourceChannelId, validityStatus);
             if (roles != null && roles.stream().anyMatch(role -> role == null)) throw invalid();
             List<MarketObjectRoleDraft> roleDrafts = roles == null
                     ? List.of()
                     : roles.stream().map(RoleRequest::draft).toList();
             return new MarketObjectDraft(
-                    objectName, objectTypeId, regionCode, productIds, cultivarIds,
+                    partyId, objectName, objectTypeId, regionCode, productIds, cultivarIds,
                     sourceChannelId, effectiveFrom, effectiveTo, validityStatus, roleDrafts);
         }
     }
