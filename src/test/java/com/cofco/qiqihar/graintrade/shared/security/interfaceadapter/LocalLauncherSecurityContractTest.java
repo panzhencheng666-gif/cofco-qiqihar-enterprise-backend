@@ -16,6 +16,7 @@ class LocalLauncherSecurityContractTest {
     private static final Path OWNERSHIP_SCRIPT = Path.of("scripts/local-process-ownership.sh");
     private static final Path LINK_VERIFIER = Path.of("scripts/verify-local-links.sh");
     private static final Path HEALTHCHECK = Path.of("scripts/healthcheck-local.sh");
+    private static final Path RUNTIME_MANAGER = Path.of("scripts/local-runtime.sh");
     private static final Path REGION_HIERARCHY_VERIFIER = Path.of("scripts/verify-local-region-hierarchy.sh");
 
     @Test
@@ -44,6 +45,13 @@ class LocalLauncherSecurityContractTest {
         assertThat(runtime).doesNotContain("prototype.html", "64185", "vite.prototype.config.ts");
         assertThat(runtime).doesNotContain("/Users/federal/Desktop/cofco-qiqihar-enterprise-backend");
         assertThat(runtime).contains("http://127.0.0.1:${business_port}/");
+    }
+
+    @Test
+    void runtimeStatusFollowsOnlyBoundedRedirectsForInternalComponents() throws IOException {
+        String manager = java.nio.file.Files.readString(RUNTIME_MANAGER);
+
+        assertThat(manager).contains("--location", "--max-redirs 3");
     }
 
     @Test

@@ -196,7 +196,8 @@ uninstall_agent() {
 }
 
 http_code() {
-  curl -sS --max-time 3 -o /dev/null -w '%{http_code}' "$1" 2>/dev/null || true
+  curl -sS --location --max-redirs 3 --max-time 3 \
+    -o /dev/null -w '%{http_code}' "$1" 2>/dev/null || true
 }
 
 print_service_status() {
