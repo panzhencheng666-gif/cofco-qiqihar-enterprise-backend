@@ -105,6 +105,11 @@ public class ProductionRecordController {
                 service.returnForCorrection(id, request.requiredVersion(), request.validatedReason())));
     }
 
+    @PostMapping("/api/v1/production-records/{id}/void")
+    ApiResponse<RecordResponse> voidRecord(@PathVariable String id, @RequestBody VersionRequest request) {
+        return new ApiResponse<>(RecordResponse.from(service.voidRecord(id, request.requiredVersion())));
+    }
+
     private static ClientRequestException invalidQuery() {
         return new ClientRequestException("INVALID_PRODUCTION_RECORD_QUERY", "Production record query context is invalid");
     }

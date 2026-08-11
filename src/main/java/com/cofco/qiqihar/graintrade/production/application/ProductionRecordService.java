@@ -215,6 +215,12 @@ public class ProductionRecordService implements ProductionImportPort {
         return transition(id, expectedVersion, "BUSINESS_RETURN", "PRODUCTION_RECORD_RETURNED", record -> record.returnForCorrection(reason));
     }
 
+    @Transactional
+    public ProductionRecordView voidRecord(String id, long expectedVersion) {
+        return transition(id, expectedVersion, "BUSINESS_UPDATE", "PRODUCTION_RECORD_VOIDED",
+                ProductionRecord::voidRecord);
+    }
+
     private ProductionRecordView transition(String id, long expectedVersion, String permission, String auditAction,
             java.util.function.UnaryOperator<ProductionRecord> command) {
         return transition(id, expectedVersion, permission, auditAction, command, (record, principal) -> { });
@@ -311,6 +317,7 @@ public class ProductionRecordService implements ProductionImportPort {
             case "SUBMIT" -> "BUSINESS_SUBMIT";
             case "APPROVE" -> "BUSINESS_APPROVE";
             case "RETURN" -> "BUSINESS_RETURN";
+            case "VOID" -> "BUSINESS_UPDATE";
             default -> null;
         };
         if (permission == null || !principal.permits(permission)) return false;

@@ -42,6 +42,11 @@ public record LogisticsRecord(
         if (status != LogisticsStatus.RETURNED) throw new IllegalStateException("Only returned records can be revised");
         return transition(LogisticsStatus.RETURNED, returnReason);
     }
+    public LogisticsRecord voidRecord() {
+        if (status != LogisticsStatus.DRAFT && status != LogisticsStatus.RETURNED)
+            throw new IllegalStateException("Only drafts or returned records can be voided");
+        return transition(LogisticsStatus.VOIDED, null);
+    }
     private LogisticsRecord transition(LogisticsStatus next, String reason) {
         if (next == LogisticsStatus.PENDING_REVIEW
                 && status != LogisticsStatus.DRAFT && status != LogisticsStatus.RETURNED)

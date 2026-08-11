@@ -138,6 +138,13 @@ public record ProductionRecord(
         return transition(ProductionStatus.PENDING_REVIEW, ProductionStatus.RETURNED, reason);
     }
 
+    public ProductionRecord voidRecord() {
+        if (status != ProductionStatus.DRAFT && status != ProductionStatus.RETURNED) {
+            throw new IllegalStateException("Cannot void production record from " + status);
+        }
+        return copy(ProductionStatus.VOIDED, null, version);
+    }
+
     public ProductionRecord savedAsVersion(long savedVersion) {
         return copy(status, returnReason, savedVersion);
     }

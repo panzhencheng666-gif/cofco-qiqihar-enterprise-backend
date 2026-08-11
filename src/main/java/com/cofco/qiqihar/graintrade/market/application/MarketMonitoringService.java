@@ -253,6 +253,12 @@ public class MarketMonitoringService {
         return transition(id, expectedVersion, "BUSINESS_RETURN", "MARKET_RECORD_RETURNED", record -> record.returnForCorrection(reason));
     }
 
+    @Transactional
+    public MarketRecordView voidRecord(String id, long expectedVersion) {
+        return transition(id, expectedVersion, "BUSINESS_UPDATE", "MARKET_RECORD_VOIDED",
+                MarketMonitoringRecord::voidRecord);
+    }
+
     private MarketRecordView transition(String id, long expectedVersion, String permissionCode, String auditAction,
             java.util.function.UnaryOperator<MarketMonitoringRecord> command) {
         return transition(id, expectedVersion, permissionCode, auditAction, command,
@@ -570,6 +576,7 @@ public class MarketMonitoringService {
             case "SUBMIT" -> "BUSINESS_SUBMIT";
             case "APPROVE" -> "BUSINESS_APPROVE";
             case "RETURN" -> "BUSINESS_RETURN";
+            case "VOID" -> "BUSINESS_UPDATE";
             default -> null;
         };
         if (permission == null || !principal.permits(permission)) return false;

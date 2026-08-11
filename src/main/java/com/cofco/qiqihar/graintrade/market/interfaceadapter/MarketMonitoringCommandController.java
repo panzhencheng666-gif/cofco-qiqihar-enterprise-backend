@@ -82,6 +82,11 @@ public class MarketMonitoringCommandController {
                 service.returnForCorrection(id, request.requiredVersion(), request.validatedReason())));
     }
 
+    @PostMapping("/api/v1/market-records/{id}/void")
+    ApiResponse<RecordResponse> voidRecord(@PathVariable String id, @RequestBody VersionRequest request) {
+        return new ApiResponse<>(RecordResponse.from(service.voidRecord(id, request.requiredVersion())));
+    }
+
     record DraftRequest(
             String productCode, Map<String, String> coreValues,
             Map<String, String> facts, List<UUID> evidencePhotoIds, Long version) {

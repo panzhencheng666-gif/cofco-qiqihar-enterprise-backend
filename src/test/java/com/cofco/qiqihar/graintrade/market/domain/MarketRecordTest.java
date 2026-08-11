@@ -50,4 +50,23 @@ class MarketRecordTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("string, number or null");
     }
+
+    @Test
+    void voidsOnlyDraftOrReturnedMarketRecordsAndKeepsThemTerminal() {
+        MarketMonitoringRecord draft = MarketMonitoringRecord.draft(
+                "record-void", "CORN", "TRADER", "230200", LocalDate.of(2026, 8, 7),
+                OffsetDateTime.parse("2026-08-07T08:00:00+08:00"), MarketTradeDirection.PURCHASE,
+                new BigDecimal("2100"), null, new BigDecimal("20"), BigDecimal.ZERO,
+                new BigDecimal("10"), "BULK", Map.of());
+
+        assertThat(draft.voidRecord().status()).isEqualTo(MarketStatus.VOIDED);
+        assertThat(draft.submit().returnForCorrection("补充").voidRecord().status())
+                .isEqualTo(MarketStatus.VOIDED);
+        assertThatThrownBy(() -> draft.submit().voidRecord())
+                .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> draft.submit().approve().voidRecord())
+                .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> draft.voidRecord().submit())
+                .isInstanceOf(IllegalStateException.class);
+    }
 }

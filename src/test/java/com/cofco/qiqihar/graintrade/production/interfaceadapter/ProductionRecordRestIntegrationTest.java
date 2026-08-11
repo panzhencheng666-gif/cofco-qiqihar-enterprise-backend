@@ -303,6 +303,39 @@ class ProductionRecordRestIntegrationTest {
                 .andExpect(jsonPath("$.data.status").value("APPROVED"));
     }
 
+    @Test
+    void voidsADraftThroughHttpAndPersistsATerminalAuditedState() throws Exception {
+        String id = create(validDraftBody());
+
+        mockMvc.perform(post("/api/v1/production-records/{id}/void", id)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("VOIDED"))
+                .andExpect(jsonPath("$.data.version").value(1))
+                .andExpect(jsonPath("$.data.allowedActions.length()").value(1))
+                .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"));
+
+        assertThat(JdbcClient.create(dataSource).sql("""
+                SELECT status_code FROM production.production_record WHERE record_id=:id
+                """).param("id", id).query(String.class).single()).isEqualTo("VOIDED");
+        assertThat(JdbcClient.create(dataSource).sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type='PRODUCTION_RECORD' AND aggregate_id=:id
+                  AND action_code='PRODUCTION_RECORD_VOIDED'
+                """).param("id", id).query(Long.class).single()).isEqualTo(1L);
+        assertThat(JdbcClient.create(dataSource).sql("""
+                SELECT count(*) FROM platform.business_event_outbox
+                WHERE aggregate_type='PRODUCTION_RECORD' AND aggregate_id=:id
+                  AND action_code='PRODUCTION_RECORD_VOIDED'
+                """).param("id", id).query(Long.class).single()).isEqualTo(1L);
+        mockMvc.perform(post("/api/v1/production-records/{id}/submit", id)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("INVALID_PRODUCTION_TRANSITION"));
+    }
+
     @ParameterizedTest(name = "{0} / AGRICULTURAL_TECH_STATION round-trips quality only")
     @MethodSource("productQualityContexts")
     void agriculturalTechStationRoundTripsOnlyItsConfirmedQualityFact(
@@ -434,9 +467,10 @@ class ProductionRecordRestIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].values.PROD_REPORTER_NAME").value("产情测试员"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_SAMPLE_LONGITUDE").value("123.9182"))
                 .andExpect(jsonPath("$.data.items[0].values.LAND_RENT").value("4.0000"))
-                .andExpect(jsonPath("$.data.items[0].allowedActions.length()").value(2))
+                .andExpect(jsonPath("$.data.items[0].allowedActions.length()").value(3))
                 .andExpect(jsonPath("$.data.items[0].allowedActions[0]").value("VIEW"))
-                .andExpect(jsonPath("$.data.items[0].allowedActions[1]").value("SUBMIT"));
+                .andExpect(jsonPath("$.data.items[0].allowedActions[1]").value("SUBMIT"))
+                .andExpect(jsonPath("$.data.items[0].allowedActions[2]").value("VOID"));
     }
 
     @Test

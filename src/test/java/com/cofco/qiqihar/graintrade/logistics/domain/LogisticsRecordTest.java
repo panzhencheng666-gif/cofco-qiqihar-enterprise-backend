@@ -23,4 +23,21 @@ class LogisticsRecordTest {
         assertThat(returned.returnReason()).isEqualTo("补充运单");
         assertThat(returned.submit().status()).isEqualTo(LogisticsStatus.PENDING_REVIEW);
     }
+
+    @Test
+    void voidsOnlyDraftOrReturnedLogisticsRecordsAndKeepsThemTerminal() {
+        LogisticsRecord draft = LogisticsRecord.draft("l-void", "CORN", "P1", LocalDate.parse("2026-08-01"),
+                OffsetDateTime.parse("2026-08-01T12:00:00+08:00"), "n1", "n2", "RAIL", "INFLOW",
+                new BigDecimal("12.500"), new BigDecimal("80.25"), new BigDecimal("2.50"));
+
+        assertThat(draft.voidRecord().status()).isEqualTo(LogisticsStatus.VOIDED);
+        assertThat(draft.submit().returnForCorrection("补充").voidRecord().status())
+                .isEqualTo(LogisticsStatus.VOIDED);
+        assertThatThrownBy(() -> draft.submit().voidRecord())
+                .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> draft.submit().approve().voidRecord())
+                .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> draft.voidRecord().submit())
+                .isInstanceOf(IllegalStateException.class);
+    }
 }

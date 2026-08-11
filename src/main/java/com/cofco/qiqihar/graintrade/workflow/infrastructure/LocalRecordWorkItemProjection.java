@@ -114,7 +114,7 @@ public class LocalRecordWorkItemProjection implements WorkItemProjection {
             case "DRAFT" -> "TO_FILL";
             case "PENDING_REVIEW" -> "TO_REVIEW";
             case "RETURNED" -> "RETURNED";
-            case "APPROVED" -> null;
+            case "APPROVED", "VOIDED" -> null;
             default -> throw new IllegalStateException(
                     "Unsupported local workflow source status: " + record.statusCode());
         };

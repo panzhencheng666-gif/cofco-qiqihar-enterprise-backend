@@ -66,6 +66,24 @@ class ProductionRecordTest {
     }
 
     @Test
+    void voidsOnlyDraftOrReturnedRecordsAndKeepsVoidedRecordsTerminal() {
+        ProductionRecord draft = ProductionRecord.draft(
+                "record-void", "CORN", "FARMER", "230202", null,
+                LocalDate.of(2026, 8, 1), OffsetDateTime.parse("2026-08-02T08:00:00+08:00"),
+                BigDecimal.ONE, BigDecimal.ONE, Map.of());
+
+        assertThat(draft.voidRecord().status()).isEqualTo(ProductionStatus.VOIDED);
+        assertThat(draft.submit().returnForCorrection("补充").voidRecord().status())
+                .isEqualTo(ProductionStatus.VOIDED);
+        assertThatThrownBy(() -> draft.submit().voidRecord())
+                .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> draft.submit().approve().voidRecord())
+                .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> draft.voidRecord().submit())
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
     void revisionPreservesAllNormalizedFactsAndCannotReopenPendingOrApprovedRecords() {
         ProductionRecord draft = ProductionRecord.draft(
                 "record-1", "RICE", "VILLAGE_COMMITTEE", "230202", null,

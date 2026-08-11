@@ -35,6 +35,7 @@ public class LogisticsController {
  @PostMapping("/api/v1/logistics-records/{id}/submit") ApiResponse<RecordResponse> submit(@PathVariable String id,@RequestBody VersionRequest r){return new ApiResponse<>(RecordResponse.from(service.submit(id,r.requiredVersion())));}
  @PostMapping("/api/v1/logistics-records/{id}/approve") ApiResponse<RecordResponse> approve(@PathVariable String id,@RequestBody VersionRequest r){return new ApiResponse<>(RecordResponse.from(service.approve(id,r.requiredVersion())));}
  @PostMapping("/api/v1/logistics-records/{id}/return") ApiResponse<RecordResponse> returned(@PathVariable String id,@RequestBody ReturnRequest r){return new ApiResponse<>(RecordResponse.from(service.returned(id,r.requiredVersion(),r.validatedReason())));}
+ @PostMapping("/api/v1/logistics-records/{id}/void") ApiResponse<RecordResponse> voidRecord(@PathVariable String id,@RequestBody VersionRequest r){return new ApiResponse<>(RecordResponse.from(service.voidRecord(id,r.requiredVersion())));}
  record DraftRequest(String productCode,Map<String,String> values,Long version){
   LogisticsDraft toDraft(){return new LogisticsDraft(productCode,values);}
   long requiredVersion(){if(version==null||version<0)throw invalid();return version;}

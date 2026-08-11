@@ -95,12 +95,19 @@ public class LogisticsService {
     @Transactional public LogisticsRecordView returned(String id,long version,String reason) {
         if (reason==null || reason.isBlank()) throw invalid(); return transition(id,version,LogisticsStatus.RETURNED,reason.trim(),"BUSINESS_RETURN","LOGISTICS_RECORD_RETURNED");
     }
+    @Transactional public LogisticsRecordView voidRecord(String id,long version) {
+        return transition(id,version,LogisticsStatus.VOIDED,null,"BUSINESS_UPDATE","LOGISTICS_RECORD_VOIDED");
+    }
     private LogisticsRecordView transition(String id,long version,LogisticsStatus target,String reason,String permission,String auditAction) {
         LogisticsRecordView existing=required(id); SecurityPrincipal principal=authorize(permission,repository.regionsForRecord(id)); requireVersion(existing,version);
         boolean allowed=(target==LogisticsStatus.PENDING_REVIEW
                 && (existing.status()==LogisticsStatus.DRAFT || existing.status()==LogisticsStatus.RETURNED))
                 || ((target==LogisticsStatus.APPROVED || target==LogisticsStatus.RETURNED) && existing.status()==LogisticsStatus.PENDING_REVIEW);
-        String action=target==LogisticsStatus.PENDING_REVIEW?"SUBMIT":target==LogisticsStatus.APPROVED?"APPROVE":"RETURN";
+        allowed=allowed || (target==LogisticsStatus.VOIDED
+                && (existing.status()==LogisticsStatus.DRAFT || existing.status()==LogisticsStatus.RETURNED));
+        String action=target==LogisticsStatus.PENDING_REVIEW?"SUBMIT"
+                :target==LogisticsStatus.APPROVED?"APPROVE"
+                :target==LogisticsStatus.RETURNED?"RETURN":"VOID";
         if(!allowed||!repository.actionAllowed(existing.productCode(),existing.status(),action)) throw invalid();
         if(separationOfDuties!=null && permission.equals("BUSINESS_APPROVE")) {
             separationOfDuties.requireIndependentApprover(
@@ -160,6 +167,7 @@ public class LogisticsService {
                 case "SUBMIT" -> "BUSINESS_SUBMIT";
                 case "APPROVE" -> "BUSINESS_APPROVE";
                 case "RETURN" -> "BUSINESS_RETURN";
+                case "VOID" -> "BUSINESS_UPDATE";
                 default -> null;
             };
             if(permission==null||!principal.permits(permission))return false;

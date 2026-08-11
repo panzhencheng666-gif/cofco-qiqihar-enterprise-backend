@@ -165,6 +165,39 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    void voidsAMarketDraftThroughHttpAndPersistsATerminalAuditedState() throws Exception {
+        String id = create("CORN", "FEED_MILL", "MOISTURE");
+
+        mockMvc.perform(post("/api/v1/market-records/{id}/void", id)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("VOIDED"))
+                .andExpect(jsonPath("$.data.version").value(1))
+                .andExpect(jsonPath("$.data.allowedActions.length()").value(1))
+                .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"));
+
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        assertThat(jdbc.sql("SELECT status_code FROM market.market_record WHERE record_id=:id")
+                .param("id", id).query(String.class).single()).isEqualTo("VOIDED");
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type='MARKET_RECORD' AND aggregate_id=:id
+                  AND action_code='MARKET_RECORD_VOIDED'
+                """).param("id", id).query(Long.class).single()).isEqualTo(1L);
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_event_outbox
+                WHERE aggregate_type='MARKET_RECORD' AND aggregate_id=:id
+                  AND action_code='MARKET_RECORD_VOIDED'
+                """).param("id", id).query(Long.class).single()).isEqualTo(1L);
+        mockMvc.perform(post("/api/v1/market-records/{id}/submit", id)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("INVALID_MARKET_TRANSITION"));
+    }
+
+    @Test
     void capturesBothObjectPricesWithoutExposingATradeDirection() throws Exception {
         mockMvc.perform(get("/api/v1/market-record-definitions")
                         .queryParam("productCode", "CORN")

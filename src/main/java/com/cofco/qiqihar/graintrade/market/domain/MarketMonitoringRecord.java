@@ -65,6 +65,13 @@ public record MarketMonitoringRecord(
     public MarketMonitoringRecord submit() { return transition(MarketStatus.DRAFT, MarketStatus.PENDING_REVIEW, null, true); }
     public MarketMonitoringRecord approve() { return transition(MarketStatus.PENDING_REVIEW, MarketStatus.APPROVED, null, false); }
     public MarketMonitoringRecord returnForCorrection(String reason) { return transition(MarketStatus.PENDING_REVIEW, MarketStatus.RETURNED, reason, false); }
+    public MarketMonitoringRecord voidRecord() {
+        if (status != MarketStatus.DRAFT && status != MarketStatus.RETURNED)
+            throw new IllegalStateException("Only DRAFT or RETURNED market records may be voided");
+        return new MarketMonitoringRecord(id, productCode, objectTypeCode, regionCode, tradeDate, reportedAt,
+                direction, purchaseBasePrice, saleBasePrice, carriageBoardAmount, freightAmount,
+                packagingAmount, packagingForm, actualTradePrice, MarketStatus.VOIDED, null, facts, version);
+    }
     public MarketMonitoringRecord savedAsVersion(long nextVersion) { return new MarketMonitoringRecord(id, productCode, objectTypeCode, regionCode, tradeDate, reportedAt, direction, purchaseBasePrice, saleBasePrice, carriageBoardAmount, freightAmount, packagingAmount, packagingForm, actualTradePrice, status, returnReason, facts, nextVersion); }
     private MarketMonitoringRecord transition(MarketStatus expected, MarketStatus next, String reason, boolean revisableReturned) {
         if ((revisableReturned && status != MarketStatus.DRAFT && status != MarketStatus.RETURNED) || (!revisableReturned && status != expected)) throw new IllegalStateException("Invalid market record transition from " + status + " to " + next);

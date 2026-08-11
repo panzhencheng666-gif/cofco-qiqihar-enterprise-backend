@@ -47,6 +47,36 @@ class LogisticsRestIntegrationTest {
         transition(id,"approve",1,null).andExpect(jsonPath("$.data.status").value("APPROVED"));
     }
 
+    @Test
+    void voidsALogisticsDraftThroughHttpAndPersistsATerminalAuditedState() throws Exception {
+        String id=create("CORN","RAIL","TEST_RAIL","TEST_ROAD",true);
+
+        transition(id,"void",0,null)
+                .andExpect(jsonPath("$.data.status").value("VOIDED"))
+                .andExpect(jsonPath("$.data.version").value(1))
+                .andExpect(jsonPath("$.data.allowedActions.length()").value(1))
+                .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"));
+
+        org.assertj.core.api.Assertions.assertThat(
+                jdbc.sql("SELECT status_code FROM logistics.route_event WHERE event_id::text=:id")
+                        .param("id", id).query(String.class).single()).isEqualTo("VOIDED");
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type='LOGISTICS_RECORD' AND aggregate_id=:id
+                  AND action_code='LOGISTICS_RECORD_VOIDED'
+                """).param("id", id).query(Long.class).single()).isEqualTo(1L);
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_event_outbox
+                WHERE aggregate_type='LOGISTICS_RECORD' AND aggregate_id=:id
+                  AND action_code='LOGISTICS_RECORD_VOIDED'
+                """).param("id", id).query(Long.class).single()).isEqualTo(1L);
+        mvc.perform(post("/api/v1/logistics-records/{id}/submit",id)
+                        .principal(() -> "logistics-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_LOGISTICS_RECORD"));
+    }
+
     @BeforeEach
     void fixture() {
         jdbc = JdbcClient.create(dataSource);
