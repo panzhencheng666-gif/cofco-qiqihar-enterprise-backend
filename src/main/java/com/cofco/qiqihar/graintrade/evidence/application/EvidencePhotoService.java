@@ -29,11 +29,16 @@ import java.util.UUID;
 import javax.imageio.ImageIO;
 import javax.imageio.ImageReader;
 import javax.imageio.stream.ImageInputStream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class EvidencePhotoService {
+    private static final Logger LOGGER = LoggerFactory.getLogger(EvidencePhotoService.class);
     private static final int MAX_BYTES = 10 * 1024 * 1024;
     private static final long MAX_PIXELS = 40_000_000L;
     private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
@@ -41,11 +46,14 @@ public class EvidencePhotoService {
     private final EvidencePhotoRepository repository;
     private final AccessControl accessControl;
     private final Clock clock;
+    private final EvidenceContentStorage contentStorage;
 
-    public EvidencePhotoService(EvidencePhotoRepository repository, AccessControl accessControl, Clock clock) {
+    public EvidencePhotoService(EvidencePhotoRepository repository, AccessControl accessControl, Clock clock,
+            EvidenceContentStorage contentStorage) {
         this.repository = repository;
         this.accessControl = accessControl;
         this.clock = clock;
+        this.contentStorage = contentStorage;
     }
 
     @Transactional
@@ -56,9 +64,21 @@ public class EvidencePhotoService {
         BufferedImage image = readImage(bytes, mediaType);
         byte[] watermarked = watermark(image, mediaType, watermarkText, capturedAt, latitude, longitude);
         OffsetDateTime uploadedAt = OffsetDateTime.ofInstant(clock.instant(), ZONE);
-        return repository.insert(new EvidencePhotoRepository.EvidencePhotoUpload(UUID.randomUUID(), filename.trim(),
-                mediaType, bytes.clone(), watermarked, bytes.length, sha256(bytes), capturedAt, latitude,
-                longitude, watermarkText.trim(), subjectId, uploadedAt));
+        UUID id = UUID.randomUUID();
+        if (!contentStorage.external()) {
+            return repository.insert(new EvidencePhotoRepository.EvidencePhotoUpload(id, filename.trim(),
+                    mediaType, bytes.clone(), watermarked, bytes.length, sha256(bytes), sha256(watermarked), capturedAt, latitude,
+                    longitude, watermarkText.trim(), subjectId, uploadedAt, "DATABASE", null));
+        }
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            throw new IllegalStateException("Private evidence upload requires transaction synchronization");
+        }
+        String objectKey = contentStorage.key(id);
+        contentStorage.put(objectKey, EvidenceContentEnvelope.encode(mediaType, bytes, watermarked));
+        registerRollbackCleanup(objectKey);
+        return repository.insert(new EvidencePhotoRepository.EvidencePhotoUpload(id, filename.trim(), mediaType,
+                null, null, bytes.length, sha256(bytes), sha256(watermarked), capturedAt, latitude, longitude, watermarkText.trim(),
+                subjectId, uploadedAt, "EXTERNAL", objectKey));
     }
 
     @Transactional(readOnly = true)
@@ -71,7 +91,21 @@ public class EvidencePhotoService {
         } else if (!stored.view().uploadedBy().equals(subjectId)) {
             throw new AccessDeniedException("EVIDENCE_PHOTO_ACCESS_DENIED", "Evidence photo access is denied");
         }
-        return new EvidenceContent(stored.view().mediaType(), stored.watermarkedBytes().clone());
+        if ("DATABASE".equals(stored.storageCode())) {
+            return new EvidenceContent(stored.view().mediaType(), stored.watermarkedBytes().clone());
+        }
+        EvidenceContentEnvelope.Content decoded;
+        try {
+            decoded = EvidenceContentEnvelope.decode(contentStorage.get(stored.objectKey()));
+        } catch (IllegalArgumentException exception) {
+            throw new EvidenceContentUnavailableException(exception);
+        }
+        if (!decoded.mediaType().equals(stored.view().mediaType())
+                || !sha256(decoded.original()).equals(stored.view().sha256())
+                || !sha256(decoded.watermarked()).equals(stored.watermarkedSha256())) {
+            throw new EvidenceContentUnavailableException();
+        }
+        return new EvidenceContent(decoded.mediaType(), decoded.watermarked());
     }
 
     @Transactional(readOnly = true, noRollbackFor = {
@@ -199,6 +233,20 @@ public class EvidencePhotoService {
         } catch (java.security.NoSuchAlgorithmException exception) {
             throw new IllegalStateException(exception);
         }
+    }
+
+    private void registerRollbackCleanup(String objectKey) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                if (status == STATUS_COMMITTED) return;
+                try {
+                    contentStorage.delete(objectKey);
+                } catch (RuntimeException exception) {
+                    LOGGER.error("Failed to compensate rolled-back private evidence content", exception);
+                }
+            }
+        });
     }
 
     private static ClientRequestException invalid() {

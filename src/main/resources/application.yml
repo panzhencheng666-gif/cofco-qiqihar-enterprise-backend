@@ -33,6 +33,17 @@ server:
         same-site: strict
 
 qiqihar:
+  evidence:
+    content:
+      mode: ${QIQIHAR_EVIDENCE_CONTENT_MODE:database}
+      filesystem-root: ${QIQIHAR_EVIDENCE_FILESYSTEM_ROOT:}
+      oss:
+        endpoint: ${QIQIHAR_OSS_ENDPOINT:}
+        bucket: ${QIQIHAR_OSS_BUCKET:}
+        prefix: ${QIQIHAR_OSS_PREFIX:}
+        kms-key-reference: ${QIQIHAR_OSS_KMS_KEY_REF:}
+        ram-role: ${QIQIHAR_OSS_RAM_ROLE:}
+        imdsv2-required: ${QIQIHAR_OSS_IMDSV2_REQUIRED:true}
   business-event:
     consumer-registration:
       datasource:

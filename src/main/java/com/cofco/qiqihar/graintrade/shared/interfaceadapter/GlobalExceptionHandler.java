@@ -4,6 +4,7 @@ import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
 import com.cofco.qiqihar.graintrade.shared.application.ServerContractException;
+import com.cofco.qiqihar.graintrade.shared.application.ServiceUnavailableException;
 import com.cofco.qiqihar.graintrade.shared.application.AuthenticationRequiredException;
 import com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -124,6 +125,15 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(ApiErrorResponse.of(
                         exception.code(), exception.clientMessage(), Map.of(), traceId));
+    }
+
+    @ExceptionHandler(ServiceUnavailableException.class)
+    ResponseEntity<ApiErrorResponse> handleServiceUnavailable(
+            ServiceUnavailableException exception, HttpServletRequest request) {
+        String traceId = traceId(request);
+        LOGGER.error("Service dependency failure [traceId={}, code={}]", traceId, exception.code(), exception);
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ApiErrorResponse.of(exception.code(), exception.clientMessage(), Map.of(), traceId));
     }
 
     @ExceptionHandler(Exception.class)

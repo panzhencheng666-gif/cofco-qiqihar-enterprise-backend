@@ -18,19 +18,40 @@ public class JdbcEvidencePhotoRepository implements EvidencePhotoRepository {
 
     @Override
     public EvidencePhotoView insert(EvidencePhotoUpload upload) {
-        jdbc.sql("""
+        if ("EXTERNAL".equals(upload.storageCode())) {
+            jdbc.sql("""
+                    INSERT INTO evidence.evidence_photo(photo_id,state_code,original_filename,media_type,
+                      original_bytes,watermarked_bytes,byte_length,sha256,captured_at,capture_latitude,
+                      capture_longitude,watermark_text,uploaded_by,uploaded_at,content_storage_code,
+                      content_object_key,watermarked_sha256)
+                    VALUES(:id,'STAGED',:filename,:mediaType,NULL,NULL,:length,:sha256,
+                      :capturedAt,CAST(:latitude AS numeric),CAST(:longitude AS numeric),:watermark,:uploadedBy,
+                      :uploadedAt,'EXTERNAL',:objectKey,:watermarkedSha256)
+                    """).param("id", upload.id()).param("filename", upload.filename())
+                    .param("mediaType", upload.mediaType()).param("length", upload.byteLength())
+                    .param("sha256", upload.sha256()).param("capturedAt", upload.capturedAt())
+                    .param("latitude", upload.latitude()).param("longitude", upload.longitude())
+                    .param("watermark", upload.watermarkText()).param("uploadedBy", upload.uploadedBy())
+                    .param("uploadedAt", upload.uploadedAt()).param("objectKey", upload.objectKey())
+                    .param("watermarkedSha256", upload.watermarkedSha256()).update();
+        } else {
+            jdbc.sql("""
                 INSERT INTO evidence.evidence_photo(photo_id,state_code,original_filename,media_type,
                   original_bytes,watermarked_bytes,byte_length,sha256,captured_at,capture_latitude,
-                  capture_longitude,watermark_text,uploaded_by,uploaded_at)
+                  capture_longitude,watermark_text,uploaded_by,uploaded_at,content_storage_code,
+                  watermarked_sha256)
                 VALUES(:id,'STAGED',:filename,:mediaType,:original,:watermarked,:length,:sha256,
-                  :capturedAt,CAST(:latitude AS numeric),CAST(:longitude AS numeric),:watermark,:uploadedBy,:uploadedAt)
+                  :capturedAt,CAST(:latitude AS numeric),CAST(:longitude AS numeric),:watermark,:uploadedBy,
+                  :uploadedAt,'DATABASE',:watermarkedSha256)
                 """).param("id", upload.id()).param("filename", upload.filename())
                 .param("mediaType", upload.mediaType()).param("original", upload.originalBytes())
                 .param("watermarked", upload.watermarkedBytes()).param("length", upload.byteLength())
                 .param("sha256", upload.sha256()).param("capturedAt", upload.capturedAt())
                 .param("latitude", upload.latitude()).param("longitude", upload.longitude())
                 .param("watermark", upload.watermarkText()).param("uploadedBy", upload.uploadedBy())
-                .param("uploadedAt", upload.uploadedAt()).update();
+                .param("uploadedAt", upload.uploadedAt())
+                .param("watermarkedSha256", upload.watermarkedSha256()).update();
+        }
         return find(upload.id()).orElseThrow().view();
     }
 
@@ -39,11 +60,13 @@ public class JdbcEvidencePhotoRepository implements EvidencePhotoRepository {
         return jdbc.sql("""
                 SELECT photo_id,state_code,original_filename,media_type,original_bytes,watermarked_bytes,
                   byte_length,sha256,captured_at,capture_latitude::text,capture_longitude::text,
-                  watermark_text,uploaded_by,uploaded_at,attached_domain,attached_record_id,attached_region_code
+                  watermark_text,uploaded_by,uploaded_at,attached_domain,attached_record_id,attached_region_code,
+                  content_storage_code,content_object_key,watermarked_sha256
                 FROM evidence.evidence_photo WHERE photo_id=:id
                 """).param("id", id).query((row, index) -> new StoredEvidencePhoto(
                         view(row), row.getBytes("original_bytes"), row.getBytes("watermarked_bytes"),
-                        row.getString("attached_region_code"))).optional();
+                        row.getString("attached_region_code"), row.getString("content_storage_code"),
+                        row.getString("content_object_key"), row.getString("watermarked_sha256").trim())).optional();
     }
 
     @Override

@@ -12,9 +12,11 @@ public interface EvidencePhotoRepository {
 
     record EvidencePhotoUpload(
             UUID id, String filename, String mediaType, byte[] originalBytes, byte[] watermarkedBytes,
-            long byteLength, String sha256, java.time.OffsetDateTime capturedAt, String latitude,
-            String longitude, String watermarkText, String uploadedBy, java.time.OffsetDateTime uploadedAt) {}
+            long byteLength, String sha256, String watermarkedSha256, java.time.OffsetDateTime capturedAt, String latitude,
+            String longitude, String watermarkText, String uploadedBy, java.time.OffsetDateTime uploadedAt,
+            String storageCode, String objectKey) {}
 
     record StoredEvidencePhoto(
-            EvidencePhotoView view, byte[] originalBytes, byte[] watermarkedBytes, String attachedRegionCode) {}
+            EvidencePhotoView view, byte[] originalBytes, byte[] watermarkedBytes, String attachedRegionCode,
+            String storageCode, String objectKey, String watermarkedSha256) {}
 }

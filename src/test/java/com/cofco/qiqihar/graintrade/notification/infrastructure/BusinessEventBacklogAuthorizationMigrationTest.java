@@ -67,7 +67,7 @@ class BusinessEventBacklogAuthorizationMigrationTest {
                 SELECT checksum FROM public.flyway_schema_history WHERE version='114'
                 """)).isEqualTo(-1616358236);
 
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isOne();
+        assertThat(DATABASE.flywayToVersion("115").migrate().migrationsExecuted).isOne();
         assertThat(queryString("""
                 SELECT version FROM public.flyway_schema_history
                 WHERE success ORDER BY installed_rank DESC LIMIT 1
@@ -89,6 +89,12 @@ class BusinessEventBacklogAuthorizationMigrationTest {
                          'platform.ensure_business_event_consumer(varchar,varchar,bigint,varchar)',
                          'EXECUTE')
                 """)).isTrue();
+
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isOne();
+        assertThat(queryString("""
+                SELECT version FROM public.flyway_schema_history
+                WHERE success ORDER BY installed_rank DESC LIMIT 1
+                """)).isEqualTo("116");
     }
 
     private void resetDatabase() throws Exception {
