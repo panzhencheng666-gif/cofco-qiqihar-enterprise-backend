@@ -47,14 +47,6 @@ GRANT SELECT ON TABLE
     registry.current_sample_subject_resolution
 TO CURRENT_USER;
 
-INSERT INTO platform.work_unit(code,name,sort_order)
-SELECT 'DATABASE_AUTOMATION','数据库受控自动化',COALESCE(max(sort_order),0)+1
-FROM platform.work_unit
-ON CONFLICT(code) DO NOTHING;
-INSERT INTO platform.security_user(subject_id,display_name,work_unit_code)
-VALUES('database-master-data-automation','主数据受控自动化','DATABASE_AUTOMATION')
-ON CONFLICT(subject_id) DO NOTHING;
-
 GRANT USAGE ON SCHEMA production,market TO qiqihar_migration_owner;
 GRANT SELECT ON TABLE
     production.production_record,
@@ -172,7 +164,7 @@ BEGIN
       'subject_id',stable_subject_id,
       'sample_point_id',target_sample_point_id,
       'created_at',approved_at,
-      'created_by','database-master-data-automation');
+      'created_by',session_user::varchar);
     RETURN platform.govern_master_data_change(
       'SUBJECT',source_domain || ':' || stable_subject_id,'INSERT',target_snapshot,
       approved_at,session_user::varchar,current_user::varchar,
