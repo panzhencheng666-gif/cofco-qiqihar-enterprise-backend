@@ -9,6 +9,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -67,7 +68,8 @@ public class BusinessEventDeliveryService {
             int limit,
             DeliverySink sink) {
         Instant now = clock.instant();
-        deliveries.ensureCheckpoint(consumerId, instanceId, afterSequence, now);
+        deliveries.expireStaleConsumers();
+        deliveries.ensureCheckpoint(consumerId, instanceId, afterSequence);
         OptionalRetry pollRetry = pollRetry(consumerId, now);
         if (pollRetry.deferred()) {
             return new DrainResult(afterSequence, 0, 0, pollRetry.delay(), false);
@@ -127,7 +129,21 @@ public class BusinessEventDeliveryService {
 
     public BusinessEventDeliveryBacklog backlog(
             String consumerId, AuthorizedReadScope scope, long afterSequence) {
+        deliveries.expireStaleConsumers();
         return deliveries.backlog(consumerId, scope, afterSequence);
+    }
+
+    public boolean retireConsumer(
+            String consumerId,
+            String instanceId,
+            long resumeSequence,
+            ConsumerRetirementReason reason) {
+        return deliveries.retireConsumer(consumerId, instanceId, resumeSequence, reason);
+    }
+
+    @Scheduled(fixedDelayString = "${qiqihar.business-event.consumer-expiry-scan-delay:1m}")
+    public int expireStaleConsumers() {
+        return deliveries.expireStaleConsumers();
     }
 
     private OptionalRetry pollRetry(String consumerId, Instant now) {

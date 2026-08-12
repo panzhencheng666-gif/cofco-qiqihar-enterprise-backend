@@ -2,6 +2,8 @@ package com.cofco.qiqihar.graintrade.notification.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -54,6 +56,9 @@ class BusinessEventStreamServiceLifecycleTest {
 
         assertThat(service.isRunning()).isFalse();
         assertThat(queryCount).hasValue(queriesAtStop);
+        verify(deliveries, timeout(2000)).retireConsumer(
+                streamConsumer(principal.subjectId()), anyString(), eq(0L),
+                eq(ConsumerRetirementReason.APPLICATION_STOP));
     }
 
     @Test

@@ -378,17 +378,10 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                 .param("effectiveFrom", record.tradeDate()).param("submittingActorId", submittingActorId)
                 .param("approvedAt", approvedTime).param("approvingActorId", approvingActorId).update();
         jdbc.sql("""
-                        SELECT platform.govern_master_data_change(
-                          'SUBJECT','MARKET:' || :subjectId,'INSERT',
-                          jsonb_build_object(
-                            'business_domain','MARKET','subject_id',:subjectId,
-                            'sample_point_id',:samplePointId,'created_at',:approvedAt,
-                            'created_by',:approvingActorId),
-                          :approvedAt,:submittingActorId,:approvingActorId,
-                          '市场记录双人审核确认稳定主体映射')
-                        """).param("subjectId", subjectId).param("samplePointId", samplePointId)
-                .param("approvedAt", approvedTime).param("submittingActorId", submittingActorId)
-                .param("approvingActorId", approvingActorId).query(Long.class).single();
+                        SELECT platform.register_approved_sample_subject(
+                          'MARKET',:recordId,:samplePointId)
+                        """).param("recordId", record.id()).param("samplePointId", samplePointId)
+                .query(Long.class).single();
         int linked = jdbc.sql("""
                         UPDATE market.market_record
                         SET party_id=:partyId,sample_point_id=:samplePointId

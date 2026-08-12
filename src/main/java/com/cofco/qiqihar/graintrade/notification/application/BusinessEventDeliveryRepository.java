@@ -7,7 +7,18 @@ import java.util.Optional;
 import java.util.UUID;
 
 public interface BusinessEventDeliveryRepository {
-    void ensureCheckpoint(String consumerId, String instanceId, long initialSequence, Instant now);
+    void ensureCheckpoint(
+            String consumerId,
+            String instanceId,
+            long initialSequence);
+
+    boolean retireConsumer(
+            String consumerId,
+            String instanceId,
+            long resumeSequence,
+            ConsumerRetirementReason reason);
+
+    int expireStaleConsumers();
 
     Optional<Instant> pollRetryAt(String consumerId);
 

@@ -10,6 +10,8 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.time.OffsetDateTime;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
@@ -25,8 +27,77 @@ class MasterDataDatabaseRoleIsolationIntegrationTest {
     private static final String APPLICANT_ROLE = "qiqihar_master_data_applicant";
     private static final String REVIEWER_ROLE = "qiqihar_master_data_reviewer";
     private static final String APPLIER_ROLE = "qiqihar_master_data_applier";
+    private static final String APPLICANT_LOGIN = "qiqihar_master_data_applicant_login";
+    private static final String REVIEWER_LOGIN = "qiqihar_master_data_reviewer_login";
+    private static final String APPLIER_LOGIN = "qiqihar_master_data_applier_login";
 
     @Autowired DataSource dataSource;
+
+    @Test
+    void closesTheV106PrivilegeSurfaceAndExposesOnlyActorFreeResolutionApply() {
+        JdbcClient owner = JdbcClient.create(dataSource);
+        assertThat(owner.sql("""
+                SELECT bool_and(NOT has_table_privilege(:role,relation_name,'INSERT,UPDATE,DELETE'))
+                FROM unnest(ARRAY[
+                  'registry.sample_subject_resolution_batch',
+                  'registry.sample_subject_resolution_item',
+                  'registry.sample_subject_resolution_revision',
+                  'registry.sample_subject_resolution_audit']) relation_name
+                """).param("role", DATASOURCE_ROLE).query(Boolean.class).single()).isTrue();
+        assertThat(owner.sql("""
+                SELECT NOT has_function_privilege(:role,
+                           'registry.apply_sample_subject_resolution(uuid,varchar)','EXECUTE')
+                   AND NOT has_function_privilege(:role,
+                           'registry.rollback_sample_subject_resolution(uuid,varchar)','EXECUTE')
+                """).param("role", DATASOURCE_ROLE).query(Boolean.class).single()).isTrue();
+        assertThat(owner.sql("""
+                SELECT to_regprocedure('registry.apply_sample_subject_resolution(uuid)') IS NOT NULL
+                   AND to_regprocedure('registry.rollback_sample_subject_resolution(uuid)') IS NOT NULL
+                """).query(Boolean.class).single()).isTrue();
+    }
+
+    @Test
+    void functionalRolesHaveDistinctLoginMembersAndRepositoriesUseTheRuntimeEntry() throws Exception {
+        JdbcClient owner = JdbcClient.create(dataSource);
+        assertThat(owner.sql("""
+                SELECT rolname FROM pg_roles
+                WHERE rolcanlogin AND rolname IN (:roles)
+                ORDER BY rolname
+                """).param("roles", List.of(APPLICANT_LOGIN, REVIEWER_LOGIN, APPLIER_LOGIN))
+                .query(String.class).list())
+                .containsExactlyInAnyOrder(APPLICANT_LOGIN, REVIEWER_LOGIN, APPLIER_LOGIN);
+        assertThat(owner.sql("""
+                SELECT pg_has_role(:applicant,:applicantRole,'MEMBER')
+                   AND pg_has_role(:reviewer,:reviewerRole,'MEMBER')
+                   AND pg_has_role(:applier,:applierRole,'MEMBER')
+                """).param("applicant", APPLICANT_LOGIN).param("applicantRole", APPLICANT_ROLE)
+                .param("reviewer", REVIEWER_LOGIN).param("reviewerRole", REVIEWER_ROLE)
+                .param("applier", APPLIER_LOGIN).param("applierRole", APPLIER_ROLE)
+                .query(Boolean.class).single()).isTrue();
+        assertThat(owner.sql("""
+                SELECT has_function_privilege(:role,
+                         'platform.register_approved_sample_subject(varchar,varchar,uuid)','EXECUTE')
+                """).param("role", DATASOURCE_ROLE).query(Boolean.class).single()).isTrue();
+        String runtimeEntry = owner.sql("""
+                SELECT pg_get_functiondef(
+                  'platform.register_approved_sample_subject(varchar,varchar,uuid)'::regprocedure)
+                """).query(String.class).single();
+        assertThat(runtimeEntry)
+                .contains("session_user::varchar", "current_user::varchar",
+                        "database-master-data-automation")
+                .doesNotContain("last_modified_by", "business_event_outbox",
+                        "point.created_by", "point.updated_by");
+
+        for (Path repository : List.of(
+                Path.of("src/main/java/com/cofco/qiqihar/graintrade/production/infrastructure/"
+                        + "JdbcProductionRecordRepository.java"),
+                Path.of("src/main/java/com/cofco/qiqihar/graintrade/market/infrastructure/"
+                        + "JdbcMarketMonitoringRepository.java"))) {
+            String source = Files.readString(repository);
+            assertThat(source).doesNotContain("govern_master_data_change")
+                    .contains("register_approved_sample_subject");
+        }
+    }
 
     @Test
     void bindsGovernanceActorsToDatabaseRolesAndRuntimeCannotForgeAnyGovernedDomain() {
@@ -61,21 +132,23 @@ class MasterDataDatabaseRoleIsolationIntegrationTest {
                 ON CONFLICT(sample_point_id) DO NOTHING
                 """).update();
 
+        String originalRegion = snapshot(owner, "REGION", "230208");
         String originalProduct = snapshot(owner, "PRODUCT", "CORN");
+        String originalObjectType = snapshot(owner, "OBJECT_TYPE", "FARMER");
         List<Attempt> attempts = List.of(
                 new Attempt("REGION", "230208", "UPDATE",
-                        withField(owner, snapshot(owner, "REGION", "230208"), "name", "伪造地区"),
+                        withField(owner, originalRegion, "name", "伪造地区"),
                         "UPDATE platform.region SET name='伪造地区' WHERE code='230208'"),
                 new Attempt("PRODUCT", "CORN", "UPDATE",
                         withField(owner, originalProduct, "name", "伪造产品"),
                         "UPDATE platform.product SET name='伪造产品' WHERE code='CORN'"),
                 new Attempt("OBJECT_TYPE", "FARMER", "UPDATE",
-                        withField(owner, snapshot(owner, "OBJECT_TYPE", "FARMER"), "name", "伪造对象"),
+                        withField(owner, originalObjectType, "name", "伪造对象"),
                         "UPDATE platform.object_type SET name='伪造对象' WHERE code='FARMER'"),
                 new Attempt("SUBJECT", "PRODUCTION:role-forgery-subject", "INSERT", """
                         {"business_domain":"PRODUCTION","subject_id":"role-forgery-subject",
                          "sample_point_id":"97000000-0000-0000-0000-000000000099",
-                         "created_at":"2026-08-12T20:00:00+08:00","created_by":"forged-actor"}
+                         "created_at":"2026-08-12T20:00:00+08:00","created_by":"production-tester"}
                         """, """
                         INSERT INTO registry.sample_point_subject_identity(
                           business_domain,subject_id,sample_point_id,created_at,created_by)
@@ -91,6 +164,21 @@ class MasterDataDatabaseRoleIsolationIntegrationTest {
                     .hasMessageContaining("permission denied");
             assertThat(snapshotIfPresent(owner, attempt.type(), attempt.key()))
                     .doesNotContain("伪造").doesNotContain("forged-actor");
+            assertThat(applyAsApplier(requestId)).isTrue();
+            assertGovernanceActors(owner, requestId);
+
+            Attempt restore = switch (attempt.type()) {
+                case "REGION" -> new Attempt("REGION", attempt.key(), "UPDATE", originalRegion, "");
+                case "PRODUCT" -> new Attempt("PRODUCT", attempt.key(), "UPDATE", originalProduct, "");
+                case "OBJECT_TYPE" ->
+                        new Attempt("OBJECT_TYPE", attempt.key(), "UPDATE", originalObjectType, "");
+                case "SUBJECT" -> new Attempt("SUBJECT", attempt.key(), "DELETE",
+                        snapshotIfPresent(owner, attempt.type(), attempt.key()), "");
+                default -> throw new IllegalArgumentException("Unsupported governed domain");
+            };
+            long restoreRequest = submitAsApplicant(restore);
+            reviewAsReviewer(restoreRequest, "APPROVE", "恢复角色隔离测试前主数据快照");
+            assertThat(applyAsApplier(restoreRequest)).isTrue();
         }
 
         long productRequest = owner.sql("""
@@ -99,28 +187,12 @@ class MasterDataDatabaseRoleIsolationIntegrationTest {
                   AND target_snapshot->>'name'='伪造产品'
                 ORDER BY request_id DESC LIMIT 1
                 """).query(Long.class).single();
-        assertThat(applyAsApplier(productRequest)).isTrue();
-        assertThat(owner.sql("""
-                SELECT r.requested_by,
-                       max(e.actor) FILTER (WHERE e.event_type='APPROVED') AS reviewed_by,
-                       max(e.actor) FILTER (WHERE e.event_type='APPLIED') AS applied_by
-                FROM platform.master_data_change_request r
-                JOIN platform.master_data_change_event e USING(request_id)
-                WHERE r.request_id=:requestId GROUP BY r.requested_by
-                """).param("requestId", productRequest).query().singleRow())
-                .containsEntry("requested_by", APPLICANT_ROLE)
-                .containsEntry("reviewed_by", REVIEWER_ROLE)
-                .containsEntry("applied_by", APPLIER_ROLE);
+        assertGovernanceActors(owner, productRequest);
         assertThat(owner.sql("""
                 SELECT changed_by FROM platform.master_data_revision
                 WHERE change_request_id=:requestId
                 """).param("requestId", productRequest).query(String.class).single())
-                .isEqualTo(APPLIER_ROLE);
-
-        Attempt restore = new Attempt("PRODUCT", "CORN", "UPDATE", originalProduct, "");
-        long restoreRequest = submitAsApplicant(restore);
-        reviewAsReviewer(restoreRequest, "APPROVE", "恢复角色隔离测试前产品快照");
-        assertThat(applyAsApplier(restoreRequest)).isTrue();
+                .isEqualTo(APPLIER_LOGIN);
 
         assertThatThrownBy(this::forgeRequestAsDatasource).hasMessageContaining("permission denied");
         assertThatThrownBy(() -> forgeEventAsDatasource(productRequest)).hasMessageContaining("permission denied");
@@ -128,8 +200,22 @@ class MasterDataDatabaseRoleIsolationIntegrationTest {
         assertThatThrownBy(() -> governAsDatasource(attempts.get(0))).hasMessageContaining("permission denied");
     }
 
+    private void assertGovernanceActors(JdbcClient owner, long requestId) {
+        assertThat(owner.sql("""
+                SELECT r.requested_by,
+                       max(e.actor) FILTER (WHERE e.event_type='APPROVED') AS reviewed_by,
+                       max(e.actor) FILTER (WHERE e.event_type='APPLIED') AS applied_by
+                FROM platform.master_data_change_request r
+                JOIN platform.master_data_change_event e USING(request_id)
+                WHERE r.request_id=:requestId GROUP BY r.requested_by
+                """).param("requestId", requestId).query().singleRow())
+                .containsEntry("requested_by", APPLICANT_LOGIN)
+                .containsEntry("reviewed_by", REVIEWER_LOGIN)
+                .containsEntry("applied_by", APPLIER_LOGIN);
+    }
+
     private long submitAsApplicant(Attempt attempt) {
-        return asRole(APPLICANT_ROLE, connection -> {
+        return asRole(APPLICANT_LOGIN, APPLICANT_ROLE, connection -> {
             try (PreparedStatement statement = connection.prepareStatement("""
                     SELECT platform.submit_master_data_change(?,?,?,CAST(? AS jsonb),?,?)
                     """)) {
@@ -148,7 +234,7 @@ class MasterDataDatabaseRoleIsolationIntegrationTest {
     }
 
     private void reviewAsReviewer(long requestId, String decision, String basis) {
-        asRole(REVIEWER_ROLE, connection -> {
+        asRole(REVIEWER_LOGIN, REVIEWER_ROLE, connection -> {
             try (PreparedStatement statement = connection.prepareStatement(
                     "SELECT platform.review_master_data_change(?,?,?)")) {
                 statement.setLong(1, requestId);
@@ -161,7 +247,7 @@ class MasterDataDatabaseRoleIsolationIntegrationTest {
     }
 
     private boolean applyAsApplier(long requestId) {
-        return asRole(APPLIER_ROLE, connection -> {
+        return asRole(APPLIER_LOGIN, APPLIER_ROLE, connection -> {
             try (PreparedStatement statement = connection.prepareStatement(
                     "SELECT platform.apply_master_data_change(?)")) {
                 statement.setLong(1, requestId);
@@ -174,7 +260,7 @@ class MasterDataDatabaseRoleIsolationIntegrationTest {
     }
 
     private void executeAsDatasource(long requestId, String directDml) {
-        asRole(DATASOURCE_ROLE, connection -> {
+        asRole(DATASOURCE_ROLE, null, connection -> {
             try (PreparedStatement context = connection.prepareStatement("""
                     SELECT set_config('application.master_data_apply_request_id',?,false),
                            set_config('application.actor','forged-runtime-actor',false)
@@ -190,7 +276,7 @@ class MasterDataDatabaseRoleIsolationIntegrationTest {
     }
 
     private void forgeRequestAsDatasource() {
-        asRole(DATASOURCE_ROLE, connection -> {
+        asRole(DATASOURCE_ROLE, null, connection -> {
             try (Statement statement = connection.createStatement()) {
                 statement.executeUpdate("""
                         INSERT INTO platform.master_data_change_request(
@@ -205,7 +291,7 @@ class MasterDataDatabaseRoleIsolationIntegrationTest {
     }
 
     private void forgeEventAsDatasource(long requestId) {
-        asRole(DATASOURCE_ROLE, connection -> {
+        asRole(DATASOURCE_ROLE, null, connection -> {
             try (PreparedStatement statement = connection.prepareStatement("""
                     INSERT INTO platform.master_data_change_event(request_id,event_type,actor,basis)
                     VALUES(?,'APPLIED','forged','forged')
@@ -218,7 +304,7 @@ class MasterDataDatabaseRoleIsolationIntegrationTest {
     }
 
     private void submitAsDatasource(Attempt attempt) {
-        asRole(DATASOURCE_ROLE, connection -> {
+        asRole(DATASOURCE_ROLE, null, connection -> {
             try (PreparedStatement statement = connection.prepareStatement("""
                     SELECT platform.submit_master_data_change(?,?,?,CAST(? AS jsonb),?,?)
                     """)) {
@@ -235,7 +321,7 @@ class MasterDataDatabaseRoleIsolationIntegrationTest {
     }
 
     private void governAsDatasource(Attempt attempt) {
-        asRole(DATASOURCE_ROLE, connection -> {
+        asRole(DATASOURCE_ROLE, null, connection -> {
             try (PreparedStatement statement = connection.prepareStatement("""
                     SELECT platform.govern_master_data_change(
                       ?,?,?,CAST(? AS jsonb),clock_timestamp(),'forged-applicant',
@@ -251,17 +337,23 @@ class MasterDataDatabaseRoleIsolationIntegrationTest {
         });
     }
 
-    private <T> T asRole(String role, RoleWork<T> work) {
-        if (!List.of(DATASOURCE_ROLE, RUNTIME_ROLE, APPLICANT_ROLE, REVIEWER_ROLE, APPLIER_ROLE)
-                .contains(role)) {
+    private <T> T asRole(String loginRole, String functionalRole, RoleWork<T> work) {
+        if (!List.of(DATASOURCE_ROLE, APPLICANT_LOGIN, REVIEWER_LOGIN, APPLIER_LOGIN)
+                .contains(loginRole)) {
             throw new IllegalArgumentException("Unsupported test database role");
         }
         try (Connection connection = dataSource.getConnection();
                 Statement authorization = connection.createStatement()) {
-            authorization.execute("SET SESSION AUTHORIZATION " + role);
+            authorization.execute("SET SESSION AUTHORIZATION " + loginRole);
+            if (functionalRole != null) {
+                authorization.execute("SET ROLE " + functionalRole);
+            }
             try {
                 return work.run(connection);
             } finally {
+                if (functionalRole != null) {
+                    authorization.execute("RESET ROLE");
+                }
                 authorization.execute("RESET SESSION AUTHORIZATION");
             }
         } catch (Exception exception) {

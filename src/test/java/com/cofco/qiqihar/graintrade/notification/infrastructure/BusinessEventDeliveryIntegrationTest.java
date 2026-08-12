@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.notification.infrastructure;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -10,18 +11,23 @@ import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.notification.application.BusinessEventDeliveryRepository;
 import com.cofco.qiqihar.graintrade.notification.application.BusinessEventDeliveryService;
 import com.cofco.qiqihar.graintrade.notification.application.BusinessNotificationRepository;
+import com.cofco.qiqihar.graintrade.notification.application.ConsumerRetirementReason;
 import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
+import java.sql.Connection;
+import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -34,6 +40,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.core.annotation.AnnotatedElementUtils;
 
 @SpringBootTest(classes = GrainTradeApplication.class)
 @UsesProtectedTestDatabase
@@ -58,7 +66,7 @@ class BusinessEventDeliveryIntegrationTest {
     void setUp() {
         jdbc = JdbcClient.create(dataSource);
         cleanup();
-        clock = new MutableClock(Instant.parse("2026-08-12T12:00:00Z"));
+        clock = new MutableClock(Instant.now().truncatedTo(ChronoUnit.MICROS));
         insertEvent(FIRST, "first", clock.instant());
         insertEvent(POISON, "poison", clock.instant().plusSeconds(1));
         insertEvent(THIRD, "third", clock.instant().plusSeconds(2));
@@ -226,6 +234,168 @@ class BusinessEventDeliveryIntegrationTest {
     }
 
     @Test
+    void retiredConnectionStopsContributingFalseBacklogAndReconnectCompensatesFromItsCursor() {
+        String retiredConsumer = CONSUMER + ":retired-connection";
+        String reconnectConsumer = CONSUMER + ":reconnected";
+        BusinessEventDeliveryService service = service();
+        AuthorizedReadScope scope = new AuthorizedReadScope(SUBJECT, Set.of(REGION));
+        AtomicBoolean disconnectOnce = new AtomicBoolean(true);
+        var first = service.drain(retiredConsumer, "instance-retiring", scope, SUBJECT,
+                initialSequence, 20, event -> {
+                    if (disconnectOnce.compareAndSet(true, false)) {
+                        throw new IllegalStateException("connection closed before first event completed");
+                    }
+                });
+
+        assertThat(service.retireConsumer(retiredConsumer, "instance-retiring",
+                first.resumeSequence(), ConsumerRetirementReason.CLIENT_COMPLETED)).isTrue();
+        assertThat(service.retireConsumer(retiredConsumer, "instance-retiring",
+                first.resumeSequence(), ConsumerRetirementReason.CLIENT_COMPLETED)).isFalse();
+        assertThat(service.backlog(retiredConsumer, scope, first.resumeSequence()))
+                .satisfies(backlog -> {
+                    assertThat(backlog.pendingCount()).isZero();
+                    assertThat(backlog.retryScheduledCount()).isZero();
+                    assertThat(backlog.inProgressCount()).isZero();
+                    assertThat(backlog.oldestPendingAt()).isNull();
+                });
+        assertThat(jdbc.sql("""
+                SELECT lifecycle_status,retirement_reason,resume_sequence
+                FROM platform.business_event_delivery_checkpoint WHERE consumer_id=:consumer
+                """).param("consumer", retiredConsumer).query().singleRow())
+                .containsEntry("lifecycle_status", "RETIRED")
+                .containsEntry("retirement_reason", "CLIENT_COMPLETED")
+                .containsEntry("resume_sequence", first.resumeSequence());
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_event_delivery_backlog
+                WHERE consumer_id=:consumer
+                """).param("consumer", retiredConsumer).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_event_consumer_lifecycle_event
+                WHERE consumer_id=:consumer AND lifecycle_status='RETIRED'
+                """).param("consumer", retiredConsumer).query(Long.class).single()).isOne();
+
+        ConcurrentHashMap<UUID, Integer> reconnected = new ConcurrentHashMap<>();
+        var compensated = service.drain(reconnectConsumer, "instance-reconnected", scope, SUBJECT,
+                first.resumeSequence(), 20, event -> reconnected.merge(event.id(), 1, Integer::sum));
+        assertThat(compensated.failedCount()).isZero();
+        assertThat(reconnected).containsEntry(FIRST, 1).containsEntry(POISON, 1).containsEntry(THIRD, 1);
+    }
+
+    @Test
+    void staleConnectionIsAuditedAsExpiredAndExcludedFromOperationalBacklog() {
+        String consumer = CONSUMER + ":expired-connection";
+        BusinessEventDeliveryService service = service();
+        AuthorizedReadScope scope = new AuthorizedReadScope(SUBJECT, Set.of(REGION));
+        service.drain(consumer, "instance-crashed", scope, SUBJECT, initialSequence, 20,
+                event -> { throw new IllegalStateException("crashed connection"); });
+
+        jdbc.sql("""
+                UPDATE platform.business_event_delivery_checkpoint
+                SET lease_expires_at=clock_timestamp()-interval '1 second'
+                WHERE consumer_id=:consumer
+                """).param("consumer", consumer).update();
+
+        assertThat(service.expireStaleConsumers()).isGreaterThanOrEqualTo(1);
+        assertThat(jdbc.sql("""
+                SELECT lifecycle_status,retirement_reason
+                FROM platform.business_event_delivery_checkpoint WHERE consumer_id=:consumer
+                """).param("consumer", consumer).query().singleRow())
+                .containsEntry("lifecycle_status", "EXPIRED")
+                .containsEntry("retirement_reason", "LEASE_EXPIRED");
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_event_delivery_backlog
+                WHERE consumer_id=:consumer
+                """).param("consumer", consumer).query(Long.class).single()).isZero();
+        assertThat(service.backlog(consumer, scope, initialSequence).pendingCount()).isZero();
+    }
+
+    @Test
+    void concurrentCloseAndLeaseExpiryAppendExactlyOneTerminalLifecycleEvent() throws Exception {
+        String consumer = CONSUMER + ":close-expiry-race";
+        BusinessEventDeliveryService service = service();
+        AuthorizedReadScope scope = new AuthorizedReadScope(SUBJECT, Set.of(REGION));
+        var drain = service.drain(consumer, "instance-race", scope, SUBJECT, initialSequence, 20,
+                ignored -> {});
+        jdbc.sql("""
+                UPDATE platform.business_event_delivery_checkpoint
+                SET lease_expires_at=clock_timestamp()-interval '1 second'
+                WHERE consumer_id=:consumer
+                """).param("consumer", consumer).update();
+
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            var outcomes = executor.invokeAll(List.<Callable<Boolean>>of(
+                    () -> service.retireConsumer(consumer, "instance-race", drain.resumeSequence(),
+                            ConsumerRetirementReason.CLIENT_COMPLETED),
+                    () -> service.expireStaleConsumers() > 0));
+            assertThat(outcomes.get(0).get() || outcomes.get(1).get()).isTrue();
+        }
+
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_event_consumer_lifecycle_event
+                WHERE consumer_id=:consumer
+                """).param("consumer", consumer).query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("""
+                SELECT lifecycle_status<>'ACTIVE'
+                FROM platform.business_event_delivery_checkpoint WHERE consumer_id=:consumer
+                """).param("consumer", consumer).query(Boolean.class).single()).isTrue();
+    }
+
+    @Test
+    void lifecycleAuditCannotBeForgedOrErasedByTheRuntimeRole() throws Exception {
+        String consumer = CONSUMER + ":acl-probe";
+        BusinessEventDeliveryService service = service();
+        AuthorizedReadScope scope = new AuthorizedReadScope(SUBJECT, Set.of(REGION));
+        service.drain(consumer, "instance-acl", scope, SUBJECT, initialSequence, 1, ignored -> {});
+
+        assertThat(jdbc.sql("""
+                SELECT NOT has_table_privilege('cofco_app',
+                         'platform.business_event_consumer_lifecycle_event','INSERT,UPDATE,DELETE')
+                   AND NOT has_table_privilege('cofco_app',
+                         'platform.business_event_delivery_checkpoint','INSERT,UPDATE,DELETE')
+                   AND has_column_privilege('cofco_app',
+                         'platform.business_event_delivery_checkpoint','last_observed_sequence','UPDATE')
+                   AND NOT has_column_privilege('cofco_app',
+                         'platform.business_event_delivery_checkpoint','lifecycle_status','UPDATE')
+                   AND NOT has_sequence_privilege('cofco_app',
+                         'platform.business_event_consumer_lifecycle_event_lifecycle_event_id_seq','USAGE')
+                   AND has_function_privilege('cofco_app',
+                         'platform.ensure_business_event_consumer(varchar,varchar,bigint)','EXECUTE')
+                   AND has_function_privilege('cofco_app',
+                         'platform.retire_business_event_consumer(varchar,varchar,bigint,varchar)','EXECUTE')
+                   AND has_function_privilege('cofco_app',
+                         'platform.expire_business_event_consumers()','EXECUTE')
+                """).query(Boolean.class).single()).isTrue();
+        assertThat(jdbc.sql("""
+                SELECT NOT EXISTS (
+                  SELECT 1 FROM pg_constraint
+                  WHERE conrelid='platform.business_event_consumer_lifecycle_event'::regclass
+                    AND contype='f' AND confdeltype='c')
+                """).query(Boolean.class).single()).isTrue();
+
+        assertThatThrownBy(() -> executeAsRuntime("""
+                INSERT INTO platform.business_event_consumer_lifecycle_event(
+                  consumer_id,instance_id,lifecycle_status,reason_code,resume_sequence,occurred_at)
+                VALUES('def-100-shared-consumer:acl-probe','instance-acl','RETIRED',
+                  'CLIENT_COMPLETED',0,clock_timestamp())
+                """)).hasMessageContaining("permission denied");
+        assertThatThrownBy(() -> executeAsRuntime("""
+                DELETE FROM platform.business_event_delivery_checkpoint
+                WHERE consumer_id='def-100-shared-consumer:acl-probe'
+                """)).hasMessageContaining("permission denied");
+        assertThatThrownBy(() -> executeAsRuntime("""
+                SELECT platform.retire_business_event_consumer(
+                  'def-100-shared-consumer:acl-probe','instance-acl',0,'FORGED_REASON')
+                """)).hasMessageContaining("consumer retirement reason is invalid");
+    }
+
+    @Test
+    void staleConsumerExpiryHasAnAutonomousScheduledEntry() throws Exception {
+        assertThat(AnnotatedElementUtils.hasAnnotation(
+                BusinessEventDeliveryService.class.getMethod("expireStaleConsumers"), Scheduled.class))
+                .isTrue();
+    }
+
+    @Test
     void queryFailureUsesPersistentBoundedBackoffAndRecordsRecovery() {
         BusinessNotificationRepository failingNotifications = mock(BusinessNotificationRepository.class);
         AuthorizedReadScope scope = new AuthorizedReadScope(SUBJECT, Set.of(REGION));
@@ -314,6 +484,20 @@ class BusinessEventDeliveryIntegrationTest {
                 Duration.ofSeconds(1), Duration.ofMillis(100), Duration.ofMillis(400), 3);
     }
 
+    private void executeAsRuntime(String sql) {
+        try (Connection connection = dataSource.getConnection();
+                Statement authorization = connection.createStatement()) {
+            authorization.execute("SET SESSION AUTHORIZATION cofco_app");
+            try (Statement statement = connection.createStatement()) {
+                statement.execute(sql);
+            } finally {
+                authorization.execute("RESET SESSION AUTHORIZATION");
+            }
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception.getMessage(), exception);
+        }
+    }
+
     private void drainConcurrently(
             BusinessEventDeliveryService firstService,
             BusinessEventDeliveryService secondService,
@@ -363,6 +547,8 @@ class BusinessEventDeliveryIntegrationTest {
 
     private void cleanup() {
         if (jdbc == null) return;
+        jdbc.sql("DELETE FROM platform.business_event_consumer_lifecycle_event WHERE consumer_id LIKE :consumer")
+                .param("consumer", CONSUMER + "%").update();
         jdbc.sql("DELETE FROM platform.business_event_delivery_checkpoint WHERE consumer_id LIKE :consumer")
                 .param("consumer", CONSUMER + "%").update();
         jdbc.sql("DELETE FROM platform.business_event_outbox WHERE event_id IN (:ids)")

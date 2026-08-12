@@ -413,17 +413,10 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
                 .param("submittingActorId", submittingActorId).param("approvedAt", approvedTime)
                 .param("approvingActorId", approvingActorId).update();
         jdbc.sql("""
-                SELECT platform.govern_master_data_change(
-                  'SUBJECT','PRODUCTION:' || :subjectId,'INSERT',
-                  jsonb_build_object(
-                    'business_domain','PRODUCTION','subject_id',:subjectId,
-                    'sample_point_id',:samplePointId,'created_at',:approvedAt,
-                    'created_by',:approvingActorId),
-                  :approvedAt,:submittingActorId,:approvingActorId,
-                  '产情记录双人审核确认稳定主体映射')
-                """).param("subjectId", subjectId).param("samplePointId", samplePointId)
-                .param("approvedAt", approvedTime).param("submittingActorId", submittingActorId)
-                .param("approvingActorId", approvingActorId).query(Long.class).single();
+                SELECT platform.register_approved_sample_subject(
+                  'PRODUCTION',:recordId,:samplePointId)
+                """).param("recordId", record.id()).param("samplePointId", samplePointId)
+                .query(Long.class).single();
         int linked = jdbc.sql("""
                 UPDATE production.production_record SET sample_point_id=:samplePointId
                 WHERE record_id=:recordId AND status_code='APPROVED' AND sample_point_id IS NULL

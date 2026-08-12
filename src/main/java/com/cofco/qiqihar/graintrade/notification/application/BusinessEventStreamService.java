@@ -8,17 +8,22 @@ import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.time.Duration;
-import java.util.Set;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.SmartLifecycle;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 @Service
 public class BusinessEventStreamService implements SmartLifecycle {
+    private static final Logger LOGGER = LoggerFactory.getLogger(BusinessEventStreamService.class);
     private static final int BATCH_SIZE = 100;
     private static final Duration QUERY_INTERVAL = Duration.ofSeconds(1);
     private static final Duration HEARTBEAT_INTERVAL = Duration.ofSeconds(15);
@@ -28,7 +33,8 @@ public class BusinessEventStreamService implements SmartLifecycle {
     private final AccessControl accessControl;
     private final SecurityPrincipalRepository principals;
     private final ExecutorService connections = Executors.newVirtualThreadPerTaskExecutor();
-    private final Set<SseEmitter> activeEmitters = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private final Map<SseEmitter, StreamConnection> activeConnections =
+            new java.util.concurrent.ConcurrentHashMap<>();
     private final String instanceId = "sse-" + UUID.randomUUID();
     private volatile boolean running;
 
@@ -51,14 +57,13 @@ public class BusinessEventStreamService implements SmartLifecycle {
         SecurityPrincipal principal = accessControl.requireAuthenticated();
         AuthorizedReadScope scope = accessControl.requireReadScope();
         SseEmitter emitter = new SseEmitter(EMITTER_TIMEOUT_MILLIS);
-        AtomicBoolean closed = new AtomicBoolean(false);
-        activeEmitters.add(emitter);
-        emitter.onCompletion(() -> closeConnection(emitter, closed));
-        emitter.onTimeout(() -> closeConnection(emitter, closed));
-        emitter.onError(ignored -> closeConnection(emitter, closed));
         String consumerId = streamConsumerId(principal.subjectId());
-        connections.submit(() -> publish(
-                emitter, closed, consumerId, principal.subjectId(), scope, afterSequence));
+        StreamConnection connection = new StreamConnection(emitter, consumerId, afterSequence);
+        activeConnections.put(emitter, connection);
+        emitter.onCompletion(() -> closeConnection(connection, ConsumerRetirementReason.CLIENT_COMPLETED));
+        emitter.onTimeout(() -> closeConnection(connection, ConsumerRetirementReason.CLIENT_TIMEOUT));
+        emitter.onError(ignored -> closeConnection(connection, ConsumerRetirementReason.CLIENT_ERROR));
+        connections.submit(() -> publish(connection, principal.subjectId(), scope));
         return emitter;
     }
 
@@ -68,30 +73,32 @@ public class BusinessEventStreamService implements SmartLifecycle {
     }
 
     private void publish(
-            SseEmitter emitter,
-            AtomicBoolean closed,
-            String consumerId,
+            StreamConnection connection,
             String subjectId,
-            AuthorizedReadScope initialScope,
-            long initialCursor) {
-        long cursor = initialCursor;
+            AuthorizedReadScope initialScope) {
         long lastHeartbeatNanos = System.nanoTime();
         AuthorizedReadScope scope = initialScope;
         try {
-            while (!closed.get() && !Thread.currentThread().isInterrupted()) {
+            while (!connection.closed().get() && !Thread.currentThread().isInterrupted()) {
                 SecurityPrincipal current = principals.findEnabled(subjectId).orElse(null);
-                if (current == null || !current.permits("BUSINESS_READ")) break;
+                if (current == null || !current.permits("BUSINESS_READ")) {
+                    connection.reason().compareAndSet(
+                            ConsumerRetirementReason.STREAM_ENDED,
+                            ConsumerRetirementReason.AUTHORIZATION_REVOKED);
+                    break;
+                }
                 scope = new AuthorizedReadScope(subjectId, current.regionCodes());
-                var result = deliveries.drain(consumerId, instanceId, scope, subjectId, cursor, BATCH_SIZE,
-                        event -> emitter.send(SseEmitter.event()
+                var result = deliveries.drain(connection.consumerId(), instanceId, scope, subjectId,
+                        connection.cursor().get(), BATCH_SIZE,
+                        event -> connection.emitter().send(SseEmitter.event()
                                 .id(Long.toString(event.sequence()))
                                 .name("business-change")
                                 .data(event)));
-                cursor = result.resumeSequence();
+                connection.cursor().set(result.resumeSequence());
                 long now = System.nanoTime();
                 if (result.deliveredCount() == 0 && result.failedCount() == 0
                         && now - lastHeartbeatNanos >= HEARTBEAT_INTERVAL.toNanos()) {
-                    emitter.send(SseEmitter.event().comment("heartbeat"));
+                    connection.emitter().send(SseEmitter.event().comment("heartbeat"));
                     lastHeartbeatNanos = now;
                 }
                 Duration delay = result.retryAfter().compareTo(QUERY_INTERVAL) > 0
@@ -99,13 +106,27 @@ public class BusinessEventStreamService implements SmartLifecycle {
                 Thread.sleep(delay);
             }
         } catch (InterruptedException interrupted) {
+            connection.reason().compareAndSet(
+                    ConsumerRetirementReason.STREAM_ENDED,
+                    ConsumerRetirementReason.APPLICATION_STOP);
             Thread.currentThread().interrupt();
         } catch (IOException | RuntimeException disconnected) {
-            closed.set(true);
+            connection.reason().compareAndSet(
+                    ConsumerRetirementReason.STREAM_ENDED,
+                    ConsumerRetirementReason.DELIVERY_DISCONNECTED);
+            connection.closed().set(true);
         } finally {
-            activeEmitters.remove(emitter);
-            if (!closed.getAndSet(true)) {
-                emitter.complete();
+            activeConnections.remove(connection.emitter(), connection);
+            try {
+                deliveries.retireConsumer(
+                        connection.consumerId(), instanceId, connection.cursor().get(),
+                        connection.reason().get());
+            } catch (RuntimeException retirementFailure) {
+                LOGGER.warn("Unable to persist business event consumer retirement for {}",
+                        connection.consumerId(), retirementFailure);
+            }
+            if (!connection.closed().getAndSet(true)) {
+                connection.emitter().complete();
             }
         }
     }
@@ -114,9 +135,12 @@ public class BusinessEventStreamService implements SmartLifecycle {
         return "sse:" + subjectId + ":" + UUID.randomUUID();
     }
 
-    private void closeConnection(SseEmitter emitter, AtomicBoolean closed) {
-        closed.set(true);
-        activeEmitters.remove(emitter);
+    private void closeConnection(
+            StreamConnection connection,
+            ConsumerRetirementReason reason) {
+        connection.reason().compareAndSet(ConsumerRetirementReason.STREAM_ENDED, reason);
+        connection.closed().set(true);
+        activeConnections.remove(connection.emitter(), connection);
     }
 
     @Override
@@ -130,8 +154,11 @@ public class BusinessEventStreamService implements SmartLifecycle {
             return;
         }
         running = false;
-        activeEmitters.forEach(SseEmitter::complete);
-        activeEmitters.clear();
+        activeConnections.values().forEach(connection -> {
+            connection.reason().set(ConsumerRetirementReason.APPLICATION_STOP);
+            connection.closed().set(true);
+            connection.emitter().complete();
+        });
         connections.shutdownNow();
     }
 
@@ -157,5 +184,19 @@ public class BusinessEventStreamService implements SmartLifecycle {
     @PreDestroy
     void destroy() {
         stop();
+    }
+
+    private record StreamConnection(
+            SseEmitter emitter,
+            String consumerId,
+            AtomicBoolean closed,
+            AtomicReference<ConsumerRetirementReason> reason,
+            AtomicLong cursor) {
+
+        private StreamConnection(SseEmitter emitter, String consumerId, long initialCursor) {
+            this(emitter, consumerId, new AtomicBoolean(false),
+                    new AtomicReference<>(ConsumerRetirementReason.STREAM_ENDED),
+                    new AtomicLong(initialCursor));
+        }
     }
 }

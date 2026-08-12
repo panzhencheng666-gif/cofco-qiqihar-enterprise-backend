@@ -3,6 +3,7 @@ package com.cofco.qiqihar.graintrade.notification.infrastructure;
 import com.cofco.qiqihar.graintrade.notification.application.BusinessEventDeliveryBacklog;
 import com.cofco.qiqihar.graintrade.notification.application.BusinessEventDeliveryRepository;
 import com.cofco.qiqihar.graintrade.notification.application.BusinessNotification;
+import com.cofco.qiqihar.graintrade.notification.application.ConsumerRetirementReason;
 import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
 import java.sql.Timestamp;
 import java.time.Duration;
@@ -25,19 +26,40 @@ public class JdbcBusinessEventDeliveryRepository implements BusinessEventDeliver
 
     @Override
     @Transactional
-    public void ensureCheckpoint(String consumerId, String instanceId, long initialSequence, Instant now) {
-        jdbc.sql("""
-                INSERT INTO platform.business_event_delivery_checkpoint(
-                  consumer_id,initial_sequence,last_observed_sequence,last_delivered_sequence,
-                  last_instance_id,created_at,updated_at)
-                VALUES(:consumerId,:initialSequence,:initialSequence,:initialSequence,
-                  :instanceId,:now,:now)
-                ON CONFLICT(consumer_id) DO UPDATE SET
-                  last_observed_sequence=GREATEST(
-                    platform.business_event_delivery_checkpoint.last_observed_sequence,:initialSequence),
-                  last_instance_id=:instanceId,updated_at=:now
-                """).param("consumerId", consumerId).param("initialSequence", initialSequence)
-                .param("instanceId", instanceId).param("now", Timestamp.from(now)).update();
+    public void ensureCheckpoint(
+            String consumerId,
+            String instanceId,
+            long initialSequence) {
+        boolean active = jdbc.sql("""
+                SELECT platform.ensure_business_event_consumer(
+                  :consumerId,:instanceId,:initialSequence)
+                """).param("consumerId", consumerId).param("instanceId", instanceId)
+                .param("initialSequence", initialSequence).query(Boolean.class).single();
+        if (!active) {
+            throw new IllegalStateException("Retired business event consumer identifiers cannot be reused");
+        }
+    }
+
+    @Override
+    @Transactional
+    public boolean retireConsumer(
+            String consumerId,
+            String instanceId,
+            long resumeSequence,
+            ConsumerRetirementReason reason) {
+        return jdbc.sql("""
+                SELECT platform.retire_business_event_consumer(
+                  :consumerId,:instanceId,:resumeSequence,:reason)
+                """).param("consumerId", consumerId).param("instanceId", instanceId)
+                .param("resumeSequence", resumeSequence).param("reason", reason.name())
+                .query(Boolean.class).single();
+    }
+
+    @Override
+    @Transactional
+    public int expireStaleConsumers() {
+        return jdbc.sql("SELECT platform.expire_business_event_consumers()")
+                .query(Integer.class).single();
     }
 
     @Override
@@ -267,6 +289,16 @@ public class JdbcBusinessEventDeliveryRepository implements BusinessEventDeliver
     @Override
     public BusinessEventDeliveryBacklog backlog(
             String consumerId, AuthorizedReadScope scope, long afterSequence) {
+        boolean active = jdbc.sql("""
+                SELECT EXISTS(
+                  SELECT 1 FROM platform.business_event_delivery_checkpoint
+                  WHERE consumer_id=:consumerId AND lifecycle_status='ACTIVE'
+                    AND lease_expires_at>clock_timestamp())
+                """).param("consumerId", consumerId)
+                .query(Boolean.class).single();
+        if (!active) {
+            return new BusinessEventDeliveryBacklog(0, 0, 0, 0, null);
+        }
         if (!scope.isUnrestricted() && scope.regionCodes().isEmpty()) {
             return new BusinessEventDeliveryBacklog(0, 0, 0, 0, null);
         }

@@ -348,6 +348,7 @@ class AuthenticatedReporterContractIntegrationTest {
         if (jdbc == null) return;
         jdbc.sql("""
                 TRUNCATE platform.notification_read_receipt,
+                  platform.business_event_consumer_lifecycle_event,
                   platform.business_event_delivery_attempt,
                   platform.business_event_poll_attempt,
                   platform.business_event_delivery_state,

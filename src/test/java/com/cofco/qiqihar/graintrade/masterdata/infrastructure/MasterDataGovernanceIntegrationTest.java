@@ -24,6 +24,9 @@ class MasterDataGovernanceIntegrationTest {
     private static final String APPLICANT_ROLE = "qiqihar_master_data_applicant";
     private static final String REVIEWER_ROLE = "qiqihar_master_data_reviewer";
     private static final String APPLIER_ROLE = "qiqihar_master_data_applier";
+    private static final String APPLICANT_LOGIN = "qiqihar_master_data_applicant_login";
+    private static final String REVIEWER_LOGIN = "qiqihar_master_data_reviewer_login";
+    private static final String APPLIER_LOGIN = "qiqihar_master_data_applier_login";
     @Autowired DataSource dataSource;
     private JdbcClient jdbc;
 
@@ -81,8 +84,8 @@ class MasterDataGovernanceIntegrationTest {
                 WHERE entity_type='PRODUCT' AND entity_key='CORN' ORDER BY revision_no DESC LIMIT 1
                 """).query().singleRow();
         assertThat(revision.get("name")).isEqualTo("玉米（治理核对）");
-        assertThat(revision.get("changed_by")).isEqualTo(APPLIER_ROLE);
-        assertThat(revision.get("reviewed_by")).isEqualTo(REVIEWER_ROLE);
+        assertThat(revision.get("changed_by")).isEqualTo(APPLIER_LOGIN);
+        assertThat(revision.get("reviewed_by")).isEqualTo(REVIEWER_LOGIN);
         assertThat(revision.get("review_basis")).isEqualTo("双人复核：名称与稳定编码一致");
         assertThat(((Number) revision.get("change_request_id")).longValue()).isEqualTo(requestId);
         assertThatThrownBy(() -> jdbc.sql("""
@@ -192,12 +195,20 @@ class MasterDataGovernanceIntegrationTest {
         if (!List.of(APPLICANT_ROLE, REVIEWER_ROLE, APPLIER_ROLE).contains(role)) {
             throw new IllegalArgumentException("Unsupported test database role");
         }
+        String loginRole = switch (role) {
+            case APPLICANT_ROLE -> APPLICANT_LOGIN;
+            case REVIEWER_ROLE -> REVIEWER_LOGIN;
+            case APPLIER_ROLE -> APPLIER_LOGIN;
+            default -> throw new IllegalArgumentException("Unsupported test database role");
+        };
         try (Connection connection = dataSource.getConnection();
                 Statement authorization = connection.createStatement()) {
-            authorization.execute("SET SESSION AUTHORIZATION " + role);
+            authorization.execute("SET SESSION AUTHORIZATION " + loginRole);
+            authorization.execute("SET ROLE " + role);
             try {
                 return work.apply(JdbcClient.create(new SingleConnectionDataSource(connection, true)));
             } finally {
+                authorization.execute("RESET ROLE");
                 authorization.execute("RESET SESSION AUTHORIZATION");
             }
         } catch (Exception exception) {
