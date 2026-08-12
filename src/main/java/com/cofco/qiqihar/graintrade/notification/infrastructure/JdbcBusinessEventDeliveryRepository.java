@@ -2,6 +2,7 @@ package com.cofco.qiqihar.graintrade.notification.infrastructure;
 
 import com.cofco.qiqihar.graintrade.notification.application.BusinessEventDeliveryBacklog;
 import com.cofco.qiqihar.graintrade.notification.application.BusinessEventDeliveryRepository;
+import com.cofco.qiqihar.graintrade.notification.application.BusinessEventConsumerRegistrar;
 import com.cofco.qiqihar.graintrade.notification.application.BusinessNotification;
 import com.cofco.qiqihar.graintrade.notification.application.ConsumerRetirementReason;
 import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
@@ -19,25 +20,22 @@ import org.springframework.transaction.annotation.Transactional;
 @Repository
 public class JdbcBusinessEventDeliveryRepository implements BusinessEventDeliveryRepository {
     private final JdbcClient jdbc;
+    private final BusinessEventConsumerRegistrar consumerRegistrar;
 
-    public JdbcBusinessEventDeliveryRepository(JdbcClient jdbc) {
+    public JdbcBusinessEventDeliveryRepository(
+            JdbcClient jdbc, BusinessEventConsumerRegistrar consumerRegistrar) {
         this.jdbc = jdbc;
+        this.consumerRegistrar = consumerRegistrar;
     }
 
     @Override
-    @Transactional
     public void ensureCheckpoint(
             String consumerId,
             String instanceId,
             long initialSequence,
             String authorizationSubjectId) {
-        boolean active = jdbc.sql("""
-                SELECT platform.ensure_business_event_consumer(
-                  :consumerId,:instanceId,:initialSequence,:authorizationSubjectId)
-                """).param("consumerId", consumerId).param("instanceId", instanceId)
-                .param("initialSequence", initialSequence)
-                .param("authorizationSubjectId", authorizationSubjectId)
-                .query(Boolean.class).single();
+        boolean active = consumerRegistrar.ensureCheckpoint(
+                consumerId, instanceId, initialSequence, authorizationSubjectId);
         if (!active) {
             throw new IllegalStateException(
                     "Retired consumers cannot be reused or rebound to another authorization subject");

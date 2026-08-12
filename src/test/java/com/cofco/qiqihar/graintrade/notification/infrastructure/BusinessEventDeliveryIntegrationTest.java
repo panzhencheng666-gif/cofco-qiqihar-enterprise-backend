@@ -2,6 +2,7 @@ package com.cofco.qiqihar.graintrade.notification.infrastructure;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -15,6 +16,7 @@ import com.cofco.qiqihar.graintrade.notification.application.ConsumerRetirementR
 import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.sql.Connection;
+import java.sql.ResultSet;
 import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.Clock;
@@ -480,7 +482,7 @@ class BusinessEventDeliveryIntegrationTest {
                          'platform.business_event_consumer_lifecycle_event_lifecycle_event_id_seq','USAGE')
                    AND NOT has_function_privilege('cofco_app',
                          'platform.ensure_business_event_consumer(varchar,varchar,bigint)','EXECUTE')
-                   AND has_function_privilege('cofco_app',
+                   AND NOT has_function_privilege('cofco_app',
                          'platform.ensure_business_event_consumer(varchar,varchar,bigint,varchar)','EXECUTE')
                    AND has_function_privilege('cofco_app',
                          'platform.retire_business_event_consumer(varchar,varchar,bigint,varchar)','EXECUTE')
@@ -490,6 +492,27 @@ class BusinessEventDeliveryIntegrationTest {
                          'platform.business_event_delivery_backlog','SELECT')
                    AND has_table_privilege('qiqihar_event_operations_monitor',
                          'platform.business_event_delivery_backlog','SELECT')
+                   AND NOT has_table_privilege('qiqihar_event_operations_monitor',
+                         'platform.business_event_delivery_checkpoint','SELECT')
+                   AND NOT has_table_privilege('qiqihar_event_operations_monitor',
+                         'platform.business_event_consumer_lifecycle_event','SELECT')
+                   AND NOT has_table_privilege('qiqihar_event_operations_monitor',
+                         'platform.business_event_outbox','SELECT')
+                   AND EXISTS (
+                         SELECT 1 FROM pg_roles registrar
+                         WHERE registrar.rolname='qiqihar_event_consumer_registrar'
+                           AND NOT registrar.rolcanlogin AND NOT registrar.rolinherit
+                           AND has_function_privilege(registrar.oid,
+                             'platform.ensure_business_event_consumer(varchar,varchar,bigint,varchar)'::regprocedure,
+                             'EXECUTE'))
+                   AND EXISTS (
+                         SELECT 1 FROM pg_roles login_role
+                         WHERE login_role.rolname='qiqihar_event_consumer_registrar_login'
+                           AND login_role.rolcanlogin AND NOT login_role.rolinherit
+                           AND pg_has_role(login_role.oid,
+                             'qiqihar_event_consumer_registrar','MEMBER'))
+                   AND NOT pg_has_role('cofco_app',
+                         'qiqihar_event_consumer_registrar','MEMBER')
                 """).query(Boolean.class).single()).isTrue();
         assertThat(jdbc.sql("""
                 SELECT NOT EXISTS (
@@ -520,11 +543,11 @@ class BusinessEventDeliveryIntegrationTest {
                 SELECT platform.ensure_business_event_consumer(
                   'def-100-shared-consumer:acl-probe','instance-acl',0)
                 """)).hasMessageContaining("permission denied");
-        executeAsRuntime("""
+        assertThatThrownBy(() -> executeAsRuntime("""
                 SELECT platform.ensure_business_event_consumer(
                   'def-100-shared-consumer:acl-probe','instance-rebind',0,
                   'def-103-full-scope-reader')
-                """);
+                """)).hasMessageContaining("permission denied");
         assertThat(jdbc.sql("""
                 SELECT authorization_subject_id
                 FROM platform.business_event_delivery_checkpoint
@@ -534,6 +557,56 @@ class BusinessEventDeliveryIntegrationTest {
                 SELECT platform.retire_business_event_consumer(
                   'def-100-shared-consumer:acl-probe','instance-acl',0,'FORGED_REASON')
                 """)).hasMessageContaining("consumer retirement reason is invalid");
+        assertThatThrownBy(() -> executeAsRuntime(
+                "SET ROLE qiqihar_event_consumer_registrar"))
+                .hasMessageContaining("permission denied");
+    }
+
+    @Test
+    void runtimeCannotBindANewConsumerToAnotherValidAuthorizationSubject() {
+        String forgedConsumer = CONSUMER + ":new-subject-forgery";
+
+        Throwable runtimeFailure = catchThrowable(() -> executeAsRuntimeAndRollback("""
+                SELECT platform.ensure_business_event_consumer(
+                  'def-100-shared-consumer:new-subject-forgery','forged-instance',0,
+                  'production-tester')
+                """));
+
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_event_delivery_checkpoint
+                WHERE consumer_id=:consumer
+                """).param("consumer", forgedConsumer).query(Long.class).single()).isZero();
+        assertThat(runtimeFailure).isNotNull().hasMessageContaining("permission denied");
+    }
+
+    @Test
+    void dedicatedRegistrarCreatesAndRenewsOnlyTheOriginalAuthorizationBinding() {
+        String consumer = CONSUMER + ":dedicated-registrar";
+
+        assertThat(queryAsEventConsumerRegistrar("""
+                SELECT platform.ensure_business_event_consumer(
+                  'def-100-shared-consumer:dedicated-registrar','registrar-instance-a',0,
+                  'def-100-reader')
+                """)).isTrue();
+        assertThat(queryAsEventConsumerRegistrar("""
+                SELECT platform.ensure_business_event_consumer(
+                  'def-100-shared-consumer:dedicated-registrar','registrar-instance-b',0,
+                  'def-100-reader')
+                """)).isTrue();
+        assertThat(queryAsEventConsumerRegistrar("""
+                SELECT platform.ensure_business_event_consumer(
+                  'def-100-shared-consumer:dedicated-registrar','registrar-instance-c',0,
+                  'production-tester')
+                """)).isFalse();
+        assertThat(jdbc.sql("""
+                SELECT authorization_subject_id || ':' || lifecycle_status
+                FROM platform.business_event_delivery_checkpoint
+                WHERE consumer_id=:consumer
+                """).param("consumer", consumer).query(String.class).single())
+                .isEqualTo(SUBJECT + ":ACTIVE");
+        assertThatThrownBy(() -> executeAsEventConsumerRegistrar("""
+                SELECT * FROM platform.business_event_delivery_checkpoint
+                """)).hasMessageContaining("permission denied");
     }
 
     @Test
@@ -639,6 +712,58 @@ class BusinessEventDeliveryIntegrationTest {
             try (Statement statement = connection.createStatement()) {
                 statement.execute(sql);
             } finally {
+                authorization.execute("RESET SESSION AUTHORIZATION");
+            }
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception.getMessage(), exception);
+        }
+    }
+
+    private void executeAsRuntimeAndRollback(String sql) {
+        try (Connection connection = dataSource.getConnection();
+                Statement authorization = connection.createStatement()) {
+            connection.setAutoCommit(false);
+            authorization.execute("SET SESSION AUTHORIZATION cofco_app");
+            try (Statement statement = connection.createStatement()) {
+                statement.execute(sql);
+            } finally {
+                connection.rollback();
+                authorization.execute("RESET SESSION AUTHORIZATION");
+            }
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception.getMessage(), exception);
+        }
+    }
+
+    private boolean queryAsEventConsumerRegistrar(String sql) {
+        try (Connection connection = dataSource.getConnection();
+                Statement authorization = connection.createStatement()) {
+            authorization.execute(
+                    "SET SESSION AUTHORIZATION qiqihar_event_consumer_registrar_login");
+            authorization.execute("SET ROLE qiqihar_event_consumer_registrar");
+            try (Statement statement = connection.createStatement();
+                    ResultSet result = statement.executeQuery(sql)) {
+                result.next();
+                return result.getBoolean(1);
+            } finally {
+                authorization.execute("RESET ROLE");
+                authorization.execute("RESET SESSION AUTHORIZATION");
+            }
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception.getMessage(), exception);
+        }
+    }
+
+    private void executeAsEventConsumerRegistrar(String sql) {
+        try (Connection connection = dataSource.getConnection();
+                Statement authorization = connection.createStatement()) {
+            authorization.execute(
+                    "SET SESSION AUTHORIZATION qiqihar_event_consumer_registrar_login");
+            authorization.execute("SET ROLE qiqihar_event_consumer_registrar");
+            try (Statement statement = connection.createStatement()) {
+                statement.execute(sql);
+            } finally {
+                authorization.execute("RESET ROLE");
                 authorization.execute("RESET SESSION AUTHORIZATION");
             }
         } catch (Exception exception) {

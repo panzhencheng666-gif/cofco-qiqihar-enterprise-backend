@@ -26,7 +26,7 @@ class BusinessEventBacklogAuthorizationMigrationTest {
     }
 
     @Test
-    void upgradesAnInstalledV112ConsumerThroughV113AndV114WithoutChangingV112() throws Exception {
+    void upgradesAnInstalledV112ConsumerThroughV113V114AndV115WithoutChangingHistory() throws Exception {
         resetDatabase();
         assertThat(DATABASE.flywayToVersion("112").migrate().migrationsExecuted)
                 .isGreaterThan(100);
@@ -39,7 +39,15 @@ class BusinessEventBacklogAuthorizationMigrationTest {
                 """);
 
         assertThat(DATABASE.flywayToVersion("113").migrate().migrationsExecuted).isOne();
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isOne();
+        assertThat(queryString("""
+                SELECT version FROM public.flyway_schema_history
+                WHERE success ORDER BY installed_rank DESC LIMIT 1
+                """)).isEqualTo("113");
+        assertThat(queryInteger("""
+                SELECT checksum FROM public.flyway_schema_history WHERE version='113'
+                """)).isEqualTo(-1778519318);
+
+        assertThat(DATABASE.flywayToVersion("114").migrate().migrationsExecuted).isOne();
 
         assertThat(queryString("""
                 SELECT lifecycle_status || ':' || retirement_reason
@@ -56,8 +64,31 @@ class BusinessEventBacklogAuthorizationMigrationTest {
                 WHERE success ORDER BY installed_rank DESC LIMIT 1
                 """)).isEqualTo("114");
         assertThat(queryInteger("""
+                SELECT checksum FROM public.flyway_schema_history WHERE version='114'
+                """)).isEqualTo(-1616358236);
+
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isOne();
+        assertThat(queryString("""
+                SELECT version FROM public.flyway_schema_history
+                WHERE success ORDER BY installed_rank DESC LIMIT 1
+                """)).isEqualTo("115");
+        assertThat(queryInteger("""
                 SELECT checksum FROM public.flyway_schema_history WHERE version='112'
                 """)).isEqualTo(819644878);
+        assertThat(queryInteger("""
+                SELECT checksum FROM public.flyway_schema_history WHERE version='113'
+                """)).isEqualTo(-1778519318);
+        assertThat(queryInteger("""
+                SELECT checksum FROM public.flyway_schema_history WHERE version='114'
+                """)).isEqualTo(-1616358236);
+        assertThat(queryBoolean("""
+                SELECT NOT has_function_privilege('cofco_app',
+                         'platform.ensure_business_event_consumer(varchar,varchar,bigint,varchar)',
+                         'EXECUTE')
+                   AND has_function_privilege('qiqihar_event_consumer_registrar',
+                         'platform.ensure_business_event_consumer(varchar,varchar,bigint,varchar)',
+                         'EXECUTE')
+                """)).isTrue();
     }
 
     private void resetDatabase() throws Exception {
@@ -88,6 +119,14 @@ class BusinessEventBacklogAuthorizationMigrationTest {
                 ResultSet row = statement.executeQuery(sql)) {
             row.next();
             return row.getInt(1);
+        }
+    }
+
+    private boolean queryBoolean(String sql) throws Exception {
+        try (Connection connection = DATABASE.openConnection(); Statement statement = connection.createStatement();
+                ResultSet row = statement.executeQuery(sql)) {
+            row.next();
+            return row.getBoolean(1);
         }
     }
 

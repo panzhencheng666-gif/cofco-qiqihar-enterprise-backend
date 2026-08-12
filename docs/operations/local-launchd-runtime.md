@@ -58,7 +58,11 @@ LaunchAgent 只读取正式 runtime 三仓。安装命令使用 APFS clonefile �
 
 执行 `chmod 600`，每行使用不带 shell 引号或变量展开的 `KEY=VALUE`。只允许
 `QIQIHAR_DB_URL`、`QIQIHAR_DB_USERNAME`、`QIQIHAR_DB_PASSWORD`、
-`QIQIHAR_FLYWAY_USERNAME`、`QIQIHAR_FLYWAY_PASSWORD`；运行 datasource 与
-Flyway 迁移账号必须分离。本机无显式覆盖时分别使用受限 `cofco_app` 与当前迁移账号；其他键或
-组/其他用户可读权限会使启动失败。正式本地端口固定为 `8090/63182/63200`，不从
-敏感配置覆盖。不得把该文件或密钥提交到仓库。
+`QIQIHAR_FLYWAY_USERNAME`、`QIQIHAR_FLYWAY_PASSWORD`，以及
+`QIQIHAR_EVENT_CONSUMER_REGISTRAR_DB_URL`、
+`QIQIHAR_EVENT_CONSUMER_REGISTRAR_DB_USERNAME`、
+`QIQIHAR_EVENT_CONSUMER_REGISTRAR_DB_PASSWORD`。运行 datasource、事件 consumer
+注册 datasource 与 Flyway 迁移账号必须分离。本机无显式覆盖时分别使用受限
+`cofco_app`、`qiqihar_event_consumer_registrar_login` 与当前迁移账号；其他键或组/其他
+用户可读权限会使启动失败。正式本地端口固定为 `8090/63182/63200`，不从敏感配置覆盖。
+不得把该文件或密钥提交到仓库。

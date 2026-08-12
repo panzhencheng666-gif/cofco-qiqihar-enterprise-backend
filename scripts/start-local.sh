@@ -37,6 +37,7 @@ business_port="${COFCO_ENTERPRISE_BUSINESS_PORT:-63182}"
 overview_port="${COFCO_ENTERPRISE_OVERVIEW_PORT:-63200}"
 runtime_database_user="${QIQIHAR_DB_USERNAME:-cofco_app}"
 migration_database_user="${QIQIHAR_FLYWAY_USERNAME:-${USER}}"
+event_consumer_registrar_database_user="${QIQIHAR_EVENT_CONSUMER_REGISTRAR_DB_USERNAME:-qiqihar_event_consumer_registrar_login}"
 
 for path in "$overview_frontend_root" "$business_frontend_root"; do
   if [[ ! -d "$path" ]]; then
@@ -212,6 +213,7 @@ start_backend() {
     "SERVER_ADDRESS=$local_access_host" \
     "QIQIHAR_DB_USERNAME=$runtime_database_user" \
     "QIQIHAR_FLYWAY_USERNAME=$migration_database_user" \
+    "QIQIHAR_EVENT_CONSUMER_REGISTRAR_DB_USERNAME=$event_consumer_registrar_database_user" \
     mvn \
     spring-boot:run \
     -Dspring-boot.run.profiles=local
