@@ -20,7 +20,8 @@ class SupplyTemporalMigrationTest {
     };
 
     @AfterEach
-    void restoreSharedSecurityFixtures() {
+    void restoreLatestSharedSchemaAndSecurityFixtures() {
+        DATABASE.flyway().migrate();
         ProtectedTestDatabaseConfiguration.provisionSecurityTestSubjects(JdbcClient.create(DATABASE.dataSource()));
     }
 

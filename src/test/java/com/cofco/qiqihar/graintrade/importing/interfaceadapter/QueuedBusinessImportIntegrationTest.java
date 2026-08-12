@@ -33,11 +33,14 @@ import org.springframework.test.web.servlet.MockMvc;
 @SpringBootTest(classes = GrainTradeApplication.class, properties = {
     "qiqihar.import.sync-row-limit=1",
     "qiqihar.import.max-row-limit=100",
+    "qiqihar.import.queue-enabled=true",
     "qiqihar.import.queue-poll-delay=50ms",
     "qiqihar.import.queue-stale-after=2m"
 })
 @AutoConfigureMockMvc
 @UsesProtectedTestDatabase
+@org.springframework.test.annotation.DirtiesContext(
+        classMode = org.springframework.test.annotation.DirtiesContext.ClassMode.AFTER_CLASS)
 class QueuedBusinessImportIntegrationTest {
     private static final UUID FIRST_PHOTO = UUID.fromString("00000000-0000-0000-0000-000000000081");
     private static final UUID SECOND_PHOTO = UUID.fromString("00000000-0000-0000-0000-000000000082");
@@ -249,9 +252,8 @@ class QueuedBusinessImportIntegrationTest {
                   original_bytes,watermarked_bytes,byte_length,sha256,captured_at,capture_latitude,
                   capture_longitude,watermark_text,uploaded_by,uploaded_at)
                 VALUES(:id,'STAGED',:filename,'image/png',decode('00','hex'),decode('01','hex'),1,
-                  :digest,now(),47.3543,123.9182,'测试水印',:uploadedBy,now())
+                  encode(sha256(decode('00','hex')),'hex'),now(),47.3543,123.9182,'测试水印',:uploadedBy,now())
                 """).param("id", id).param("filename", filename).param("uploadedBy", uploadedBy)
-                .param("digest", id.toString().replace("-", "") + "00000000000000000000000000000000")
                 .update();
     }
 

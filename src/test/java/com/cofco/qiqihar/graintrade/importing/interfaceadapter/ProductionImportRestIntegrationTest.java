@@ -47,7 +47,7 @@ class ProductionImportRestIntegrationTest {
                   original_bytes,watermarked_bytes,byte_length,sha256,captured_at,capture_latitude,
                   capture_longitude,watermark_text,uploaded_by,uploaded_at)
                 VALUES(CAST(:id AS uuid),'STAGED','fixture.png','image/png',decode('00','hex'),decode('01','hex'),
-                  1,repeat('b',64),now(),47.3543,123.9182,'测试水印','production-tester',now())
+                  1,encode(sha256(decode('00','hex')),'hex'),now(),47.3543,123.9182,'测试水印','production-tester',now())
                 """).param("id", PHOTO_ID).update();
         jdbc.sql("""
                 INSERT INTO platform.work_unit(code,name,sort_order) VALUES('IMPORT_LIMITED','导入受限测试单位',9901)

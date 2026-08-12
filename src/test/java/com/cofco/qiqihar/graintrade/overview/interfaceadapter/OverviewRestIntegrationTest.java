@@ -6,6 +6,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
+import com.cofco.qiqihar.graintrade.testsupport.GovernedMasterDataFixtures;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.util.UUID;
 import javax.sql.DataSource;
@@ -38,7 +39,9 @@ class OverviewRestIntegrationTest {
         jdbc.sql("DELETE FROM overview.administrative_boundary_display_reference WHERE region_code IN ('230281999001','230281999','230281998001','230281998002','230281998','230202998001','230202998')").update();
         jdbc.sql("DELETE FROM overview.administrative_boundary_render WHERE region_code IN ('230281999001','230281999','230281998001','230281998002','230281998','230202998001','230202998')").update();
         jdbc.sql("DELETE FROM overview.administrative_boundary WHERE region_code IN ('230281999001','230281999','230281998001','230281998002','230281998','230202998001','230202998')").update();
-        jdbc.sql("DELETE FROM platform.region WHERE code IN ('230281999001','230281999','230281998001','230281998002','230281998','230202998001','230202998')").update();
+        GovernedMasterDataFixtures.deleteRegions(jdbc, java.util.List.of(
+                "230281999001", "230281999", "230281998001", "230281998002",
+                "230281998", "230202998001", "230202998"));
         jdbc.sql("""
                 TRUNCATE production.production_record,market.market_record,logistics.route_event,logistics.logistics_node,
                   supply.calculation_run RESTART IDENTITY CASCADE
@@ -179,13 +182,34 @@ class OverviewRestIntegrationTest {
                 .andExpect(jsonPath("$.data[?(@.mapContextOnly == true)]").isEmpty());
         mvc.perform(get("/api/v1/overview/indicators").queryParam("productCode", "CORN")
                         .queryParam("regionCode", "230200").queryParam("periodCode", "2026-Q3"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].value").value("10"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.contractVersion").value("overview-audit-v2"))
+                .andExpect(jsonPath("$.data[0].value").value("10"))
+                .andExpect(jsonPath("$.data[0].formula").value("核定种植面积合计"))
+                .andExpect(jsonPath("$.data[0].sourceRelation").value("产情核定记录"))
+                .andExpect(jsonPath("$.data[0].dataCutoff").isString())
+                .andExpect(jsonPath("$.data[0].coverageScope")
+                        .value("所选地区及全部下级地区、所选产品、2026年度"))
+                .andExpect(jsonPath("$.data[0].coverageStatus").value("AVAILABLE"))
+                .andExpect(jsonPath("$.data[0].calculationVersion").value("总揽指标口径第1版"))
                 .andExpect(jsonPath("$.data[1].value").value("200"))
                 .andExpect(jsonPath("$.data[2].value").value("2050"))
                 .andExpect(jsonPath("$.data[3].value").value(org.hamcrest.Matchers.nullValue()))
                 .andExpect(jsonPath("$.data[3].sourceCount").value(0))
                 .andExpect(jsonPath("$.data[0].sourceCount").value(1))
                 .andExpect(jsonPath("$.data[5].value").value(org.hamcrest.Matchers.nullValue()));
+
+        mvc.perform(get("/api/v1/overview/dashboard").queryParam("productCode", "CORN")
+                        .queryParam("regionCode", "230200").queryParam("year", "2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.contractVersion").value("overview-audit-v2"))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].formula")
+                        .value(org.hamcrest.Matchers.hasItem("核定种植面积合计")))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].coverageScope")
+                        .value(org.hamcrest.Matchers.hasItem(
+                                "所选地区及全部下级地区、所选产品、2026年度")))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].calculationVersion")
+                        .value(org.hamcrest.Matchers.hasItem("总揽指标口径第1版")));
     }
 
     @Test
@@ -250,11 +274,11 @@ class OverviewRestIntegrationTest {
                 .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].sourceCount")
                         .value(org.hamcrest.Matchers.hasItem(2)))
                 .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].dataCutoff")
-                        .value(org.hamcrest.Matchers.hasItem("2026-08-10")))
+                        .value(org.hamcrest.Matchers.hasItem("2026年08月10日")))
                 .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].coverageStatus")
                         .value(org.hamcrest.Matchers.hasItem("AVAILABLE")))
                 .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].calculationVersion")
-                        .value(org.hamcrest.Matchers.hasItem("REGION_SURPLUS_V1")))
+                        .value(org.hamcrest.Matchers.hasItem("地区余粮口径第1版")))
                 .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].auditSources.length()")
                         .value(org.hamcrest.Matchers.hasItem(2)))
                 .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].auditSources[*].subjectKey")
@@ -338,6 +362,13 @@ class OverviewRestIntegrationTest {
                 .param("actionCode", actionCode).param("occurredAt", occurredAt).update();
     }
 
+    private void insertSampleCountRegions() {
+        GovernedMasterDataFixtures.insertRegion(
+                jdbc, "230281999", "测试乡", "230281", "TOWNSHIP", 999);
+        GovernedMasterDataFixtures.insertRegion(
+                jdbc, "230281999001", "测试村", "230281999", "VILLAGE", 1);
+    }
+
     @Test
     void returnsVerifiedBoundaryGeometryForTheSelectedYear() throws Exception {
         mvc.perform(get("/api/v1/overview/regions").queryParam("productCode", "CORN")
@@ -350,11 +381,7 @@ class OverviewRestIntegrationTest {
 
     @Test
     void derivesSamplePointCountsFromTheSelectedRegionHierarchy() throws Exception {
-        jdbc.sql("""
-                INSERT INTO platform.region(code,name,parent_code,administrative_level,sort_order)
-                VALUES('230281999','测试乡','230281','TOWNSHIP',999),
-                      ('230281999001','测试村','230281999','VILLAGE',1)
-                """).update();
+        insertSampleCountRegions();
         jdbc.sql("""
                 INSERT INTO platform.monitoring_scope_region(scope_code,region_code,included)
                 VALUES('FORMAL_BUSINESS','230281999',true),('FORMAL_BUSINESS','230281999001',true)
@@ -435,12 +462,12 @@ class OverviewRestIntegrationTest {
 
     @Test
     void repartitionsAHoledVillageSourceIntoOneWatertightParentSurface() {
-        jdbc.sql("""
-                INSERT INTO platform.region(code,name,parent_code,administrative_level,sort_order)
-                VALUES('230281998','拓扑测试乡','230281','TOWNSHIP',998),
-                      ('230281998001','拓扑测试甲村','230281998','VILLAGE',1),
-                      ('230281998002','拓扑测试乙村','230281998','VILLAGE',2)
-                """).update();
+        GovernedMasterDataFixtures.insertRegion(
+                jdbc, "230281998", "拓扑测试乡", "230281", "TOWNSHIP", 998);
+        GovernedMasterDataFixtures.insertRegion(
+                jdbc, "230281998001", "拓扑测试甲村", "230281998", "VILLAGE", 1);
+        GovernedMasterDataFixtures.insertRegion(
+                jdbc, "230281998002", "拓扑测试乙村", "230281998", "VILLAGE", 2);
         jdbc.sql("""
                 WITH county_anchor AS (
                   SELECT ST_PointOnSurface(geometry) point
@@ -559,11 +586,7 @@ class OverviewRestIntegrationTest {
 
     @Test
     void returnsSourceAttributedPointsWithGeneratedTopologyClosedDisplayBoundaries() throws Exception {
-        jdbc.sql("""
-                INSERT INTO platform.region(code,name,parent_code,administrative_level,sort_order)
-                VALUES('230281999','测试乡','230281','TOWNSHIP',999),
-                      ('230281999001','测试村','230281999','VILLAGE',1)
-                """).update();
+        insertSampleCountRegions();
         jdbc.sql("""
                 INSERT INTO platform.monitoring_scope_region(scope_code,region_code,included)
                 VALUES('FORMAL_BUSINESS','230281999',true),('FORMAL_BUSINESS','230281999001',true)

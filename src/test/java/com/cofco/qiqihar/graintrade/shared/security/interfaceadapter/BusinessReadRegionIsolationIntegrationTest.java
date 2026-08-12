@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
+import com.cofco.qiqihar.graintrade.testsupport.GovernedMasterDataFixtures;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import com.cofco.qiqihar.graintrade.workflow.application.WorkItemProjection;
 import javax.sql.DataSource;
@@ -325,11 +326,10 @@ class BusinessReadRegionIsolationIntegrationTest {
     }
 
     private void createOverviewScopeFixture() {
-        jdbc.sql("""
-                INSERT INTO platform.region(code,name,parent_code,administrative_level,sort_order)
-                VALUES (:regionA,'区域隔离测试地区A','230200','COUNTY',991),
-                       (:regionB,'区域隔离测试地区B','230200','COUNTY',992)
-                """).param("regionA", REGION_A).param("regionB", REGION_B).update();
+        GovernedMasterDataFixtures.insertRegion(
+                jdbc, REGION_A, "区域隔离测试地区A", "230200", "COUNTY", 991);
+        GovernedMasterDataFixtures.insertRegion(
+                jdbc, REGION_B, "区域隔离测试地区B", "230200", "COUNTY", 992);
         jdbc.sql("""
                 INSERT INTO platform.monitoring_scope_region(scope_code,region_code,included)
                 VALUES ('FORMAL_BUSINESS',:regionA,true),('FORMAL_BUSINESS',:regionB,true)
@@ -517,7 +517,6 @@ class BusinessReadRegionIsolationIntegrationTest {
                 .param("codes", ISOLATION_REGION_CODES).update();
         jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE region_code IN (:codes)")
                 .param("codes", ISOLATION_REGION_CODES).update();
-        jdbc.sql("DELETE FROM platform.region WHERE code IN (:codes)")
-                .param("codes", ISOLATION_REGION_CODES).update();
+        GovernedMasterDataFixtures.deleteRegions(jdbc, ISOLATION_REGION_CODES);
     }
 }

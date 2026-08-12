@@ -5,6 +5,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
+import com.cofco.qiqihar.graintrade.testsupport.GovernedMasterDataFixtures;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.util.List;
 import javax.sql.DataSource;
@@ -35,11 +36,10 @@ class AnnualComparisonRestIntegrationTest {
     void setUpPublishedRecords() {
         jdbc = JdbcClient.create(dataSource);
         clean();
-        jdbc.sql("""
-                INSERT INTO platform.region(code,name,parent_code,administrative_level,sort_order)
-                VALUES (:region,'年度同比授权地区','230200','COUNTY',993),
-                       (:other,'年度同比未授权地区','230200','COUNTY',994)
-                """).param("region", REGION).param("other", OTHER_REGION).update();
+        GovernedMasterDataFixtures.insertRegion(
+                jdbc, REGION, "年度同比授权地区", "230200", "COUNTY", 993);
+        GovernedMasterDataFixtures.insertRegion(
+                jdbc, OTHER_REGION, "年度同比未授权地区", "230200", "COUNTY", 994);
         jdbc.sql("""
                 INSERT INTO platform.monitoring_scope_region(scope_code,region_code,included)
                 VALUES ('FORMAL_BUSINESS',:region,true),('FORMAL_BUSINESS',:other,true)
@@ -156,7 +156,7 @@ class AnnualComparisonRestIntegrationTest {
                 .andExpect(jsonPath("$.data.points[0].sourcePublicationVersion").value("APPROVED_PRODUCTION_RECORD:v0"))
                 .andExpect(jsonPath("$.data.points[3].businessYear").value("2023"))
                 .andExpect(jsonPath("$.data.points[3].value").value(9.0))
-                .andExpect(jsonPath("$.data.points[0].dataCutoff").value("2026-08-11T00:00:00Z"));
+                .andExpect(jsonPath("$.data.points[0].dataCutoff").value("2026年08月11日 08:00:00"));
 
         mvc.perform(get("/api/v1/overview/annual-comparisons").principal(() -> READER)
                         .queryParam("productCode", "SOYBEAN").queryParam("cultivarCode", "HEINONG_84")
@@ -229,6 +229,40 @@ class AnnualComparisonRestIntegrationTest {
                 .andExpect(jsonPath("$.data.points[3].missingReason").value("NO_APPROVED_RECORDS"));
     }
 
+    @Test
+    void excludesApprovedProductionAndMarketRowsWhoseSurveyPeriodIsPendingGovernance() throws Exception {
+        jdbc.sql("""
+                UPDATE production.production_record
+                SET survey_period_governance_state='PENDING_GOVERNANCE'
+                WHERE record_id='annual-production-2026'
+                """).update();
+        jdbc.sql("""
+                UPDATE market.market_record
+                SET survey_period_governance_state='PENDING_GOVERNANCE'
+                WHERE record_id='annual-market-2026'
+                """).update();
+
+        mvc.perform(get("/api/v1/overview/annual-comparisons").principal(() -> READER)
+                        .queryParam("productCode", "SOYBEAN").queryParam("cultivarCode", "HEINONG_84")
+                        .queryParam("regionCode", REGION).queryParam("periodCode", PERIOD)
+                        .queryParam("indicatorCode", "PRODUCTION_CULTIVATED_AREA"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.points[0].value").doesNotExist())
+                .andExpect(jsonPath("$.data.points[0].sourcePublicationVersion").doesNotExist())
+                .andExpect(jsonPath("$.data.points[0].dataCutoff").doesNotExist())
+                .andExpect(jsonPath("$.data.points[0].missingReason").value("NO_APPROVED_RECORDS"));
+
+        mvc.perform(get("/api/v1/overview/annual-comparisons").principal(() -> READER)
+                        .queryParam("productCode", "SOYBEAN").queryParam("regionCode", REGION)
+                        .queryParam("periodCode", PERIOD)
+                        .queryParam("indicatorCode", "MARKET_AVERAGE_TRADE_PRICE"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.points[0].value").doesNotExist())
+                .andExpect(jsonPath("$.data.points[0].sourcePublicationVersion").doesNotExist())
+                .andExpect(jsonPath("$.data.points[0].dataCutoff").doesNotExist())
+                .andExpect(jsonPath("$.data.points[0].missingReason").value("NO_APPROVED_RECORDS"));
+    }
+
     private void clean() {
         if (jdbc == null) return;
         jdbc.sql("DELETE FROM market.market_record WHERE record_id LIKE 'annual-market-%'").update();
@@ -241,6 +275,6 @@ class AnnualComparisonRestIntegrationTest {
         jdbc.sql("DELETE FROM platform.work_unit WHERE code='ANNUAL_COMPARISON'").update();
         jdbc.sql("DELETE FROM platform.monitoring_scope_region WHERE region_code IN (:codes)")
                 .param("codes", List.of(REGION, OTHER_REGION)).update();
-        jdbc.sql("DELETE FROM platform.region WHERE code IN (:codes)").param("codes", List.of(REGION, OTHER_REGION)).update();
+        GovernedMasterDataFixtures.deleteRegions(jdbc, List.of(REGION, OTHER_REGION));
     }
 }

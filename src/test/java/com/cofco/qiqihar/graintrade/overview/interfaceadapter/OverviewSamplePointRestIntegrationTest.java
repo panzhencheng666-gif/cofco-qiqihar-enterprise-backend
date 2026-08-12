@@ -5,6 +5,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
+import com.cofco.qiqihar.graintrade.testsupport.GovernedMasterDataFixtures;
 import com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabaseConfiguration;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.sql.Connection;
@@ -180,6 +181,37 @@ class OverviewSamplePointRestIntegrationTest {
     }
 
     @Test
+    void separatesCurrentFilterCorrectionsFromTheFullCatalogUnresolvedTotal() throws Exception {
+        mvc.perform(get("/api/v1/overview/sample-points")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("year", "2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.correctionSourceCount").value(2))
+                .andExpect(jsonPath("$.data.unresolvedSourceCount").value(3));
+
+        mvc.perform(get("/api/v1/overview/sample-points")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("year", "2026")
+                        .queryParam("categoryCode", "MARKET"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.correctionSourceCount").value(0))
+                .andExpect(jsonPath("$.data.unresolvedSourceCount").value(3));
+
+        mvc.perform(get("/api/v1/overview/sample-points")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("year", "2026")
+                        .queryParam("categoryCode", "PRODUCTION")
+                        .queryParam("typeCode", "FARMER")
+                        .queryParam("query", "同一跨产品"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.correctionSourceCount").value(0))
+                .andExpect(jsonPath("$.data.unresolvedSourceCount").value(3));
+    }
+
+    @Test
     void rejectsUnverifiedCopiedCoordinatesButKeepsVerifiedColocatedEntitiesDistinct() throws Exception {
         String first = "94000000-0000-0000-0000-000000000011";
         String second = "94000000-0000-0000-0000-000000000012";
@@ -293,7 +325,7 @@ class OverviewSamplePointRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.regionCode").value(VILLAGE))
                 .andExpect(jsonPath("$.data.totalCount").value(1))
-                .andExpect(jsonPath("$.data.unresolvedSourceCount").value(0))
+                .andExpect(jsonPath("$.data.unresolvedSourceCount").value(3))
                 .andExpect(jsonPath("$.data.categories[?(@.code == 'PRODUCTION')].name")
                         .value(org.hamcrest.Matchers.hasItem("产情类")))
                 .andExpect(jsonPath("$.data.categories[?(@.code == 'PRODUCTION')].types[?(@.code == 'FARMER')].name")
@@ -534,11 +566,10 @@ class OverviewSamplePointRestIntegrationTest {
     }
 
     private void insertRegionAndBoundaryFixtures() {
-        jdbc.sql("""
-                INSERT INTO platform.region(code,name,parent_code,administrative_level,sort_order)
-                VALUES(:township,'契约测试乡','230202','TOWNSHIP',997),
-                      (:village,'契约测试村',:township,'VILLAGE',1)
-                """).param("township", TOWNSHIP).param("village", VILLAGE).update();
+        GovernedMasterDataFixtures.insertRegion(
+                jdbc, TOWNSHIP, "契约测试乡", "230202", "TOWNSHIP", 997);
+        GovernedMasterDataFixtures.insertRegion(
+                jdbc, VILLAGE, "契约测试村", TOWNSHIP, "VILLAGE", 1);
         jdbc.sql("""
                 WITH township AS (
                   SELECT ST_Multi(ST_Buffer(ST_SetSRID(ST_MakePoint(123.9,47.3),4326),0.005)) geometry
@@ -669,7 +700,6 @@ class OverviewSamplePointRestIntegrationTest {
                 .param("township", TOWNSHIP).param("village", VILLAGE).update();
         jdbc.sql("DELETE FROM overview.administrative_boundary WHERE region_code IN (:township,:village)")
                 .param("township", TOWNSHIP).param("village", VILLAGE).update();
-        jdbc.sql("DELETE FROM platform.region WHERE code IN (:village,:township)")
-                .param("township", TOWNSHIP).param("village", VILLAGE).update();
+        GovernedMasterDataFixtures.deleteRegions(jdbc, java.util.List.of(VILLAGE, TOWNSHIP));
     }
 }

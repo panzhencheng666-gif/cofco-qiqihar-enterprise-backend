@@ -41,11 +41,11 @@ public class OverviewController {
     }
 
     @GetMapping("/api/v1/overview/indicators")
-    ApiResponse<List<OverviewIndicator>> indicators(@RequestParam String productCode, @RequestParam String regionCode,
+    OverviewContractResponse<List<OverviewIndicator>> indicators(@RequestParam String productCode, @RequestParam String regionCode,
             @RequestParam(required = false) Integer year,
             @RequestParam(required = false) String periodCode,
             @RequestParam(required = false) String marketingYear) {
-        return new ApiResponse<>(service.indicators(productCode, regionCode, year, periodCode));
+        return new OverviewContractResponse<>(service.indicators(productCode, regionCode, year, periodCode));
     }
 
     @GetMapping("/api/v1/overview/annual-comparisons")
@@ -65,12 +65,12 @@ public class OverviewController {
     }
 
     @GetMapping("/api/v1/overview/dashboard")
-    ApiResponse<OverviewDashboard> dashboard(
+    OverviewContractResponse<OverviewDashboard> dashboard(
             @RequestParam String productCode,
             @RequestParam(required = false) Integer year,
             @RequestParam(required = false) String periodCode,
             @RequestParam(required = false) String regionCode,
             @RequestParam(required = false) String marketingYear) {
-        return new ApiResponse<>(service.dashboard(productCode, year, periodCode, regionCode));
+        return new OverviewContractResponse<>(service.dashboard(productCode, year, periodCode, regionCode));
     }
 }

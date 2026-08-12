@@ -50,7 +50,7 @@ class ProductionRecordRestIntegrationTest {
                   original_bytes,watermarked_bytes,byte_length,sha256,captured_at,capture_latitude,
                   capture_longitude,watermark_text,uploaded_by,uploaded_at)
                 VALUES(CAST(:id AS uuid),'STAGED','fixture.png','image/png',decode('00','hex'),decode('01','hex'),
-                  1,repeat('a',64),now(),47.3543,123.9182,'测试水印','production-tester',now())
+                  1,encode(sha256(decode('00','hex')),'hex'),now(),47.3543,123.9182,'测试水印','production-tester',now())
                 """).param("id", EVIDENCE_PHOTO_ID).update();
     }
 
@@ -67,14 +67,23 @@ class ProductionRecordRestIntegrationTest {
         jdbc.sql("TRUNCATE platform.business_audit_event").update();
         jdbc.sql(
                 "DELETE FROM production.production_record WHERE last_modified_by = 'production-tester'").update();
+        List<UUID> governedPoints = jdbc.sql("""
+                SELECT sample_point_id FROM registry.sample_point_subject_identity
+                WHERE business_domain='PRODUCTION' AND subject_id LIKE 'fixture-production-%'
+                """).query(UUID.class).list();
         jdbc.sql("""
-                WITH deleted AS (
-                  DELETE FROM registry.sample_point_subject_identity
-                  WHERE business_domain='PRODUCTION' AND subject_id LIKE 'fixture-production-%'
-                  RETURNING sample_point_id)
-                DELETE FROM registry.sample_point
-                WHERE sample_point_id IN (SELECT sample_point_id FROM deleted)
-                """).update();
+                SELECT platform.govern_master_data_change(
+                  'SUBJECT',identity.business_domain || ':' || identity.subject_id,'DELETE',
+                  to_jsonb(identity),clock_timestamp(),'production-tester','market-tester',
+                  '自动化测试清理稳定主体映射')
+                FROM registry.sample_point_subject_identity identity
+                WHERE identity.business_domain='PRODUCTION'
+                  AND identity.subject_id LIKE 'fixture-production-%'
+                """).query(Long.class).list();
+        if (!governedPoints.isEmpty()) {
+            jdbc.sql("DELETE FROM registry.sample_point WHERE sample_point_id IN (:ids)")
+                    .param("ids", governedPoints).update();
+        }
         jdbc.sql("TRUNCATE evidence.evidence_photo").update();
         jdbc.sql("DELETE FROM overview.administrative_boundary "
                         + "WHERE source_url='urn:test:production-sample-point'")
@@ -144,7 +153,7 @@ class ProductionRecordRestIntegrationTest {
                   original_bytes,watermarked_bytes,byte_length,sha256,captured_at,capture_latitude,
                   capture_longitude,watermark_text,uploaded_by,uploaded_at)
                 VALUES(:id,'STAGED','fixture-2.png','image/png',decode('00','hex'),decode('01','hex'),
-                  1,repeat('b',64),now(),:latitude,:longitude,'测试水印','production-tester',now())
+                  1,encode(sha256(decode('00','hex')),'hex'),now(),:latitude,:longitude,'测试水印','production-tester',now())
                 """).param("id", secondEvidence).param("latitude", coordinate.get(1))
                 .param("longitude", coordinate.get(0)).update();
         String identityFields = "\"PROD_SAMPLE_SUBJECT_CODE\":\"fixture-production-subject-1\","

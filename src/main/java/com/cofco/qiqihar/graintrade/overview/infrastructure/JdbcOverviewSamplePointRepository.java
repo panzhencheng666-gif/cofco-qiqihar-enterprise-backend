@@ -105,6 +105,9 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
             String query, Set<String> authorizedRegionCodes) {
         EntityProjection projection = projection(year, regionCode, categoryCode, typeCode, query,
                 authorizedRegionCodes);
+        EntityProjection catalogProjection = categoryCode == null && typeCode == null && query == null
+                ? projection
+                : projection(year, regionCode, null, null, null, authorizedRegionCodes);
         List<OverviewSamplePointList.Item> items = projection.entities().stream()
                 .map(this::listItem)
                 .sorted(Comparator.comparing(OverviewSamplePointList.Item::name)
@@ -117,8 +120,11 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                 .map(row -> new OverviewSamplePointList.CorrectionSource(
                         row.categoryCode(), row.sourceRecordId(), row.sourceRole(), row.unresolvedReason()))
                 .toList();
+        long catalogQuality = catalogProjection.entities().stream()
+                .filter(entity -> entity.dataQualityReason() != null).count();
+        long catalogUnresolved = catalogQuality + catalogProjection.corrections().size();
         return new OverviewSamplePointList(regionCode, items.size(), valid, quality, corrections.size(),
-                quality + corrections.size(), categories(projection.entities()), items, corrections);
+                catalogUnresolved, categories(projection.entities()), items, corrections);
     }
 
     @Override
@@ -169,8 +175,8 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                   SELECT child.code FROM platform.region child
                   JOIN descendants parent ON child.parent_code=parent.code
                 )
-                SELECT CASE WHEN source.point_approval_state='APPROVED'
-                         THEN source.sample_point_id END sample_point_id,
+                SELECT CASE WHEN point.approval_state='APPROVED'
+                         THEN point.sample_point_id END sample_point_id,
                        source.category_code,
                        source.category_name,
                        source.source_record_id,
@@ -180,30 +186,37 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                        source.occurrence_date,
                        source.source_version,
                        source.source_region_code,
-                       CASE WHEN source.point_approval_state='APPROVED'
-                         THEN source.governed_region_code END governed_region_code,
-                       CASE WHEN source.point_approval_state='APPROVED'
-                         THEN source.governed_region_name END governed_region_name,
+                       CASE WHEN point.approval_state='APPROVED'
+                         THEN point.region_code END governed_region_code,
+                       CASE WHEN point.approval_state='APPROVED'
+                         THEN governed_region.name END governed_region_name,
                        source.type_code,
                        source.type_name,
                        source.type_sort_order,
                        visible_type.overview_icon_key,
-                       CASE WHEN source.point_approval_state='APPROVED'
-                         THEN source.canonical_name END canonical_name,
-                       CASE WHEN source.point_approval_state='APPROVED'
-                         THEN source.point_approval_state END point_approval_state,
-                       CASE WHEN source.point_approval_state='APPROVED'
-                         THEN source.location_state END location_state,
-                       source.unresolved_reason,
-                       ST_X(source.point_geometry) longitude,
-                       ST_Y(source.point_geometry) latitude,
+                       CASE WHEN point.approval_state='APPROVED'
+                         THEN point.canonical_name END canonical_name,
+                       CASE WHEN point.approval_state='APPROVED'
+                         THEN point.approval_state END point_approval_state,
+                       CASE WHEN point.approval_state='APPROVED'
+                         THEN point.location_state END location_state,
+                       CASE WHEN resolution.resolution_action='LINK' THEN NULL
+                         ELSE source.unresolved_reason END unresolved_reason,
+                       ST_X(point.governed_point) longitude,
+                       ST_Y(point.governed_point) latitude,
                        COALESCE(point.coordinate_shared_verified,false) coordinate_shared_verified
                 FROM overview.sample_point_query_source source
                 JOIN platform.object_type visible_type
                   ON visible_type.business_domain=source.category_code
                  AND visible_type.code=source.type_code
                  AND visible_type.overview_enabled
-                LEFT JOIN registry.sample_point point ON point.sample_point_id=source.sample_point_id
+                LEFT JOIN registry.current_sample_subject_resolution resolution
+                  ON resolution.source_domain=source.category_code
+                 AND resolution.source_record_id=source.source_record_id
+                LEFT JOIN registry.sample_point point
+                  ON point.sample_point_id=COALESCE(
+                    resolution.target_sample_point_id,source.sample_point_id)
+                LEFT JOIN platform.region governed_region ON governed_region.code=point.region_code
                 WHERE (
                     source.category_code='PRODUCTION' AND EXISTS(
                       SELECT 1 FROM production.production_record record
@@ -215,15 +228,16 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                       WHERE record.record_id=source.source_record_id
                         AND record.survey_year=:year
                         AND record.survey_period_governance_state='CONFIRMED'))
+                  AND resolution.resolution_action IS DISTINCT FROM 'VOID'
                   AND COALESCE(
-                        CASE WHEN source.point_approval_state='APPROVED'
-                          THEN source.governed_region_code END,
+                        CASE WHEN point.approval_state='APPROVED'
+                          THEN point.region_code END,
                         source.source_region_code) IN (SELECT code FROM descendants)
                   AND (:unrestricted OR (
                     source.source_region_code IN (:authorizedRegions)
-                    AND (source.point_approval_state IS DISTINCT FROM 'APPROVED'
-                      OR source.governed_region_code IS NULL
-                      OR source.governed_region_code IN (:authorizedRegions))))
+                    AND (point.approval_state IS DISTINCT FROM 'APPROVED'
+                      OR point.region_code IS NULL
+                      OR point.region_code IN (:authorizedRegions))))
                 ORDER BY source.type_sort_order,source.canonical_name,source.sample_point_id,
                          source.product_code,source.source_role
                 """).param("year", year).param("region", regionCode)

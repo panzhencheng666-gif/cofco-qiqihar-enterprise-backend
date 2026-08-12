@@ -5,6 +5,7 @@ import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
 import com.cofco.qiqihar.graintrade.reporting.domain.ReportExportContent;
 import com.cofco.qiqihar.graintrade.reporting.infrastructure.ReportPdf;
+import com.cofco.qiqihar.graintrade.reporting.infrastructure.ReportDocument;
 import com.cofco.qiqihar.graintrade.reporting.infrastructure.ReportWorkbook;
 import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder;
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
@@ -56,7 +57,7 @@ public class ReportingService {
         Instant now = clock.instant();
         String datasetId = UUID.randomUUID().toString();
         String datasetDigest = digest(material.approvedSummaryJson());
-        String contentJson = content(command, material, now);
+        String contentJson = content(command, material, datasetId, now);
         ReportPreviewView preview = repository.persistPreview(new ReportingRepository.ReportPreviewPersistence(
                 command, material, principal.subjectId(), now, now.plus(30, ChronoUnit.MINUTES), datasetId, datasetDigest,
                 contentJson, digest(contentJson)));
@@ -75,22 +76,26 @@ public class ReportingService {
             throw new ClientRequestException("REPORT_PREVIEW_EXPIRED", "Report preview has expired");
         }
         String format = formatCode.trim().toUpperCase();
-        if (!format.equals("CSV") && !format.equals("XLSX") && !format.equals("PDF")) {
+        if (!format.equals("CSV") && !format.equals("XLSX") && !format.equals("PDF")
+                && !format.equals("DOCX")) {
             throw new ClientRequestException("REPORT_EXPORT_FORMAT_UNAVAILABLE", "Requested report export format is unavailable");
         }
         byte[] content = switch (format) {
             case "XLSX" -> ReportWorkbook.create(preview);
             case "PDF" -> ReportPdf.create(preview);
+            case "DOCX" -> ReportDocument.create(preview);
             default -> csv(preview).getBytes(StandardCharsets.UTF_8);
         };
         String extension = switch (format) {
             case "XLSX" -> ".xlsx";
             case "PDF" -> ".pdf";
+            case "DOCX" -> ".docx";
             default -> ".csv";
         };
         String contentType = switch (format) {
             case "XLSX" -> "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
             case "PDF" -> "application/pdf";
+            case "DOCX" -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
             default -> "text/csv;charset=utf-8";
         };
         Instant now = clock.instant();
@@ -130,11 +135,21 @@ public class ReportingService {
         }
     }
 
-    private String content(ReportPreviewCommand command, ReportingRepository.ReportPreviewMaterial material, Instant now) {
+    private String content(ReportPreviewCommand command, ReportingRepository.ReportPreviewMaterial material,
+            String datasetId, Instant now) {
         ObjectNode root = json.createObjectNode();
         root.put("title", material.regionLabel() + material.productLabel() + material.definition().name());
         root.put("dataCutoffLabel", material.periodLabel());
         root.put("approvedRecordCount", material.approvedRecordCount());
+        root.put("scopeLabel", material.regionLabel() + " / " + material.productLabel() + " / "
+                + material.periodLabel());
+        root.put("dataCutoff", chineseTime(material.dataCutoff()));
+        root.put("auditNumber", datasetId);
+        root.put("classification", "内部");
+        root.put("formula", "核定且期次确认的正式来源逐条计数");
+        root.put("sourcePath", sourcePath(material.definition().businessDomain()));
+        root.put("calculationVersion", material.definition().name() + "第"
+                + material.definition().version() + "版");
         root.set("approvedSummary", json.readTree(material.approvedSummaryJson()));
         ArrayNode sections = root.putArray("sections");
         for (ReportDefinitionView.Section section : material.definition().sections()) {
@@ -143,8 +158,23 @@ public class ReportingService {
             item.put("title", section.title());
             item.put("body", section.title() + "：已采用 " + material.approvedRecordCount() + " 条核定数据。");
         }
-        root.put("generatedAt", now.toString());
+        root.put("generatedAt", chineseTime(now));
         return root.toString();
+    }
+
+    private static String sourcePath(String domain) {
+        return switch (domain) {
+            case "PRODUCTION" -> "产情核定记录";
+            case "MARKET" -> "市场核定记录";
+            case "LOGISTICS" -> "物流核定事件及数量明细";
+            case "SUPPLY" -> "供需正式计算结果";
+            default -> throw new IllegalArgumentException("unsupported report domain");
+        };
+    }
+
+    private static String chineseTime(Instant value) {
+        return value.atZone(java.time.ZoneId.of("Asia/Shanghai"))
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy年MM月dd日 HH:mm:ss"));
     }
 
     private String csv(ReportPreviewView preview) {

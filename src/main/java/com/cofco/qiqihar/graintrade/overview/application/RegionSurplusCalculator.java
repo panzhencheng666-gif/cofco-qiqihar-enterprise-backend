@@ -13,7 +13,7 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 public final class RegionSurplusCalculator {
-    public static final String CALCULATION_VERSION = "REGION_SURPLUS_V1";
+    public static final String CALCULATION_VERSION = "地区余粮口径第1版";
     private static final Comparator<RegionSurplusSource> LATEST_FIRST = Comparator
             .comparing(RegionSurplusSource::approvedAt, Comparator.reverseOrder())
             .thenComparing(RegionSurplusSource::sourceVersion, Comparator.reverseOrder())

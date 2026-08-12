@@ -951,7 +951,7 @@ class MarketMonitoringRestIntegrationTest {
                   original_bytes,watermarked_bytes,byte_length,sha256,captured_at,capture_latitude,
                   capture_longitude,watermark_text,uploaded_by,uploaded_at)
                 VALUES(:id,'STAGED','market-fixture.png','image/png',decode('00','hex'),decode('01','hex'),
-                  1,repeat('a',64),now(),47.3543,123.9182,'市场测试水印','market-tester',now())
+                  1,encode(sha256(decode('00','hex')),'hex'),now(),47.3543,123.9182,'市场测试水印','market-tester',now())
                 """).param("id", id).update();
         return id;
     }

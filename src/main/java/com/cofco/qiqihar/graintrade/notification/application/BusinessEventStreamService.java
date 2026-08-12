@@ -8,8 +8,8 @@ import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.time.Duration;
-import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -24,18 +24,19 @@ public class BusinessEventStreamService implements SmartLifecycle {
     private static final Duration HEARTBEAT_INTERVAL = Duration.ofSeconds(15);
     private static final long EMITTER_TIMEOUT_MILLIS = Duration.ofMinutes(30).toMillis();
 
-    private final BusinessNotificationRepository repository;
+    private final BusinessEventDeliveryService deliveries;
     private final AccessControl accessControl;
     private final SecurityPrincipalRepository principals;
     private final ExecutorService connections = Executors.newVirtualThreadPerTaskExecutor();
     private final Set<SseEmitter> activeEmitters = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private final String instanceId = "sse-" + UUID.randomUUID();
     private volatile boolean running;
 
     public BusinessEventStreamService(
-            BusinessNotificationRepository repository,
+            BusinessEventDeliveryService deliveries,
             AccessControl accessControl,
             SecurityPrincipalRepository principals) {
-        this.repository = repository;
+        this.deliveries = deliveries;
         this.accessControl = accessControl;
         this.principals = principals;
     }
@@ -73,27 +74,27 @@ public class BusinessEventStreamService implements SmartLifecycle {
         long cursor = initialCursor;
         long lastHeartbeatNanos = System.nanoTime();
         AuthorizedReadScope scope = initialScope;
+        String consumerId = "sse:" + subjectId;
         try {
             while (!closed.get() && !Thread.currentThread().isInterrupted()) {
                 SecurityPrincipal current = principals.findEnabled(subjectId).orElse(null);
                 if (current == null || !current.permits("BUSINESS_READ")) break;
                 scope = new AuthorizedReadScope(subjectId, current.regionCodes());
-                List<BusinessNotification> events =
-                        repository.findVisibleAfter(scope, subjectId, cursor, BATCH_SIZE);
-                for (BusinessNotification event : events) {
-                    emitter.send(SseEmitter.event()
-                            .id(Long.toString(event.sequence()))
-                            .name("business-change")
-                            .data(event));
-                    cursor = event.sequence();
-                }
+                var result = deliveries.drain(consumerId, instanceId, scope, subjectId, cursor, BATCH_SIZE,
+                        event -> emitter.send(SseEmitter.event()
+                                .id(Long.toString(event.sequence()))
+                                .name("business-change")
+                                .data(event)));
+                cursor = result.resumeSequence();
                 long now = System.nanoTime();
-                if (events.isEmpty()
+                if (result.deliveredCount() == 0 && result.failedCount() == 0
                         && now - lastHeartbeatNanos >= HEARTBEAT_INTERVAL.toNanos()) {
                     emitter.send(SseEmitter.event().comment("heartbeat"));
                     lastHeartbeatNanos = now;
                 }
-                Thread.sleep(QUERY_INTERVAL);
+                Duration delay = result.retryAfter().compareTo(QUERY_INTERVAL) > 0
+                        ? result.retryAfter() : QUERY_INTERVAL;
+                Thread.sleep(delay);
             }
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();

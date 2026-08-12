@@ -16,12 +16,14 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 @Component
+@ConditionalOnProperty(name = "qiqihar.import.queue-enabled", matchIfMissing = true)
 final class BusinessImportQueueWorker {
     private static final Logger LOGGER = LoggerFactory.getLogger(BusinessImportQueueWorker.class);
     private final ImportJobRepository jobs;

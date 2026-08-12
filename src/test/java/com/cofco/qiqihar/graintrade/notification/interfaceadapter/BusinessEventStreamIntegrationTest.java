@@ -219,8 +219,8 @@ class BusinessEventStreamIntegrationTest {
 
     private void cleanup() {
         if (jdbc != null) {
-            jdbc.sql("DELETE FROM platform.business_event_outbox WHERE event_id IN (:ids)")
-                    .param("ids", List.of(FIRST_VISIBLE, HIDDEN, SECOND_VISIBLE, DISCONNECT_TRIGGER)).update();
+            jdbc.sql("DELETE FROM platform.business_event_outbox WHERE work_unit_code=:unit")
+                    .param("unit", WORK_UNIT).update();
             jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id=:reader")
                     .param("reader", READER).update();
             jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:reader")

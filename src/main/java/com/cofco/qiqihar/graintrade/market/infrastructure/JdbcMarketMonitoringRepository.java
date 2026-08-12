@@ -378,11 +378,17 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                 .param("effectiveFrom", record.tradeDate()).param("submittingActorId", submittingActorId)
                 .param("approvedAt", approvedTime).param("approvingActorId", approvingActorId).update();
         jdbc.sql("""
-                        INSERT INTO registry.sample_point_subject_identity(
-                            business_domain,subject_id,sample_point_id,created_at,created_by)
-                        VALUES('MARKET',:subjectId,:samplePointId,:approvedAt,:approvingActorId)
+                        SELECT platform.govern_master_data_change(
+                          'SUBJECT','MARKET:' || :subjectId,'INSERT',
+                          jsonb_build_object(
+                            'business_domain','MARKET','subject_id',:subjectId,
+                            'sample_point_id',:samplePointId,'created_at',:approvedAt,
+                            'created_by',:approvingActorId),
+                          :approvedAt,:submittingActorId,:approvingActorId,
+                          '市场记录双人审核确认稳定主体映射')
                         """).param("subjectId", subjectId).param("samplePointId", samplePointId)
-                .param("approvedAt", approvedTime).param("approvingActorId", approvingActorId).update();
+                .param("approvedAt", approvedTime).param("submittingActorId", submittingActorId)
+                .param("approvingActorId", approvingActorId).query(Long.class).single();
         int linked = jdbc.sql("""
                         UPDATE market.market_record
                         SET party_id=:partyId,sample_point_id=:samplePointId

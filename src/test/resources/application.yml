@@ -7,6 +7,8 @@ spring:
     password: ${QIQIHAR_TEST_DB_PASSWORD:}
 
 qiqihar:
+  import:
+    queue-enabled: false
   security:
     require-read-authentication: false
     test-default-subject: __UNRESTRICTED_TEST_READ__

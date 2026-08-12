@@ -7,6 +7,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
+import com.cofco.qiqihar.graintrade.testsupport.GovernedMasterDataFixtures;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
@@ -67,12 +68,10 @@ class IdentityGovernanceRestIntegrationTest {
                 INSERT INTO platform.security_user_role(subject_id,role_code)
                 VALUES('identity-governance-outside-reviewer','ACCESS_REVIEWER')
                 """).update();
-        jdbc.sql("""
-                INSERT INTO platform.region(code,name,parent_code,administrative_level,sort_order)
-                VALUES(:township,'身份治理测试乡镇','230202','TOWNSHIP',9997),
-                      (:village,'身份治理测试行政村',:township,'VILLAGE',9998)
-                ON CONFLICT(code) DO NOTHING
-                """).param("township",TOWNSHIP).param("village",VILLAGE).update();
+        GovernedMasterDataFixtures.insertRegion(
+                jdbc, TOWNSHIP, "身份治理测试乡镇", "230202", "TOWNSHIP", 9997);
+        GovernedMasterDataFixtures.insertRegion(
+                jdbc, VILLAGE, "身份治理测试行政村", TOWNSHIP, "VILLAGE", 9998);
         jdbc.sql("""
                 INSERT INTO platform.work_unit_region_scope(work_unit_code,region_code)
                 VALUES('IDENTITY_GOV_TEST','230202'),
@@ -108,8 +107,7 @@ class IdentityGovernanceRestIntegrationTest {
         jdbc.sql("DELETE FROM platform.position WHERE code='GOVERNANCE_REPORTER'").update();
         jdbc.sql("DELETE FROM platform.work_unit_region_scope WHERE work_unit_code=:unit")
                 .param("unit",WORK_UNIT).update();
-        jdbc.sql("DELETE FROM platform.region WHERE code=:village").param("village",VILLAGE).update();
-        jdbc.sql("DELETE FROM platform.region WHERE code=:township").param("township",TOWNSHIP).update();
+        GovernedMasterDataFixtures.deleteRegions(jdbc, java.util.List.of(VILLAGE, TOWNSHIP));
         // Immutable audit events retain their governed work-unit foreign key. Keep the stable
         // test fixtures (including UNIT_ADMIN after its first invitation audit) and recreate
         // their mutable assignments in prepare() instead of deleting history.

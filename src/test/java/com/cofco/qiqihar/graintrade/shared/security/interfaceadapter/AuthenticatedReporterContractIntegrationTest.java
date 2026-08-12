@@ -306,7 +306,7 @@ class AuthenticatedReporterContractIntegrationTest {
                   original_bytes,watermarked_bytes,byte_length,sha256,captured_at,capture_latitude,
                   capture_longitude,watermark_text,uploaded_by,uploaded_at)
                 VALUES(:id,'STAGED',:filename,'image/png',decode('00','hex'),decode('01','hex'),
-                  1,repeat('d',64),now(),47.3543,123.9182,'身份契约水印',:subjectId,now())
+                  1,encode(sha256(decode('00','hex')),'hex'),now(),47.3543,123.9182,'身份契约水印',:subjectId,now())
                 """).param("id", id).param("filename", filename).param("subjectId", subjectId).update();
         return id;
     }
@@ -346,7 +346,14 @@ class AuthenticatedReporterContractIntegrationTest {
 
     private void cleanup() {
         if (jdbc == null) return;
-        jdbc.sql("TRUNCATE platform.notification_read_receipt, platform.business_event_outbox").update();
+        jdbc.sql("""
+                TRUNCATE platform.notification_read_receipt,
+                  platform.business_event_delivery_attempt,
+                  platform.business_event_poll_attempt,
+                  platform.business_event_delivery_state,
+                  platform.business_event_delivery_checkpoint,
+                  platform.business_event_outbox RESTART IDENTITY
+                """).update();
         jdbc.sql("TRUNCATE platform.business_audit_event").update();
         jdbc.sql("DELETE FROM platform.import_row_result WHERE import_job_id IN (SELECT import_job_id FROM platform.import_job WHERE requested_by IN (:author,:colleague,:outsider))")
                 .param("author", AUTHOR).param("colleague", COLLEAGUE).param("outsider", OUTSIDER).update();

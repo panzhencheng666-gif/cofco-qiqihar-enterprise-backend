@@ -111,6 +111,72 @@ class ReportingRestIntegrationTest {
                 .hasMessageContaining("business audit events are immutable");
     }
 
+    @Test void changesDatasetDigestWhenApprovedSourceChangesButRecordCountDoesNot() throws Exception {
+        String request = "{\"definitionCode\":\"PRODUCTION_DAILY\",\"productCode\":\"CORN\","
+                + "\"regionLevel\":\"PREFECTURE\",\"regionCode\":\"230200\",\"periodCode\":\"2026-Q3\"}";
+        jdbc.sql("""
+                INSERT INTO production.production_record(record_id,product_code,object_type_code,region_code,
+                    survey_date,reported_at,cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by)
+                VALUES('digest-source-a','CORN','FARMER','230202',DATE '2026-08-09',
+                    TIMESTAMPTZ '2026-08-09 12:34:56+08',100,20,'APPROVED','report-test')
+                """).update();
+
+        String firstPreview = mvc.perform(post("/api/v1/reports/previews").principal(() -> "reporter")
+                        .contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.lines[0].value").value("1"))
+                .andReturn().getResponse().getContentAsString()
+                .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+        String firstDigest = jdbc.sql("""
+                SELECT dataset.immutable_digest
+                FROM reporting.report_preview preview
+                JOIN reporting.approved_dataset dataset ON dataset.dataset_id=preview.dataset_id
+                WHERE preview.preview_id=CAST(:preview AS uuid)
+                """).param("preview", firstPreview).query(String.class).single();
+
+        String replayedPreview = mvc.perform(post("/api/v1/reports/previews").principal(() -> "reporter")
+                        .contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString()
+                .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+        String replayedDigest = jdbc.sql("""
+                SELECT dataset.immutable_digest
+                FROM reporting.report_preview preview
+                JOIN reporting.approved_dataset dataset ON dataset.dataset_id=preview.dataset_id
+                WHERE preview.preview_id=CAST(:preview AS uuid)
+                """).param("preview", replayedPreview).query(String.class).single();
+        assertThat(replayedDigest).isEqualTo(firstDigest);
+
+        jdbc.sql("DELETE FROM production.production_record WHERE record_id='digest-source-a'").update();
+        jdbc.sql("""
+                INSERT INTO production.production_record(record_id,product_code,object_type_code,region_code,
+                    survey_date,reported_at,cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by)
+                VALUES('digest-source-b','CORN','FARMER','230202',DATE '2026-08-09',
+                    TIMESTAMPTZ '2026-08-09 12:34:56+08',100,20,'APPROVED','report-test')
+                """).update();
+
+        String secondPreview = mvc.perform(post("/api/v1/reports/previews").principal(() -> "reporter")
+                        .contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.lines[0].value").value("1"))
+                .andReturn().getResponse().getContentAsString()
+                .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+        String secondDigest = jdbc.sql("""
+                SELECT dataset.immutable_digest
+                FROM reporting.report_preview preview
+                JOIN reporting.approved_dataset dataset ON dataset.dataset_id=preview.dataset_id
+                WHERE preview.preview_id=CAST(:preview AS uuid)
+                """).param("preview", secondPreview).query(String.class).single();
+
+        assertThat(secondDigest).isNotEqualTo(firstDigest);
+        assertThat(jdbc.sql("""
+                SELECT dataset.immutable_digest
+                FROM reporting.report_preview preview
+                JOIN reporting.approved_dataset dataset ON dataset.dataset_id=preview.dataset_id
+                WHERE preview.preview_id=CAST(:preview AS uuid)
+                """).param("preview", firstPreview).query(String.class).single()).isEqualTo(firstDigest);
+    }
+
     @Test void listsDailyWeeklyAndMonthlyReportsForEveryScopedBusinessDomain() throws Exception {
         mvc.perform(get("/api/v1/reports/parameter-options").principal(() -> "reporter"))
                 .andExpect(status().isOk())
@@ -206,6 +272,60 @@ class ReportingRestIntegrationTest {
         assertThat(pdf.length).isGreaterThan(1_000);
     }
 
+    @Test void exposesAuditableScopeAndCutoffAndExportsTheSameSnapshotAsDocx() throws Exception {
+        jdbc.sql("""
+                INSERT INTO production.production_record(record_id,product_code,object_type_code,region_code,
+                    survey_date,reported_at,cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by)
+                VALUES(:id,'CORN','FARMER','230202',DATE '2026-08-09',
+                    TIMESTAMPTZ '2026-08-09 12:34:56+08',100,20,'APPROVED','report-test')
+                """).param("id", UUID.randomUUID().toString()).update();
+        String request = "{\"definitionCode\":\"PRODUCTION_DAILY\",\"productCode\":\"CORN\","
+                + "\"regionLevel\":\"PREFECTURE\",\"regionCode\":\"230200\",\"periodCode\":\"2026-Q3\"}";
+        String response = mvc.perform(post("/api/v1/reports/previews").principal(() -> "reporter")
+                        .contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.lines[?(@.label == '报告范围')].value")
+                        .value(org.hamcrest.Matchers.hasItem("齐齐哈尔市 / 玉米 / 2026年第三季度")))
+                .andExpect(jsonPath("$.data.lines[?(@.label == '精确数据截止')].value")
+                        .value(org.hamcrest.Matchers.hasItem("2026年08月09日 12:34:56")))
+                .andExpect(jsonPath("$.data.lines[?(@.label == '数据分级')].value")
+                        .value(org.hamcrest.Matchers.hasItem("内部")))
+                .andExpect(jsonPath("$.data.lines[?(@.label == '审计编号')].value")
+                        .value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.matchesPattern(
+                                "[0-9a-f-]{36}"))))
+                .andReturn().getResponse().getContentAsString();
+        String preview = response.replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+
+        String export = mvc.perform(post("/api/v1/reports/previews/{id}/exports", preview)
+                        .principal(() -> "reporter").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"formatCode\":\"DOCX\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.formatCode").value("DOCX"))
+                .andReturn().getResponse().getContentAsString()
+                .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+
+        byte[] document = mvc.perform(get("/api/v1/reports/exports/{id}/content", export)
+                        .principal(() -> "reporter"))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"))
+                .andExpect(header().string("Content-Disposition", org.hamcrest.Matchers.containsString(".docx")))
+                .andReturn().getResponse().getContentAsByteArray();
+
+        assertThat(document).startsWith(80, 75, 3, 4);
+        StringBuilder xml = new StringBuilder();
+        try (var zip = new ZipInputStream(new ByteArrayInputStream(document))) {
+            for (var entry = zip.getNextEntry(); entry != null; entry = zip.getNextEntry()) {
+                if (entry.getName().endsWith(".xml")) {
+                    xml.append(new String(zip.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8));
+                }
+            }
+        }
+        assertThat(xml).contains("报告范围", "精确数据截止", "审计编号", "数据分级", "内部")
+                .doesNotContain("production.production_record", "SUM(cultivated_area_mu)",
+                        "2026-08-09T04:34:56Z");
+    }
+
     @Test void scopesProductionReportsToDescendantRegionsAndTheRequestedCultivar() throws Exception {
         String requested = UUID.randomUUID().toString();
         String other = UUID.randomUUID().toString();
@@ -235,5 +355,31 @@ class ReportingRestIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON).content(cultivarRequest))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.lines[0].value").value("1"));
+    }
+
+    @Test void excludesApprovedRowsWhoseSurveyPeriodIsStillPendingGovernance() throws Exception {
+        jdbc.sql("""
+                INSERT INTO production.production_record(record_id,product_code,object_type_code,region_code,
+                    survey_date,reported_at,cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,
+                    survey_period_governance_state)
+                VALUES('report-confirmed','CORN','FARMER','230202',DATE '2026-08-09',
+                         TIMESTAMPTZ '2026-08-09 12:34:56+08',100,20,'APPROVED','report-test','CONFIRMED'),
+                      ('report-pending','CORN','FARMER','230202',DATE '2026-08-10',
+                         TIMESTAMPTZ '2026-08-10 23:59:59+08',200,30,'APPROVED','report-test','PENDING_GOVERNANCE')
+                """).update();
+        jdbc.sql("""
+                UPDATE production.production_record
+                SET survey_period_governance_state='PENDING_GOVERNANCE'
+                WHERE record_id='report-pending'
+                """).update();
+        String request = "{\"definitionCode\":\"PRODUCTION_DAILY\",\"productCode\":\"CORN\","
+                + "\"regionLevel\":\"PREFECTURE\",\"regionCode\":\"230200\",\"periodCode\":\"2026-Q3\"}";
+
+        mvc.perform(post("/api/v1/reports/previews").principal(() -> "reporter")
+                        .contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.lines[0].value").value("1"))
+                .andExpect(jsonPath("$.data.lines[?(@.label == '精确数据截止')].value")
+                        .value(org.hamcrest.Matchers.hasItem("2026年08月09日 12:34:56")));
     }
 }

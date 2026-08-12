@@ -27,7 +27,7 @@ class RegionSurplusCalculatorTest {
         assertThat(result.valueTonnes()).isEqualByComparingTo("37");
         assertThat(result.sourceCount()).isEqualTo(3);
         assertThat(result.dataCutoff()).isEqualTo(CUTOFF);
-        assertThat(result.calculationVersion()).isEqualTo("REGION_SURPLUS_V1");
+        assertThat(result.calculationVersion()).isEqualTo("地区余粮口径第1版");
         assertThat(result.auditSources()).filteredOn(RegionSurplusAuditSource::adopted)
                 .extracting(RegionSurplusAuditSource::sourceRecordId)
                 .containsExactlyInAnyOrder("production-latest", "market-owner", "market-custody-distinct");

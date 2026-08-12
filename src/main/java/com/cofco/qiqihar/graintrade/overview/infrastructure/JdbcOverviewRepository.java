@@ -318,33 +318,75 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   WHERE run.product_code=:product AND run.survey_year=:year
                     AND run.result_state='PUBLISHED' AND run.temporal_governance_state='CONFIRMED'
                   ORDER BY run.region_code,run.created_at DESC,run.calculation_run_id DESC
+                ), governed_metric_fact AS (
+                  SELECT fact.*
+                  FROM overview.approved_annual_metric_fact fact
+                  JOIN overview.indicator_definition definition ON definition.code=fact.metric_code
+                  WHERE fact.product_code=:product AND fact.region_code IN(SELECT code FROM scope)
+                    AND EXTRACT(YEAR FROM fact.occurred_on)=:year
+                    AND (
+                      definition.source_domain='PRODUCTION' AND EXISTS(
+                        SELECT 1 FROM production.production_record record
+                        WHERE record.record_id=fact.record_id AND record.status_code='APPROVED'
+                          AND record.survey_period_governance_state='CONFIRMED')
+                      OR definition.source_domain='MARKET' AND EXISTS(
+                        SELECT 1 FROM market.market_record record
+                        WHERE record.record_id=fact.record_id AND record.status_code='APPROVED'
+                          AND record.survey_period_governance_state='CONFIRMED'))
+                ), aggregated_metric_fact AS (
+                  SELECT fact.metric_code,
+                    CASE definition.aggregation_code
+                      WHEN 'AVERAGE' THEN AVG(fact.value) ELSE SUM(fact.value) END value,
+                    COUNT(*) source_count,MAX(fact.reported_at) data_cutoff
+                  FROM governed_metric_fact fact
+                  JOIN overview.indicator_definition definition ON definition.code=fact.metric_code
+                  GROUP BY fact.metric_code,definition.aggregation_code
                 )
                 SELECT definition.code,definition.name,definition.unit_code,definition.source_domain,
+                  definition.formula,definition.source_relation,definition.calculation_version,
                   CASE definition.code
-                    WHEN 'PRODUCTION_CULTIVATED_AREA' THEN (SELECT SUM(record.cultivated_area_mu) FROM production.production_record record WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.survey_period_governance_state='CONFIRMED' AND record.region_code IN(SELECT code FROM scope) AND record.survey_year=:year)
-                    WHEN 'PRODUCTION_ESTIMATED_OUTPUT' THEN (SELECT SUM(record.estimated_output_kg) FROM production.production_record record WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.survey_period_governance_state='CONFIRMED' AND record.region_code IN(SELECT code FROM scope) AND record.survey_year=:year)
-                    WHEN 'MARKET_AVERAGE_TRADE_PRICE' THEN (SELECT AVG(record.actual_trade_price) FROM market.market_record record WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.survey_period_governance_state='CONFIRMED' AND record.region_code IN(SELECT code FROM scope) AND record.survey_year=:year)
                     WHEN 'LOGISTICS_INFLOW_VOLUME' THEN (SELECT SUM(CASE fact.unit_code WHEN '吨' THEN fact.value WHEN '万吨' THEN fact.value*10000 END) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND event.origin_region_code IN(SELECT region_code FROM monitoring_scope) AND event.destination_region_code IN(SELECT code FROM scope) AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
                     WHEN 'LOGISTICS_OUTFLOW_VOLUME' THEN (SELECT SUM(CASE fact.unit_code WHEN '吨' THEN fact.value WHEN '万吨' THEN fact.value*10000 END) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND event.origin_region_code IN(SELECT code FROM scope) AND event.destination_region_code IN(SELECT region_code FROM monitoring_scope) AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
                     WHEN 'SUPPLY_TOTAL_SUPPLY' THEN (SELECT SUM(total_supply) FROM latest_supply)
                     WHEN 'SUPPLY_TOTAL_USE' THEN (SELECT SUM(total_use) FROM latest_supply)
                     WHEN 'SUPPLY_ADOPTED_ENDING_INVENTORY' THEN (SELECT SUM(adopted_ending_inventory) FROM latest_supply)
+                    WHEN 'REGION_SURPLUS' THEN NULL
+                    ELSE (SELECT value FROM aggregated_metric_fact metric WHERE metric.metric_code=definition.code)
                   END AS value,
                   CASE definition.code
-                    WHEN 'PRODUCTION_CULTIVATED_AREA' THEN (SELECT COUNT(*) FROM production.production_record record WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.survey_period_governance_state='CONFIRMED' AND record.region_code IN(SELECT code FROM scope) AND record.survey_year=:year)
-                    WHEN 'PRODUCTION_ESTIMATED_OUTPUT' THEN (SELECT COUNT(*) FROM production.production_record record WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.survey_period_governance_state='CONFIRMED' AND record.region_code IN(SELECT code FROM scope) AND record.survey_year=:year)
-                    WHEN 'MARKET_AVERAGE_TRADE_PRICE' THEN (SELECT COUNT(*) FROM market.market_record record WHERE record.product_code=:product AND record.status_code='APPROVED' AND record.survey_period_governance_state='CONFIRMED' AND record.region_code IN(SELECT code FROM scope) AND record.survey_year=:year)
                     WHEN 'LOGISTICS_INFLOW_VOLUME' THEN (SELECT COUNT(*) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND event.origin_region_code IN(SELECT region_code FROM monitoring_scope) AND event.destination_region_code IN(SELECT code FROM scope) AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
                     WHEN 'LOGISTICS_OUTFLOW_VOLUME' THEN (SELECT COUNT(*) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND event.origin_region_code IN(SELECT code FROM scope) AND event.destination_region_code IN(SELECT region_code FROM monitoring_scope) AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
-                    ELSE (SELECT COUNT(*) FROM latest_supply)
-                  END AS source_count
+                    WHEN 'SUPPLY_TOTAL_SUPPLY' THEN (SELECT COUNT(*) FROM latest_supply)
+                    WHEN 'SUPPLY_TOTAL_USE' THEN (SELECT COUNT(*) FROM latest_supply)
+                    WHEN 'SUPPLY_ADOPTED_ENDING_INVENTORY' THEN (SELECT COUNT(*) FROM latest_supply)
+                    WHEN 'REGION_SURPLUS' THEN 0
+                    ELSE COALESCE((SELECT source_count FROM aggregated_metric_fact metric WHERE metric.metric_code=definition.code),0)
+                  END AS source_count,
+                  CASE definition.code
+                    WHEN 'LOGISTICS_INFLOW_VOLUME' THEN (SELECT MAX(event.reported_at) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND event.origin_region_code IN(SELECT region_code FROM monitoring_scope) AND event.destination_region_code IN(SELECT code FROM scope) AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
+                    WHEN 'LOGISTICS_OUTFLOW_VOLUME' THEN (SELECT MAX(event.reported_at) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND event.origin_region_code IN(SELECT code FROM scope) AND event.destination_region_code IN(SELECT region_code FROM monitoring_scope) AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
+                    WHEN 'SUPPLY_TOTAL_SUPPLY' THEN (SELECT MAX(created_at) FROM latest_supply)
+                    WHEN 'SUPPLY_TOTAL_USE' THEN (SELECT MAX(created_at) FROM latest_supply)
+                    WHEN 'SUPPLY_ADOPTED_ENDING_INVENTORY' THEN (SELECT MAX(created_at) FROM latest_supply)
+                    WHEN 'REGION_SURPLUS' THEN NULL
+                    ELSE (SELECT data_cutoff FROM aggregated_metric_fact metric WHERE metric.metric_code=definition.code)
+                  END AS data_cutoff
                 FROM overview.indicator_definition definition ORDER BY definition.sort_order
                 """).param("region", regionCode).param("product", productCode).param("year", year)
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
                 .param("authorizedRegions", authorizedRegionCodes)
-                .query((row, index) -> new OverviewIndicator(row.getString("code"), row.getString("name"),
-                        row.getString("unit_code"), decimal(row.getBigDecimal("value")), row.getString("source_domain"),
-                        row.getLong("source_count"), sourcePath(row.getString("source_domain")))).list();
+                .query((row, index) -> {
+                    long sourceCount = row.getLong("source_count");
+                    OffsetDateTime cutoff = row.getObject("data_cutoff", OffsetDateTime.class);
+                    return new OverviewIndicator(row.getString("code"), row.getString("name"),
+                            row.getString("unit_code"), decimal(row.getBigDecimal("value")),
+                            row.getString("source_domain"), sourceCount,
+                            sourcePath(row.getString("source_domain")), row.getString("formula"),
+                            row.getString("source_relation"), chineseTime(cutoff),
+                            coverageScope(regionCode, productCode, year),
+                            sourceCount > 0 ? "AVAILABLE" : "NO_APPROVED_SOURCES",
+                            row.getString("calculation_version"));
+                }).list();
     }
 
     @Override
@@ -393,6 +435,17 @@ public class JdbcOverviewRepository implements OverviewRepository {
                     AND record.occurred_on BETWEEN make_date(:surveyYear-3,1,1) AND make_date(:surveyYear,12,31)
                     AND (CAST(:cultivar AS varchar) IS NULL
                       OR record.cultivar_code=CAST(:cultivar AS varchar))
+                    AND (
+                      :sourceDomain='PRODUCTION' AND EXISTS(
+                        SELECT 1 FROM production.production_record source
+                        WHERE source.record_id=record.record_id
+                          AND source.status_code='APPROVED'
+                          AND source.survey_period_governance_state='CONFIRMED')
+                      OR :sourceDomain='MARKET' AND EXISTS(
+                        SELECT 1 FROM market.market_record source
+                        WHERE source.record_id=record.record_id
+                          AND source.status_code='APPROVED'
+                          AND source.survey_period_governance_state='CONFIRMED'))
                 )
                 SELECT comparison_year.business_year,
                   CASE WHEN :aggregation='AVERAGE' THEN AVG(record.value) ELSE SUM(record.value) END value,
@@ -405,14 +458,15 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 """)
                 .param("region", regionCode).param("surveyYear", surveyYear).param("product", productCode)
                 .param("metric", definition.code()).param("aggregation", definition.aggregationCode())
-                .param("cultivar", cultivarCode).param("unrestricted", authorizedRegionCodes.contains("*"))
+                .param("cultivar", cultivarCode).param("sourceDomain", definition.sourceDomain())
+                .param("unrestricted", authorizedRegionCodes.contains("*"))
                 .param("authorizedRegions", authorizedRegionCodes)
                 .query((row, index) -> {
                     long count = row.getLong("source_count");
                     OffsetDateTime cutoff = row.getObject("data_cutoff", OffsetDateTime.class);
                     return new AnnualComparisonPoint(row.getString("business_year"), row.getBigDecimal("value"),
                             count == 0 ? null : publication + row.getLong("source_version"),
-                            cutoff == null ? null : DateTimeFormatter.ISO_INSTANT.format(cutoff.toInstant()),
+                            chineseTime(cutoff),
                             count == 0 ? "NO_APPROVED_RECORDS" : null);
                 }).list();
     }
@@ -455,7 +509,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                     return new OverviewDashboard.Scope(
                             row.getLong("county_count"), row.getLong("township_count"), row.getLong("village_count"),
                             row.getLong("reporting_unit_count"), row.getLong("approved_record_count"),
-                            updatedAt == null ? null : updatedAt.toString());
+                            chineseTime(updatedAt));
                 }).single();
     }
 
@@ -472,7 +526,10 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 })
                 .map(indicator -> new OverviewDashboard.Metric(
                         indicator.code(), indicator.name(), indicator.unitCode(),
-                        indicator.sourceCount() == 0 ? null : indicator.value(), indicator.sourceCount()))
+                        indicator.sourceCount() == 0 ? null : indicator.value(), indicator.sourceCount(),
+                        indicator.dataCutoff(), indicator.coverageStatus(), indicator.formula(),
+                        indicator.sourcePath(), indicator.sourceRelation(), indicator.coverageScope(),
+                        indicator.calculationVersion(), List.of()))
                 .toList());
         RegionSurplusCalculation surplus = new RegionSurplusCalculator().calculate(
                 regionSurplusSources(productCode, year, regionCode, authorizedRegionCodes));
@@ -480,8 +537,13 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 "REGION_SURPLUS", "地区余粮", "吨",
                 surplus.valueTonnes() == null ? null : decimal(surplus.valueTonnes()),
                 surplus.sourceCount(),
-                surplus.dataCutoff() == null ? null : surplus.dataCutoff().toString(),
-                surplus.coverageStatus(), surplus.calculationVersion(), surplus.auditSources()));
+                chineseDate(surplus.dataCutoff()),
+                surplus.coverageStatus(),
+                "互斥归属核验后的正式库存合计",
+                "/api/v1/overview/dashboard",
+                "产情与市场核定记录",
+                coverageScope(regionCode, productCode, year),
+                surplus.calculationVersion(), surplus.auditSources()));
         return List.copyOf(metrics);
     }
 
@@ -768,5 +830,19 @@ public class JdbcOverviewRepository implements OverviewRepository {
             case "SUPPLY" -> "/api/v1/supply-accounts";
             default -> throw new IllegalStateException("Unknown overview source domain");
         };
+    }
+
+    private static String coverageScope(String regionCode, String productCode, int year) {
+        return "所选地区及全部下级地区、所选产品、" + year + "年度";
+    }
+
+    private static String chineseTime(OffsetDateTime value) {
+        if (value == null) return null;
+        return value.atZoneSameInstant(java.time.ZoneId.of("Asia/Shanghai"))
+                .format(DateTimeFormatter.ofPattern("yyyy年MM月dd日 HH:mm:ss"));
+    }
+
+    private static String chineseDate(LocalDate value) {
+        return value == null ? null : value.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日"));
     }
 }

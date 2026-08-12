@@ -20,7 +20,8 @@ public interface ReportingRepository {
             String regionLabel,
             String periodLabel,
             String approvedSummaryJson,
-            long approvedRecordCount) {}
+            long approvedRecordCount,
+            Instant dataCutoff) {}
     record ReportPreviewPersistence(
             ReportPreviewCommand command, ReportPreviewMaterial material, String actor, Instant now, Instant expiresAt,
             String datasetId, String datasetDigest, String contentJson, String contentDigest) {}
