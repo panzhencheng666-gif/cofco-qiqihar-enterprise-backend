@@ -33,6 +33,17 @@ class LocalLauncherSecurityContractTest {
     }
 
     @Test
+    void localBackendSeparatesRuntimeAndMigrationDatabaseIdentities() throws IOException {
+        String launcher = java.nio.file.Files.readString(START_SCRIPT);
+
+        assertThat(launcher)
+                .contains("runtime_database_user=\"${QIQIHAR_DB_USERNAME:-cofco_app}\"")
+                .contains("migration_database_user=\"${QIQIHAR_FLYWAY_USERNAME:-${USER}}\"")
+                .contains("\"QIQIHAR_DB_USERNAME=$runtime_database_user\"")
+                .contains("\"QIQIHAR_FLYWAY_USERNAME=$migration_database_user\"");
+    }
+
+    @Test
     void businessRuntimeUsesOnlyTheCanonicalRootEntry() throws IOException {
         String runtime = String.join("\n",
                 java.nio.file.Files.readString(START_SCRIPT),

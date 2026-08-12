@@ -6,17 +6,24 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabaseConfiguration;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
+import java.sql.Connection;
+import java.sql.Statement;
 import java.util.List;
+import java.util.function.Function;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.jdbc.datasource.SingleConnectionDataSource;
 
 @SpringBootTest(classes = GrainTradeApplication.class)
 @UsesProtectedTestDatabase
 class MasterDataGovernanceIntegrationTest {
+    private static final String APPLICANT_ROLE = "qiqihar_master_data_applicant";
+    private static final String REVIEWER_ROLE = "qiqihar_master_data_reviewer";
+    private static final String APPLIER_ROLE = "qiqihar_master_data_applier";
     @Autowired DataSource dataSource;
     private JdbcClient jdbc;
 
@@ -56,8 +63,9 @@ class MasterDataGovernanceIntegrationTest {
         long requestId = submit(
                 "PRODUCT", "CORN", "UPDATE", changed, "clock_timestamp() + interval '250 milliseconds'");
 
-        assertThatThrownBy(() -> review(requestId, "APPROVE", "production-tester", "申请人自审"))
-                .hasMessageContaining("separation of duties");
+        assertThatThrownBy(() -> reviewAsRole(
+                requestId, "APPROVE", "申请人自审", APPLICANT_ROLE))
+                .hasRootCauseMessage("ERROR: permission denied for function review_master_data_change");
         review(requestId, "APPROVE", "market-tester", "双人复核：名称与稳定编码一致");
         assertThatThrownBy(() -> apply(requestId, "supply-reviewer"))
                 .hasMessageContaining("effective_at");
@@ -73,8 +81,8 @@ class MasterDataGovernanceIntegrationTest {
                 WHERE entity_type='PRODUCT' AND entity_key='CORN' ORDER BY revision_no DESC LIMIT 1
                 """).query().singleRow();
         assertThat(revision.get("name")).isEqualTo("玉米（治理核对）");
-        assertThat(revision.get("changed_by")).isEqualTo("supply-reviewer");
-        assertThat(revision.get("reviewed_by")).isEqualTo("market-tester");
+        assertThat(revision.get("changed_by")).isEqualTo(APPLIER_ROLE);
+        assertThat(revision.get("reviewed_by")).isEqualTo(REVIEWER_ROLE);
         assertThat(revision.get("review_basis")).isEqualTo("双人复核：名称与稳定编码一致");
         assertThat(((Number) revision.get("change_request_id")).longValue()).isEqualTo(requestId);
         assertThatThrownBy(() -> jdbc.sql("""
@@ -148,32 +156,53 @@ class MasterDataGovernanceIntegrationTest {
     }
 
     private long submit(String type, String key, String operation, String snapshot, String effectiveExpression) {
-        return jdbc.sql("SELECT platform.submit_master_data_change(:type,:key,:operation,"
-                        + "CAST(:snapshot AS jsonb)," + effectiveExpression + ",:applicant,:basis)")
+        return asRole(APPLICANT_ROLE, roleJdbc -> roleJdbc.sql(
+                        "SELECT platform.submit_master_data_change(:type,:key,:operation,"
+                                + "CAST(:snapshot AS jsonb)," + effectiveExpression + ",:basis)")
                 .param("type", type).param("key", key).param("operation", operation)
-                .param("snapshot", snapshot).param("applicant", "production-tester")
-                .param("basis", "自动化主数据治理申请")
-                .query(Long.class).single();
+                .param("snapshot", snapshot).param("basis", "自动化主数据治理申请")
+                .query(Long.class).single());
     }
 
     private void review(long requestId, String decision, String reviewer, String basis) {
-        jdbc.sql("SELECT platform.review_master_data_change(:requestId,:decision,:reviewer,:basis)")
+        reviewAsRole(requestId, decision, basis, REVIEWER_ROLE);
+    }
+
+    private void reviewAsRole(long requestId, String decision, String basis, String role) {
+        asRole(role, roleJdbc -> roleJdbc.sql(
+                        "SELECT platform.review_master_data_change(:requestId,:decision,:basis)")
                 .param("requestId", requestId).param("decision", decision)
-                .param("reviewer", reviewer).param("basis", basis).query(Boolean.class).single();
+                .param("basis", basis).query(Boolean.class).single());
     }
 
     private boolean apply(long requestId, String actor) {
-        return jdbc.sql("SELECT platform.apply_master_data_change(:requestId,:actor)")
-                .param("requestId", requestId).param("actor", actor).query(Boolean.class).single();
+        return asRole(APPLIER_ROLE, roleJdbc -> roleJdbc.sql(
+                        "SELECT platform.apply_master_data_change(:requestId)")
+                .param("requestId", requestId).query(Boolean.class).single());
     }
 
     private long govern(String type, String key, String operation, String snapshot) {
-        return jdbc.sql("""
-                SELECT platform.govern_master_data_change(
-                  :type,:key,:operation,CAST(:snapshot AS jsonb),clock_timestamp(),
-                  'production-tester','market-tester','自动化双人复核')
-                """).param("type", type).param("key", key).param("operation", operation)
-                .param("snapshot", snapshot).query(Long.class).single();
+        long requestId = submit(type, key, operation, snapshot, "clock_timestamp()");
+        review(requestId, "APPROVE", REVIEWER_ROLE, "自动化双人复核");
+        assertThat(apply(requestId, APPLIER_ROLE)).isTrue();
+        return requestId;
+    }
+
+    private <T> T asRole(String role, Function<JdbcClient, T> work) {
+        if (!List.of(APPLICANT_ROLE, REVIEWER_ROLE, APPLIER_ROLE).contains(role)) {
+            throw new IllegalArgumentException("Unsupported test database role");
+        }
+        try (Connection connection = dataSource.getConnection();
+                Statement authorization = connection.createStatement()) {
+            authorization.execute("SET SESSION AUTHORIZATION " + role);
+            try {
+                return work.apply(JdbcClient.create(new SingleConnectionDataSource(connection, true)));
+            } finally {
+                authorization.execute("RESET SESSION AUTHORIZATION");
+            }
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception.getMessage(), exception);
+        }
     }
 
     private String snapshot(String type, String key) {

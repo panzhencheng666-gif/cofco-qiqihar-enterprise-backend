@@ -47,14 +47,15 @@ public class JdbcReportingRepository implements ReportingRepository {
         if (definition == null || !exists("SELECT 1 FROM platform.product WHERE code=:code",command.productCode())
                 || !exists("SELECT 1 FROM platform.region WHERE code=:code AND administrative_level=:level",command.regionCode(),command.regionLevel())
                 || !exists("SELECT 1 FROM platform.business_period WHERE code=:code",command.periodCode())) return null;
-        long count = approvedCount(definition.businessDomain(), command);
-        Instant cutoff = count == 0 ? null : approvedCutoff(definition.businessDomain(), command);
+        ApprovedDatasetSnapshot dataset = approvedDatasetSnapshot(definition.businessDomain(), command);
+        long count = dataset.approvedRecordCount();
+        Instant cutoff = dataset.dataCutoff();
         ObjectNode summaryNode = json.createObjectNode();
         summaryNode.put("businessDomain", definition.businessDomain());
         summaryNode.put("approvedRecordCount", count);
         if (cutoff == null) summaryNode.putNull("dataCutoff");
         else summaryNode.put("dataCutoff", cutoff.toString());
-        summaryNode.set("sources", json.readTree(approvedSourceManifest(definition.businessDomain(), command)));
+        summaryNode.set("sources", json.readTree(dataset.sourceManifestJson()));
         String summary = summaryNode.toString();
         return new ReportPreviewMaterial(new ReportDefinitionView(definition.code(),definition.name(),definition.businessDomain(),definition.businessSubtype(),definition.frequencyCode(),definition.versionNo(), sections(definition.id())),
                 label("SELECT name FROM platform.product WHERE code=:code",command.productCode()), label("SELECT name FROM platform.region WHERE code=:code",command.regionCode()),
@@ -92,80 +93,8 @@ public class JdbcReportingRepository implements ReportingRepository {
     private boolean exists(String sql,String code){return jdbc.sql(sql).param("code",code).query(Integer.class).optional().isPresent();}
     private boolean exists(String sql,String code,String level){return jdbc.sql(sql).param("code",code).param("level",level).query(Integer.class).optional().isPresent();}
     private String label(String sql,String code){return jdbc.sql(sql).param("code",code).query(String.class).single();}
-    private long approvedCount(String domain,ReportPreviewCommand c){
-        String regionScope = """
-                WITH RECURSIVE selected_regions(code) AS (
-                    SELECT code FROM platform.region WHERE code=:region
-                    UNION
-                    SELECT child.code FROM platform.region child
-                    JOIN selected_regions parent ON child.parent_code=parent.code
-                )
-                """;
-        String period = "(SELECT starts_on FROM platform.business_period WHERE code=:period)"
-                + " AND (SELECT ends_on FROM platform.business_period WHERE code=:period)";
-        String production = regionScope + """
-                SELECT count(*) FROM production.production_record record
-                WHERE record.product_code=:product
-                  AND record.region_code IN (SELECT code FROM selected_regions)
-                  AND record.status_code='APPROVED'
-                  AND record.survey_period_governance_state='CONFIRMED'
-                  AND record.survey_date BETWEEN %s
-                  AND (CAST(:cultivar AS varchar) IS NULL OR record.cultivar_code=:cultivar OR EXISTS (
-                      SELECT 1 FROM production.production_record_submission_metadata metadata
-                      WHERE metadata.record_id=record.record_id
-                        AND metadata.field_code='PROD_CULTIVAR_NAME'
-                        AND (metadata.value=:cultivar OR metadata.value=(
-                            SELECT cultivar.name FROM platform.cultivar cultivar
-                            WHERE cultivar.code=:cultivar AND cultivar.product_code=record.product_code))))
-                """.formatted(period);
-        String market = regionScope + """
-                SELECT count(*) FROM market.market_record record
-                WHERE record.product_code=:product
-                  AND record.region_code IN (SELECT code FROM selected_regions)
-                  AND record.status_code='APPROVED'
-                  AND record.survey_period_governance_state='CONFIRMED'
-                  AND record.trade_date BETWEEN %s
-                  AND (CAST(:cultivar AS varchar) IS NULL OR EXISTS (
-                      SELECT 1 FROM market.market_record_core_value value
-                      WHERE value.record_id=record.record_id AND value.field_code='MKT_CULTIVAR_NAME'
-                        AND (value.value=:cultivar OR value.value=(
-                            SELECT cultivar.name FROM platform.cultivar cultivar
-                            WHERE cultivar.code=:cultivar AND cultivar.product_code=record.product_code))))
-                """.formatted(period);
-        String logistics = regionScope + """
-                SELECT count(*) FROM logistics.route_event event
-                WHERE event.product_code=:product
-                  AND (event.origin_region_code IN (SELECT code FROM selected_regions)
-                    OR event.destination_region_code IN (SELECT code FROM selected_regions))
-                  AND event.status_code='APPROVED'
-                  AND event.survey_period_governance_state='CONFIRMED'
-                  AND event.collection_date BETWEEN %s
-                  AND CAST(:cultivar AS varchar) IS NULL
-                """.formatted(period);
-        String supply = regionScope + """
-                SELECT count(*) FROM supply.calculation_run run
-                WHERE run.product_code=:product
-                  AND run.region_code IN (SELECT code FROM selected_regions)
-                  AND run.result_state='FORMAL'
-                  AND run.temporal_governance_state='CONFIRMED'
-                  AND run.created_at::date BETWEEN %s
-                  AND CAST(:cultivar AS varchar) IS NULL
-                """.formatted(period);
-        String sql = switch (domain) {
-            case "PRODUCTION" -> production;
-            case "MARKET" -> market;
-            case "LOGISTICS" -> logistics;
-            case "SUPPLY" -> supply;
-            default -> null;
-        };
-        if (sql == null) return 0;
-        String cultivar = c.cultivarCode() == null || c.cultivarCode().isBlank()
-                ? null : c.cultivarCode().strip();
-        return jdbc.sql(sql).param("product",c.productCode()).param("region",c.regionCode())
-                .param("period",c.periodCode()).param("cultivar",cultivar).query(Long.class).single();
-    }
 
-    private Instant approvedCutoff(String domain, ReportPreviewCommand c) {
+    private ApprovedDatasetSnapshot approvedDatasetSnapshot(String domain, ReportPreviewCommand c) {
         String regionScope = """
                 WITH RECURSIVE selected_regions(code) AS (
                     SELECT code FROM platform.region WHERE code=:region
@@ -177,77 +106,8 @@ public class JdbcReportingRepository implements ReportingRepository {
         String period = "(SELECT starts_on FROM platform.business_period WHERE code=:period)"
                 + " AND (SELECT ends_on FROM platform.business_period WHERE code=:period)";
         String production = regionScope + """
-                SELECT max(record.reported_at) FROM production.production_record record
-                WHERE record.product_code=:product
-                  AND record.region_code IN (SELECT code FROM selected_regions)
-                  AND record.status_code='APPROVED'
-                  AND record.survey_period_governance_state='CONFIRMED'
-                  AND record.survey_date BETWEEN %s
-                  AND (CAST(:cultivar AS varchar) IS NULL OR record.cultivar_code=:cultivar OR EXISTS (
-                    SELECT 1 FROM production.production_record_submission_metadata metadata
-                    WHERE metadata.record_id=record.record_id AND metadata.field_code='PROD_CULTIVAR_NAME'
-                      AND (metadata.value=:cultivar OR metadata.value=(SELECT cultivar.name
-                        FROM platform.cultivar cultivar WHERE cultivar.code=:cultivar
-                          AND cultivar.product_code=record.product_code))))
-                """.formatted(period);
-        String market = regionScope + """
-                SELECT max(record.reported_at) FROM market.market_record record
-                WHERE record.product_code=:product
-                  AND record.region_code IN (SELECT code FROM selected_regions)
-                  AND record.status_code='APPROVED'
-                  AND record.survey_period_governance_state='CONFIRMED'
-                  AND record.trade_date BETWEEN %s
-                  AND (CAST(:cultivar AS varchar) IS NULL OR EXISTS (
-                    SELECT 1 FROM market.market_record_core_value value
-                    WHERE value.record_id=record.record_id AND value.field_code='MKT_CULTIVAR_NAME'
-                      AND (value.value=:cultivar OR value.value=(SELECT cultivar.name
-                        FROM platform.cultivar cultivar WHERE cultivar.code=:cultivar
-                          AND cultivar.product_code=record.product_code))))
-                """.formatted(period);
-        String logistics = regionScope + """
-                SELECT max(event.reported_at) FROM logistics.route_event event
-                WHERE event.product_code=:product
-                  AND (event.origin_region_code IN (SELECT code FROM selected_regions)
-                    OR event.destination_region_code IN (SELECT code FROM selected_regions))
-                  AND event.status_code='APPROVED'
-                  AND event.survey_period_governance_state='CONFIRMED'
-                  AND event.collection_date BETWEEN %s
-                  AND CAST(:cultivar AS varchar) IS NULL
-                """.formatted(period);
-        String supply = regionScope + """
-                SELECT max(run.created_at) FROM supply.calculation_run run
-                WHERE run.product_code=:product AND run.region_code IN (SELECT code FROM selected_regions)
-                  AND run.result_state='FORMAL' AND run.temporal_governance_state='CONFIRMED'
-                  AND run.created_at::date BETWEEN %s
-                  AND CAST(:cultivar AS varchar) IS NULL
-                """.formatted(period);
-        String sql = switch (domain) {
-            case "PRODUCTION" -> production;
-            case "MARKET" -> market;
-            case "LOGISTICS" -> logistics;
-            case "SUPPLY" -> supply;
-            default -> throw new IllegalArgumentException("unsupported report domain");
-        };
-        String cultivar = c.cultivarCode() == null || c.cultivarCode().isBlank()
-                ? null : c.cultivarCode().strip();
-        return jdbc.sql(sql).param("product", c.productCode()).param("region", c.regionCode())
-                .param("period", c.periodCode()).param("cultivar", cultivar)
-                .query((row, index) -> row.getTimestamp(1).toInstant()).single();
-    }
-
-    private String approvedSourceManifest(String domain, ReportPreviewCommand c) {
-        String regionScope = """
-                WITH RECURSIVE selected_regions(code) AS (
-                    SELECT code FROM platform.region WHERE code=:region
-                    UNION
-                    SELECT child.code FROM platform.region child
-                    JOIN selected_regions parent ON child.parent_code=parent.code
-                )
-                """;
-        String period = "(SELECT starts_on FROM platform.business_period WHERE code=:period)"
-                + " AND (SELECT ends_on FROM platform.business_period WHERE code=:period)";
-        String production = regionScope + """
-                SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                SELECT count(*) AS approved_count,max(record.reported_at) AS data_cutoff,
+                  COALESCE(jsonb_agg(jsonb_build_object(
                   'sourceRecordId',record.record_id,'sourceVersion',record.version,
                   'reportedAt',record.reported_at,
                   'contentSha256',encode(sha256(convert_to(
@@ -268,7 +128,7 @@ public class JdbcReportingRepository implements ReportingRepository {
                       'subsidy',COALESCE((SELECT jsonb_agg(to_jsonb(fact) ORDER BY fact.subsidy_code)
                         FROM production.production_record_subsidy fact
                         WHERE fact.record_id=record.record_id),'[]'::jsonb))::text,'UTF8')),'hex'))
-                  ORDER BY record.record_id),'[]'::jsonb)::text
+                  ORDER BY record.record_id),'[]'::jsonb)::text AS source_manifest
                 FROM production.production_record record
                 WHERE record.product_code=:product
                   AND record.region_code IN (SELECT code FROM selected_regions)
@@ -283,7 +143,8 @@ public class JdbcReportingRepository implements ReportingRepository {
                           AND cultivar.product_code=record.product_code))))
                 """.formatted(period);
         String market = regionScope + """
-                SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                SELECT count(*) AS approved_count,max(record.reported_at) AS data_cutoff,
+                  COALESCE(jsonb_agg(jsonb_build_object(
                   'sourceRecordId',record.record_id,'sourceVersion',record.version,
                   'reportedAt',record.reported_at,
                   'contentSha256',encode(sha256(convert_to(
@@ -294,7 +155,7 @@ public class JdbcReportingRepository implements ReportingRepository {
                     || COALESCE((SELECT jsonb_agg(to_jsonb(fact) ORDER BY fact.fact_code)::text
                       FROM market.market_record_fact fact
                       WHERE fact.record_id=record.record_id),'[]'),'UTF8')),'hex'))
-                  ORDER BY record.record_id),'[]'::jsonb)::text
+                  ORDER BY record.record_id),'[]'::jsonb)::text AS source_manifest
                 FROM market.market_record record
                 WHERE record.product_code=:product
                   AND record.region_code IN (SELECT code FROM selected_regions)
@@ -309,14 +170,15 @@ public class JdbcReportingRepository implements ReportingRepository {
                           AND cultivar.product_code=record.product_code))))
                 """.formatted(period);
         String logistics = regionScope + """
-                SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                SELECT count(*) AS approved_count,max(event.reported_at) AS data_cutoff,
+                  COALESCE(jsonb_agg(jsonb_build_object(
                   'sourceRecordId',event.event_id,'sourceVersion',event.version,
                   'reportedAt',event.reported_at,
                   'contentSha256',encode(sha256(convert_to(
                     to_jsonb(event)::text
                     || COALESCE((SELECT jsonb_agg(to_jsonb(fact) ORDER BY fact.fact_code)::text
                       FROM logistics.route_fact fact WHERE fact.event_id=event.event_id),'[]'),
-                    'UTF8')),'hex')) ORDER BY event.event_id),'[]'::jsonb)::text
+                    'UTF8')),'hex')) ORDER BY event.event_id),'[]'::jsonb)::text AS source_manifest
                 FROM logistics.route_event event
                 WHERE event.product_code=:product
                   AND (event.origin_region_code IN (SELECT code FROM selected_regions)
@@ -327,15 +189,16 @@ public class JdbcReportingRepository implements ReportingRepository {
                   AND CAST(:cultivar AS varchar) IS NULL
                 """.formatted(period);
         String supply = regionScope + """
-                SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                SELECT count(*) AS approved_count,max(run.created_at) AS data_cutoff,
+                  COALESCE(jsonb_agg(jsonb_build_object(
                   'sourceRecordId',run.calculation_run_id,'sourceVersion',run.version,
                   'reportedAt',run.created_at,
                   'contentSha256',encode(sha256(convert_to(to_jsonb(run)::text,'UTF8')),'hex'))
-                  ORDER BY run.calculation_run_id),'[]'::jsonb)::text
+                  ORDER BY run.calculation_run_id),'[]'::jsonb)::text AS source_manifest
                 FROM supply.calculation_run run
                 WHERE run.product_code=:product
                   AND run.region_code IN (SELECT code FROM selected_regions)
-                  AND run.result_state='FORMAL'
+                  AND run.result_state='PUBLISHED'
                   AND run.temporal_governance_state='CONFIRMED'
                   AND run.created_at::date BETWEEN %s
                   AND CAST(:cultivar AS varchar) IS NULL
@@ -351,8 +214,15 @@ public class JdbcReportingRepository implements ReportingRepository {
                 ? null : c.cultivarCode().strip();
         return jdbc.sql(sql).param("product", c.productCode()).param("region", c.regionCode())
                 .param("period", c.periodCode()).param("cultivar", cultivar)
-                .query(String.class).single();
+                .query((row, index) -> new ApprovedDatasetSnapshot(
+                        row.getLong("approved_count"),
+                        row.getTimestamp("data_cutoff") == null
+                                ? null : row.getTimestamp("data_cutoff").toInstant(),
+                        row.getString("source_manifest")))
+                .single();
     }
+    private record ApprovedDatasetSnapshot(
+            long approvedRecordCount, Instant dataCutoff, String sourceManifestJson) {}
     private String parameters(ReportPreviewCommand c){
         ObjectNode parameters=json.createObjectNode();
         parameters.put("definitionCode",c.definitionCode());

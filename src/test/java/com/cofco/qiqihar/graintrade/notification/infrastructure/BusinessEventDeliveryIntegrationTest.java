@@ -41,9 +41,11 @@ class BusinessEventDeliveryIntegrationTest {
     private static final String CONSUMER = "def-100-shared-consumer";
     private static final String SUBJECT = "def-100-reader";
     private static final String REGION = "230208";
+    private static final String HIDDEN_REGION = "231100";
     private static final UUID FIRST = UUID.fromString("99000000-0000-0000-0000-000000000001");
     private static final UUID POISON = UUID.fromString("99000000-0000-0000-0000-000000000002");
     private static final UUID THIRD = UUID.fromString("99000000-0000-0000-0000-000000000003");
+    private static final UUID HIDDEN = UUID.fromString("99000000-0000-0000-0000-000000000004");
 
     @Autowired DataSource dataSource;
     @Autowired BusinessNotificationRepository notifications;
@@ -145,6 +147,82 @@ class BusinessEventDeliveryIntegrationTest {
                 SELECT count(DISTINCT instance_id) FROM platform.business_event_delivery_attempt
                 WHERE consumer_id=:consumer
                 """).param("consumer", CONSUMER).query(Long.class).single()).isEqualTo(2);
+    }
+
+    @Test
+    void independentStreamConsumersEachReceiveOnceAndOneFailureDoesNotSuppressTheOther()
+            throws Exception {
+        String firstConsumer = CONSUMER + ":session-a";
+        String secondConsumer = CONSUMER + ":session-b";
+        insertEvent(HIDDEN, "hidden", clock.instant().plusSeconds(3), HIDDEN_REGION);
+        BusinessEventDeliveryService firstService = service();
+        BusinessEventDeliveryService secondService = service();
+        AuthorizedReadScope scope = new AuthorizedReadScope(SUBJECT, Set.of(REGION));
+        AtomicBoolean failPoisonOnce = new AtomicBoolean(true);
+        ConcurrentHashMap<UUID, Integer> firstEmitter = new ConcurrentHashMap<>();
+        ConcurrentHashMap<UUID, Integer> secondEmitter = new ConcurrentHashMap<>();
+        BusinessEventDeliveryService.DeliverySink firstSink = event -> {
+            if (event.id().equals(POISON) && failPoisonOnce.compareAndSet(true, false)) {
+                throw new IllegalStateException("first emitter disconnected during one event");
+            }
+            firstEmitter.merge(event.id(), 1, Integer::sum);
+        };
+        BusinessEventDeliveryService.DeliverySink secondSink =
+                event -> secondEmitter.merge(event.id(), 1, Integer::sum);
+
+        BusinessEventDeliveryService.DrainResult firstResult;
+        try (var executor = Executors.newFixedThreadPool(2)) {
+            List<java.util.concurrent.Callable<BusinessEventDeliveryService.DrainResult>> drains = List.of(
+                    () -> firstService.drain(firstConsumer, "instance-a", scope, SUBJECT,
+                            initialSequence, 20, firstSink),
+                    () -> secondService.drain(secondConsumer, "instance-b", scope, SUBJECT,
+                            initialSequence, 20, secondSink));
+            var results = executor.invokeAll(drains);
+            firstResult = results.getFirst().get();
+            results.get(1).get();
+        }
+
+        assertThat(firstEmitter)
+                .containsEntry(FIRST, 1)
+                .containsEntry(THIRD, 1)
+                .doesNotContainKeys(POISON, HIDDEN);
+        assertThat(secondEmitter)
+                .containsEntry(FIRST, 1)
+                .containsEntry(POISON, 1)
+                .containsEntry(THIRD, 1)
+                .doesNotContainKey(HIDDEN);
+
+        clock.advance(Duration.ofMillis(101));
+        var reconnected = firstService.drain(firstConsumer, "instance-a-reconnected", scope, SUBJECT,
+                firstResult.resumeSequence(), 20, firstSink);
+
+        assertThat(reconnected.failedCount()).isZero();
+        assertThat(firstEmitter)
+                .containsEntry(FIRST, 1)
+                .containsEntry(POISON, 1)
+                .containsEntry(THIRD, 1)
+                .doesNotContainKey(HIDDEN);
+        assertThat(secondEmitter)
+                .containsEntry(FIRST, 1)
+                .containsEntry(POISON, 1)
+                .containsEntry(THIRD, 1)
+                .doesNotContainKey(HIDDEN);
+        assertThat(jdbc.sql("""
+                SELECT consumer_id,count(*) AS delivered_count
+                FROM platform.business_event_delivery_state
+                WHERE consumer_id IN (:consumers) AND status_code='DELIVERED'
+                GROUP BY consumer_id ORDER BY consumer_id
+                """).param("consumers", List.of(firstConsumer, secondConsumer)).query().listOfRows())
+                .satisfiesExactly(
+                        row -> assertThat(row).containsEntry("consumer_id", firstConsumer)
+                                .containsEntry("delivered_count", 3L),
+                        row -> assertThat(row).containsEntry("consumer_id", secondConsumer)
+                                .containsEntry("delivered_count", 3L));
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_event_delivery_state
+                WHERE consumer_id IN (:consumers) AND event_id=:hidden
+                """).param("consumers", List.of(firstConsumer, secondConsumer)).param("hidden", HIDDEN)
+                .query(Long.class).single()).isZero();
     }
 
     @Test
@@ -252,6 +330,10 @@ class BusinessEventDeliveryIntegrationTest {
     }
 
     private void insertEvent(UUID id, String aggregateId, Instant occurredAt) {
+        insertEvent(id, aggregateId, occurredAt, REGION);
+    }
+
+    private void insertEvent(UUID id, String aggregateId, Instant occurredAt, String region) {
         jdbc.sql("""
                 INSERT INTO platform.business_event_outbox(
                   event_id,aggregate_type,aggregate_id,action_code,actor_subject_id,
@@ -259,7 +341,7 @@ class BusinessEventDeliveryIntegrationTest {
                 VALUES(:id,'DELIVERY_PROBE',:aggregateId,'DELIVERY_PROBE_CREATED','production-tester',
                   'DEF_100_TEST',ARRAY[:region],'CORN',:occurredAt,
                   jsonb_build_object('regionCode',:region,'productCode','CORN','surveyYear',2026))
-                """).param("id", id).param("aggregateId", aggregateId).param("region", REGION)
+                """).param("id", id).param("aggregateId", aggregateId).param("region", region)
                 .param("occurredAt", Timestamp.from(occurredAt)).update();
     }
 
@@ -281,10 +363,10 @@ class BusinessEventDeliveryIntegrationTest {
 
     private void cleanup() {
         if (jdbc == null) return;
-        jdbc.sql("DELETE FROM platform.business_event_delivery_checkpoint WHERE consumer_id=:consumer")
-                .param("consumer", CONSUMER).update();
+        jdbc.sql("DELETE FROM platform.business_event_delivery_checkpoint WHERE consumer_id LIKE :consumer")
+                .param("consumer", CONSUMER + "%").update();
         jdbc.sql("DELETE FROM platform.business_event_outbox WHERE event_id IN (:ids)")
-                .param("ids", List.of(FIRST, POISON, THIRD)).update();
+                .param("ids", List.of(FIRST, POISON, THIRD, HIDDEN)).update();
     }
 
     private static final class MutableClock extends Clock {

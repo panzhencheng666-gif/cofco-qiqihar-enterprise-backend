@@ -28,7 +28,8 @@ load_local_config() {
     key="${line%%=*}"
     value="${line#*=}"
     case "$key" in
-      QIQIHAR_DB_URL | QIQIHAR_DB_USERNAME | QIQIHAR_DB_PASSWORD)
+      QIQIHAR_DB_URL | QIQIHAR_DB_USERNAME | QIQIHAR_DB_PASSWORD | \
+        QIQIHAR_FLYWAY_USERNAME | QIQIHAR_FLYWAY_PASSWORD)
         export "$key=$value"
         ;;
       *)

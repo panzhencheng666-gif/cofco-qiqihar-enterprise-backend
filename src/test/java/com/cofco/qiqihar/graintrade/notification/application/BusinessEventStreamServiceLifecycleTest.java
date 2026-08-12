@@ -5,6 +5,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
@@ -13,6 +14,7 @@ import com.cofco.qiqihar.graintrade.shared.security.application.SecurityPrincipa
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
 import java.time.Duration;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -33,7 +35,7 @@ class BusinessEventStreamServiceLifecycleTest {
         when(accessControl.requireAuthenticated()).thenReturn(principal);
         when(accessControl.requireReadScope()).thenReturn(scope);
         when(principals.findEnabled(principal.subjectId())).thenReturn(java.util.Optional.of(principal));
-        when(deliveries.drain(eq("sse:" + principal.subjectId()), anyString(), eq(scope),
+        when(deliveries.drain(streamConsumer(principal.subjectId()), anyString(), eq(scope),
                 eq(principal.subjectId()), eq(0L), eq(100), any()))
                 .thenAnswer(ignored -> {
                     queryCount.incrementAndGet();
@@ -73,13 +75,13 @@ class BusinessEventStreamServiceLifecycleTest {
         when(accessControl.requireReadScope()).thenReturn(originalScope);
         when(principals.findEnabled(original.subjectId()))
                 .thenAnswer(ignored -> java.util.Optional.of(current.get()));
-        when(deliveries.drain(eq("sse:" + original.subjectId()), anyString(), eq(originalScope),
+        when(deliveries.drain(streamConsumer(original.subjectId()), anyString(), eq(originalScope),
                 eq(original.subjectId()), eq(0L), eq(100), any()))
                 .thenAnswer(ignored -> {
                     originalQuery.countDown();
                     return emptyDrain();
                 });
-        when(deliveries.drain(eq("sse:" + original.subjectId()), anyString(), eq(narrowedScope),
+        when(deliveries.drain(streamConsumer(original.subjectId()), anyString(), eq(narrowedScope),
                 eq(original.subjectId()), eq(0L), eq(100), any()))
                 .thenAnswer(ignored -> {
                     narrowedQuery.countDown();
@@ -95,7 +97,52 @@ class BusinessEventStreamServiceLifecycleTest {
         service.stop();
     }
 
+    @Test
+    void assignsAnIndependentDurableConsumerToConnectionsOnSeparateServiceInstances() throws Exception {
+        BusinessEventDeliveryService deliveries = mock(BusinessEventDeliveryService.class);
+        AccessControl accessControl = mock(AccessControl.class);
+        SecurityPrincipalRepository principals = mock(SecurityPrincipalRepository.class);
+        SecurityPrincipal principal = new SecurityPrincipal(
+                "employee-1", "员工一", "UNIT", Set.of("BUSINESS_READ"), Set.of("230200"));
+        AuthorizedReadScope scope = new AuthorizedReadScope("employee-1", Set.of("230200"));
+        CountDownLatch connectionsStarted = new CountDownLatch(2);
+        Set<String> consumerIds = ConcurrentHashMap.newKeySet();
+        when(accessControl.requireAuthenticated()).thenReturn(principal);
+        when(accessControl.requireReadScope()).thenReturn(scope);
+        when(principals.findEnabled(principal.subjectId())).thenReturn(java.util.Optional.of(principal));
+        when(deliveries.drain(anyString(), anyString(), eq(scope), eq(principal.subjectId()),
+                eq(0L), eq(100), any()))
+                .thenAnswer(invocation -> {
+                    consumerIds.add(invocation.getArgument(0, String.class));
+                    connectionsStarted.countDown();
+                    return emptyDrain();
+                });
+
+        BusinessEventStreamService firstService =
+                new BusinessEventStreamService(deliveries, accessControl, principals);
+        BusinessEventStreamService secondService =
+                new BusinessEventStreamService(deliveries, accessControl, principals);
+        firstService.start();
+        secondService.start();
+        try {
+            firstService.stream(0);
+            secondService.stream(0);
+            assertThat(connectionsStarted.await(2, TimeUnit.SECONDS)).isTrue();
+            assertThat(consumerIds)
+                    .hasSize(2)
+                    .allMatch(consumerId -> consumerId.startsWith("sse:" + principal.subjectId() + ":"));
+        } finally {
+            firstService.stop();
+            secondService.stop();
+        }
+    }
+
     private static BusinessEventDeliveryService.DrainResult emptyDrain() {
         return new BusinessEventDeliveryService.DrainResult(0, 0, 0, Duration.ZERO, false);
+    }
+
+    private static String streamConsumer(String subjectId) {
+        return argThat(consumerId -> consumerId != null
+                && consumerId.startsWith("sse:" + subjectId + ":"));
     }
 }

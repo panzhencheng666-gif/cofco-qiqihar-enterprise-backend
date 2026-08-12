@@ -8,6 +8,8 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+    user: ${QIQIHAR_FLYWAY_USERNAME:${USER}}
+    password: ${QIQIHAR_FLYWAY_PASSWORD:}
   servlet:
     multipart:
       max-file-size: ${QIQIHAR_IMPORT_MAX_FILE_SIZE:20MB}

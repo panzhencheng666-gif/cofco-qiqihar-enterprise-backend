@@ -56,7 +56,9 @@ public class BusinessEventStreamService implements SmartLifecycle {
         emitter.onCompletion(() -> closeConnection(emitter, closed));
         emitter.onTimeout(() -> closeConnection(emitter, closed));
         emitter.onError(ignored -> closeConnection(emitter, closed));
-        connections.submit(() -> publish(emitter, closed, principal.subjectId(), scope, afterSequence));
+        String consumerId = streamConsumerId(principal.subjectId());
+        connections.submit(() -> publish(
+                emitter, closed, consumerId, principal.subjectId(), scope, afterSequence));
         return emitter;
     }
 
@@ -68,13 +70,13 @@ public class BusinessEventStreamService implements SmartLifecycle {
     private void publish(
             SseEmitter emitter,
             AtomicBoolean closed,
+            String consumerId,
             String subjectId,
             AuthorizedReadScope initialScope,
             long initialCursor) {
         long cursor = initialCursor;
         long lastHeartbeatNanos = System.nanoTime();
         AuthorizedReadScope scope = initialScope;
-        String consumerId = "sse:" + subjectId;
         try {
             while (!closed.get() && !Thread.currentThread().isInterrupted()) {
                 SecurityPrincipal current = principals.findEnabled(subjectId).orElse(null);
@@ -106,6 +108,10 @@ public class BusinessEventStreamService implements SmartLifecycle {
                 emitter.complete();
             }
         }
+    }
+
+    private static String streamConsumerId(String subjectId) {
+        return "sse:" + subjectId + ":" + UUID.randomUUID();
     }
 
     private void closeConnection(SseEmitter emitter, AtomicBoolean closed) {

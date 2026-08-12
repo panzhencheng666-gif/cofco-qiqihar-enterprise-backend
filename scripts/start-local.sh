@@ -35,6 +35,8 @@ local_access_host="127.0.0.1"
 backend_port="${COFCO_ENTERPRISE_BACKEND_PORT:-8090}"
 business_port="${COFCO_ENTERPRISE_BUSINESS_PORT:-63182}"
 overview_port="${COFCO_ENTERPRISE_OVERVIEW_PORT:-63200}"
+runtime_database_user="${QIQIHAR_DB_USERNAME:-cofco_app}"
+migration_database_user="${QIQIHAR_FLYWAY_USERNAME:-${USER}}"
 
 for path in "$overview_frontend_root" "$business_frontend_root"; do
   if [[ ! -d "$path" ]]; then
@@ -208,6 +210,8 @@ start_backend() {
     env \
     "QIQIHAR_SERVER_PORT=$backend_port" \
     "SERVER_ADDRESS=$local_access_host" \
+    "QIQIHAR_DB_USERNAME=$runtime_database_user" \
+    "QIQIHAR_FLYWAY_USERNAME=$migration_database_user" \
     mvn \
     spring-boot:run \
     -Dspring-boot.run.profiles=local
