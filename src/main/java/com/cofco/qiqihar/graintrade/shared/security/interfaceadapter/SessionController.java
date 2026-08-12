@@ -24,14 +24,15 @@ public class SessionController {
             String subjectId,String displayName,String workUnitCode,String workUnitName,
             String accountStatus,String employmentStatus,List<String> roleCodes,
             List<SecurityPrincipal.PositionAssignment> positions,
-            List<String> permissions,List<String> regionCodes) {
+            List<String> permissions,List<String> regionCodes,
+            List<SecurityPrincipal.RegionScope> regionScopes) {
         static SessionResponse from(SecurityPrincipal principal) {
             return new SessionResponse(
                     principal.subjectId(),principal.displayName(),principal.workUnitCode(),principal.workUnitName(),
                     principal.accountStatus(),principal.employmentStatus(),
                     principal.roleCodes().stream().sorted().toList(),principal.positions(),
                     principal.permissionCodes().stream().sorted().toList(),
-                    principal.regionCodes().stream().sorted().toList());
+                    principal.regionCodes().stream().sorted().toList(),principal.assignedRegionScopes());
         }
     }
 }

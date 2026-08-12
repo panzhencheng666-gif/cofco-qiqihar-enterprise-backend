@@ -19,6 +19,8 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
     @Override
     public boolean validAssignment(EmployeeAssignment value) {
         if(value.roleCodes().isEmpty()||value.positionCodes().isEmpty()||value.regionCodes().isEmpty())return false;
+        boolean privileged=value.roleCodes().stream().anyMatch(
+                role->role.equals("SYSTEM_ADMIN")||role.equals("IDENTITY_ADMIN"));
         return count("SELECT count(*) FROM platform.work_unit WHERE code=:code AND active","code",value.workUnitCode())==1
                 && countIn("SELECT count(*) FROM platform.access_role WHERE code IN (:codes) AND active",value.roleCodes())==value.roleCodes().size()
                 && countIn("SELECT count(*) FROM platform.position WHERE code IN (:codes) AND active",value.positionCodes())==value.positionCodes().size()
@@ -26,7 +28,11 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
                         SELECT count(*) FROM platform.work_unit_region_scope
                         WHERE work_unit_code=:unit AND region_code IN (:regions)
                         """).param("unit",value.workUnitCode()).param("regions",value.regionCodes())
-                        .query(Long.class).single()==value.regionCodes().size();
+                        .query(Long.class).single()==value.regionCodes().size()
+                && (privileged || jdbc.sql("""
+                        SELECT count(*) FROM platform.region
+                        WHERE code IN (:regions) AND administrative_level='TOWNSHIP'
+                        """).param("regions",value.regionCodes()).query(Long.class).single()==value.regionCodes().size());
     }
 
     @Override public boolean exists(String subjectId){return count(
@@ -125,6 +131,7 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
                 WHERE assignment.subject_id=:subject
                   AND CURRENT_TIMESTAMP>=assignment.valid_from
                   AND (assignment.valid_until IS NULL OR CURRENT_TIMESTAMP<assignment.valid_until)
+                  AND (assignment.review_due_at IS NULL OR CURRENT_TIMESTAMP<assignment.review_due_at)
                 ORDER BY role.sort_order,role.code
                 """).param("subject",subject).query((row,index)->new EmployeeProfile.Grant(
                         row.getString(1),row.getString(2))).list();
@@ -143,6 +150,7 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
                 WHERE subject_id=:subject
                   AND CURRENT_TIMESTAMP>=valid_from
                   AND (valid_until IS NULL OR CURRENT_TIMESTAMP<valid_until)
+                  AND (review_due_at IS NULL OR CURRENT_TIMESTAMP<review_due_at)
                 ORDER BY region_code
                 """).param("subject",subject).query(String.class).list();
         return new EmployeeProfile(subject,name,unit,unitName,accountStatus,employmentStatus,

@@ -67,6 +67,8 @@ public class AccessReviewService {
         requireReviewScope(actor,campaign.workUnitCode());
         if(!"OPEN".equals(campaign.statusCode())||decisions==null||decisions.isEmpty()
                 ||decisions.size()>500||hasDuplicates(decisions)||decisions.stream().anyMatch(this::invalid))throw invalid();
+        if(decisions.stream().anyMatch(decision->actor.subjectId().equals(decision.subjectId())))
+            throw new AccessDeniedException("ACCESS_REVIEW_SELF_DECISION_DENIED","不能复核本人的权限");
         Instant now=clock.instant();
         if(!repository.decide(reviewId,decisions,actor.subjectId(),now))throw new ConflictException(
                 "ACCESS_REVIEW_CONFLICT","Access review has already changed");

@@ -13,7 +13,16 @@ public record SecurityPrincipal(
         Set<String> roleCodes,
         List<PositionAssignment> positions,
         Set<String> permissionCodes,
-        Set<String> regionCodes) {
+        Set<String> regionCodes,
+        List<RegionScope> assignedRegionScopes) {
+
+    public SecurityPrincipal(
+            String subjectId, String displayName, String workUnitCode, String workUnitName,
+            String accountStatus, String employmentStatus, Set<String> roleCodes,
+            List<PositionAssignment> positions, Set<String> permissionCodes, Set<String> regionCodes) {
+        this(subjectId, displayName, workUnitCode, workUnitName, accountStatus, employmentStatus,
+                roleCodes, positions, permissionCodes, regionCodes, List.of());
+    }
 
     public SecurityPrincipal(String subjectId, String displayName, String workUnitCode,
             Set<String> permissionCodes, Set<String> regionCodes) {
@@ -40,6 +49,7 @@ public record SecurityPrincipal(
         positions = List.copyOf(positions);
         permissionCodes = Set.copyOf(permissionCodes);
         regionCodes = Set.copyOf(regionCodes);
+        assignedRegionScopes = List.copyOf(assignedRegionScopes);
         if (regionCodes.contains("*")) {
             throw new IllegalArgumentException("Persisted region code must not use the unrestricted test sentinel");
         }
@@ -57,6 +67,15 @@ public record SecurityPrincipal(
         public PositionAssignment {
             if (code == null || code.isBlank() || name == null || name.isBlank()) {
                 throw new IllegalArgumentException("Position code and name are required");
+            }
+        }
+    }
+
+    public record RegionScope(String code, String administrativeLevel, String namePath) {
+        public RegionScope {
+            if (code == null || code.isBlank() || administrativeLevel == null || administrativeLevel.isBlank()
+                    || namePath == null || namePath.isBlank()) {
+                throw new IllegalArgumentException("Assigned region code, level and name path are required");
             }
         }
     }

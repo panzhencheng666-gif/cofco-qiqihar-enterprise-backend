@@ -20,8 +20,31 @@ spring:
 
 server:
   port: ${QIQIHAR_SERVER_PORT:8090}
+  forward-headers-strategy: framework
+  servlet:
+    session:
+      timeout: ${QIQIHAR_SESSION_TIMEOUT:30m}
+      cookie:
+        name: COFCO_SESSION
+        http-only: true
+        secure: ${QIQIHAR_SESSION_COOKIE_SECURE:true}
+        same-site: strict
 
 qiqihar:
+  security:
+    oidc:
+      client-id: ${QIQIHAR_OIDC_CLIENT_ID:}
+      client-secret: ${QIQIHAR_OIDC_CLIENT_SECRET:}
+      authorization-uri: ${QIQIHAR_OIDC_AUTHORIZATION_URI:}
+      token-uri: ${QIQIHAR_OIDC_TOKEN_URI:}
+      jwk-set-uri: ${QIQIHAR_OIDC_JWK_SET_URI:}
+      user-info-uri: ${QIQIHAR_OIDC_USER_INFO_URI:}
+      end-session-uri: ${QIQIHAR_OIDC_END_SESSION_URI:}
+      redirect-uri: ${QIQIHAR_OIDC_REDIRECT_URI:}
+      post-logout-redirect-uri: ${QIQIHAR_OIDC_POST_LOGOUT_REDIRECT_URI:}
+      mfa-amr-values: ${QIQIHAR_OIDC_MFA_AMR_VALUES:}
+      mfa-acr-values: ${QIQIHAR_OIDC_MFA_ACR_VALUES:}
+    session-cookie-secure: ${QIQIHAR_SESSION_COOKIE_SECURE:true}
   import:
     sync-row-limit: ${QIQIHAR_IMPORT_SYNC_ROW_LIMIT:5000}
     max-row-limit: ${QIQIHAR_IMPORT_MAX_ROW_LIMIT:50000}

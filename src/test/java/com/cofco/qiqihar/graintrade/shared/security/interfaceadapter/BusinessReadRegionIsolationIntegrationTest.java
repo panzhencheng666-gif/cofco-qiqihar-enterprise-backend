@@ -285,6 +285,41 @@ class BusinessReadRegionIsolationIntegrationTest {
                 .andExpect(jsonPath("$.data.totalElements").value(1));
     }
 
+    @Test
+    void navigableAncestorAggregatesOnlyAuthorizedDescendantsAndRejectsUnrelatedRegions() throws Exception {
+        mockMvc.perform(get("/api/v1/overview/indicators")
+                        .principal(() -> READER_A)
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", "230200")
+                        .queryParam("periodCode", PERIOD))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].value")
+                        .value(org.hamcrest.Matchers.hasItem("10")))
+                .andExpect(jsonPath("$.data[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].sourceCount")
+                        .value(org.hamcrest.Matchers.hasItem(1)));
+
+        mockMvc.perform(get("/api/v1/overview/dashboard")
+                        .principal(() -> READER_A)
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", "230200")
+                        .queryParam("periodCode", PERIOD))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].value")
+                        .value(org.hamcrest.Matchers.hasItem("10")))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].sourceCount")
+                        .value(org.hamcrest.Matchers.hasItem(1)))
+                .andExpect(content().string(not(containsString(REGION_B))))
+                .andExpect(content().string(not(containsString("区域隔离测试地区B"))));
+
+        mockMvc.perform(get("/api/v1/overview/indicators")
+                        .principal(() -> READER_A)
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", REGION_B)
+                        .queryParam("periodCode", PERIOD))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+    }
+
     private void assertForbidden(String path) throws Exception {
         assertForbidden(path, READER_A);
     }

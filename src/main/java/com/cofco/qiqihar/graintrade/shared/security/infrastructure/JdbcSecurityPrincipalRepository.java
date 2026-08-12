@@ -36,7 +36,8 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
                 .optional().map(subject -> new SecurityPrincipal(
                         subject.id(),subject.displayName(),subject.workUnitCode(),subject.workUnitName(),
                         subject.accountStatus(),subject.employmentStatus(),roles(subject.id()),positions(subject.id()),
-                        permissions(subject.id()),regions(subject.id(),subject.workUnitCode())));
+                        permissions(subject.id()),regions(subject.id(),subject.workUnitCode()),
+                        assignedRegions(subject.id(),subject.workUnitCode())));
     }
 
     private Set<String> permissions(String subjectId) {
@@ -49,20 +50,62 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
                 WHERE user_role.subject_id = :subjectId
                   AND CURRENT_TIMESTAMP >= user_role.valid_from
                   AND (user_role.valid_until IS NULL OR CURRENT_TIMESTAMP < user_role.valid_until)
+                  AND (user_role.review_due_at IS NULL OR CURRENT_TIMESTAMP < user_role.review_due_at)
                 """).param("subjectId", subjectId).query(String.class).list());
     }
 
     private Set<String> regions(String subjectId, String workUnitCode) {
         return new LinkedHashSet<>(jdbc.sql("""
-                SELECT scope.region_code
-                FROM platform.security_user_region_scope scope
-                JOIN platform.work_unit_region_scope unit_scope
-                  ON unit_scope.work_unit_code = :workUnitCode
-                 AND unit_scope.region_code = scope.region_code
-                WHERE scope.subject_id = :subjectId
-                  AND CURRENT_TIMESTAMP >= scope.valid_from
-                  AND (scope.valid_until IS NULL OR CURRENT_TIMESTAMP < scope.valid_until)
+                WITH RECURSIVE assigned(region_code) AS (
+                    SELECT scope.region_code
+                    FROM platform.security_user_region_scope scope
+                    JOIN platform.work_unit_region_scope unit_scope
+                      ON unit_scope.work_unit_code = :workUnitCode
+                     AND unit_scope.region_code = scope.region_code
+                    WHERE scope.subject_id = :subjectId
+                      AND CURRENT_TIMESTAMP >= scope.valid_from
+                      AND (scope.valid_until IS NULL OR CURRENT_TIMESTAMP < scope.valid_until)
+                      AND (scope.review_due_at IS NULL OR CURRENT_TIMESTAMP < scope.review_due_at)
+                ), covered(region_code) AS (
+                    SELECT region_code FROM assigned
+                    UNION
+                    SELECT child.code
+                    FROM platform.region child
+                    JOIN covered parent ON parent.region_code = child.parent_code
+                )
+                SELECT region_code FROM covered ORDER BY region_code
                 """).param("subjectId", subjectId).param("workUnitCode", workUnitCode).query(String.class).list());
+    }
+
+    private List<SecurityPrincipal.RegionScope> assignedRegions(String subjectId,String workUnitCode) {
+        return jdbc.sql("""
+                WITH RECURSIVE assigned AS (
+                    SELECT scope.region_code
+                    FROM platform.security_user_region_scope scope
+                    JOIN platform.work_unit_region_scope unit_scope
+                      ON unit_scope.work_unit_code=:workUnitCode
+                     AND unit_scope.region_code=scope.region_code
+                    WHERE scope.subject_id=:subjectId
+                      AND CURRENT_TIMESTAMP>=scope.valid_from
+                      AND (scope.valid_until IS NULL OR CURRENT_TIMESTAMP<scope.valid_until)
+                      AND (scope.review_due_at IS NULL OR CURRENT_TIMESTAMP<scope.review_due_at)
+                ), region_path(anchor_code,code,name,parent_code,depth) AS (
+                    SELECT assigned.region_code,region.code,region.name,region.parent_code,0
+                    FROM assigned JOIN platform.region region ON region.code=assigned.region_code
+                    UNION ALL
+                    SELECT path.anchor_code,parent.code,parent.name,parent.parent_code,path.depth+1
+                    FROM region_path path JOIN platform.region parent ON parent.code=path.parent_code
+                )
+                SELECT assigned.region_code,anchor.administrative_level,
+                       string_agg(path.name,' / ' ORDER BY path.depth DESC)
+                FROM assigned
+                JOIN platform.region anchor ON anchor.code=assigned.region_code
+                JOIN region_path path ON path.anchor_code=assigned.region_code
+                GROUP BY assigned.region_code,anchor.administrative_level
+                ORDER BY assigned.region_code
+                """).param("subjectId",subjectId).param("workUnitCode",workUnitCode)
+                .query((row,index)->new SecurityPrincipal.RegionScope(
+                        row.getString(1),row.getString(2),row.getString(3))).list();
     }
 
     private Set<String> roles(String subjectId) {
@@ -73,6 +116,7 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
                 WHERE user_role.subject_id=:subjectId
                   AND CURRENT_TIMESTAMP >= user_role.valid_from
                   AND (user_role.valid_until IS NULL OR CURRENT_TIMESTAMP < user_role.valid_until)
+                  AND (user_role.review_due_at IS NULL OR CURRENT_TIMESTAMP < user_role.review_due_at)
                 ORDER BY role.sort_order,role.code
                 """).param("subjectId",subjectId).query(String.class).list());
     }

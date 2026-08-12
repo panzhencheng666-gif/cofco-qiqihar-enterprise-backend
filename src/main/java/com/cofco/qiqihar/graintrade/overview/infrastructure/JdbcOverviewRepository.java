@@ -27,6 +27,24 @@ import org.springframework.stereotype.Repository;
 
 @Repository
 public class JdbcOverviewRepository implements OverviewRepository {
+    private static final String AUTHORIZED_REQUEST_SCOPE = """
+            WITH RECURSIVE monitoring_scope(region_code) AS (
+              SELECT region_code FROM platform.monitoring_scope_region
+              WHERE scope_code='FORMAL_BUSINESS' AND included
+                AND (:unrestricted OR region_code IN (:authorizedRegions))
+            ), requested_scope(code) AS (
+              SELECT code FROM platform.region
+              WHERE CAST(:region AS varchar) IS NULL OR code=CAST(:region AS varchar)
+              UNION
+              SELECT child.code FROM platform.region child
+              JOIN requested_scope parent ON child.parent_code=parent.code
+            ), scope(code) AS (
+              SELECT monitoring_scope.region_code FROM monitoring_scope
+              WHERE CAST(:region AS varchar) IS NULL
+                 OR monitoring_scope.region_code IN (SELECT code FROM requested_scope)
+            )
+            """;
+
     private final JdbcClient jdbc;
     public JdbcOverviewRepository(JdbcClient jdbc) { this.jdbc = jdbc; }
 
@@ -294,19 +312,8 @@ public class JdbcOverviewRepository implements OverviewRepository {
     @Override
     public List<OverviewIndicator> indicators(String productCode, String regionCode, int year,
             Set<String> authorizedRegionCodes) {
-        return jdbc.sql("""
-                WITH RECURSIVE monitoring_scope AS (
-                  SELECT region_code FROM platform.monitoring_scope_region
-                  WHERE scope_code='FORMAL_BUSINESS' AND included
-                    AND (:unrestricted OR region_code IN (:authorizedRegions))
-                ), scope(code) AS (
-                  SELECT region.code FROM platform.region region JOIN monitoring_scope ON monitoring_scope.region_code=region.code
-                  WHERE CAST(:region AS varchar) IS NULL OR region.code=CAST(:region AS varchar)
-                  UNION
-                  SELECT child.code FROM platform.region child
-                  JOIN scope parent ON child.parent_code=parent.code
-                  JOIN monitoring_scope ON monitoring_scope.region_code=child.code
-                ), latest_supply AS (
+        return jdbc.sql(AUTHORIZED_REQUEST_SCOPE + """
+                , latest_supply AS (
                   SELECT DISTINCT ON (run.region_code) run.* FROM supply.calculation_run run JOIN scope ON scope.code=run.region_code
                   WHERE run.product_code=:product AND run.survey_year=:year
                     AND run.result_state='PUBLISHED' AND run.temporal_governance_state='CONFIRMED'
@@ -412,20 +419,8 @@ public class JdbcOverviewRepository implements OverviewRepository {
 
     private OverviewDashboard.Scope dashboardScope(
             String productCode, int year, String regionCode, Set<String> authorizedRegionCodes) {
-        return jdbc.sql("""
-                WITH RECURSIVE monitoring_scope AS (
-                  SELECT region_code FROM platform.monitoring_scope_region
-                  WHERE scope_code='FORMAL_BUSINESS' AND included
-                    AND (:unrestricted OR region_code IN (:authorizedRegions))
-                ), scope(code) AS (
-                  SELECT region.code FROM platform.region region
-                  JOIN monitoring_scope ON monitoring_scope.region_code=region.code
-                  WHERE CAST(:region AS varchar) IS NULL OR region.code=CAST(:region AS varchar)
-                  UNION
-                  SELECT child.code FROM platform.region child
-                  JOIN scope parent ON child.parent_code=parent.code
-                  JOIN monitoring_scope ON monitoring_scope.region_code=child.code
-                ), business_record AS (
+        return jdbc.sql(AUTHORIZED_REQUEST_SCOPE + """
+                , business_record AS (
                   SELECT record.record_id,record.region_code,record.status_code,record.reported_at,record.last_modified_by
                   FROM production.production_record record
                   WHERE record.product_code=:product AND record.region_code IN(SELECT code FROM scope)
@@ -493,20 +488,8 @@ public class JdbcOverviewRepository implements OverviewRepository {
     private List<RegionSurplusSource> regionSurplusSources(
             String productCode, int year, String regionCode,
             Set<String> authorizedRegionCodes) {
-        return jdbc.sql("""
-                WITH RECURSIVE monitoring_scope AS (
-                  SELECT region_code FROM platform.monitoring_scope_region
-                  WHERE scope_code='FORMAL_BUSINESS' AND included
-                    AND (:unrestricted OR region_code IN (:authorizedRegions))
-                ), scope(code) AS (
-                  SELECT region.code FROM platform.region region
-                  JOIN monitoring_scope ON monitoring_scope.region_code=region.code
-                  WHERE CAST(:region AS varchar) IS NULL OR region.code=CAST(:region AS varchar)
-                  UNION
-                  SELECT child.code FROM platform.region child
-                  JOIN scope parent ON child.parent_code=parent.code
-                  JOIN monitoring_scope ON monitoring_scope.region_code=child.code
-                ), production_metadata AS (
+        return jdbc.sql(AUTHORIZED_REQUEST_SCOPE + """
+                , production_metadata AS (
                   SELECT metadata.record_id,
                     max(metadata.value) FILTER(WHERE metadata.field_code='PROD_ENDING_INVENTORY') ending_value,
                     max(metadata.value) FILTER(WHERE metadata.field_code='PROD_SURPLUS_SUBJECT_CODE') subject_code,
@@ -620,18 +603,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
 
     private List<OverviewDashboard.PriceTrendPoint> dashboardPriceTrend(
             String productCode, int year, String regionCode, Set<String> authorizedRegionCodes) {
-        return jdbc.sql("""
-                WITH RECURSIVE monitoring_scope AS (
-                  SELECT region_code FROM platform.monitoring_scope_region
-                  WHERE scope_code='FORMAL_BUSINESS' AND included
-                    AND (:unrestricted OR region_code IN (:authorizedRegions))
-                ), scope(code) AS (
-                  SELECT region.code FROM platform.region region JOIN monitoring_scope ON monitoring_scope.region_code=region.code
-                  WHERE CAST(:region AS varchar) IS NULL OR region.code=CAST(:region AS varchar)
-                  UNION
-                  SELECT child.code FROM platform.region child JOIN scope parent ON child.parent_code=parent.code
-                  JOIN monitoring_scope ON monitoring_scope.region_code=child.code
-                )
+        return jdbc.sql(AUTHORIZED_REQUEST_SCOPE + """
                 SELECT to_char(date_trunc('month',record.trade_date),'YYYY-MM') period_label,
                        AVG(record.actual_trade_price) value,COUNT(*) source_count
                 FROM market.market_record record
@@ -650,18 +622,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
 
     private List<OverviewDashboard.ProductShare> dashboardProductStructure(
             String productCode, int year, String regionCode, Set<String> authorizedRegionCodes) {
-        return jdbc.sql("""
-                WITH RECURSIVE monitoring_scope AS (
-                  SELECT region_code FROM platform.monitoring_scope_region
-                  WHERE scope_code='FORMAL_BUSINESS' AND included
-                    AND (:unrestricted OR region_code IN (:authorizedRegions))
-                ), scope(code) AS (
-                  SELECT region.code FROM platform.region region JOIN monitoring_scope ON monitoring_scope.region_code=region.code
-                  WHERE CAST(:region AS varchar) IS NULL OR region.code=CAST(:region AS varchar)
-                  UNION
-                  SELECT child.code FROM platform.region child JOIN scope parent ON child.parent_code=parent.code
-                  JOIN monitoring_scope ON monitoring_scope.region_code=child.code
-                )
+        return jdbc.sql(AUTHORIZED_REQUEST_SCOPE + """
                 SELECT product.code product_code,product.name product_name,SUM(record.estimated_output_kg) value,
                        COUNT(*) source_count
                 FROM production.production_record record
@@ -688,13 +649,16 @@ public class JdbcOverviewRepository implements OverviewRepository {
                     AND (:unrestricted OR region_code IN (:authorizedRegions))
                 ), children AS (
                   SELECT region.code,region.name,region.sort_order FROM platform.region region
-                  JOIN monitoring_scope ON monitoring_scope.region_code=region.code WHERE region.parent_code=:region
-                ), descendants(root_code,code) AS (
+                  WHERE region.parent_code=:region
+                ), all_descendants(root_code,code) AS (
                   SELECT code,code FROM children
                   UNION ALL
                   SELECT descendants.root_code,child.code FROM platform.region child
-                  JOIN descendants ON child.parent_code=descendants.code
-                  JOIN monitoring_scope ON monitoring_scope.region_code=child.code
+                  JOIN all_descendants descendants ON child.parent_code=descendants.code
+                ), descendants(root_code,code) AS (
+                  SELECT DISTINCT descendants.root_code,descendants.code
+                  FROM all_descendants descendants
+                  JOIN monitoring_scope ON monitoring_scope.region_code=descendants.code
                 ), business_record AS (
                   SELECT record.record_id,record.region_code FROM production.production_record record
                   WHERE record.product_code=:product AND record.survey_year=:year
@@ -733,13 +697,16 @@ public class JdbcOverviewRepository implements OverviewRepository {
                     AND (:unrestricted OR region_code IN (:authorizedRegions))
                 ), children AS (
                   SELECT region.code,region.name,region.sort_order FROM platform.region region
-                  JOIN monitoring_scope ON monitoring_scope.region_code=region.code WHERE region.parent_code=:region
-                ), descendants(root_code,code) AS (
+                  WHERE region.parent_code=:region
+                ), all_descendants(root_code,code) AS (
                   SELECT code,code FROM children
                   UNION ALL
                   SELECT descendants.root_code,child.code FROM platform.region child
-                  JOIN descendants ON child.parent_code=descendants.code
-                  JOIN monitoring_scope ON monitoring_scope.region_code=child.code
+                  JOIN all_descendants descendants ON child.parent_code=descendants.code
+                ), descendants(root_code,code) AS (
+                  SELECT DISTINCT descendants.root_code,descendants.code
+                  FROM all_descendants descendants
+                  JOIN monitoring_scope ON monitoring_scope.region_code=descendants.code
                 ), production_record AS (
                   SELECT record.*,
                     CASE WHEN record.survey_year=:year THEN 'CURRENT' ELSE 'PREVIOUS' END comparison_period

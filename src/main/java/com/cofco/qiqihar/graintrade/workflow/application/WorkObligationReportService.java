@@ -79,6 +79,10 @@ public class WorkObligationReportService {
                 && !principal.roleCodes().contains("SYSTEM_ADMIN")) {
             throw denied();
         }
+        if (export.authorizedRegionCodes().isEmpty()
+                || !principal.regionCodes().containsAll(export.authorizedRegionCodes())) {
+            throw denied();
+        }
         audit.record(principal, "WORK_OBLIGATION_REPORT", export.id(),
                 "WORK_OBLIGATION_REPORT_DOWNLOADED", clock.instant(), "{}");
         return export;

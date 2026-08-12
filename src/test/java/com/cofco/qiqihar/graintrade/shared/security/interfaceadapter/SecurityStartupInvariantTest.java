@@ -34,6 +34,63 @@ class SecurityStartupInvariantTest {
     }
 
     @Test
+    void rejectsIncompleteOidcBrowserClientInProduction() {
+        assertThatThrownBy(() -> SecurityStartupInvariant.validate(
+                Set.of("production"), "127.0.0.1", "", "https://id.example.test",
+                "", "", "", "", "mfa", "", true))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("QIQIHAR_OIDC_CLIENT_ID");
+        assertThatThrownBy(() -> SecurityStartupInvariant.validate(
+                Set.of("production"), "127.0.0.1", "", "https://id.example.test",
+                "client", "", "", "", "mfa", "", true))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("QIQIHAR_OIDC_CLIENT_SECRET");
+        assertThatThrownBy(() -> SecurityStartupInvariant.validate(
+                Set.of("production"), "127.0.0.1", "", "https://id.example.test",
+                "client", "secret", "", "", "mfa", "", true))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("QIQIHAR_OIDC_REDIRECT_URI");
+    }
+
+    @Test
+    void rejectsCallbackOutsideTheControlledEnterpriseEndpoint() {
+        assertThatThrownBy(() -> SecurityStartupInvariant.validate(
+                Set.of("production"), "127.0.0.1", "", "https://id.example.test",
+                "client", "secret", "https://app.example.test/uncontrolled", "", "mfa", "", true))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("/login/oauth2/code/enterprise");
+    }
+
+    @Test
+    void rejectsProductionWithoutApprovedMfaEvidenceContract() {
+        assertThatThrownBy(() -> SecurityStartupInvariant.validate(
+                Set.of("production"), "127.0.0.1", "", "https://id.example.test",
+                "client", "secret", "https://app.example.test/login/oauth2/code/enterprise",
+                "https://app.example.test/logged-out", "", "", true))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("MFA");
+    }
+
+    @Test
+    void acceptsCompleteProductionBrowserSessionContract() {
+        assertThatCode(() -> SecurityStartupInvariant.validate(
+                Set.of("production"), "127.0.0.1", "", "https://id.example.test",
+                "client", "secret", "https://app.example.test/login/oauth2/code/enterprise",
+                "https://app.example.test/logged-out", "mfa", "", true))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void rejectsProductionWithoutControlledPostLogoutRedirect() {
+        assertThatThrownBy(() -> SecurityStartupInvariant.validate(
+                Set.of("production"), "127.0.0.1", "", "https://id.example.test",
+                "client", "secret", "https://app.example.test/login/oauth2/code/enterprise",
+                "", "mfa", "", true))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("QIQIHAR_OIDC_POST_LOGOUT_REDIRECT_URI");
+    }
+
+    @Test
     void acceptsLocalProfileOnLoopbackWithDevelopmentActorHeader() {
         assertThatCode(() -> SecurityStartupInvariant.validate(
                 Set.of("local"), "127.0.0.1", "X-Actor", ""))

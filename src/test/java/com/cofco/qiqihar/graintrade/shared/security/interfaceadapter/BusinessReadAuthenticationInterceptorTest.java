@@ -2,6 +2,7 @@ package com.cofco.qiqihar.graintrade.shared.security.interfaceadapter;
 
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
 import org.junit.jupiter.api.Test;
@@ -20,5 +21,17 @@ class BusinessReadAuthenticationInterceptorTest {
         interceptor.preHandle(request, new MockHttpServletResponse(), new Object());
 
         verify(accessControl).require("BUSINESS_READ", null);
+    }
+
+    @Test
+    void controlledOidcLoginEntryIsTheOnlyAnonymousGetUnderTheBusinessApiPrefix() {
+        AccessControl accessControl = mock(AccessControl.class);
+        BusinessReadAuthenticationInterceptor interceptor =
+                new BusinessReadAuthenticationInterceptor(accessControl, true);
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/v1/session/login");
+
+        interceptor.preHandle(request, new MockHttpServletResponse(), new Object());
+
+        verifyNoInteractions(accessControl);
     }
 }

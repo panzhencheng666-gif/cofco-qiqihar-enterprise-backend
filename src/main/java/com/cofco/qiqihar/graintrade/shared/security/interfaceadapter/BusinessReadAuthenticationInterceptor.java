@@ -41,7 +41,10 @@ public class BusinessReadAuthenticationInterceptor implements HandlerInterceptor
 
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
-        if (required && "GET".equals(request.getMethod())) accessControl.require("BUSINESS_READ", null);
+        String path = request.getRequestURI().substring(request.getContextPath().length());
+        if (required && "GET".equals(request.getMethod()) && !"/api/v1/session/login".equals(path)) {
+            accessControl.require("BUSINESS_READ", null);
+        }
         return true;
     }
 }

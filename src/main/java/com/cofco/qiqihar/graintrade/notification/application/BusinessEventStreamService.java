@@ -3,6 +3,7 @@ package com.cofco.qiqihar.graintrade.notification.application;
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
 import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
+import com.cofco.qiqihar.graintrade.shared.security.application.SecurityPrincipalRepository;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import jakarta.annotation.PreDestroy;
 import java.io.IOException;
@@ -25,14 +26,18 @@ public class BusinessEventStreamService implements SmartLifecycle {
 
     private final BusinessNotificationRepository repository;
     private final AccessControl accessControl;
+    private final SecurityPrincipalRepository principals;
     private final ExecutorService connections = Executors.newVirtualThreadPerTaskExecutor();
     private final Set<SseEmitter> activeEmitters = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private volatile boolean running;
 
     public BusinessEventStreamService(
-            BusinessNotificationRepository repository, AccessControl accessControl) {
+            BusinessNotificationRepository repository,
+            AccessControl accessControl,
+            SecurityPrincipalRepository principals) {
         this.repository = repository;
         this.accessControl = accessControl;
+        this.principals = principals;
     }
 
     public SseEmitter stream(long afterSequence) {
@@ -63,12 +68,16 @@ public class BusinessEventStreamService implements SmartLifecycle {
             SseEmitter emitter,
             AtomicBoolean closed,
             String subjectId,
-            AuthorizedReadScope scope,
+            AuthorizedReadScope initialScope,
             long initialCursor) {
         long cursor = initialCursor;
         long lastHeartbeatNanos = System.nanoTime();
+        AuthorizedReadScope scope = initialScope;
         try {
             while (!closed.get() && !Thread.currentThread().isInterrupted()) {
+                SecurityPrincipal current = principals.findEnabled(subjectId).orElse(null);
+                if (current == null || !current.permits("BUSINESS_READ")) break;
+                scope = new AuthorizedReadScope(subjectId, current.regionCodes());
                 List<BusinessNotification> events =
                         repository.findVisibleAfter(scope, subjectId, cursor, BATCH_SIZE);
                 for (BusinessNotification event : events) {

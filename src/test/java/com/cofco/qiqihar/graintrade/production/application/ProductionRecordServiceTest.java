@@ -100,7 +100,7 @@ class ProductionRecordServiceTest {
         ProductionRecordView result = service.detail("record-1");
 
         assertThat(result.record()).isSameAs(record);
-        assertThat(result.allowedActions()).containsExactly("VIEW", "SAVE", "SUBMIT");
+        assertThat(result.allowedActions()).containsExactly("VIEW", "SAVE", "SUBMIT", "VOID");
     }
 
     @Test

@@ -25,10 +25,22 @@ public class LocalSecurityBootstrapConfiguration {
                     WHERE work_unit_code = 'LOCAL_DEV'
                     """).update();
             jdbc.sql("""
+                    WITH preferred AS (
+                        SELECT scope.region_code
+                        FROM platform.monitoring_scope_region scope
+                        JOIN platform.region region ON region.code=scope.region_code
+                        WHERE scope.scope_code='FORMAL_BUSINESS' AND scope.included
+                          AND region.administrative_level='TOWNSHIP'
+                    ), eligible AS (
+                        SELECT region_code FROM preferred
+                        UNION ALL
+                        SELECT scope.region_code
+                        FROM platform.monitoring_scope_region scope
+                        WHERE scope.scope_code='FORMAL_BUSINESS' AND scope.included
+                          AND NOT EXISTS (SELECT 1 FROM preferred)
+                    )
                     INSERT INTO platform.work_unit_region_scope(work_unit_code, region_code)
-                    SELECT 'LOCAL_DEV', region_code
-                    FROM platform.monitoring_scope_region
-                    WHERE scope_code = 'FORMAL_BUSINESS' AND included
+                    SELECT 'LOCAL_DEV', region_code FROM eligible
                     """).update();
             jdbc.sql("""
                     INSERT INTO platform.security_user(subject_id, display_name, work_unit_code)
@@ -44,14 +56,28 @@ public class LocalSecurityBootstrapConfiguration {
                     ON CONFLICT DO NOTHING
                     """).update();
             jdbc.sql("""
-                    DELETE FROM platform.security_user_region_scope
-                    WHERE subject_id = 'wang-yang'
+                    UPDATE platform.security_user_region_scope scope
+                       SET valid_until=now(),last_reviewed_at=now(),review_due_at=now()+interval '90 days'
+                     WHERE scope.subject_id='wang-yang'
+                       AND now()>=scope.valid_from
+                       AND (scope.valid_until IS NULL OR now()<scope.valid_until)
+                       AND NOT EXISTS (
+                           SELECT 1 FROM platform.work_unit_region_scope eligible
+                           WHERE eligible.work_unit_code='LOCAL_DEV'
+                             AND eligible.region_code=scope.region_code)
                     """).update();
             jdbc.sql("""
-                    INSERT INTO platform.security_user_region_scope(subject_id, region_code)
-                    SELECT 'wang-yang', region_code
-                    FROM platform.monitoring_scope_region
-                    WHERE scope_code = 'FORMAL_BUSINESS' AND included
+                    INSERT INTO platform.security_user_region_scope(
+                        subject_id,region_code,valid_from,granted_by,granted_at,last_reviewed_at,review_due_at)
+                    SELECT 'wang-yang',eligible.region_code,now(),'wang-yang',now(),now(),now()+interval '90 days'
+                    FROM platform.work_unit_region_scope eligible
+                    WHERE eligible.work_unit_code='LOCAL_DEV'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM platform.security_user_region_scope active_scope
+                          WHERE active_scope.subject_id='wang-yang'
+                            AND active_scope.region_code=eligible.region_code
+                            AND now()>=active_scope.valid_from
+                            AND (active_scope.valid_until IS NULL OR now()<active_scope.valid_until))
                     """).update();
         };
     }

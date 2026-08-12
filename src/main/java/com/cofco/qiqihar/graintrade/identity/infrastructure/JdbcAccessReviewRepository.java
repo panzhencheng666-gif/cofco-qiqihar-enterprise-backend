@@ -147,12 +147,14 @@ public class JdbcAccessReviewRepository implements AccessReviewRepository {
 
     private void markReviewed(AccessReviewDecision decision,Instant now) {
         if("ROLE".equals(decision.grantType()))jdbc.sql("""
-                UPDATE platform.security_user_role SET last_reviewed_at=:now
+                UPDATE platform.security_user_role
+                SET last_reviewed_at=:now,review_due_at=:now+interval '1 year'
                 WHERE subject_id=:subject AND role_code=:key
                   AND :now>=valid_from AND (valid_until IS NULL OR :now<valid_until)
                 """).param("now",dbTime(now)).param("subject",decision.subjectId()).param("key",decision.grantKey()).update();
         if("REGION".equals(decision.grantType()))jdbc.sql("""
-                UPDATE platform.security_user_region_scope SET last_reviewed_at=:now
+                UPDATE platform.security_user_region_scope
+                SET last_reviewed_at=:now,review_due_at=:now+interval '1 year'
                 WHERE subject_id=:subject AND region_code=:key
                   AND :now>=valid_from AND (valid_until IS NULL OR :now<valid_until)
                 """).param("now",dbTime(now)).param("subject",decision.subjectId()).param("key",decision.grantKey()).update();

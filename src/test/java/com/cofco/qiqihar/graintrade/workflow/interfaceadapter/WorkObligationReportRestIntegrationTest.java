@@ -164,6 +164,14 @@ class WorkObligationReportRestIntegrationTest {
                 WHERE aggregate_type='WORK_OBLIGATION_REPORT' AND aggregate_id=:id
                   AND action_code IN ('WORK_OBLIGATION_REPORT_EXPORTED','WORK_OBLIGATION_REPORT_DOWNLOADED')
                 """).param("id", exportId).query(Long.class).single()).isEqualTo(2L);
+
+        jdbc.sql("""
+                UPDATE platform.security_user_region_scope SET valid_until=now()
+                WHERE subject_id=:reviewer AND region_code='230202' AND valid_until IS NULL
+                """).param("reviewer", REVIEWER).update();
+        mockMvc.perform(get("/api/v1/work-obligation-reports/exports/{id}/content", exportId)
+                        .principal(() -> REVIEWER))
+                .andExpect(status().isForbidden());
     }
 
     private void insertItem(

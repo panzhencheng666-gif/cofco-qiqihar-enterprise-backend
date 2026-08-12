@@ -110,9 +110,9 @@ public class JdbcWorkObligationReportRepository implements WorkObligationReportR
         jdbc.sql("""
                 INSERT INTO workflow.obligation_report_export(
                     export_id,week_start,week_end,subject_id,work_unit_code,business_domain,
-                    region_code,generated_by,generated_at,filename,content_type,content_sha256,content)
+                    region_code,authorized_region_codes,generated_by,generated_at,filename,content_type,content_sha256,content)
                 VALUES (CAST(:id AS uuid),:weekStart,:weekEnd,:subjectId,:workUnitCode,:domain,
-                    :regionCode,:generatedBy,:generatedAt,:filename,:contentType,:checksum,:content)
+                    :regionCode,:authorizedRegions,:generatedBy,:generatedAt,:filename,:contentType,:checksum,:content)
                 """)
                 .param("id", export.id())
                 .param("weekStart", export.query().weekStart())
@@ -121,6 +121,7 @@ public class JdbcWorkObligationReportRepository implements WorkObligationReportR
                 .param("workUnitCode", export.query().workUnitCode(), java.sql.Types.VARCHAR)
                 .param("domain", export.query().businessDomain(), java.sql.Types.VARCHAR)
                 .param("regionCode", export.query().regionCode(), java.sql.Types.VARCHAR)
+                .param("authorizedRegions", export.query().authorizedRegionCodes().toArray(String[]::new))
                 .param("generatedBy", export.generatedBy())
                 .param("generatedAt", OffsetDateTime.ofInstant(export.generatedAt(), REPORTING_ZONE),
                         java.sql.Types.TIMESTAMP_WITH_TIMEZONE)
@@ -134,11 +135,12 @@ public class JdbcWorkObligationReportRepository implements WorkObligationReportR
     @Override
     public ExportContent findExport(String exportId) {
         return jdbc.sql("""
-                SELECT export_id::text,generated_by,filename,content_type,content
+                SELECT export_id::text,generated_by,filename,content_type,authorized_region_codes,content
                 FROM workflow.obligation_report_export WHERE export_id=CAST(:id AS uuid)
                 """).param("id", exportId).query((row, ignored) -> new ExportContent(
                         row.getString("export_id"), row.getString("generated_by"),
                         row.getString("filename"), row.getString("content_type"),
+                        java.util.Set.of((String[]) row.getArray("authorized_region_codes").getArray()),
                         row.getBytes("content"))).optional().orElse(null);
     }
 

@@ -74,6 +74,8 @@ public class IdentityGovernanceService {
     @Transactional
     public EmployeeProfile update(String subjectId,long expectedVersion,EmployeeAssignment assignment) {
         SecurityPrincipal actor=access.require("IDENTITY_ADMIN",null);
+        if(actor.subjectId().equals(subjectId))throw new AccessDeniedException(
+                "IDENTITY_SELF_ADMINISTRATION_DENIED","不能修改本人的账号或授权");
         EmployeeProfile current=required(subjectId,actor);
         if(!systemAdministrator(actor)&&current.roles().stream().anyMatch(role->role.code().equals("SYSTEM_ADMIN")))
             throw roleDenied();

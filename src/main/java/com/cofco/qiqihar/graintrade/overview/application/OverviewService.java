@@ -57,7 +57,8 @@ public class OverviewService {
                 || !repository.knownProduct(productCode) || !repository.knownRegion(regionCode)
                 || (!blank(periodCode) && !repository.knownPeriod(periodCode))) throw invalid();
         int effectiveYear = effectiveYear(year, periodCode);
-        AuthorizedReadScope scope=readScope(); scope.requireRegion(regionCode);
+        AuthorizedReadScope scope=readScope();
+        if (!repository.canNavigateRegion(regionCode, scope.regionCodes())) scope.requireRegion(regionCode);
         return repository.indicators(productCode, regionCode, effectiveYear, scope.regionCodes());
     }
 
@@ -70,7 +71,9 @@ public class OverviewService {
         int effectiveYear = effectiveYear(year, periodCode);
         AuthorizedReadScope scope=readScope();
         if(scope.regionCodes().isEmpty())scope.requireRegion(regionCode);
-        if(!blank(regionCode))scope.requireRegion(regionCode);
+        if (!blank(regionCode) && !repository.canNavigateRegion(regionCode, scope.regionCodes())) {
+            scope.requireRegion(regionCode);
+        }
         return repository.dashboard(productCode, effectiveYear, regionCode, scope.regionCodes());
     }
 

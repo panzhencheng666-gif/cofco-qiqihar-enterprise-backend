@@ -295,6 +295,11 @@ class ProductionRecordRestIntegrationTest {
                         .content("{\"version\":1}"))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error.code").value("SELF_APPROVAL_FORBIDDEN"));
+        mockMvc.perform(post("/api/v1/production-records/{id}/return", id)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1,\"reason\":\"补充依据\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("SELF_RETURN_FORBIDDEN"));
 
         mockMvc.perform(post("/api/v1/production-records/{id}/approve", id)
                         .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)

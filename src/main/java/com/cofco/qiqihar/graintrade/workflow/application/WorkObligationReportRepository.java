@@ -44,8 +44,10 @@ public interface WorkObligationReportRepository {
             String generatedBy,
             String filename,
             String contentType,
+            Set<String> authorizedRegionCodes,
             byte[] content) {
         public ExportContent {
+            authorizedRegionCodes = Set.copyOf(authorizedRegionCodes);
             content = content.clone();
         }
     }
