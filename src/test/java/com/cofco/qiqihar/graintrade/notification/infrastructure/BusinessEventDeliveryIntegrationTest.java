@@ -48,12 +48,18 @@ import org.springframework.core.annotation.AnnotatedElementUtils;
 class BusinessEventDeliveryIntegrationTest {
     private static final String CONSUMER = "def-100-shared-consumer";
     private static final String SUBJECT = "def-100-reader";
+    private static final String FULL_SCOPE_SUBJECT = "def-103-full-scope-reader";
+    private static final String EMPTY_SCOPE_SUBJECT = "def-103-empty-scope-reader";
     private static final String REGION = "230208";
     private static final String HIDDEN_REGION = "231100";
     private static final UUID FIRST = UUID.fromString("99000000-0000-0000-0000-000000000001");
     private static final UUID POISON = UUID.fromString("99000000-0000-0000-0000-000000000002");
     private static final UUID THIRD = UUID.fromString("99000000-0000-0000-0000-000000000003");
     private static final UUID HIDDEN = UUID.fromString("99000000-0000-0000-0000-000000000004");
+    private static final UUID HIDDEN_BACKLOG =
+            UUID.fromString("99000000-0000-0000-0000-000000000005");
+    private static final UUID VISIBLE_BACKLOG =
+            UUID.fromString("99000000-0000-0000-0000-000000000006");
 
     @Autowired DataSource dataSource;
     @Autowired BusinessNotificationRepository notifications;
@@ -66,6 +72,7 @@ class BusinessEventDeliveryIntegrationTest {
     void setUp() {
         jdbc = JdbcClient.create(dataSource);
         cleanup();
+        ensureAuthorizationFixture();
         clock = new MutableClock(Instant.now().truncatedTo(ChronoUnit.MICROS));
         insertEvent(FIRST, "first", clock.instant());
         insertEvent(POISON, "poison", clock.instant().plusSeconds(1));
@@ -234,6 +241,117 @@ class BusinessEventDeliveryIntegrationTest {
     }
 
     @Test
+    void operationalBacklogExcludesHiddenEventsWithoutDeliveryStateOrMetadataLeak() {
+        String consumer = CONSUMER + ":authorized-backlog";
+        AuthorizedReadScope scope = new AuthorizedReadScope(SUBJECT, Set.of(REGION));
+        BusinessEventDeliveryService service = service();
+        service.drain(consumer, "instance-authorized-backlog", scope, SUBJECT,
+                initialSequence, 20, ignored -> {});
+        insertEvent(HIDDEN_BACKLOG, "hidden-backlog", clock.instant().plusSeconds(3), HIDDEN_REGION);
+
+        assertThat(service.backlog(consumer, scope, initialSequence)).satisfies(backlog -> {
+            assertThat(backlog.pendingCount()).isZero();
+            assertThat(backlog.oldestPendingAt()).isNull();
+        });
+        assertThat(jdbc.sql("""
+                SELECT pending_count,oldest_pending_at
+                FROM platform.business_event_delivery_backlog
+                WHERE consumer_id=:consumer
+                """).param("consumer", consumer).query().singleRow()).satisfies(row -> {
+                    assertThat(((Number) row.get("pending_count")).longValue()).isZero();
+                    assertThat(row.get("oldest_pending_at")).isNull();
+                });
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_event_delivery_state
+                WHERE consumer_id=:consumer AND event_id=:eventId
+                """).param("consumer", consumer).param("eventId", HIDDEN_BACKLOG)
+                .query(Long.class).single()).isZero();
+
+        insertEvent(VISIBLE_BACKLOG, "visible-backlog", clock.instant().plusSeconds(4), REGION);
+
+        assertThat(service.backlog(consumer, scope, initialSequence)).satisfies(backlog -> {
+            assertThat(backlog.pendingCount()).isOne();
+            assertThat(backlog.oldestPendingAt()).isEqualTo(clock.instant().plusSeconds(4));
+        });
+        assertThat(jdbc.sql("""
+                SELECT pending_count,oldest_pending_at
+                FROM platform.business_event_delivery_backlog
+                WHERE consumer_id=:consumer
+                """).param("consumer", consumer).query().singleRow()).satisfies(row -> {
+                    assertThat(((Number) row.get("pending_count")).longValue()).isOne();
+                    assertThat(((Timestamp) row.get("oldest_pending_at")).toInstant())
+                            .isEqualTo(clock.instant().plusSeconds(4));
+                });
+    }
+
+    @Test
+    void operationalBacklogHandlesFullAndEmptyRegionScopesAndCurrentRevocation() {
+        String fullConsumer = CONSUMER + ":full-scope";
+        String emptyConsumer = CONSUMER + ":empty-scope";
+        BusinessEventDeliveryService service = service();
+        AuthorizedReadScope fullScope = new AuthorizedReadScope(
+                FULL_SCOPE_SUBJECT, Set.of(REGION, HIDDEN_REGION));
+        AuthorizedReadScope emptyScope = new AuthorizedReadScope(EMPTY_SCOPE_SUBJECT, Set.of());
+        service.drain(fullConsumer, "instance-full-scope", fullScope, FULL_SCOPE_SUBJECT,
+                initialSequence, 20, ignored -> {});
+        service.drain(emptyConsumer, "instance-empty-scope", emptyScope, EMPTY_SCOPE_SUBJECT,
+                initialSequence, 20, ignored -> {});
+        insertEvent(HIDDEN_BACKLOG, "full-scope-hidden", clock.instant().plusSeconds(3), HIDDEN_REGION);
+        insertEvent(VISIBLE_BACKLOG, "full-scope-visible", clock.instant().plusSeconds(4), REGION);
+
+        assertThat(jdbc.sql("""
+                SELECT consumer_id,pending_count,oldest_pending_at
+                FROM platform.business_event_delivery_backlog
+                WHERE consumer_id IN (:consumers)
+                ORDER BY consumer_id
+                """).param("consumers", List.of(fullConsumer, emptyConsumer)).query().listOfRows())
+                .satisfiesExactly(
+                        row -> {
+                            assertThat(row).containsEntry("consumer_id", emptyConsumer)
+                                    .containsEntry("pending_count", 0L);
+                            assertThat(row.get("oldest_pending_at")).isNull();
+                        },
+                        row -> {
+                            assertThat(row).containsEntry("consumer_id", fullConsumer)
+                                    .containsEntry("pending_count", 2L);
+                            assertThat(((Timestamp) row.get("oldest_pending_at")).toInstant())
+                                    .isEqualTo(clock.instant().plusSeconds(3));
+                        });
+
+        jdbc.sql("""
+                UPDATE platform.security_user_region_scope
+                SET valid_until=clock_timestamp()
+                WHERE subject_id=:subject AND region_code=:region
+                """).param("subject", FULL_SCOPE_SUBJECT).param("region", HIDDEN_REGION).update();
+
+        assertThat(jdbc.sql("""
+                SELECT pending_count,oldest_pending_at
+                FROM platform.business_event_delivery_backlog
+                WHERE consumer_id=:consumer
+                """).param("consumer", fullConsumer).query().singleRow()).satisfies(row -> {
+                    assertThat(row).containsEntry("pending_count", 1L);
+                    assertThat(((Timestamp) row.get("oldest_pending_at")).toInstant())
+                            .isEqualTo(clock.instant().plusSeconds(4));
+                });
+    }
+
+    @Test
+    void deliveryRejectsAConsumerWhoseSubjectDoesNotMatchItsAuthorizedScope() {
+        AuthorizedReadScope scope = new AuthorizedReadScope(SUBJECT, Set.of(REGION));
+
+        assertThatThrownBy(() -> service().drain(
+                CONSUMER + ":subject-mismatch", "instance-subject-mismatch", scope,
+                FULL_SCOPE_SUBJECT, initialSequence, 20, ignored -> {}))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must match");
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_event_delivery_checkpoint
+                WHERE consumer_id=:consumer
+                """).param("consumer", CONSUMER + ":subject-mismatch")
+                .query(Long.class).single()).isZero();
+    }
+
+    @Test
     void retiredConnectionStopsContributingFalseBacklogAndReconnectCompensatesFromItsCursor() {
         String retiredConsumer = CONSUMER + ":retired-connection";
         String reconnectConsumer = CONSUMER + ":reconnected";
@@ -356,14 +474,22 @@ class BusinessEventDeliveryIntegrationTest {
                          'platform.business_event_delivery_checkpoint','last_observed_sequence','UPDATE')
                    AND NOT has_column_privilege('cofco_app',
                          'platform.business_event_delivery_checkpoint','lifecycle_status','UPDATE')
+                   AND NOT has_column_privilege('cofco_app',
+                         'platform.business_event_delivery_checkpoint','authorization_subject_id','UPDATE')
                    AND NOT has_sequence_privilege('cofco_app',
                          'platform.business_event_consumer_lifecycle_event_lifecycle_event_id_seq','USAGE')
-                   AND has_function_privilege('cofco_app',
+                   AND NOT has_function_privilege('cofco_app',
                          'platform.ensure_business_event_consumer(varchar,varchar,bigint)','EXECUTE')
+                   AND has_function_privilege('cofco_app',
+                         'platform.ensure_business_event_consumer(varchar,varchar,bigint,varchar)','EXECUTE')
                    AND has_function_privilege('cofco_app',
                          'platform.retire_business_event_consumer(varchar,varchar,bigint,varchar)','EXECUTE')
                    AND has_function_privilege('cofco_app',
                          'platform.expire_business_event_consumers()','EXECUTE')
+                   AND NOT has_table_privilege('cofco_app',
+                         'platform.business_event_delivery_backlog','SELECT')
+                   AND has_table_privilege('qiqihar_event_operations_monitor',
+                         'platform.business_event_delivery_backlog','SELECT')
                 """).query(Boolean.class).single()).isTrue();
         assertThat(jdbc.sql("""
                 SELECT NOT EXISTS (
@@ -382,6 +508,28 @@ class BusinessEventDeliveryIntegrationTest {
                 DELETE FROM platform.business_event_delivery_checkpoint
                 WHERE consumer_id='def-100-shared-consumer:acl-probe'
                 """)).hasMessageContaining("permission denied");
+        assertThatThrownBy(() -> executeAsRuntime("""
+                UPDATE platform.business_event_delivery_checkpoint
+                SET authorization_subject_id='def-103-full-scope-reader'
+                WHERE consumer_id='def-100-shared-consumer:acl-probe'
+                """)).hasMessageContaining("permission denied");
+        assertThatThrownBy(() -> executeAsRuntime("""
+                SELECT * FROM platform.business_event_delivery_backlog
+                """)).hasMessageContaining("permission denied");
+        assertThatThrownBy(() -> executeAsRuntime("""
+                SELECT platform.ensure_business_event_consumer(
+                  'def-100-shared-consumer:acl-probe','instance-acl',0)
+                """)).hasMessageContaining("permission denied");
+        executeAsRuntime("""
+                SELECT platform.ensure_business_event_consumer(
+                  'def-100-shared-consumer:acl-probe','instance-rebind',0,
+                  'def-103-full-scope-reader')
+                """);
+        assertThat(jdbc.sql("""
+                SELECT authorization_subject_id
+                FROM platform.business_event_delivery_checkpoint
+                WHERE consumer_id=:consumer
+                """).param("consumer", consumer).query(String.class).single()).isEqualTo(SUBJECT);
         assertThatThrownBy(() -> executeAsRuntime("""
                 SELECT platform.retire_business_event_consumer(
                   'def-100-shared-consumer:acl-probe','instance-acl',0,'FORGED_REASON')
@@ -529,6 +677,44 @@ class BusinessEventDeliveryIntegrationTest {
                 .param("occurredAt", Timestamp.from(occurredAt)).update();
     }
 
+    private void ensureAuthorizationFixture() {
+        jdbc.sql("""
+                INSERT INTO platform.work_unit(code,name,sort_order)
+                SELECT 'DEF_100_TEST','事件积压授权测试单位',COALESCE(max(sort_order),0)+1
+                FROM platform.work_unit
+                ON CONFLICT(code) DO NOTHING
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.work_unit_region_scope(work_unit_code,region_code)
+                VALUES('DEF_100_TEST',:region),('DEF_100_TEST',:hiddenRegion)
+                ON CONFLICT DO NOTHING
+                """).param("region", REGION).param("hiddenRegion", HIDDEN_REGION).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user(subject_id,display_name,work_unit_code)
+                VALUES(:subject,'事件积压授权测试员工','DEF_100_TEST'),
+                      (:fullSubject,'事件积压全范围测试员工','DEF_100_TEST'),
+                      (:emptySubject,'事件积压空范围测试员工','DEF_100_TEST')
+                ON CONFLICT(subject_id) DO NOTHING
+                """).param("subject", SUBJECT).param("fullSubject", FULL_SCOPE_SUBJECT)
+                .param("emptySubject", EMPTY_SCOPE_SUBJECT).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_role(subject_id,role_code,valid_from)
+                VALUES(:subject,'SYSTEM_ADMIN','-infinity'),
+                      (:fullSubject,'SYSTEM_ADMIN','-infinity'),
+                      (:emptySubject,'SYSTEM_ADMIN','-infinity')
+                ON CONFLICT DO NOTHING
+                """).param("subject", SUBJECT).param("fullSubject", FULL_SCOPE_SUBJECT)
+                .param("emptySubject", EMPTY_SCOPE_SUBJECT).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_region_scope(subject_id,region_code,valid_from)
+                VALUES(:subject,:region,'-infinity'),
+                      (:fullSubject,:region,'-infinity'),
+                      (:fullSubject,:hiddenRegion,'-infinity')
+                ON CONFLICT DO NOTHING
+                """).param("subject", SUBJECT).param("fullSubject", FULL_SCOPE_SUBJECT)
+                .param("region", REGION).param("hiddenRegion", HIDDEN_REGION).update();
+    }
+
     private String status(UUID eventId) {
         return jdbc.sql("""
                 SELECT status_code FROM platform.business_event_delivery_state
@@ -552,7 +738,18 @@ class BusinessEventDeliveryIntegrationTest {
         jdbc.sql("DELETE FROM platform.business_event_delivery_checkpoint WHERE consumer_id LIKE :consumer")
                 .param("consumer", CONSUMER + "%").update();
         jdbc.sql("DELETE FROM platform.business_event_outbox WHERE event_id IN (:ids)")
-                .param("ids", List.of(FIRST, POISON, THIRD, HIDDEN)).update();
+                .param("ids", List.of(FIRST, POISON, THIRD, HIDDEN, HIDDEN_BACKLOG, VISIBLE_BACKLOG))
+                .update();
+        List<String> subjects = List.of(SUBJECT, FULL_SCOPE_SUBJECT, EMPTY_SCOPE_SUBJECT);
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id IN (:subjects)")
+                .param("subjects", subjects).update();
+        jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id IN (:subjects)")
+                .param("subjects", subjects).update();
+        jdbc.sql("DELETE FROM platform.security_user WHERE subject_id IN (:subjects)")
+                .param("subjects", subjects).update();
+        jdbc.sql("DELETE FROM platform.work_unit_region_scope WHERE work_unit_code='DEF_100_TEST'")
+                .update();
+        jdbc.sql("DELETE FROM platform.work_unit WHERE code='DEF_100_TEST'").update();
     }
 
     private static final class MutableClock extends Clock {

@@ -67,9 +67,12 @@ public class BusinessEventDeliveryService {
             long afterSequence,
             int limit,
             DeliverySink sink) {
+        if (!subjectId.equals(scope.subjectId())) {
+            throw new IllegalArgumentException("Delivery subject must match the authorized read scope");
+        }
         Instant now = clock.instant();
         deliveries.expireStaleConsumers();
-        deliveries.ensureCheckpoint(consumerId, instanceId, afterSequence);
+        deliveries.ensureCheckpoint(consumerId, instanceId, afterSequence, subjectId);
         OptionalRetry pollRetry = pollRetry(consumerId, now);
         if (pollRetry.deferred()) {
             return new DrainResult(afterSequence, 0, 0, pollRetry.delay(), false);

@@ -29,14 +29,18 @@ public class JdbcBusinessEventDeliveryRepository implements BusinessEventDeliver
     public void ensureCheckpoint(
             String consumerId,
             String instanceId,
-            long initialSequence) {
+            long initialSequence,
+            String authorizationSubjectId) {
         boolean active = jdbc.sql("""
                 SELECT platform.ensure_business_event_consumer(
-                  :consumerId,:instanceId,:initialSequence)
+                  :consumerId,:instanceId,:initialSequence,:authorizationSubjectId)
                 """).param("consumerId", consumerId).param("instanceId", instanceId)
-                .param("initialSequence", initialSequence).query(Boolean.class).single();
+                .param("initialSequence", initialSequence)
+                .param("authorizationSubjectId", authorizationSubjectId)
+                .query(Boolean.class).single();
         if (!active) {
-            throw new IllegalStateException("Retired business event consumer identifiers cannot be reused");
+            throw new IllegalStateException(
+                    "Retired consumers cannot be reused or rebound to another authorization subject");
         }
     }
 

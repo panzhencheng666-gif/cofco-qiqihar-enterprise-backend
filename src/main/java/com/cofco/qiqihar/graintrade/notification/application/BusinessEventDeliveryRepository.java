@@ -10,7 +10,8 @@ public interface BusinessEventDeliveryRepository {
     void ensureCheckpoint(
             String consumerId,
             String instanceId,
-            long initialSequence);
+            long initialSequence,
+            String authorizationSubjectId);
 
     boolean retireConsumer(
             String consumerId,
