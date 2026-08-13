@@ -52,6 +52,7 @@ public class MarketImportService implements QueuedImportProcessor {
         return MarketImportTemplate.workbook(market.definition(productCode, objectTypeCode));
     }
 
+    @Transactional
     public ImportErrorFile errors(UUID importJobId) {
         SecurityPrincipal principal = access.require("BUSINESS_IMPORT", null);
         ImportJob job = jobs.findById(importJobId)
@@ -71,8 +72,11 @@ public class MarketImportService implements QueuedImportProcessor {
             csv.append(CsvTable.escape(row.errorCode())).append(',')
                     .append(CsvTable.escape(row.errorMessage())).append('\n');
         });
-        return new ImportErrorFile("market-import-errors-" + job.id() + ".csv",
+        ImportErrorFile file = new ImportErrorFile("market-import-errors-" + job.id() + ".csv",
                 csv.toString().getBytes(StandardCharsets.UTF_8));
+        audit.record(principal, "IMPORT_JOB", job.id().toString(), "IMPORT_ERROR_FILE_DOWNLOADED",
+                clock.instant(), "{}");
+        return file;
     }
 
     @Transactional

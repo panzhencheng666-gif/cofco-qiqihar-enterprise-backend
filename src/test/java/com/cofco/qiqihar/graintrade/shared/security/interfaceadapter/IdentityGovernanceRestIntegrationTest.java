@@ -471,10 +471,12 @@ class IdentityGovernanceRestIntegrationTest {
                                 """.formatted(TOWNSHIP)))
                 .andExpect(status().isOk());
 
+        long beforeAuditReads = auditReadCount();
         mvc.perform(get("/api/v1/audit-events")
                         .param("workUnitCode",governedUnit).principal(() -> employee))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error.code").value("ACCESS_PERMISSION_DENIED"));
+        org.assertj.core.api.Assertions.assertThat(auditReadCount()).isEqualTo(beforeAuditReads);
 
         mvc.perform(get("/api/v1/audit-events")
                         .param("workUnitCode",governedUnit)
@@ -487,6 +489,14 @@ class IdentityGovernanceRestIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].actorDisplayName").isNotEmpty())
                 .andExpect(jsonPath("$.data.pageNumber").value(0))
                 .andExpect(jsonPath("$.data.pageSize").value(20));
+        org.assertj.core.api.Assertions.assertThat(auditReadCount()).isEqualTo(beforeAuditReads + 1);
+    }
+
+    private long auditReadCount() {
+        return jdbc.sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE action_code='AUDIT_EVENTS_READ'
+                """).query(Long.class).single();
     }
 
     @Test

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
@@ -112,7 +113,7 @@ class LogisticsImportRestIntegrationTest {
         byte[] workbook = BusinessImportWorkbook.create(
                 LogisticsImportTemplate.workbook(definition), List.of(valid, invalid));
 
-        mvc.perform(multipart("/api/v1/imports/logistics")
+        String response = mvc.perform(multipart("/api/v1/imports/logistics")
                         .file(new MockMultipartFile("file", "logistics.xlsx",
                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
                         .param("productCode", "CORN")
@@ -120,7 +121,28 @@ class LogisticsImportRestIntegrationTest {
                         .principal(() -> "logistics-tester"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.importedRows").value(0))
-                .andExpect(jsonPath("$.data.failedRows").value(2));
+                .andExpect(jsonPath("$.data.failedRows").value(2))
+                .andReturn().getResponse().getContentAsString();
+        String jobId = response.replaceFirst("(?s).*?\"id\":\"([^\"]+)\".*", "$1");
+
+        mvc.perform(get("/api/v1/imports/logistics/{jobId}/errors", jobId)
+                        .principal(() -> "logistics-tester"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("INVALID_LOGISTICS_RECORD")));
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type='IMPORT_JOB' AND aggregate_id=:id
+                  AND action_code='IMPORT_ERROR_FILE_DOWNLOADED'
+                """).param("id", jobId).query(Long.class).single()).isEqualTo(1);
+        mvc.perform(get("/api/v1/imports/logistics/{jobId}/errors", jobId)
+                .principal(() -> "production-tester"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("IMPORT_ERROR_FILE_NOT_ALLOWED"));
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type='IMPORT_JOB' AND aggregate_id=:id
+                  AND action_code='IMPORT_ERROR_FILE_DOWNLOADED'
+                """).param("id", jobId).query(Long.class).single()).isEqualTo(1);
 
         assertThat(jdbc.sql("SELECT count(*) FROM logistics.route_event")
                 .query(Long.class).single()).isZero();

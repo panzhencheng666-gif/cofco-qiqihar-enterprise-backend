@@ -58,11 +58,13 @@ class EvidencePhotoRestIntegrationTest {
                         .principal(() -> "production-tester"))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
         assertThat(watermarked).isNotEqualTo(original);
+        assertContentReadAudit(photoId, "production-tester", 1);
 
         mvc.perform(get("/api/v1/evidence-photos/{id}/content", photoId)
                         .principal(() -> "market-tester"))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error.code").value("EVIDENCE_PHOTO_ACCESS_DENIED"));
+        assertContentReadAudit(photoId, "production-tester", 1);
 
         JdbcClient.create(dataSource).sql("""
                 UPDATE evidence.evidence_photo
@@ -74,6 +76,8 @@ class EvidencePhotoRestIntegrationTest {
         mvc.perform(get("/api/v1/evidence-photos/{id}/content", photoId)
                         .principal(() -> "market-tester"))
                 .andExpect(status().isOk());
+        assertContentReadAudit(photoId, "market-tester", 1);
+        assertThat(contentReadAuditCount(photoId)).isEqualTo(2);
     }
 
     @Test
@@ -121,5 +125,22 @@ class EvidencePhotoRestIntegrationTest {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         ImageIO.write(image, "png", output);
         return output.toByteArray();
+    }
+
+    private void assertContentReadAudit(String photoId, String actor, long expected) {
+        assertThat(JdbcClient.create(dataSource).sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type='EVIDENCE_PHOTO' AND aggregate_id=:id
+                  AND action_code='EVIDENCE_PHOTO_CONTENT_READ' AND actor_subject_id=:actor
+                """).param("id", photoId).param("actor", actor).query(Long.class).single())
+                .isEqualTo(expected);
+    }
+
+    private long contentReadAuditCount(String photoId) {
+        return JdbcClient.create(dataSource).sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type='EVIDENCE_PHOTO' AND aggregate_id=:id
+                  AND action_code='EVIDENCE_PHOTO_CONTENT_READ'
+                """).param("id", photoId).query(Long.class).single();
     }
 }

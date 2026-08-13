@@ -48,6 +48,7 @@ public class LogisticsImportService implements QueuedImportProcessor {
         return LogisticsImportTemplate.workbook(definition(productCode));
     }
 
+    @Transactional
     public ImportErrorFile errors(UUID importJobId) {
         SecurityPrincipal principal = access.require("BUSINESS_IMPORT", null);
         ImportJob job = ownedJob(importJobId, principal);
@@ -59,8 +60,11 @@ public class LogisticsImportService implements QueuedImportProcessor {
             csv.append(CsvTable.escape(row.errorCode())).append(',')
                     .append(CsvTable.escape(row.errorMessage())).append('\n');
         });
-        return new ImportErrorFile("logistics-import-errors-" + job.id() + ".csv",
+        ImportErrorFile file = new ImportErrorFile("logistics-import-errors-" + job.id() + ".csv",
                 csv.toString().getBytes(StandardCharsets.UTF_8));
+        audit.record(principal, "IMPORT_JOB", job.id().toString(), "IMPORT_ERROR_FILE_DOWNLOADED",
+                clock.instant(), "{}");
+        return file;
     }
 
     @Transactional

@@ -6,6 +6,7 @@ import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import com.cofco.qiqihar.graintrade.shared.audit.domain.BusinessAuditView;
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
+import java.time.Clock;
 import java.time.Instant;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -14,13 +15,18 @@ import org.springframework.transaction.annotation.Transactional;
 public class BusinessAuditQueryService {
     private final BusinessAuditReader reader;
     private final AccessControl access;
+    private final BusinessAuditRecorder audit;
+    private final Clock clock;
 
-    public BusinessAuditQueryService(BusinessAuditReader reader, AccessControl access) {
+    public BusinessAuditQueryService(BusinessAuditReader reader, AccessControl access,
+            BusinessAuditRecorder audit, Clock clock) {
         this.reader = reader;
         this.access = access;
+        this.audit = audit;
+        this.clock = clock;
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public PagedResult<BusinessAuditView> events(
             String requestedWorkUnit,
             String aggregateType,
@@ -40,7 +46,7 @@ public class BusinessAuditQueryService {
         if (!workUnit.equals(principal.workUnitCode()) && !principal.roleCodes().contains("SYSTEM_ADMIN")) {
             throw new AccessDeniedException("ACCESS_WORK_UNIT_DENIED", "Work unit is outside the assigned scope");
         }
-        return reader.find(
+        PagedResult<BusinessAuditView> result = reader.find(
                 workUnit,
                 normalize(aggregateType),
                 normalize(actorSubjectId),
@@ -48,6 +54,8 @@ public class BusinessAuditQueryService {
                 occurredTo,
                 pageNumber,
                 pageSize);
+        audit.record(principal, "BUSINESS_AUDIT", workUnit, "AUDIT_EVENTS_READ", clock.instant(), "{}");
+        return result;
     }
 
     private static String normalize(String value) {

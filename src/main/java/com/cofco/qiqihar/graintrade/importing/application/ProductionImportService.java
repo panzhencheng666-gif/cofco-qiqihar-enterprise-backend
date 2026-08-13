@@ -112,6 +112,7 @@ public class ProductionImportService implements QueuedImportProcessor {
                 prior.job().contentSha256(), prior.job().id(), failedRows, principal));
     }
 
+    @Transactional
     public ImportErrorFile errors(UUID importJobId) {
         SecurityPrincipal principal = accessControl.require("BUSINESS_IMPORT", null);
         ImportJob job = repository.findById(importJobId).orElseThrow(() -> new ClientRequestException(
@@ -128,7 +129,11 @@ public class ProductionImportService implements QueuedImportProcessor {
             headers.forEach(header -> csv.append(CsvTable.escape(row.values().get(header))).append(','));
             csv.append(CsvTable.escape(row.errorCode())).append(',').append(CsvTable.escape(row.errorMessage())).append('\n');
         });
-        return new ImportErrorFile("production-import-errors-" + job.id() + ".csv", csv.toString().getBytes(StandardCharsets.UTF_8));
+        ImportErrorFile file = new ImportErrorFile("production-import-errors-" + job.id() + ".csv",
+                csv.toString().getBytes(StandardCharsets.UTF_8));
+        audit.record(principal, "IMPORT_JOB", job.id().toString(), "IMPORT_ERROR_FILE_DOWNLOADED",
+                clock.instant(), "{}");
+        return file;
     }
 
     @Transactional(readOnly = true)

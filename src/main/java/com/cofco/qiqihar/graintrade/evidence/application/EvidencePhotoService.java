@@ -6,6 +6,7 @@ import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.PlainDecimal;
 import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
+import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder;
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
 import java.awt.AlphaComposite;
 import java.awt.Color;
@@ -47,13 +48,15 @@ public class EvidencePhotoService {
     private final AccessControl accessControl;
     private final Clock clock;
     private final EvidenceContentStorage contentStorage;
+    private final BusinessAuditRecorder audit;
 
     public EvidencePhotoService(EvidencePhotoRepository repository, AccessControl accessControl, Clock clock,
-            EvidenceContentStorage contentStorage) {
+            EvidenceContentStorage contentStorage, BusinessAuditRecorder audit) {
         this.repository = repository;
         this.accessControl = accessControl;
         this.clock = clock;
         this.contentStorage = contentStorage;
+        this.audit = audit;
     }
 
     @Transactional
@@ -81,31 +84,36 @@ public class EvidencePhotoService {
                 subjectId, uploadedAt, "EXTERNAL", objectKey));
     }
 
-    @Transactional(readOnly = true)
+    @Transactional
     public EvidenceContent content(UUID id) {
-        String subjectId = accessControl.require("BUSINESS_READ", null).subjectId();
+        var principal = accessControl.require("BUSINESS_READ", null);
         var stored = repository.find(id).orElseThrow(() -> new ResourceNotFoundException(
                 "EVIDENCE_PHOTO_NOT_FOUND", "Evidence photo does not exist"));
         if (stored.view().state().equals("ATTACHED")) {
             accessControl.require("BUSINESS_READ", stored.attachedRegionCode());
-        } else if (!stored.view().uploadedBy().equals(subjectId)) {
+        } else if (!stored.view().uploadedBy().equals(principal.subjectId())) {
             throw new AccessDeniedException("EVIDENCE_PHOTO_ACCESS_DENIED", "Evidence photo access is denied");
         }
+        EvidenceContent content;
         if ("DATABASE".equals(stored.storageCode())) {
-            return new EvidenceContent(stored.view().mediaType(), stored.watermarkedBytes().clone());
+            content = new EvidenceContent(stored.view().mediaType(), stored.watermarkedBytes().clone());
+        } else {
+            EvidenceContentEnvelope.Content decoded;
+            try {
+                decoded = EvidenceContentEnvelope.decode(contentStorage.get(stored.objectKey()));
+            } catch (IllegalArgumentException exception) {
+                throw new EvidenceContentUnavailableException(exception);
+            }
+            if (!decoded.mediaType().equals(stored.view().mediaType())
+                    || !sha256(decoded.original()).equals(stored.view().sha256())
+                    || !sha256(decoded.watermarked()).equals(stored.watermarkedSha256())) {
+                throw new EvidenceContentUnavailableException();
+            }
+            content = new EvidenceContent(decoded.mediaType(), decoded.watermarked());
         }
-        EvidenceContentEnvelope.Content decoded;
-        try {
-            decoded = EvidenceContentEnvelope.decode(contentStorage.get(stored.objectKey()));
-        } catch (IllegalArgumentException exception) {
-            throw new EvidenceContentUnavailableException(exception);
-        }
-        if (!decoded.mediaType().equals(stored.view().mediaType())
-                || !sha256(decoded.original()).equals(stored.view().sha256())
-                || !sha256(decoded.watermarked()).equals(stored.watermarkedSha256())) {
-            throw new EvidenceContentUnavailableException();
-        }
-        return new EvidenceContent(decoded.mediaType(), decoded.watermarked());
+        audit.record(principal, "EVIDENCE_PHOTO", id.toString(), "EVIDENCE_PHOTO_CONTENT_READ",
+                clock.instant(), "{}");
+        return content;
     }
 
     @Transactional(readOnly = true, noRollbackFor = {

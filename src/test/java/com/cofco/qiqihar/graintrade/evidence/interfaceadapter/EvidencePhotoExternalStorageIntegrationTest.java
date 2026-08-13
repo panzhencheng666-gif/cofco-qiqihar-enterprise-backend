@@ -92,6 +92,7 @@ class EvidencePhotoExternalStorageIntegrationTest {
         mvc.perform(get("/api/v1/evidence-photos/{id}/content", photoId)
                         .principal(() -> "production-tester"))
                 .andExpect(status().isOk());
+        assertThat(contentReadAuditCount(photoId)).isEqualTo(1);
     }
 
     @Test
@@ -105,6 +106,7 @@ class EvidencePhotoExternalStorageIntegrationTest {
                             .principal(() -> "market-tester"))
                     .andExpect(status().isForbidden())
                     .andExpect(jsonPath("$.error.code").value("EVIDENCE_PHOTO_ACCESS_DENIED"));
+            assertThat(contentReadAuditCount(photoId)).isZero();
 
             mvc.perform(get("/api/v1/evidence-photos/{id}/content", photoId)
                             .principal(() -> "production-tester"))
@@ -112,6 +114,7 @@ class EvidencePhotoExternalStorageIntegrationTest {
                     .andExpect(jsonPath("$.error.code").value("EVIDENCE_CONTENT_UNAVAILABLE"))
                     .andExpect(jsonPath("$.error.message")
                             .value("Private evidence content is temporarily unavailable"));
+            assertThat(contentReadAuditCount(photoId)).isZero();
         } finally {
             Files.deleteIfExists(CONTENT_ROOT);
             Files.move(displaced, CONTENT_ROOT);
@@ -156,6 +159,14 @@ class EvidencePhotoExternalStorageIntegrationTest {
         return performUpload().andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.state").value("STAGED"))
                 .andReturn().getResponse().getContentAsString();
+    }
+
+    private long contentReadAuditCount(String photoId) {
+        return JdbcClient.create(dataSource).sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type='EVIDENCE_PHOTO' AND aggregate_id=:id
+                  AND action_code='EVIDENCE_PHOTO_CONTENT_READ'
+                """).param("id", photoId).query(Long.class).single();
     }
 
     private org.springframework.test.web.servlet.ResultActions performUpload() throws Exception {

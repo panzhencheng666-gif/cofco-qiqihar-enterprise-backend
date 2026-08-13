@@ -360,6 +360,12 @@ class ProductionImportRestIntegrationTest {
 
         mvc.perform(get("/api/v1/imports/production/{jobId}/errors", jobId).principal(() -> "production-tester"))
                 .andExpect(status().isOk()).andExpect(content().string(org.hamcrest.Matchers.containsString("IMPORT_ROW_VALUE_FORMAT")));
+        assertThat(importErrorDownloadAuditCount(jobId)).isEqualTo(1);
+        mvc.perform(get("/api/v1/imports/production/{jobId}/errors", jobId)
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("IMPORT_ERROR_FILE_NOT_ALLOWED"));
+        assertThat(importErrorDownloadAuditCount(jobId)).isEqualTo(1);
 
         mvc.perform(multipart("/api/v1/imports/production").file(file)
                         .param("productCode", "CORN").param("objectTypeCode", "FARMER")
@@ -374,5 +380,13 @@ class ProductionImportRestIntegrationTest {
         assertThat(jdbc.sql("SELECT count(*) FROM production.production_record").query(Long.class).single()).isZero();
         assertThat(jdbc.sql("SELECT action_code FROM platform.business_audit_event ORDER BY occurred_at,event_id")
                 .query(String.class).list()).contains("IMPORT_JOB_COMPLETED");
+    }
+
+    private long importErrorDownloadAuditCount(UUID jobId) {
+        return jdbc.sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type='IMPORT_JOB' AND aggregate_id=:id
+                  AND action_code='IMPORT_ERROR_FILE_DOWNLOADED'
+                """).param("id", jobId.toString()).query(Long.class).single();
     }
 }

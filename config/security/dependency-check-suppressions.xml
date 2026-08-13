@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+  <suppress until="2026-11-30Z">
+    <notes><![CDATA[
+      DEF-137: CVE-2025-7962 affects Jakarta Mail SMTP message handling. ODC mapped it to the
+      separate angus-activation artifact; this application does not include Jakarta Mail.
+    ]]></notes>
+    <packageUrl>pkg:maven/org.eclipse.angus/angus-activation@2.0.3</packageUrl>
+    <cve>CVE-2025-7962</cve>
+  </suppress>
+
+  <suppress until="2026-11-30Z">
+    <notes><![CDATA[
+      DEF-137: these records affect the GlassFish server or its administration console. ODC
+      mapped the standalone JAXB implementation to GlassFish; the application is Spring Boot
+      with embedded Tomcat and contains no GlassFish runtime or administration application.
+    ]]></notes>
+    <packageUrl>pkg:maven/com.sun.xml.bind/jaxb-impl@4.0.9</packageUrl>
+    <cve>CVE-2026-2587</cve>
+    <cve>CVE-2026-2586</cve>
+    <cve>CVE-2024-9329</cve>
+  </suppress>
+
+  <suppress until="2026-11-30Z">
+    <notes><![CDATA[
+      DEF-137: CVE-2026-53914 is unsafe deserialization in Kotlin build-cache metadata. These
+      stdlib jars are runtime transitives of the Aliyun credential client and do not provide or
+      consume Kotlin compiler or build-cache metadata in this Maven-built application.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.jetbrains\.kotlin/kotlin-stdlib(?:-(?:common|jdk7|jdk8))?@(?:2\.3\.21|1\.9\.10)$</packageUrl>
+    <cve>CVE-2026-53914</cve>
+  </suppress>
+
+  <suppress until="2026-11-30Z">
+    <notes><![CDATA[
+      DEF-137: CVE-2020-29582 affects Kotlin versions before 1.4.21. ODC associated it with
+      kotlin-stdlib-common 1.9.10, which is outside the affected version range.
+    ]]></notes>
+    <packageUrl>pkg:maven/org.jetbrains.kotlin/kotlin-stdlib-common@1.9.10</packageUrl>
+    <cve>CVE-2020-29582</cve>
+  </suppress>
+
+  <suppress until="2026-11-30Z">
+    <notes><![CDATA[
+      DEF-137: CVE-2026-49844 requires JsonTemplateLayout (or another MapMessage JSON layout)
+      plus an attacker-controlled non-finite MapMessage value. The application uses SLF4J with
+      Logback and has no MapMessage or JsonTemplateLayout use.
+    ]]></notes>
+    <packageUrl>pkg:maven/org.apache.logging.log4j/log4j-api@2.25.4</packageUrl>
+    <cve>CVE-2026-49844</cve>
+  </suppress>
+
+  <suppress until="2026-11-30Z">
+    <notes><![CDATA[
+      DEF-137: CVE-2026-54291 is limited to channelBinding=require. The approved preproduction
+      JDBC URL enforces sslmode=verify-full and does not enable channelBinding=require.
+    ]]></notes>
+    <packageUrl>pkg:maven/org.postgresql/postgresql@42.7.11</packageUrl>
+    <cve>CVE-2026-54291</cve>
+  </suppress>
+
+  <suppress until="2026-11-30Z">
+    <notes><![CDATA[
+      DEF-137: these embedded-Tomcat records require FFM CRL configuration, effective web.xml
+      logging, RewriteValve, cluster EncryptInterceptor, default-servlet container constraints,
+      or the Tomcat example application. None is configured or packaged; authorization is
+      enforced by the Spring Security filter chain. Reassess before enabling any listed feature.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.apache\.tomcat\.embed/tomcat-embed-(?:core|websocket)@11\.0\.22$</packageUrl>
+    <cve>CVE-2026-53434</cve>
+    <cve>CVE-2026-55276</cve>
+    <cve>CVE-2026-59083</cve>
+    <cve>CVE-2026-59084</cve>
+    <cve>CVE-2026-53404</cve>
+    <cve>CVE-2026-55955</cve>
+    <cve>CVE-2026-55956</cve>
+    <cve>CVE-2026-50229</cve>
+  </suppress>
+</suppressions>

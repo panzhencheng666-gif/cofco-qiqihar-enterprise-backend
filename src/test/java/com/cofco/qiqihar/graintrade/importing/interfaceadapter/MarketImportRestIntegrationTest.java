@@ -328,6 +328,12 @@ class MarketImportRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("NOT_IMPORTED_ATOMIC_BATCH")))
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("IMPORT_ROW_VALUE_FORMAT")));
+        assertThat(importErrorDownloadAuditCount(jobId)).isEqualTo(1);
+        mvc.perform(get("/api/v1/imports/market/{jobId}/errors", jobId)
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("IMPORT_ERROR_FILE_NOT_ALLOWED"));
+        assertThat(importErrorDownloadAuditCount(jobId)).isEqualTo(1);
 
         String retryResponse = mvc.perform(post("/api/v1/imports/market/{jobId}/retries", jobId)
                         .principal(() -> "market-tester"))
@@ -345,6 +351,14 @@ class MarketImportRestIntegrationTest {
                 .param("job", UUID.fromString(retryJobId)).query(Long.class).single()).isEqualTo(2L);
         assertThat(jdbc.sql("SELECT count(*) FROM evidence.evidence_photo WHERE state_code='ATTACHED'")
                 .query(Long.class).single()).isZero();
+    }
+
+    private long importErrorDownloadAuditCount(String jobId) {
+        return jdbc.sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type='IMPORT_JOB' AND aggregate_id=:id
+                  AND action_code='IMPORT_ERROR_FILE_DOWNLOADED'
+                """).param("id", jobId).query(Long.class).single();
     }
 
     private static String row(String photoId, String moisture) {
