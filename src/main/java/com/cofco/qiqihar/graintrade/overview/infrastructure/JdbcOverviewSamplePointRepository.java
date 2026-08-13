@@ -95,9 +95,17 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                     .filter(entity -> entity.dataQualityReason() != null).count();
             long valid = projection.entities().size() - quality;
             long corrections = projection.corrections().size();
+            long productionCount = categoryPointCount(projection.entities(), "PRODUCTION");
+            long marketCount = categoryPointCount(projection.entities(), "MARKET");
             return new OverviewSamplePointAggregate(region.code(), region.name(), region.level(),
-                    projection.entities().size(), valid, quality, corrections, quality + corrections);
+                    productionCount + marketCount, productionCount, marketCount,
+                    valid, quality, corrections, quality + corrections);
         }).toList();
+    }
+
+    private static long categoryPointCount(List<Entity> entities, String categoryCode) {
+        return entities.stream().filter(entity -> entity.rows().stream()
+                .anyMatch(row -> row.categoryCode().equals(categoryCode))).count();
     }
 
     @Override

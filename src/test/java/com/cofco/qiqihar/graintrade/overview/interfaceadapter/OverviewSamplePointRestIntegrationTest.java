@@ -68,7 +68,11 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].samplePointCount")
+                        .value(org.hamcrest.Matchers.hasItem(3)))
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].productionCount")
                         .value(org.hamcrest.Matchers.hasItem(2)))
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].marketCount")
+                        .value(org.hamcrest.Matchers.hasItem(1)))
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].unresolvedSourceCount")
                         .value(org.hamcrest.Matchers.hasItem(3)));
 
@@ -120,6 +124,47 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("regionCode", VILLAGE))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("INVALID_OVERVIEW_SAMPLE_POINT_QUERY"));
+    }
+
+    @Test
+    void aggregateTotalIsTheSumOfRealProductionAndMarketPointCounts() throws Exception {
+        mvc.perform(get("/api/v1/overview/sample-point-aggregates")
+                        .principal(() -> "production-tester")
+                        .queryParam("parentCode", PREFECTURE)
+                        .queryParam("year", "2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].productionCount")
+                        .value(org.hamcrest.Matchers.hasItem(2)))
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].marketCount")
+                        .value(org.hamcrest.Matchers.hasItem(1)))
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].samplePointCount")
+                        .value(org.hamcrest.Matchers.hasItem(3)));
+
+        jdbc.sql("DELETE FROM market.market_record").update();
+        mvc.perform(get("/api/v1/overview/sample-point-aggregates")
+                        .principal(() -> "production-tester")
+                        .queryParam("parentCode", PREFECTURE)
+                        .queryParam("year", "2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].productionCount")
+                        .value(org.hamcrest.Matchers.hasItem(2)))
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].marketCount")
+                        .value(org.hamcrest.Matchers.hasItem(0)))
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].samplePointCount")
+                        .value(org.hamcrest.Matchers.hasItem(2)));
+
+        jdbc.sql("DELETE FROM production.production_record").update();
+        mvc.perform(get("/api/v1/overview/sample-point-aggregates")
+                        .principal(() -> "production-tester")
+                        .queryParam("parentCode", PREFECTURE)
+                        .queryParam("year", "2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].productionCount")
+                        .value(org.hamcrest.Matchers.hasItem(0)))
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].marketCount")
+                        .value(org.hamcrest.Matchers.hasItem(0)))
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].samplePointCount")
+                        .value(org.hamcrest.Matchers.hasItem(0)));
     }
 
     @Test
@@ -271,7 +316,7 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("productCode", "CORN"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230200')].samplePointCount")
-                        .value(org.hamcrest.Matchers.hasItem(2)));
+                        .value(org.hamcrest.Matchers.hasItem(3)));
 
         mvc.perform(get("/api/v1/overview/sample-point-aggregates")
                         .principal(() -> "production-tester")
@@ -284,7 +329,7 @@ class OverviewSamplePointRestIntegrationTest {
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].regionLevel")
                         .value(org.hamcrest.Matchers.hasItem("COUNTY")))
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].samplePointCount")
-                        .value(org.hamcrest.Matchers.hasItem(2)))
+                        .value(org.hamcrest.Matchers.hasItem(3)))
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].unresolvedSourceCount")
                         .value(org.hamcrest.Matchers.hasItem(3)))
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].categoryCode").doesNotExist())
@@ -299,7 +344,7 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("typeCode", "TRADER"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].samplePointCount")
-                        .value(org.hamcrest.Matchers.hasItem(2)))
+                        .value(org.hamcrest.Matchers.hasItem(3)))
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].unresolvedSourceCount")
                         .value(org.hamcrest.Matchers.hasItem(3)));
 

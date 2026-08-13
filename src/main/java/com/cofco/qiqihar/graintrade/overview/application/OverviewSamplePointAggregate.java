@@ -5,6 +5,8 @@ public record OverviewSamplePointAggregate(
         String regionName,
         String regionLevel,
         long samplePointCount,
+        long productionCount,
+        long marketCount,
         long validCoordinateCount,
         long dataQualityIssueCount,
         long correctionSourceCount,
