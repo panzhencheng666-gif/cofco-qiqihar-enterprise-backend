@@ -4,6 +4,7 @@ import com.cofco.qiqihar.graintrade.notification.application.BusinessEventDelive
 import com.cofco.qiqihar.graintrade.notification.application.BusinessEventDeliveryRepository.ClaimState;
 import com.cofco.qiqihar.graintrade.notification.application.BusinessEventDeliveryRepository.DeliveryClaim;
 import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
+import com.cofco.qiqihar.graintrade.shared.observability.BusinessObservationMetrics;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -26,14 +27,16 @@ public class BusinessEventDeliveryService {
     private final Duration baseRetry;
     private final Duration maximumRetry;
     private final int maximumAttempts;
+    private final BusinessObservationMetrics metrics;
 
     @Autowired
     public BusinessEventDeliveryService(
             BusinessNotificationRepository notifications,
             BusinessEventDeliveryRepository deliveries,
-            Clock clock) {
+            Clock clock,
+            BusinessObservationMetrics metrics) {
         this(notifications, deliveries, clock, DEFAULT_LEASE, DEFAULT_BASE_RETRY,
-                DEFAULT_MAXIMUM_RETRY, DEFAULT_MAX_ATTEMPTS);
+                DEFAULT_MAXIMUM_RETRY, DEFAULT_MAX_ATTEMPTS, metrics);
     }
 
     public BusinessEventDeliveryService(
@@ -44,6 +47,19 @@ public class BusinessEventDeliveryService {
             Duration baseRetry,
             Duration maximumRetry,
             int maximumAttempts) {
+        this(notifications, deliveries, clock, leaseDuration, baseRetry, maximumRetry,
+                maximumAttempts, null);
+    }
+
+    private BusinessEventDeliveryService(
+            BusinessNotificationRepository notifications,
+            BusinessEventDeliveryRepository deliveries,
+            Clock clock,
+            Duration leaseDuration,
+            Duration baseRetry,
+            Duration maximumRetry,
+            int maximumAttempts,
+            BusinessObservationMetrics metrics) {
         this.notifications = notifications;
         this.deliveries = deliveries;
         this.clock = clock;
@@ -57,6 +73,7 @@ public class BusinessEventDeliveryService {
             throw new IllegalArgumentException("maximumAttempts must be positive");
         }
         this.maximumAttempts = maximumAttempts;
+        this.metrics = metrics;
     }
 
     public DrainResult drain(
@@ -133,7 +150,12 @@ public class BusinessEventDeliveryService {
     public BusinessEventDeliveryBacklog backlog(
             String consumerId, AuthorizedReadScope scope, long afterSequence) {
         deliveries.expireStaleConsumers();
-        return deliveries.backlog(consumerId, scope, afterSequence);
+        BusinessEventDeliveryBacklog backlog = deliveries.backlog(consumerId, scope, afterSequence);
+        if (metrics != null) {
+            metrics.observeEventBacklog(
+                    backlog.pendingCount(), backlog.oldestPendingAt(), clock.instant());
+        }
+        return backlog;
     }
 
     public boolean retireConsumer(

@@ -149,7 +149,8 @@ public class ProductionSecurityConfiguration {
                         request -> request.getRequestURI().startsWith(request.getContextPath() + "/api/")))
                 .authorizeHttpRequests(authorize -> authorize
                         .dispatcherTypeMatchers(DispatcherType.ASYNC).permitAll()
-                        .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+                        .requestMatchers("/actuator/health", "/actuator/health/**",
+                                "/actuator/prometheus").permitAll()
                         .requestMatchers("/api/v1/session/login", "/oauth2/**", "/login/oauth2/**").permitAll()
                         .requestMatchers("/logout/connect/back-channel/**").permitAll()
                         .requestMatchers("/api/v1/**").authenticated()

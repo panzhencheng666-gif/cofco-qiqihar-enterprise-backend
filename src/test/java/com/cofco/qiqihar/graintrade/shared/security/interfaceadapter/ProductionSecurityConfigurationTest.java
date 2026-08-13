@@ -84,6 +84,12 @@ class ProductionSecurityConfigurationTest {
     }
 
     @Test
+    void internalPrometheusEndpointIsAnonymousAtTheApplicationLayer() throws Exception {
+        mockMvc.perform(get("/actuator/prometheus"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
     void unauthenticatedBusinessApiIsRejected() throws Exception {
         mockMvc.perform(get("/api/v1/whoami"))
                 .andExpect(status().isUnauthorized());
@@ -180,6 +186,11 @@ class ProductionSecurityConfigurationTest {
         @GetMapping("/actuator/health")
         String health() {
             return "UP";
+        }
+
+        @GetMapping("/actuator/prometheus")
+        String prometheus() {
+            return "metric 1";
         }
 
         @GetMapping("/api/v1/whoami")

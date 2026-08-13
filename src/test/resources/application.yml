@@ -18,3 +18,9 @@ qiqihar:
   security:
     require-read-authentication: false
     test-default-subject: __UNRESTRICTED_TEST_READ__
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus

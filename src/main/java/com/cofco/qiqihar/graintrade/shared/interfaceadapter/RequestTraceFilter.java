@@ -18,6 +18,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class RequestTraceFilter extends OncePerRequestFilter {
 
     public static final String TRACE_ID_HEADER = "X-Trace-Id";
+    public static final String REQUEST_ID_HEADER = "X-Request-Id";
     public static final String TRACE_ID_ATTRIBUTE = RequestTraceFilter.class.getName() + ".traceId";
 
     private static final Pattern SAFE_TRACE_ID = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,127}");
@@ -28,7 +29,9 @@ public class RequestTraceFilter extends OncePerRequestFilter {
             HttpServletRequest request,
             HttpServletResponse response,
             FilterChain filterChain) throws ServletException, IOException {
-        String traceId = resolveTraceId(request.getHeader(TRACE_ID_HEADER));
+        String traceId = resolveTraceId(
+                request.getHeader(TRACE_ID_HEADER),
+                request.getHeader(REQUEST_ID_HEADER));
         String previousTraceId = MDC.get(MDC_KEY);
 
         request.setAttribute(TRACE_ID_ATTRIBUTE, traceId);
@@ -46,9 +49,13 @@ public class RequestTraceFilter extends OncePerRequestFilter {
         }
     }
 
-    private String resolveTraceId(String requestedTraceId) {
-        return requestedTraceId != null && SAFE_TRACE_ID.matcher(requestedTraceId).matches()
-                ? requestedTraceId
-                : UUID.randomUUID().toString();
+    private String resolveTraceId(String requestedTraceId, String requestedRequestId) {
+        if (safe(requestedTraceId)) return requestedTraceId;
+        if (safe(requestedRequestId)) return requestedRequestId;
+        return UUID.randomUUID().toString();
+    }
+
+    private static boolean safe(String value) {
+        return value != null && SAFE_TRACE_ID.matcher(value).matches();
     }
 }

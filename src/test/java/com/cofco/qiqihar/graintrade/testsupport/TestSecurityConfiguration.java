@@ -50,7 +50,8 @@ public class TestSecurityConfiguration {
                         }))
                 .authorizeHttpRequests(authorize -> authorize
                         .dispatcherTypeMatchers(DispatcherType.ASYNC).permitAll()
-                        .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+                        .requestMatchers("/actuator/health", "/actuator/health/**",
+                                "/actuator/prometheus").permitAll()
                         .anyRequest().authenticated());
         return http.build();
     }

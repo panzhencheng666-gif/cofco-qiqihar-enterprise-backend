@@ -10,6 +10,7 @@ import com.cofco.qiqihar.graintrade.reporting.infrastructure.ReportWorkbook;
 import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder;
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
+import com.cofco.qiqihar.graintrade.shared.observability.BusinessObservationMetrics;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -32,13 +33,16 @@ public class ReportingService {
     private final BusinessAuditRecorder audit;
     private final Clock clock;
     private final ObjectMapper json;
+    private final BusinessObservationMetrics metrics;
 
-    public ReportingService(ReportingRepository repository, AccessControl accessControl, BusinessAuditRecorder audit, Clock clock, ObjectMapper json) {
+    public ReportingService(ReportingRepository repository, AccessControl accessControl, BusinessAuditRecorder audit,
+            Clock clock, ObjectMapper json, BusinessObservationMetrics metrics) {
         this.repository = repository;
         this.accessControl = accessControl;
         this.audit = audit;
         this.clock = clock;
         this.json = json;
+        this.metrics = metrics;
     }
 
     @Transactional(readOnly = true)
@@ -68,6 +72,18 @@ public class ReportingService {
 
     @Transactional
     public ReportExportView export(String previewId, String formatCode) {
+        var sample = metrics.startReportGeneration();
+        try {
+            ReportExportView export = exportWithoutMetrics(previewId, formatCode);
+            metrics.reportFinished(sample, true);
+            return export;
+        } catch (RuntimeException | Error failure) {
+            metrics.reportFinished(sample, false);
+            throw failure;
+        }
+    }
+
+    private ReportExportView exportWithoutMetrics(String previewId, String formatCode) {
         if (blank(previewId) || blank(formatCode)) throw invalid();
         ReportPreviewView preview = repository.findPreview(previewId);
         if (preview == null) throw new ResourceNotFoundException("REPORT_PREVIEW_NOT_FOUND", "Report preview was not found");

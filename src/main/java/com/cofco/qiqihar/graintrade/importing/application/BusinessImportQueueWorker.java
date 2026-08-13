@@ -4,6 +4,7 @@ import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.security.application.InternalSecuritySubjectScope;
 import com.cofco.qiqihar.graintrade.shared.security.application.SecurityPrincipalRepository;
+import com.cofco.qiqihar.graintrade.shared.observability.BusinessObservationMetrics;
 import jakarta.annotation.PreDestroy;
 import java.time.Clock;
 import java.time.Duration;
@@ -35,9 +36,11 @@ final class BusinessImportQueueWorker {
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
     private final Semaphore capacity;
     private final Map<java.util.UUID, java.util.UUID> activeLeases = new ConcurrentHashMap<>();
+    private final BusinessObservationMetrics metrics;
 
     BusinessImportQueueWorker(ImportJobRepository jobs, SecurityPrincipalRepository principals,
             InternalSecuritySubjectScope subjects, List<QueuedImportProcessor> processors, Clock clock,
+            BusinessObservationMetrics metrics,
             @Value("${qiqihar.import.queue-stale-after:15m}") Duration staleAfter,
             @Value("${qiqihar.import.queue-concurrency:2}") int concurrency) {
         if (staleAfter.isNegative() || staleAfter.isZero() || concurrency < 1 || concurrency > 8) {
@@ -49,6 +52,7 @@ final class BusinessImportQueueWorker {
         this.processors = processors.stream().collect(Collectors.toUnmodifiableMap(
                 QueuedImportProcessor::domainCode, Function.identity()));
         this.clock = clock;
+        this.metrics = metrics;
         this.staleAfter = staleAfter;
         this.capacity = new Semaphore(concurrency);
     }
@@ -76,6 +80,8 @@ final class BusinessImportQueueWorker {
     }
 
     private void process(ImportJobRepository.StoredImportJob stored) {
+        boolean completed = false;
+        metrics.importStarted();
         try {
             var principal = principals.findEnabled(stored.job().requestedBy())
                     .filter(value -> value.permits("BUSINESS_IMPORT"))
@@ -86,6 +92,7 @@ final class BusinessImportQueueWorker {
                 processor.processQueued(stored.job().id(), principal);
                 return null;
             });
+            completed = true;
         } catch (RuntimeException exception) {
             Failure failure = failure(exception);
             LOGGER.warn("Queued import failed [jobId={}, code={}]", stored.job().id(), failure.code());
@@ -93,6 +100,7 @@ final class BusinessImportQueueWorker {
                     failure.code(), failure.message(), clock.instant()); }
             catch (RuntimeException ignored) { /* completed or recovered by another owner */ }
         } finally {
+            metrics.importFinished(completed);
             activeLeases.remove(stored.job().id(), stored.job().leaseToken());
             capacity.release();
         }

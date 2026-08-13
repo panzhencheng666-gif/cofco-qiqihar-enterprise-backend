@@ -21,6 +21,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.instanceOf;
+import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -56,6 +57,53 @@ class HealthContractTest {
                 .andExpect(jsonPath("$.error.message").value("The request cannot be processed"))
                 .andExpect(jsonPath("$.error.details").isMap())
                 .andExpect(jsonPath("$.traceId").value("trace-contract-test"));
+    }
+
+    @Test
+    void gatewayRequestIdBecomesTheApplicationTraceIdWhenNoTraceHeaderExists() throws Exception {
+        mockMvc.perform(get("/_test/controlled-client-error")
+                        .header("X-Request-Id", "gateway-request-123"))
+                .andExpect(status().isBadRequest())
+                .andExpect(header().string("X-Trace-Id", "gateway-request-123"))
+                .andExpect(jsonPath("$.traceId").value("gateway-request-123"));
+    }
+
+    @Test
+    void explicitSafeTraceIdWinsOverGatewayRequestId() throws Exception {
+        mockMvc.perform(get("/_test/controlled-client-error")
+                        .header("X-Trace-Id", "trace-wins")
+                        .header("X-Request-Id", "gateway-loses"))
+                .andExpect(status().isBadRequest())
+                .andExpect(header().string("X-Trace-Id", "trace-wins"))
+                .andExpect(jsonPath("$.traceId").value("trace-wins"));
+    }
+
+    @Test
+    void invalidGatewayRequestIdNeverEntersTheResolvedTraceContract() throws Exception {
+        String resolved = mockMvc.perform(get("/_test/controlled-client-error")
+                        .header("X-Request-Id", "unsafe request value"))
+                .andExpect(status().isBadRequest())
+                .andReturn().getResponse().getHeader("X-Trace-Id");
+
+        assertThat(resolved)
+                .isNotEqualTo("unsafe request value")
+                .matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+    }
+
+    @Test
+    void prometheusExportsStableInfrastructureAndBusinessMetricNames() throws Exception {
+        mockMvc.perform(get("/actuator/health"))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/actuator/prometheus"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(containsString("http_server_requests_seconds")))
+                .andExpect(content().string(containsString("qiqihar_database_pool_active")))
+                .andExpect(content().string(containsString("qiqihar_database_pool_pending")))
+                .andExpect(content().string(containsString("qiqihar_import_queue_active")))
+                .andExpect(content().string(containsString("qiqihar_import_jobs_total")))
+                .andExpect(content().string(containsString("qiqihar_report_generation_seconds")))
+                .andExpect(content().string(containsString("qiqihar_business_event_backlog_seconds")))
+                .andExpect(content().string(containsString("qiqihar_security_secret_key_ready")));
     }
 
     @Test
