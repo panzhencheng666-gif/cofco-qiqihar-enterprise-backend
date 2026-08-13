@@ -286,6 +286,37 @@ class ProductionImportRestIntegrationTest {
         assertThat(jdbc.sql("SELECT count(*) FROM platform.business_audit_event").query(Long.class).single()).isZero();
     }
 
+    @Test
+    void rejectsAnObsoleteProductionFieldContractWithoutFallingBackToLegacyXlsxParsing() throws Exception {
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
+                        .param("format", "xlsx")
+                        .param("productCode", "CORN")
+                        .param("objectTypeCode", "FARMER")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        var current = template(downloaded, "产情", "CORN", "FARMER");
+        var obsolete = new BusinessImportWorkbook.Template(
+                current.domainCode(), current.domainLabel(), current.productCode(), current.objectTypeCode(),
+                "production-survey-fields-obsolete", current.headers(), current.labels(), java.util.List.of());
+        byte[] workbook = BusinessImportWorkbook.create(obsolete, java.util.List.of(
+                java.util.Collections.nCopies(obsolete.headers().size(), "")));
+
+        mvc.perform(multipart("/api/v1/imports/production")
+                        .file(new MockMultipartFile("file", "obsolete-contract.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
+                        .param("productCode", "CORN")
+                        .param("objectTypeCode", "FARMER")
+                        .header("Idempotency-Key", "obsolete-production-contract")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("IMPORT_CONTRACT_MISMATCH"));
+
+        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
+                .query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.import_job")
+                .query(Long.class).single()).isZero();
+    }
+
     private static void put(java.util.List<String> row, java.util.List<String> headers,
             String header, String value) {
         row.set(headers.indexOf(header), value);
@@ -297,8 +328,11 @@ class ProductionImportRestIntegrationTest {
         java.util.List<String> labels = withoutTrailingBlanks(rows.get(0));
         java.util.List<String> headers = withoutTrailingBlanks(rows.get(1));
         assertThat(headers).hasSameSizeAs(labels);
+        String contractVersion = XlsxTable.parseWorksheet(workbook, 2, 2).stream()
+                .filter(row -> "字段契约版本".equals(row.getFirst()))
+                .map(row -> row.get(1)).findFirst().orElse(null);
         return new BusinessImportWorkbook.Template("PRODUCTION", label, productCode, objectTypeCode,
-                headers, labels);
+                contractVersion, headers, labels, java.util.List.of());
     }
 
     private static java.util.List<String> withoutTrailingBlanks(java.util.List<String> values) {

@@ -116,13 +116,15 @@ public class ProductionRecordService implements ProductionImportPort {
                 definitionsByCategory.get(category.code()).stream()
                         .sorted(Comparator.comparingInt(ProductionFactDefinition::sortOrder)
                                 .thenComparing(ProductionFactDefinition::code)).toList())).toList();
-        return new ProductionFormDefinition(productCode, objectTypeCode, groups);
+        return new ProductionFormDefinition(productCode, objectTypeCode, ProductionSurveyFieldContract.VERSION,
+                ProductionSurveyFieldContract.fields(groups), groups);
     }
 
     @Override
     public ProductionImportDefinition importDefinition(String productCode, String objectTypeCode) {
         ProductionFormDefinition definition = factDefinition(productCode, objectTypeCode);
         return new ProductionImportDefinition(definition.productCode(), definition.objectTypeCode(),
+                definition.contractVersion(), definition.fields(),
                 definition.groups().stream().map(group -> new ProductionImportDefinition.Group(
                         group.category(), group.label(), group.fields().stream()
                                 .map(field -> new ProductionImportDefinition.Field(

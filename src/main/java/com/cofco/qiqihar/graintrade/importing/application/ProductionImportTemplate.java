@@ -3,6 +3,7 @@ package com.cofco.qiqihar.graintrade.importing.application;
 import java.util.List;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
 import com.cofco.qiqihar.graintrade.production.application.ProductionImportDefinition;
+import com.cofco.qiqihar.graintrade.production.application.ProductionSurveyField;
 
 public final class ProductionImportTemplate {
     public static final String DOMAIN = "PRODUCTION";
@@ -51,6 +52,16 @@ public final class ProductionImportTemplate {
     }
 
     public static BusinessImportWorkbook.Template workbook(ProductionImportDefinition definition) {
+        if (!definition.fields().isEmpty()) {
+            List<ProductionSurveyField> fields = definition.fields().stream()
+                    .filter(ProductionSurveyField::importable)
+                    .toList();
+            return new BusinessImportWorkbook.Template(DOMAIN, "产情", definition.productCode(),
+                    definition.objectTypeCode(), definition.contractVersion(),
+                    fields.stream().map(ProductionSurveyField::code).toList(),
+                    fields.stream().map(ProductionSurveyField::displayLabel).toList(),
+                    fields.stream().map(ProductionImportTemplate::columnRule).toList());
+        }
         List<ProductionImportDefinition.Field> fields = definition.groups().stream()
                 .flatMap(group -> group.fields().stream())
                 .filter(field -> !XLSX_CORE_HEADERS.contains(field.code()))
@@ -94,7 +105,9 @@ public final class ProductionImportTemplate {
     public static List<List<String>> canonicalXlsx(
             byte[] bytes, ProductionImportDefinition definition, int maxDataRows) {
         BusinessImportWorkbook.Template template = workbook(definition);
-        var sheet = readCompatible(bytes, template.headers(), template.labels(), maxDataRows);
+        var sheet = definition.fields().isEmpty()
+                ? readCompatible(bytes, template.headers(), template.labels(), maxDataRows)
+                : BusinessImportWorkbook.read(bytes, template, maxDataRows);
         List<String> canonicalHeaders = java.util.stream.Stream.concat(
                 java.util.stream.Stream.of("productCode", "objectTypeCode", "PROD_REPORTER_NAME"),
                 template.headers().stream()).toList();
@@ -111,6 +124,11 @@ public final class ProductionImportTemplate {
             table.add(canonicalHeaders.stream().map(header -> values.getOrDefault(header, "")).toList());
         }
         return List.copyOf(table);
+    }
+
+    private static BusinessImportWorkbook.ColumnRule columnRule(ProductionSurveyField field) {
+        return new BusinessImportWorkbook.ColumnRule(field.code(), field.valueType(), field.controlType(),
+                field.required(), field.options(), field.precision(), field.scale(), field.description());
     }
 
     private static BusinessImportWorkbook.ImportSheet readCompatible(

@@ -54,6 +54,32 @@ class ProductionRecordServiceTest {
         assertThat(result.groups().get(1).fields()).isEmpty();
         assertThat(result.groups().get(2).fields()).extracting(ProductionFactDefinition::code)
                 .containsExactly("PHOTO_COUNT");
+        assertThat(result.contractVersion()).isEqualTo("production-survey-fields-v1");
+        assertThat(result.fields()).extracting(ProductionSurveyField::code)
+                .startsWith("objectTypeCode", "regionCode", "PROD_CULTIVAR_NAME", "surveyDate",
+                        "PROD_SAMPLE_SUBJECT_CODE", "PROD_SAMPLE_NAME")
+                .containsSubsequence("cultivatedAreaMu", "yieldPerMuKilograms", "estimatedOutputKilograms")
+                .containsSubsequence("MOISTURE", "IMPURITY", "PHOTO_COUNT")
+                .doesNotContain("sample_point_id");
+        ProductionSurveyField subjectCode = result.fields().stream()
+                .filter(field -> field.code().equals("PROD_SAMPLE_SUBJECT_CODE"))
+                .findFirst().orElseThrow();
+        assertThat(subjectCode.label()).isEqualTo("稳定主体码");
+        assertThat(subjectCode.readOnly()).isTrue();
+        assertThat(subjectCode.importable()).isFalse();
+        assertThat(subjectCode.displayed()).isTrue();
+        ProductionSurveyField subjectName = result.fields().stream()
+                .filter(field -> field.code().equals("PROD_SAMPLE_NAME"))
+                .findFirst().orElseThrow();
+        assertThat(subjectName.label()).isEqualTo("填报对象名称");
+        assertThat(subjectName.required()).isFalse();
+        assertThat(subjectName.readOnly()).isFalse();
+        assertThat(result.fields()).extracting(ProductionSurveyField::code)
+                .doesNotHaveDuplicates();
+
+        ProductionImportDefinition importDefinition = service.importDefinition("RICE", "FARMER");
+        assertThat(importDefinition.contractVersion()).isEqualTo(result.contractVersion());
+        assertThat(importDefinition.fields()).isEqualTo(result.fields());
     }
 
     @Test

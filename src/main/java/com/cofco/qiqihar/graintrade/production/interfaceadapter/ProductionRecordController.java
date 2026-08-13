@@ -6,6 +6,7 @@ import com.cofco.qiqihar.graintrade.production.application.ProductionListItem;
 import com.cofco.qiqihar.graintrade.production.application.ProductionFactDefinition;
 import com.cofco.qiqihar.graintrade.production.application.ProductionFactGroup;
 import com.cofco.qiqihar.graintrade.production.application.ProductionFormDefinition;
+import com.cofco.qiqihar.graintrade.production.application.ProductionSurveyField;
 import com.cofco.qiqihar.graintrade.production.application.ProductionRecordView;
 import com.cofco.qiqihar.graintrade.production.application.ProductionRecordService;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecord;
@@ -208,10 +209,25 @@ public class ProductionRecordController {
                     page.pageSize(), page.totalElements(), page.totalPages());
         }
     }
-    record DefinitionResponse(String productCode, String objectTypeCode, List<GroupResponse> groups) {
+    record DefinitionResponse(String productCode, String objectTypeCode, String contractVersion,
+                              List<ContractFieldResponse> fields, List<GroupResponse> groups) {
         static DefinitionResponse from(ProductionFormDefinition definition) {
             return new DefinitionResponse(definition.productCode(), definition.objectTypeCode(),
+                    definition.contractVersion(),
+                    definition.fields().stream().map(ContractFieldResponse::from).toList(),
                     definition.groups().stream().map(GroupResponse::from).toList());
+        }
+    }
+    record ContractFieldResponse(
+            String code, String label, String groupCode, String groupLabel, int groupOrder, int sortOrder,
+            String valueType, String controlType, String unit, boolean required, List<String> options,
+            boolean readOnly, boolean calculated, boolean importable, boolean displayed,
+            String description, int precision, int scale) {
+        static ContractFieldResponse from(ProductionSurveyField field) {
+            return new ContractFieldResponse(field.code(), field.label(), field.groupCode(), field.groupLabel(),
+                    field.groupOrder(), field.sortOrder(), field.valueType(), field.controlType(), field.unit(),
+                    field.required(), field.options(), field.readOnly(), field.calculated(), field.importable(),
+                    field.displayed(), field.description(), field.precision(), field.scale());
         }
     }
     record GroupResponse(String category, String label, int sortOrder, List<FieldResponse> fields) {

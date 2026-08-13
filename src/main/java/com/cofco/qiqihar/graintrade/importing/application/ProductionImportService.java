@@ -229,8 +229,9 @@ public class ProductionImportService implements QueuedImportProcessor {
         }
         if (lower.endsWith(".xlsx") && (mediaType == null || mediaType.equals(
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))) {
+            com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook.Context context = null;
             try {
-                var context = com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook
+                context = com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook
                         .context(bytes, ProductionImportTemplate.DOMAIN);
                 expectedContext.requireMatches(context.productCode(), context.objectTypeCode());
                 return ProductionImportTemplate.canonicalXlsx(bytes,
@@ -239,6 +240,13 @@ public class ProductionImportService implements QueuedImportProcessor {
             } catch (ClientRequestException exception) {
                 throw exception;
             } catch (IllegalArgumentException exception) {
+                if (context != null && context.contractVersion() != null) {
+                    String code = exception.getMessage() != null
+                                    && exception.getMessage().startsWith("XLSX_CONTRACT_MISMATCH")
+                            ? "IMPORT_CONTRACT_MISMATCH" : "INVALID_IMPORT_FORMAT";
+                    throw new ClientRequestException(code,
+                            "XLSX fields or values do not match the current production survey contract");
+                }
                 try {
                     List<List<String>> table = XlsxTable.parseWorksheet(
                             bytes, 1, ProductionImportTemplate.HEADERS.size(), maxDataRows + 1);
