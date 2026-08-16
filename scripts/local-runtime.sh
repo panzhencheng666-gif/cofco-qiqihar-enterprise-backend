@@ -43,6 +43,29 @@ remove_runtime_cache() {
   esac
 }
 
+assert_source_git_metadata_is_safe() {
+  local repository
+  local source_repository
+  local git_directory
+
+  for repository in \
+    cofco-qiqihar-enterprise-backend \
+    cofco-qiqihar-enterprise-web \
+    cofco-qiqihar-enterprise-frontend; do
+    source_repository="${source_workspace_root}/${repository}"
+    if ! git_directory="$(git -C "$source_repository" rev-parse --absolute-git-dir 2>/dev/null)"; then
+      echo "Required source repository has invalid Git metadata: $source_repository" >&2
+      return 1
+    fi
+    case "$git_directory" in
+      "$snapshot_workspace" | "$snapshot_workspace"/*)
+        echo "Refusing to replace runtime because source Git metadata is stored inside it: $git_directory" >&2
+        return 1
+        ;;
+    esac
+  done
+}
+
 refresh_runtime_snapshot() {
   local temporary_root
   local temporary_workspace
@@ -136,6 +159,7 @@ install_agent() {
     return 1
   }
   plutil -lint "$source_plist" >/dev/null
+  assert_source_git_metadata_is_safe
   mkdir -p "${HOME}/Library/LaunchAgents" "$launchd_log_dir" "${runtime_root}/logs" "${runtime_root}/pids"
   chmod 700 "$launchd_log_dir" "${runtime_root}/logs" "${runtime_root}/pids"
 
