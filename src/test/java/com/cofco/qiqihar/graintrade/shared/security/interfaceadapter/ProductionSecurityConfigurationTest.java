@@ -32,6 +32,7 @@ import org.springframework.context.annotation.Import;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.ContextConfiguration;
+import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -75,6 +76,8 @@ class ProductionSecurityConfigurationTest {
     void authorizeKnownEnterpriseSubjects() {
         when(principals.findEnabled(any())).thenAnswer(invocation -> Optional.of(principal(
                 invocation.getArgument(0),Set.of("BUSINESS_OPERATOR"))));
+        when(principals.findEnabledByOidcIdentity(any(),any())).thenAnswer(invocation -> Optional.of(principal(
+                invocation.getArgument(1),Set.of("BUSINESS_OPERATOR"))));
     }
 
     @Test
@@ -102,12 +105,36 @@ class ProductionSecurityConfigurationTest {
     }
 
     @Test
-    void oidcMfaSessionSubjectIsTheServletPrincipal() throws Exception {
+    void oidcProviderSubjectIsReplacedByTheStableBusinessSubject() throws Exception {
+        when(principals.findEnabledByOidcIdentity("https://issuer.example.test","oidc-subject"))
+                .thenReturn(Optional.of(principal("employee-001",Set.of("BUSINESS_OPERATOR"))));
+
         mockMvc.perform(get("/api/v1/whoami").with(oidcLogin()
-                        .idToken(token -> token.subject("oidc-subject")
+                        .idToken(token -> token.issuer("https://issuer.example.test")
+                                .subject("oidc-subject")
                                 .claim("amr", java.util.List.of("pwd", "mfa")))))
                 .andExpect(status().isOk())
-                .andExpect(content().string("oidc-subject"));
+                .andExpect(content().string("employee-001"));
+    }
+
+    @Test
+    void existingSessionIsRejectedIfProviderBindingChangesToAnotherEmployee() throws Exception {
+        when(principals.findEnabledByOidcIdentity("https://issuer.example.test","oidc-subject"))
+                .thenReturn(Optional.of(principal("employee-001",Set.of("BUSINESS_OPERATOR"))),
+                        Optional.of(principal("employee-002",Set.of("BUSINESS_OPERATOR"))));
+
+        MvcResult first=mockMvc.perform(get("/api/v1/whoami").with(oidcLogin()
+                        .idToken(token -> token.issuer("https://issuer.example.test")
+                                .subject("oidc-subject").claim("amr",List.of("mfa")))))
+                .andExpect(status().isOk())
+                .andExpect(content().string("employee-001"))
+                .andReturn();
+        MockHttpSession session=(MockHttpSession)first.getRequest().getSession(false);
+
+        mockMvc.perform(get("/api/v1/whoami").session(session))
+                .andExpect(status().isForbidden());
+        verify(sessionAudit).record(eq("employee-001"),eq(session.getId()),
+                eq("SESSION_ACCESS_DENIED"),eq("{\"reason\":\"BINDING_CHANGED\"}"));
     }
 
     @Test
@@ -115,6 +142,15 @@ class ProductionSecurityConfigurationTest {
         mockMvc.perform(get("/api/v1/whoami").with(oidcLogin()
                         .idToken(token -> token.subject("oidc-subject")
                                 .claim("amr", java.util.List.of("pwd")))))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void oidcSessionWithoutIssuerCannotFallBackToLegacySubjectLookup() throws Exception {
+        mockMvc.perform(get("/api/v1/whoami").with(oidcLogin()
+                        .idToken(token -> token.subject("oidc-subject")
+                                .claims(claims -> claims.remove("iss"))
+                                .claim("amr",List.of("mfa")))))
                 .andExpect(status().isForbidden());
     }
 
@@ -171,7 +207,8 @@ class ProductionSecurityConfigurationTest {
     @Test
     void authenticatedProductionAsyncDispatchCompletesWithoutReauthorizationFailure() throws Exception {
         MvcResult initial = mockMvc.perform(get("/api/v1/whoami-async")
-                        .with(oidcLogin().idToken(token -> token.subject("oidc-subject")
+                        .with(oidcLogin().idToken(token -> token.issuer("https://issuer.example.test")
+                                .subject("oidc-subject")
                                 .claim("amr", java.util.List.of("mfa")))))
                 .andExpect(request().asyncStarted())
                 .andReturn();

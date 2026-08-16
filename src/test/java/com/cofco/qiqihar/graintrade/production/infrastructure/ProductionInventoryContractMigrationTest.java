@@ -34,7 +34,7 @@ class ProductionInventoryContractMigrationTest {
     @Test
     void freshMigrationVersionsPublicProductionInventoryWithoutRemovingBusinessFields() throws Exception {
         resetDatabase();
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(119);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(120);
 
         assertThat(query("""
                 SELECT EXISTS(
@@ -170,7 +170,7 @@ class ProductionInventoryContractMigrationTest {
     @Test
     void freshMigrationGrantsRuntimeOverviewContractReadOnlyAccess() throws Exception {
         resetDatabase();
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(119);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(120);
 
         assertThat(query("""
                 SELECT has_table_privilege('cofco_app',
@@ -211,7 +211,7 @@ class ProductionInventoryContractMigrationTest {
         assertThat(query("SELECT version FROM public.flyway_schema_history WHERE success ORDER BY installed_rank DESC LIMIT 1"))
                 .isEqualTo("118");
 
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isOne();
+        assertThat(DATABASE.flywayToVersion("119").migrate().migrationsExecuted).isOne();
         assertThat(query("SELECT version FROM public.flyway_schema_history WHERE success ORDER BY installed_rank DESC LIMIT 1"))
                 .isEqualTo("119");
         assertRuntimeCanReadOverviewRegionSurplusContract();
@@ -250,7 +250,7 @@ class ProductionInventoryContractMigrationTest {
                     """);
         }
 
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(2);
+        assertThat(DATABASE.flywayToVersion("119").migrate().migrationsExecuted).isEqualTo(2);
         assertThat(query("""
                 SELECT string_agg(field_code || ':' || value,',' ORDER BY field_code)
                 FROM production.production_record_submission_metadata

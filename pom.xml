@@ -21,6 +21,8 @@
         <java.version>21</java.version>
         <maven.compiler.release>21</maven.compiler.release>
         <spring-modulith.version>2.1.0</spring-modulith.version>
+        <postgresql.version>42.7.12</postgresql.version>
+        <bouncycastle.version>1.80.2</bouncycastle.version>
     </properties>
 
     <dependencyManagement>
@@ -31,6 +33,11 @@
                 <version>${spring-modulith.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.bouncycastle</groupId>
+                <artifactId>bcprov-jdk18on</artifactId>
+                <version>${bouncycastle.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -96,6 +103,12 @@
             <groupId>com.aliyun</groupId>
             <artifactId>credentials-java</artifactId>
             <version>0.3.10</version>
+            <exclusions>
+                <exclusion>
+                    <groupId>org.ini4j</groupId>
+                    <artifactId>ini4j</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <dependency>

@@ -200,11 +200,17 @@ public class ProductionSecurityConfiguration {
                     deny(request,response,authentication,"MFA_REQUIRED");
                     return;
                 }
-                SecurityPrincipal principal=principals.findEnabled(authentication.getName()).orElse(null);
+                SecurityPrincipal principal=findEnabledOidc(principals,authentication).orElse(null);
                 if(principal==null||principal.roleCodes().isEmpty()) {
                     deny(request,response,authentication,principal==null?"SUBJECT_DISABLED":"ROLE_REQUIRED");
                     return;
                 }
+                if(authentication instanceof StableSubjectOAuth2AuthenticationToken
+                        && !authentication.getName().equals(principal.subjectId())) {
+                    deny(request,response,authentication,"BINDING_CHANGED");
+                    return;
+                }
+                authentication=bindStableSubject(authentication,principal.subjectId());
             }
             filterChain.doFilter(request, response);
         }
@@ -252,7 +258,7 @@ public class ProductionSecurityConfiguration {
         @Override
         public void onAuthenticationSuccess(HttpServletRequest request,HttpServletResponse response,
                 Authentication authentication) throws IOException,ServletException {
-            SecurityPrincipal principal=principals.findEnabled(authentication.getName()).orElse(null);
+            SecurityPrincipal principal=findEnabledOidc(principals,authentication).orElse(null);
             String reason=!approvedMfa(authentication,acceptedAmr,acceptedAcr)?"MFA_REQUIRED"
                     : principal==null?"SUBJECT_DISABLED":principal.roleCodes().isEmpty()?"ROLE_REQUIRED":null;
             if(reason!=null) {
@@ -265,8 +271,9 @@ public class ProductionSecurityConfiguration {
                 return;
             }
             var session=request.getSession();
-            audit.record(authentication.getName(),session.getId(),"LOGIN_SUCCESS","{}");
-            delegate.onAuthenticationSuccess(request,response,authentication);
+            Authentication stableAuthentication=bindStableSubject(authentication,principal.subjectId());
+            audit.record(stableAuthentication.getName(),session.getId(),"LOGIN_SUCCESS","{}");
+            delegate.onAuthenticationSuccess(request,response,stableAuthentication);
         }
     }
 
@@ -354,6 +361,42 @@ public class ProductionSecurityConfiguration {
         }
         Object acrClaim=user.getClaims().get("acr");
         return acrClaim!=null&&acceptedAcr.contains(acrClaim.toString());
+    }
+
+    private static Authentication bindStableSubject(Authentication authentication,String stableSubjectId) {
+        if (!(authentication instanceof OAuth2AuthenticationToken token)
+                || stableSubjectId.equals(authentication.getName())) return authentication;
+        var stable=new StableSubjectOAuth2AuthenticationToken(token,stableSubjectId);
+        SecurityContextHolder.getContext().setAuthentication(stable);
+        return stable;
+    }
+
+    private static java.util.Optional<SecurityPrincipal> findEnabledOidc(
+            SecurityPrincipalRepository principals,Authentication authentication) {
+        if (authentication instanceof OAuth2AuthenticationToken token) {
+            if(token.getPrincipal() instanceof OidcUser user
+                    && user.getIssuer()!=null && user.getSubject()!=null) {
+                return principals.findEnabledByOidcIdentity(user.getIssuer().toString(),user.getSubject());
+            }
+            return java.util.Optional.empty();
+        }
+        return principals.findEnabled(authentication.getName());
+    }
+
+    private static final class StableSubjectOAuth2AuthenticationToken extends OAuth2AuthenticationToken {
+        private final String stableSubjectId;
+
+        private StableSubjectOAuth2AuthenticationToken(
+                OAuth2AuthenticationToken source,String stableSubjectId) {
+            super(source.getPrincipal(),source.getAuthorities(),source.getAuthorizedClientRegistrationId());
+            this.stableSubjectId=stableSubjectId;
+            setDetails(source.getDetails());
+        }
+
+        @Override
+        public String getName() {
+            return stableSubjectId;
+        }
     }
 }
 

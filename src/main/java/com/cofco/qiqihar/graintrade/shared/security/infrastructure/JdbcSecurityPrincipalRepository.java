@@ -40,6 +40,22 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
                         assignedRegions(subject.id(),subject.workUnitCode())));
     }
 
+    @Override
+    public Optional<SecurityPrincipal> findEnabledByOidcIdentity(String issuer,String providerSubject) {
+        if(issuer==null||issuer.isBlank()||!issuer.startsWith("https://")
+                ||providerSubject==null||providerSubject.isBlank())return Optional.empty();
+        return jdbc.sql("""
+                SELECT security_subject_id
+                FROM platform.identity_provider_binding
+                WHERE issuer_uri=:issuer
+                  AND provider_subject=:providerSubject
+                  AND state='ACTIVE'
+                  AND CURRENT_TIMESTAMP>=valid_from
+                  AND (valid_until IS NULL OR CURRENT_TIMESTAMP<valid_until)
+                """).param("issuer",issuer).param("providerSubject",providerSubject)
+                .query(String.class).optional().flatMap(this::findEnabled);
+    }
+
     private Set<String> permissions(String subjectId) {
         return new LinkedHashSet<>(jdbc.sql("""
                 SELECT DISTINCT role_permission.permission_code

@@ -303,9 +303,25 @@ class RealOidcJwtIntegrationTest {
     static class ProductionTestApplication {
         @Bean
         SecurityPrincipalRepository enterpriseSubjects() {
-            return subjectId -> Optional.of(new SecurityPrincipal(
-                    subjectId, subjectId, "TEST_UNIT", "测试单位", "ACTIVE", "ACTIVE",
-                    Set.of("BUSINESS_OPERATOR"), List.of(), Set.of("BUSINESS_READ"), Set.of("230202")));
+            return new SecurityPrincipalRepository() {
+                @Override
+                public Optional<SecurityPrincipal> findEnabled(String subjectId) {
+                    return Optional.of(principal(subjectId));
+                }
+
+                @Override
+                public Optional<SecurityPrincipal> findEnabledByOidcIdentity(
+                        String issuer,String providerSubject) {
+                    return OIDC.issuer().equals(issuer)&&"oidc-subject".equals(providerSubject)
+                            ? Optional.of(principal(providerSubject)) : Optional.empty();
+                }
+
+                private SecurityPrincipal principal(String subjectId) {
+                    return new SecurityPrincipal(
+                            subjectId,subjectId,"TEST_UNIT","测试单位","ACTIVE","ACTIVE",
+                            Set.of("BUSINESS_OPERATOR"),List.of(),Set.of("BUSINESS_READ"),Set.of("230202"));
+                }
+            };
         }
 
         @Bean
