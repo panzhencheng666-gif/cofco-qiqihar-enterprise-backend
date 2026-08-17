@@ -178,7 +178,8 @@ class LocalLauncherSecurityContractTest {
                 .contains("230200", "231100", "150700")
                 .contains("231102", "231102101", "231102101001")
                 .contains("150721", "150721100", "150721100001")
-                .contains("boundaryGeoJson");
+                .contains("boundaryGeoJson")
+                .contains("if years:", "options[\"periods\"][0][\"startsOn\"]");
         assertThat(startScript).contains("verify-local-region-hierarchy.sh");
         assertThat(healthcheck).contains("verify-local-region-hierarchy.sh");
         assertThat(linkVerifier).contains("verify-local-region-hierarchy.sh");

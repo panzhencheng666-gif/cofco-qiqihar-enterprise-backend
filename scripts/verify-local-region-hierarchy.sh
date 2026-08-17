@@ -91,11 +91,16 @@ import sys
 
 try:
     with open(sys.argv[1], encoding="utf-8") as source:
-        years = json.load(source)["data"]["years"]
-    year = years[0]
+        options = json.load(source)["data"]
+    years = options["years"]
+    if years:
+        year = years[0]
+    else:
+        starts_on = options["periods"][0]["startsOn"]
+        year = int(starts_on[:4])
     if not isinstance(year, int):
         raise TypeError("year must be an integer")
-except (IndexError, KeyError, TypeError, json.JSONDecodeError) as exc:
+except (IndexError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
     raise SystemExit(f"[FAIL] no authoritative overview year is available: {exc}")
 
 print(year)
