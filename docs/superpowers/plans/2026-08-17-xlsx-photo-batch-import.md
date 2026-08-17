@@ -87,7 +87,7 @@ assertThat(sheetXml).contains("LEN(TRIM(A2))=0");
 Run:
 
 ```bash
-./mvnw -q -Dtest=BusinessImportWorkbookTest,BusinessImportTemplateMatrixIntegrationTest test
+mvn -q -Dtest=BusinessImportWorkbookTest,BusinessImportTemplateMatrixIntegrationTest test
 ```
 
 Expected: failure because current metadata does not expose version/digest for every domain and current generated templates omit the shared photo column.
@@ -152,7 +152,7 @@ assertThat(columns("platform", "business_import_draft"))
 - [ ] **Step 2: Verify the migration test fails**
 
 ```bash
-./mvnw -q -Dtest=PhotoAwareImportDraftMigrationTest test
+mvn -q -Dtest=PhotoAwareImportDraftMigrationTest test
 ```
 
 Expected: failure because V121 and its tables do not exist.
@@ -216,7 +216,7 @@ assertThatThrownBy(() -> photoPackage.parseNames("../secret.jpg"))
 - [ ] **Step 2: Verify focused tests fail**
 
 ```bash
-./mvnw -q -Dtest=BusinessImportPhotoPackageTest,EvidencePhotoRestIntegrationTest test
+mvn -q -Dtest=BusinessImportPhotoPackageTest,EvidencePhotoRestIntegrationTest test
 ```
 
 Expected: failure because package resolution and missing-location batch upload are absent.
@@ -292,7 +292,7 @@ mvc.perform(multipart("/api/v1/imports/production")
 - [ ] **Step 2: Verify the tests fail**
 
 ```bash
-./mvnw -q -Dtest=ProductionImportRestIntegrationTest,MarketImportRestIntegrationTest,LogisticsImportRestIntegrationTest test
+mvn -q -Dtest=ProductionImportRestIntegrationTest,MarketImportRestIntegrationTest,LogisticsImportRestIntegrationTest test
 ```
 
 Expected: current controllers accept only one workbook and current services require complete canonical domain drafts or process the batch atomically.
@@ -325,7 +325,7 @@ Authorize `BUSINESS_IMPORT` for every resolved region. Store all other nonblank 
 Run the command from Step 2 plus:
 
 ```bash
-./mvnw -q -Dtest=QueuedBusinessImportIntegrationTest,ProductionImportConcurrencyIntegrationTest test
+mvn -q -Dtest=QueuedBusinessImportIntegrationTest,ProductionImportConcurrencyIntegrationTest test
 ```
 
 Expected: sparse rows become drafts, partial success works, queue/retry remains durable, and idempotency is preserved.
@@ -371,7 +371,7 @@ assertThatThrownBy(() -> reviewRoutes.requireIndependentReviewer(region, submitt
 - [ ] **Step 2: Verify tests fail**
 
 ```bash
-./mvnw -q -Dtest=ImportDraftPromotionIntegrationTest,ProductionRecordRestIntegrationTest,MarketRecordRestIntegrationTest,LogisticsRestIntegrationTest test
+mvn -q -Dtest=ImportDraftPromotionIntegrationTest,ProductionRecordRestIntegrationTest,MarketRecordRestIntegrationTest,LogisticsRestIntegrationTest test
 ```
 
 Expected: import-draft API and reviewer routing are absent; logistics has no evidence list.
@@ -423,7 +423,7 @@ assertThat(manualPublicationWorkItems(recordId)).isZero();
 - [ ] **Step 2: Verify the tests fail on action naming or event expectation**
 
 ```bash
-./mvnw -q -Dtest=ImportApprovalAutoPublicationIntegrationTest,BusinessEventStreamIntegrationTest test
+mvn -q -Dtest=ImportApprovalAutoPublicationIntegrationTest,BusinessEventStreamIntegrationTest test
 ```
 
 - [ ] **Step 3: Align approval audit actions**
@@ -433,7 +433,7 @@ Retain `APPROVED` as the canonical published state and replace only the domain a
 - [ ] **Step 4: Run approval, separation-of-duties, analytics, and SSE tests**
 
 ```bash
-./mvnw -q -Dtest=ImportApprovalAutoPublicationIntegrationTest,BusinessEventStreamIntegrationTest,ProductionActionPolicyTest,MarketRecordTest,LogisticsRecordTest test
+mvn -q -Dtest=ImportApprovalAutoPublicationIntegrationTest,BusinessEventStreamIntegrationTest,ProductionActionPolicyTest,MarketRecordTest,LogisticsRecordTest test
 ```
 
 Expected: all pass and self-approval remains rejected.
@@ -542,8 +542,8 @@ Use deterministic in-memory PNGs and generated server templates. Cover every pro
 - [ ] **Step 2: Run the complete backend import gate**
 
 ```bash
-./mvnw -q -Dtest=BusinessImportWorkbookTest,BusinessImportTemplateMatrixIntegrationTest,ProductionImportRestIntegrationTest,MarketImportRestIntegrationTest,LogisticsImportRestIntegrationTest,ImportDraftPromotionIntegrationTest,ImportApprovalAutoPublicationIntegrationTest test
-./mvnw -q -DskipTests package
+mvn -q -Dtest=BusinessImportWorkbookTest,BusinessImportTemplateMatrixIntegrationTest,ProductionImportRestIntegrationTest,MarketImportRestIntegrationTest,LogisticsImportRestIntegrationTest,ImportDraftPromotionIntegrationTest,ImportApprovalAutoPublicationIntegrationTest test
+mvn -q -DskipTests package
 ```
 
 Expected: zero failures and a successful backend package.
