@@ -86,6 +86,12 @@ class BusinessImportTemplateMatrixIntegrationTest {
                 labels = labels.stream().takeWhile(label -> !label.isBlank()).toList();
                 assertThat(labels).as(domain + " " + product)
                         .endsWith(BusinessImportWorkbook.PHOTO_FILENAMES_LABEL);
+                String instructions = com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
+                        .parseWorksheet(response.getContentAsByteArray(), 2, 2).toString();
+                assertThat(instructions).as(domain + " " + product)
+                        .doesNotContain("模板版本", "契约摘要", "sha256:",
+                                "PRODUCTION", "MARKET", "LOGISTICS", "CORN", "SOYBEAN", "RICE",
+                                "FARMER", "TRADER", "ROUTE_EVENT", "version", "digest", "test");
                 if ("production".equals(domain)) assertThat(labels).contains("样本点类型");
                 if ("market".equals(domain)) assertThat(labels).contains("对象类型");
             }

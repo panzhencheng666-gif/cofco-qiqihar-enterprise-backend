@@ -64,7 +64,9 @@ class ProductionImportTemplateTest {
                     assertThat(context.contractDigest()).startsWith("sha256:");
                     assertThat(com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
                             .parseWorksheet(workbook, 2, 2).toString())
-                            .contains("模板版本", "契约摘要", "sha256:");
+                            .doesNotContain("模板版本", "契约摘要", "sha256:",
+                                    BusinessImportWorkbook.CONTRACT_VERSION,
+                                    "PRODUCTION", "CORN", "SOYBEAN", "RICE", "FARMER");
                     assertThat(template.headers()).contains("MOISTURE", "PROTEIN", "MILLING_YIELD");
                     assertThat(product.get(1)).isIn(template.headers());
                 });

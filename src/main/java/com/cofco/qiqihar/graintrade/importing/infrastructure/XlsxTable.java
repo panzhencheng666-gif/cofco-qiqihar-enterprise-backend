@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -40,6 +41,40 @@ public final class XlsxTable {
         byte[] sheet = entries.get("xl/worksheets/sheet" + worksheetNumber + ".xml");
         if (sheet == null) throw invalid();
         return rows(sheet, sharedStrings, expectedColumns, maxRows);
+    }
+
+    static Map<String, String> parseDefinedNames(byte[] bytes, List<String> expectedNames) {
+        if (bytes == null || bytes.length == 0 || expectedNames == null
+                || expectedNames.isEmpty() || Set.copyOf(expectedNames).size() != expectedNames.size()) {
+            throw invalid();
+        }
+        Map<String, byte[]> entries = unzip(bytes);
+        if (entries.keySet().stream().anyMatch(name -> name.contains("vbaProject")
+                || name.startsWith("xl/externalLinks/"))) throw invalid();
+        byte[] workbook = entries.get("xl/workbook.xml");
+        if (workbook == null) throw invalid();
+        var document = document(workbook);
+        Map<String, String> values = new HashMap<>();
+        var names = document.getElementsByTagNameNS("*", "definedName");
+        for (int index = 0; index < names.getLength(); index++) {
+            Element name = (Element) names.item(index);
+            String key = name.getAttribute("name");
+            if (!expectedNames.contains(key)) continue;
+            String hidden = name.getAttribute("hidden");
+            if (!("1".equals(hidden) || "true".equalsIgnoreCase(hidden)) || values.containsKey(key)
+                    || name.getElementsByTagNameNS("*", "*").getLength() > 0) throw invalid();
+            String value = definedNameString(name.getTextContent().trim());
+            if (value.codePointCount(0, value.length()) > MAX_CELL_CODE_POINTS) throw invalid();
+            values.put(key, value);
+        }
+        if (!values.keySet().equals(Set.copyOf(expectedNames))) throw invalid();
+        return Map.copyOf(values);
+    }
+
+    private static String definedNameString(String formula) {
+        if (formula.length() < 2 || formula.charAt(0) != '"'
+                || formula.charAt(formula.length() - 1) != '"') throw invalid();
+        return formula.substring(1, formula.length() - 1).replace("\"\"", "\"");
     }
 
     private static Map<String, byte[]> unzip(byte[] bytes) {

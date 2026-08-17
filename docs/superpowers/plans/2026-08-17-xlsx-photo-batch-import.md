@@ -67,12 +67,12 @@
 
 **Interfaces:**
 - Produces: `BusinessImportWorkbook.PHOTO_FILENAMES_CODE = "evidencePhotoNames"` and label `现场照片文件名（可选，最多5张，分号分隔）`.
-- Produces: `Context.contractVersion()` and `Context.contractDigest()` read from the instruction sheet and matched before data parsing.
+- Produces: `Context.contractVersion()` and `Context.contractDigest()` read from machine-only workbook metadata and matched before data parsing. The user-visible instruction sheet remains Chinese business content only.
 - Produces: every current production, market, and logistics workbook with the common photo column last.
 
 - [ ] **Step 1: Add failing workbook tests**
 
-Add assertions that exactly 9 user-facing templates exist (3 products × 3 domains), each generated template has a `填报说明` sheet, carries nonblank `模板版本` and `契约摘要`, puts the photo column last, permits blank non-anchor business cells, applies year/month validation to row 2, and ignores a completely blank row. Production and market expose one optional object-type column inside the product template; object-type applicability remains an internal row-routing rule.
+Add assertions that exactly 9 user-facing templates exist (3 products × 3 domains), each generated template has a `填报说明` sheet containing only Chinese business-facing content, keeps nonblank version and digest values in machine-only workbook metadata, puts the photo column last, permits blank non-anchor business cells, applies year/month validation to row 2, and ignores a completely blank row. Production and market expose one optional object-type column inside the product template; object-type applicability remains an internal row-routing rule.
 
 ```java
 assertThat(template.headers().getLast()).isEqualTo(BusinessImportWorkbook.PHOTO_FILENAMES_CODE);
@@ -106,7 +106,7 @@ public static ColumnRule photoFilenameRule() {
 }
 ```
 
-Write `模板版本` and `契约摘要` into the instruction sheet and return them from `context`. Make all domain business `ColumnRule.required` values false except the sample name and region; the photo column is optional. Keep server-generated reporter/status fields out of editable columns. Reject absent/mismatched metadata as `IMPORT_CONTRACT_MISMATCH` with the Chinese old-template message.
+Write contract version and digest into machine-only workbook metadata and return them from `context`; never expose them, internal codes, English development terms, or test traces in user-visible worksheets or pages. Make all domain business `ColumnRule.required` values false except the sample name and region; the photo column is optional. Keep server-generated reporter/status fields out of editable columns. Reject absent/mismatched metadata as `IMPORT_CONTRACT_MISMATCH` with the Chinese old-template message.
 
 - [ ] **Step 4: Run the focused template matrix**
 

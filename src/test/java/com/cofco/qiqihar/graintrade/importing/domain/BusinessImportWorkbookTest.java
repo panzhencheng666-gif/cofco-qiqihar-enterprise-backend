@@ -41,7 +41,7 @@ class BusinessImportWorkbookTest {
     }
 
     @Test
-    void createsOneVersionedProtocolSpecializedForProductionProductAndObjectType() {
+    void createsOneBusinessOnlyProtocolSpecializedForProductionProductAndObjectType() {
         byte[] workbook = BusinessImportWorkbook.create(
                 ProductionImportTemplate.workbook("CORN", "FARMER"));
 
@@ -52,11 +52,12 @@ class BusinessImportWorkbookTest {
                         java.util.List.of("业务类型", "产情"),
                         java.util.List.of("产品品种", "玉米"),
                         java.util.List.of("对象类型", "农户"),
-                        java.util.List.of("模板版本", BusinessImportWorkbook.CONTRACT_VERSION),
                         java.util.List.of("填报人", "由登录账号自动记录，不得在模板中填写"),
                         java.util.List.of("处理方式", "5000 条以内即时处理；5001 至 50000 条转入后台任务处理"));
         assertThat(XlsxTable.parseWorksheet(workbook, 2, 2).toString())
-                .contains("模板版本", "契约摘要", "sha256:");
+                .doesNotContain("模板版本", "契约摘要", "sha256:",
+                        BusinessImportWorkbook.CONTRACT_VERSION,
+                        "PRODUCTION", "CORN", "FARMER", "version", "digest");
         assertThat(ProductionImportTemplate.XLSX_HEADERS)
                 .endsWith(BusinessImportWorkbook.PHOTO_FILENAMES_CODE)
                 .doesNotContain("productCode", "objectTypeCode", "PROD_REPORTER_NAME", "evidencePhotoId");
@@ -97,7 +98,8 @@ class BusinessImportWorkbookTest {
                     List.of("对象类型", expected.get(index).get(2)));
             assertThat(instructions.toString()).doesNotContain(
                     "PRODUCTION", "MARKET", "LOGISTICS", "CORN", "SOYBEAN", "RICE",
-                    "FARMER", "TRADER", "ROUTE_EVENT", "production-survey-fields-v1");
+                    "FARMER", "TRADER", "ROUTE_EVENT", "production-survey-fields-v1",
+                    "模板版本", "契约摘要", "sha256:", "version", "digest");
             BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(
                     workbook, template.domainCode());
             assertThat(context.productCode()).isEqualTo(template.productCode());
@@ -164,14 +166,20 @@ class BusinessImportWorkbookTest {
         byte[] workbook = BusinessImportWorkbook.create(template, List.of(row));
 
         assertThat(XlsxTable.parseWorksheet(workbook, 2, 2).toString())
-                .contains("模板版本", "契约摘要", "sha256:")
-                .doesNotContain("production-survey-fields");
+                .doesNotContain("模板版本", "契约摘要", "sha256:",
+                        "production-survey-fields", "version", "digest");
         assertThat(zipEntry(workbook, "xl/worksheets/sheet1.xml"))
                 .contains("<dataValidations", "promptTitle=\"必填字段\"", "type=\"decimal\"");
         assertThat(zipEntry(workbook, "xl/styles.xml"))
                 .contains("0.##################");
         assertThat(BusinessImportWorkbook.read(workbook, template).rows())
                 .containsExactly(row);
+
+        byte[] tamperedContract = replaceZipEntry(workbook, "xl/workbook.xml",
+                content -> content.replace(template.contractDigest(), "sha256:tampered"));
+        assertThatThrownBy(() -> BusinessImportWorkbook.read(tamperedContract, template))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("XLSX_CONTRACT_MISMATCH");
 
         ArrayList<String> sparse = new ArrayList<>(Collections.nCopies(template.headers().size(), ""));
         put(sparse, template.headers(), "地区", "230208");

@@ -20,6 +20,14 @@ public final class BusinessImportWorkbook {
     public static final String CONTRACT_VERSION = "2026.08.17-2";
     public static final String PHOTO_FILENAMES_CODE = "evidencePhotoNames";
     public static final String PHOTO_FILENAMES_LABEL = "现场照片文件名（可选，最多5张，分号分隔）";
+    private static final String DOMAIN_METADATA_NAME = "_业务模板校验_业务类型";
+    private static final String PRODUCT_METADATA_NAME = "_业务模板校验_产品品种";
+    private static final String OBJECT_METADATA_NAME = "_业务模板校验_对象类型";
+    private static final String VERSION_METADATA_NAME = "_业务模板校验_校验代号";
+    private static final String DIGEST_METADATA_NAME = "_业务模板校验_校验摘要";
+    private static final List<String> CONTRACT_METADATA_NAMES = List.of(
+            DOMAIN_METADATA_NAME, PRODUCT_METADATA_NAME, OBJECT_METADATA_NAME,
+            VERSION_METADATA_NAME, DIGEST_METADATA_NAME);
     private static final Map<String, String> PUBLIC_CONTEXT_VALUES = Map.ofEntries(
             Map.entry("PRODUCTION", "产情"), Map.entry("MARKET", "市场"), Map.entry("LOGISTICS", "物流"),
             Map.entry("CORN", "玉米"), Map.entry("SOYBEAN", "大豆"), Map.entry("RICE", "稻谷"),
@@ -139,26 +147,32 @@ public final class BusinessImportWorkbook {
     public record Context(String productCode, String objectTypeCode, String contractVersion, String contractDigest) {}
 
     public static Context context(byte[] bytes, String domainCode) {
-        Map<String, String> context = instructionContext(bytes);
-        if (blank(context.get("业务类型"))) {
+        Map<String, String> visibleContext = instructionContext(bytes);
+        if (blank(visibleContext.get("业务类型"))) {
             throw new IllegalArgumentException("INVALID_XLSX_CONTEXT");
         }
-        String actualDomain = internalContextValue(context.get("业务类型"));
+        String actualDomain = internalContextValue(visibleContext.get("业务类型"));
         if (!domainCode.equals(actualDomain)) throw new IllegalArgumentException("INVALID_XLSX_CONTEXT");
-        boolean productMissing = blank(context.get("产品品种"));
-        boolean objectTypeMissing = blank(context.get("对象类型"));
+        boolean productMissing = blank(visibleContext.get("产品品种"));
+        boolean objectTypeMissing = blank(visibleContext.get("对象类型"));
         if ((productMissing && !objectTypeMissing)
                 || (productMissing && !"LOGISTICS".equals(domainCode))) {
             throw new IllegalArgumentException("INVALID_XLSX_CONTEXT");
         }
-        String contractVersion = context.get("模板版本");
-        String contractDigest = context.get("契约摘要");
+        String productCode = productMissing ? null : internalContextValue(visibleContext.get("产品品种"));
+        String objectTypeCode = objectTypeMissing ? null : internalContextValue(visibleContext.get("对象类型"));
+        Map<String, String> machineContext = contractContext(bytes);
+        if (!actualDomain.equals(machineContext.get(DOMAIN_METADATA_NAME))
+                || !java.util.Objects.equals(productCode, optionalMetadata(machineContext.get(PRODUCT_METADATA_NAME)))
+                || !java.util.Objects.equals(objectTypeCode, optionalMetadata(machineContext.get(OBJECT_METADATA_NAME)))) {
+            throw new IllegalArgumentException("INVALID_XLSX_CONTEXT");
+        }
+        String contractVersion = machineContext.get(VERSION_METADATA_NAME);
+        String contractDigest = machineContext.get(DIGEST_METADATA_NAME);
         if (blank(contractVersion) || blank(contractDigest) || !contractDigest.startsWith("sha256:")) {
             throw new IllegalArgumentException("INVALID_XLSX_CONTRACT");
         }
-        return new Context(productMissing ? null : internalContextValue(context.get("产品品种")),
-                objectTypeMissing ? null : internalContextValue(context.get("对象类型")),
-                contractVersion.trim(), contractDigest.trim());
+        return new Context(productCode, objectTypeCode, contractVersion.trim(), contractDigest.trim());
     }
 
     public static ImportSheet read(byte[] bytes, String domainCode, List<String> headers, List<String> labels) {
@@ -249,6 +263,18 @@ public final class BusinessImportWorkbook {
         return context;
     }
 
+    private static Map<String, String> contractContext(byte[] bytes) {
+        try {
+            return XlsxTable.parseDefinedNames(bytes, CONTRACT_METADATA_NAMES);
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException("INVALID_XLSX_CONTRACT", exception);
+        }
+    }
+
+    private static String optionalMetadata(String value) {
+        return blank(value) ? null : value;
+    }
+
     private static String dataSheet(Template template, List<List<String>> dataRows) {
         StringBuilder rows = new StringBuilder();
         for (int index = 0; index < dataRows.size(); index++) {
@@ -277,11 +303,9 @@ public final class BusinessImportWorkbook {
         if (template.objectTypeCode() != null) {
             metadata.add(List.of("对象类型", publicContextValue(template.objectTypeCode())));
         }
-        metadata.add(List.of("模板版本", template.contractVersion()));
-        metadata.add(List.of("契约摘要", template.contractDigest()));
         StringBuilder xml = new StringBuilder();
         for (int index = 0; index < metadata.size(); index++) {
-            xml.append(row(index + 1, metadata.get(index), 0, true));
+            xml.append(row(index + 1, metadata.get(index), 0, false));
         }
         java.util.ArrayList<List<String>> instructions = new java.util.ArrayList<>(List.of(
                 List.of("填报说明", "请按业务字段名称填写，不得修改表头"),
@@ -355,8 +379,25 @@ public final class BusinessImportWorkbook {
                 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
                 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
                   <sheets><sheet name="%s填报" sheetId="1" r:id="rId1"/><sheet name="填报说明" sheetId="2" r:id="rId2"/></sheets>
+                  %s
                 </workbook>
-                """.formatted(xml(template.domainLabel()));
+                """.formatted(xml(template.domainLabel()), contractMetadata(template));
+    }
+
+    private static String contractMetadata(Template template) {
+        return """
+                <definedNames>
+                  <definedName name="%s" hidden="1">&quot;%s&quot;</definedName>
+                  <definedName name="%s" hidden="1">&quot;%s&quot;</definedName>
+                  <definedName name="%s" hidden="1">&quot;%s&quot;</definedName>
+                  <definedName name="%s" hidden="1">&quot;%s&quot;</definedName>
+                  <definedName name="%s" hidden="1">&quot;%s&quot;</definedName>
+                </definedNames>
+                """.formatted(DOMAIN_METADATA_NAME, xml(template.domainCode()),
+                PRODUCT_METADATA_NAME, xml(template.productCode() == null ? "" : template.productCode()),
+                OBJECT_METADATA_NAME, xml(template.objectTypeCode() == null ? "" : template.objectTypeCode()),
+                VERSION_METADATA_NAME, xml(template.contractVersion()),
+                DIGEST_METADATA_NAME, xml(template.contractDigest()));
     }
 
     private static String publicContextValue(String internalValue) {
