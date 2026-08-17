@@ -48,7 +48,7 @@ public class LogisticsImportService implements QueuedImportProcessor {
 
     public BusinessImportWorkbook.Template template(String productCode) {
         access.require("BUSINESS_IMPORT", null);
-        return LogisticsImportTemplate.workbook(definition(productCode));
+        return LogisticsImportTemplate.workbook(productCode, definition(productCode));
     }
 
     @Transactional

@@ -115,7 +115,7 @@ class MarketImportRestIntegrationTest {
                         .param("objectTypeCode", "FEED_MILL")
                         .principal(() -> "market-tester"))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
-        var template = template(downloaded, "CORN", "FEED_MILL");
+        var template = internalTemplate("CORN", "FEED_MILL");
         java.util.Map<String, String> fields = new java.util.HashMap<>();
         fields.put("surveyYear", "2026");
         fields.put("surveyMonth", "8");
@@ -168,7 +168,7 @@ class MarketImportRestIntegrationTest {
                         .param("objectTypeCode", "FEED_MILL")
                         .principal(() -> "market-tester"))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
-        var template = template(downloaded, "CORN", "FEED_MILL");
+        var template = internalTemplate("CORN", "FEED_MILL");
         java.util.Map<String, String> fields = new java.util.HashMap<>();
         fields.put("surveyYear", "2026");
         fields.put("surveyMonth", "8");
@@ -221,7 +221,7 @@ class MarketImportRestIntegrationTest {
                         .param("objectTypeCode", "TRADER")
                         .principal(() -> "market-tester"))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
-        var soybean = template(downloaded, "SOYBEAN", "TRADER");
+        var soybean = internalTemplate("SOYBEAN", "TRADER");
         byte[] workbook = BusinessImportWorkbook.create(soybean, List.of(
                 java.util.Collections.nCopies(soybean.headers().size(), "")));
 
@@ -251,35 +251,24 @@ class MarketImportRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andReturn().getResponse();
         assertThat(ContentDisposition.parse(response.getHeader(HttpHeaders.CONTENT_DISPOSITION)).getFilename())
-                .isEqualTo("市场-玉米-承储企业-批量导入模板.xlsx");
+                .isEqualTo("市场-玉米-批量导入模板.xlsx");
         byte[] workbook = response.getContentAsByteArray();
 
-        var template = template(workbook, "CORN", "RESERVE_ENTERPRISE");
-        assertThat(com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
-                        .parseWorksheet(workbook, 1, template.headers().size()))
-                .containsExactly(template.labels());
-        assertThat(template.headers())
-                .contains("surveyYear", "surveyMonth", "MKT_REGION", "MKT_SAMPLE_NAME",
-                        "MKT_REPORTER_NAME", "MKT_REPORTER_PHONE", "MKT_SAMPLE_CONTACT", "MKT_SAMPLE_LATITUDE",
-                        "MKT_SAMPLE_LONGITUDE", "MKT_PURCHASE_BASE_PRICE", "MKT_SALE_BASE_PRICE",
-                        "ENDING_INVENTORY")
-                .doesNotContain("MKT_TRADE_DATE", "MKT_CULTIVAR_NAME", "OPENING_INVENTORY", "STOCK_OUTFLOW",
-                        "MKT_INVENTORY_HOLDER_CODE", "MKT_INVENTORY_OWNERSHIP_TYPE",
-                        "MKT_STORAGE_REGION_CODE", "MKT_CARGO_OWNER_CODE", "MKT_INVENTORY_CUTOFF_DATE",
-                        "MKT_INVENTORY_POLICY_ATTRIBUTE", MarketImportTemplate.EVIDENCE_PHOTO_ID,
-                        "MKT_TRADE_DIRECTION", "MKT_ACTUAL_TRADE_PRICE",
-                        "STOCK_INFLOW", "STORAGE_LOSS");
+        List<String> labels = withoutTrailingBlanks(
+                com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
+                        .parseWorksheet(workbook, 1, 256).getFirst());
+        assertThat(labels)
+                .startsWith("对象类型", "数据年份", "数据月份", "样本点名称", "地区")
+                .contains("采购量（吨）", "销售量（吨）", "现有库存（吨）")
+                .endsWith(BusinessImportWorkbook.PHOTO_FILENAMES_LABEL)
+                .doesNotContain("库存持有人代码", "货权人代码", "内部治理截止日期");
+        assertThat(BusinessImportWorkbook.context(workbook, "MARKET").productCode()).isEqualTo("CORN");
+        assertThat(BusinessImportWorkbook.context(workbook, "MARKET").objectTypeCode()).isNull();
     }
 
-    private BusinessImportWorkbook.Template template(byte[] workbook,
+    private BusinessImportWorkbook.Template internalTemplate(
             String productCode, String objectTypeCode) {
-        var rows = com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
-                .parseWorksheet(workbook, 1, 256);
-        java.util.List<String> labels = withoutTrailingBlanks(rows.get(0));
-        BusinessImportWorkbook.Template template = MarketImportTemplate.workbook(
-                market.definition(productCode, objectTypeCode));
-        assertThat(labels).isEqualTo(template.labels());
-        return template;
+        return MarketImportTemplate.workbook(market.definition(productCode, objectTypeCode));
     }
 
     private static java.util.List<String> withoutTrailingBlanks(java.util.List<String> values) {

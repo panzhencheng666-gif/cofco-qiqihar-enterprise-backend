@@ -41,10 +41,12 @@ public class ProductionImportService implements QueuedImportProcessor {
     private final Clock clock;
     private final BusinessImportLimits limits;
     private final RegionImportResolver regions;
+    private final BusinessImportTemplateCatalog templateCatalog;
 
     public ProductionImportService(ImportJobRepository repository, ProductionImportPort production,
             AccessControl accessControl, BusinessAuditRecorder audit, ObjectMapper objectMapper, Clock clock,
-            BusinessImportLimits limits, RegionImportResolver regions) {
+            BusinessImportLimits limits, RegionImportResolver regions,
+            BusinessImportTemplateCatalog templateCatalog) {
         this.repository = repository;
         this.production = production;
         this.accessControl = accessControl;
@@ -53,6 +55,7 @@ public class ProductionImportService implements QueuedImportProcessor {
         this.clock = clock;
         this.limits = limits;
         this.regions = regions;
+        this.templateCatalog = templateCatalog;
     }
 
     public String template() { return ProductionImportTemplate.csv(); }
@@ -62,6 +65,15 @@ public class ProductionImportService implements QueuedImportProcessor {
         accessControl.require("BUSINESS_IMPORT", null);
         return ProductionImportTemplate.workbook(
                 production.importDefinition(productCode, objectTypeCode));
+    }
+
+    public com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook.Template productWorkbook(
+            String productCode) {
+        accessControl.require("BUSINESS_IMPORT", null);
+        var objectTypes = templateCatalog.objectTypes(ProductionImportTemplate.DOMAIN, productCode);
+        var definitions = objectTypes.stream()
+                .map(option -> production.importDefinition(productCode, option.code())).toList();
+        return ProductionImportTemplate.productWorkbook(productCode, definitions, objectTypes);
     }
 
     @Transactional

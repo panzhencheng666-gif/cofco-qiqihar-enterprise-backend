@@ -16,6 +16,7 @@ import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.LinkedHashSet;
 import java.util.regex.Pattern;
 import java.util.zip.ZipInputStream;
 import javax.sql.DataSource;
@@ -25,6 +26,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -58,6 +61,43 @@ class BusinessImportTemplateMatrixIntegrationTest {
     }
 
     @Test
+    void publishesExactlyNineUserFacingProductTemplates() throws Exception {
+        List<String> products = jdbc.sql("SELECT code FROM platform.product ORDER BY sort_order")
+                .query(String.class).list();
+        assertThat(products).containsExactly("CORN", "SOYBEAN", "RICE");
+        java.util.Set<String> filenames = new LinkedHashSet<>();
+
+        for (String product : products) {
+            for (String domain : List.of("production", "market", "logistics")) {
+                var request = get("/api/v1/imports/" + domain + "/template")
+                        .param("productCode", product)
+                        .principal(() -> domain + "-tester");
+                if (!"logistics".equals(domain)) request.param("format", "xlsx");
+                var response = mvc.perform(request).andReturn().getResponse();
+                assertThat(response.getStatus()).as(domain + " " + product).isEqualTo(200);
+                filenames.add(ContentDisposition.parse(
+                        response.getHeader(HttpHeaders.CONTENT_DISPOSITION)).getFilename());
+                var context = BusinessImportWorkbook.context(
+                        response.getContentAsByteArray(), domain.toUpperCase(java.util.Locale.ROOT));
+                assertThat(context.productCode()).as(domain + " " + product).isEqualTo(product);
+                assertThat(context.objectTypeCode()).as(domain + " " + product).isNull();
+                List<String> labels = com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
+                        .parseWorksheet(response.getContentAsByteArray(), 1, 256).getFirst();
+                labels = labels.stream().takeWhile(label -> !label.isBlank()).toList();
+                assertThat(labels).as(domain + " " + product)
+                        .endsWith(BusinessImportWorkbook.PHOTO_FILENAMES_LABEL);
+                if ("production".equals(domain)) assertThat(labels).contains("样本点类型");
+                if ("market".equals(domain)) assertThat(labels).contains("对象类型");
+            }
+        }
+
+        assertThat(filenames).hasSize(9)
+                .allMatch(filename -> filename != null && !filename.contains("FARMER")
+                        && !filename.contains("TRADER") && !filename.contains("农户")
+                        && !filename.contains("贸易商"));
+    }
+
+    @Test
     void everyProductionTemplateAcceptsTheFirstTwoDataRowsAndImportsThem() throws Exception {
         List<Context> contexts = contexts("PRODUCTION");
         assertThat(contexts).hasSize(9);
@@ -66,15 +106,10 @@ class BusinessImportTemplateMatrixIntegrationTest {
             String key = context.key();
             var definition = production.importDefinition(context.productCode(), context.objectTypeCode());
             BusinessImportWorkbook.Template template = ProductionImportTemplate.workbook(definition);
-            byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
-                            .param("format", "xlsx")
-                            .param("productCode", context.productCode())
-                            .param("objectTypeCode", context.objectTypeCode())
-                            .principal(() -> "production-tester"))
-                    .andReturn().getResponse().getContentAsByteArray();
-            assertThat(BusinessImportWorkbook.read(downloaded, template).rows()).as(key).isEmpty();
-            assertVersionedOptionalPhotoContract(downloaded, template, key);
-            assertRequiredValidationsUseFirstDataRow(downloaded, key, true);
+            byte[] generated = BusinessImportWorkbook.create(template);
+            assertThat(BusinessImportWorkbook.read(generated, template).rows()).as(key).isEmpty();
+            assertVersionedOptionalPhotoContract(generated, template, key);
+            assertRequiredValidationsUseFirstDataRow(generated, key, true);
 
             List<String> first = template.headers().stream()
                     .map(header -> productionValue(header, key + "-1")).toList();
@@ -101,15 +136,10 @@ class BusinessImportTemplateMatrixIntegrationTest {
             String key = context.key();
             var definition = market.definition(context.productCode(), context.objectTypeCode());
             BusinessImportWorkbook.Template template = MarketImportTemplate.workbook(definition);
-            byte[] downloaded = mvc.perform(get("/api/v1/imports/market/template")
-                            .param("format", "xlsx")
-                            .param("productCode", context.productCode())
-                            .param("objectTypeCode", context.objectTypeCode())
-                            .principal(() -> "market-tester"))
-                    .andReturn().getResponse().getContentAsByteArray();
-            assertThat(BusinessImportWorkbook.read(downloaded, template).rows()).as(key).isEmpty();
-            assertVersionedOptionalPhotoContract(downloaded, template, key);
-            assertRequiredValidationsUseFirstDataRow(downloaded, key, true);
+            byte[] generated = BusinessImportWorkbook.create(template);
+            assertThat(BusinessImportWorkbook.read(generated, template).rows()).as(key).isEmpty();
+            assertVersionedOptionalPhotoContract(generated, template, key);
+            assertRequiredValidationsUseFirstDataRow(generated, key, true);
 
             List<String> first = template.headers().stream()
                     .map(header -> marketValue(header, key + "-1")).toList();
@@ -135,7 +165,7 @@ class BusinessImportTemplateMatrixIntegrationTest {
 
         for (String product : products) {
             var definition = logistics.definition(product);
-            BusinessImportWorkbook.Template template = LogisticsImportTemplate.workbook(definition);
+            BusinessImportWorkbook.Template template = LogisticsImportTemplate.workbook(product, definition);
             byte[] downloaded = mvc.perform(get("/api/v1/imports/logistics/template")
                             .param("productCode", product)
                             .principal(() -> "logistics-tester"))

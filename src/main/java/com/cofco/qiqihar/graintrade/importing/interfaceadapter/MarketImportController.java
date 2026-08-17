@@ -34,12 +34,12 @@ public class MarketImportController {
                                     @RequestParam(required = false) String productCode,
                                     @RequestParam(required = false) String objectTypeCode) {
         if ("xlsx".equalsIgnoreCase(format)) {
-            byte[] bytes = BusinessImportWorkbook.create(service.workbook(productCode, objectTypeCode));
+            byte[] bytes = BusinessImportWorkbook.create(service.productWorkbook(productCode));
             return ResponseEntity.ok().contentType(MediaType.parseMediaType(
                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                     .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
-                            .filename("市场-" + BusinessImportWorkbook.businessLabel(productCode) + "-"
-                                    + BusinessImportWorkbook.businessLabel(objectTypeCode) + "-批量导入模板.xlsx",
+                            .filename("市场-" + BusinessImportWorkbook.businessLabel(productCode)
+                                    + "-批量导入模板.xlsx",
                                     StandardCharsets.UTF_8).build().toString())
                     .body(bytes);
         }

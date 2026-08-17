@@ -27,6 +27,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import com.cofco.qiqihar.graintrade.importing.application.ProductionImportTemplate;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable;
+import com.cofco.qiqihar.graintrade.production.application.ProductionImportPort;
 
 @SpringBootTest(classes = GrainTradeApplication.class)
 @AutoConfigureMockMvc
@@ -35,6 +36,7 @@ class ProductionImportRestIntegrationTest {
     private static final String PHOTO_ID = "00000000-0000-0000-0000-000000000011";
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
+    @Autowired ProductionImportPort production;
     JdbcClient jdbc;
 
     @BeforeEach
@@ -92,17 +94,18 @@ class ProductionImportRestIntegrationTest {
                 .andExpect(content().contentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                 .andReturn().getResponse();
         assertThat(ContentDisposition.parse(response.getHeader(HttpHeaders.CONTENT_DISPOSITION)).getFilename())
-                .isEqualTo("产情-玉米-农户-批量导入模板.xlsx");
+                .isEqualTo("产情-玉米-批量导入模板.xlsx");
         byte[] workbook = response.getContentAsByteArray();
 
-        var template = template(workbook, "产情", "CORN", "FARMER");
+        var template = downloadedProductTemplate(workbook, "产情", "CORN");
         assertThat(XlsxTable.parseWorksheet(workbook, 1, template.headers().size()))
                 .containsExactly(template.labels());
         assertThat(template.headers()).isEqualTo(template.labels())
                 .allSatisfy(header -> assertThat(header)
                         .doesNotContain("_")
                         .doesNotMatch(".*[A-Za-z].*"));
-        assertThat(template.labels()).startsWith("数据年份", "数据月份", "样本点名称", "地区", "具体品种");
+        assertThat(template.labels()).startsWith(
+                "样本点类型", "数据年份", "数据月份", "样本点名称", "地区", "具体品种");
         assertThat(template.labels())
                 .contains("预计收获面积（亩）", "水分（%）", "地租（元/亩）",
                         "期初库存（吨）", "期末余粮（吨）")
@@ -117,7 +120,7 @@ class ProductionImportRestIntegrationTest {
                         .param("objectTypeCode", "FARMER")
                         .principal(() -> "production-tester"))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
-        var template = template(downloaded, "产情", "CORN", "FARMER");
+        var template = internalTemplate("CORN", "FARMER");
         java.util.ArrayList<String> row = new java.util.ArrayList<>(
                 java.util.Collections.nCopies(template.headers().size(), ""));
         put(row, template.headers(), "地区",
@@ -174,7 +177,7 @@ class ProductionImportRestIntegrationTest {
                         .param("objectTypeCode", "FARMER")
                         .principal(() -> "production-tester"))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
-        var template = template(downloaded, "产情", "CORN", "FARMER");
+        var template = internalTemplate("CORN", "FARMER");
         java.util.ArrayList<String> row = new java.util.ArrayList<>(
                 java.util.Collections.nCopies(template.headers().size(), ""));
         put(row, template.headers(), "地区", "230208");
@@ -220,7 +223,7 @@ class ProductionImportRestIntegrationTest {
                         .param("objectTypeCode", "FARMER")
                         .principal(() -> "production-tester"))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
-        var template = template(downloaded, "产情", "CORN", "FARMER");
+        var template = downloadedProductTemplate(downloaded, "产情", "CORN");
         assertThat(template.headers())
                 .allSatisfy(header -> assertThat(header)
                         .doesNotContain("_")
@@ -236,7 +239,7 @@ class ProductionImportRestIntegrationTest {
                         .param("objectTypeCode", "FARMER")
                         .principal(() -> "production-tester"))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
-        var soybean = template(downloaded, "产情", "SOYBEAN", "FARMER");
+        var soybean = internalTemplate("SOYBEAN", "FARMER");
         byte[] workbook = BusinessImportWorkbook.create(soybean, java.util.List.of(
                 java.util.Collections.nCopies(soybean.headers().size(), "")));
 
@@ -264,7 +267,7 @@ class ProductionImportRestIntegrationTest {
                         .param("objectTypeCode", "FARMER")
                         .principal(() -> "production-tester"))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
-        var current = template(downloaded, "产情", "CORN", "FARMER");
+        var current = internalTemplate("CORN", "FARMER");
         var obsoleteLabels = new java.util.ArrayList<>(current.labels());
         obsoleteLabels.set(0, "旧调查日期");
         var obsolete = new BusinessImportWorkbook.Template(
@@ -294,12 +297,17 @@ class ProductionImportRestIntegrationTest {
         row.set(headers.indexOf(header), value);
     }
 
-    private static BusinessImportWorkbook.Template template(byte[] workbook, String label,
-            String productCode, String objectTypeCode) {
+    private BusinessImportWorkbook.Template internalTemplate(String productCode, String objectTypeCode) {
+        return ProductionImportTemplate.workbook(
+                production.importDefinition(productCode, objectTypeCode));
+    }
+
+    private static BusinessImportWorkbook.Template downloadedProductTemplate(
+            byte[] workbook, String label, String productCode) {
         var rows = XlsxTable.parseWorksheet(workbook, 1, 256);
         java.util.List<String> labels = withoutTrailingBlanks(rows.get(0));
         BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(workbook, "PRODUCTION");
-        return new BusinessImportWorkbook.Template("PRODUCTION", label, productCode, objectTypeCode,
+        return new BusinessImportWorkbook.Template("PRODUCTION", label, productCode, null,
                 context.contractVersion(), context.contractDigest(), labels, labels, java.util.List.of());
     }
 

@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.importing.application;
 
 import java.util.List;
+import com.cofco.qiqihar.graintrade.importing.application.BusinessImportTemplateCatalog.ObjectTypeOption;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
 import com.cofco.qiqihar.graintrade.production.application.ProductionImportDefinition;
 import com.cofco.qiqihar.graintrade.production.application.ProductionSurveyField;
@@ -97,6 +98,37 @@ public final class ProductionImportTemplate {
                 headers, labels, List.of());
     }
 
+    public static BusinessImportWorkbook.Template productWorkbook(
+            String productCode, List<ProductionImportDefinition> definitions,
+            List<ObjectTypeOption> objectTypes) {
+        List<ProductionSurveyField> fields = productFields(productCode, definitions);
+        List<String> headers = java.util.stream.Stream.of(
+                        java.util.stream.Stream.of("样本点类型"),
+                        fields.stream().map(ProductionSurveyField::displayLabel),
+                        java.util.stream.Stream.of(BusinessImportWorkbook.PHOTO_FILENAMES_LABEL))
+                .flatMap(java.util.function.Function.identity()).toList();
+        List<BusinessImportWorkbook.ColumnRule> rules = java.util.stream.Stream.of(
+                        java.util.stream.Stream.of(new BusinessImportWorkbook.ColumnRule(
+                                "样本点类型", "TEXT", "SELECT", false,
+                                objectTypes.stream().map(ObjectTypeOption::label).toList(), 0, 0,
+                                "可留空导入草稿；提升为正式记录前补充")),
+                        fields.stream().map(field -> columnRule(field, field.displayLabel())),
+                        java.util.stream.Stream.of(BusinessImportWorkbook.photoFilenameRule(
+                                BusinessImportWorkbook.PHOTO_FILENAMES_LABEL)))
+                .flatMap(java.util.function.Function.identity()).toList();
+        return new BusinessImportWorkbook.Template(DOMAIN, "产情", productCode, null,
+                BusinessImportWorkbook.CONTRACT_VERSION, null, headers, headers, rules);
+    }
+
+    public static List<String> productCodes(
+            String productCode, List<ProductionImportDefinition> definitions) {
+        return java.util.stream.Stream.of(
+                        java.util.stream.Stream.of("objectTypeCode"),
+                        productFields(productCode, definitions).stream().map(ProductionSurveyField::code),
+                        java.util.stream.Stream.of(BusinessImportWorkbook.PHOTO_FILENAMES_CODE))
+                .flatMap(java.util.function.Function.identity()).toList();
+    }
+
     public static List<List<String>> canonicalXlsx(byte[] bytes) {
         var sheet = readCompatible(bytes, XLSX_HEADERS, XLSX_LABELS, 5_000);
         java.util.ArrayList<List<String>> table = new java.util.ArrayList<>();
@@ -157,6 +189,18 @@ public final class ProductionImportTemplate {
         return BUSINESS_HEADERS.stream()
                 .map(byCode::get).filter(java.util.Objects::nonNull)
                 .filter(field -> field.importable() || "PROD_REPORTER_NAME".equals(field.code())).toList();
+    }
+
+    private static List<ProductionSurveyField> productFields(
+            String productCode, List<ProductionImportDefinition> definitions) {
+        if (definitions == null || definitions.isEmpty()
+                || definitions.stream().anyMatch(definition -> !productCode.equals(definition.productCode()))) {
+            throw new IllegalArgumentException("INVALID_PRODUCTION_PRODUCT_TEMPLATE");
+        }
+        java.util.Map<String, ProductionSurveyField> fields = new java.util.LinkedHashMap<>();
+        definitions.forEach(definition -> auditedFields(definition).forEach(field ->
+                fields.putIfAbsent(field.code(), field)));
+        return BUSINESS_HEADERS.stream().map(fields::get).filter(java.util.Objects::nonNull).toList();
     }
 
     private static BusinessImportWorkbook.ColumnRule columnRule(

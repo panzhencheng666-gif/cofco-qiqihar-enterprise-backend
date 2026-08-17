@@ -39,7 +39,7 @@
 - `ProductionImportService.java`, `MarketImportService.java`, `LogisticsImportService.java`: parse rows, enforce the minimum anchor contract, and create generic import drafts instead of incomplete canonical records.
 - `ProductionRecordService.java`, `MarketMonitoringService.java`, `LogisticsService.java`: reviewer-route gate, draft promotion, photo attachment, and approval audit action.
 - `V121__stage_photo_aware_business_import_drafts.sql`: expand-only draft, photo mapping, nullable staged capture location, logistics evidence consistency, and indexes.
-- Integration tests under `src/test/java/.../importing/interfaceadapter`: 27-template matrix, multipart package, partial row success, draft promotion, independent review, auto-publish event.
+- Integration tests under `src/test/java/.../importing/interfaceadapter`: 9 user-template catalog plus internal applicability matrix, multipart package, partial row success, draft promotion, independent review, auto-publish event.
 
 ### Business Web root
 
@@ -72,7 +72,7 @@
 
 - [ ] **Step 1: Add failing workbook tests**
 
-Add assertions that a generated template has a `填报说明` sheet, carries nonblank `模板版本` and `契约摘要`, puts the photo column last, permits blank non-anchor business cells, applies year/month validation to row 2, and ignores a completely blank row.
+Add assertions that exactly 9 user-facing templates exist (3 products × 3 domains), each generated template has a `填报说明` sheet, carries nonblank `模板版本` and `契约摘要`, puts the photo column last, permits blank non-anchor business cells, applies year/month validation to row 2, and ignores a completely blank row. Production and market expose one optional object-type column inside the product template; object-type applicability remains an internal row-routing rule.
 
 ```java
 assertThat(template.headers().getLast()).isEqualTo(BusinessImportWorkbook.PHOTO_FILENAMES_CODE);
@@ -112,8 +112,9 @@ Write `模板版本` and `契约摘要` into the instruction sheet and return th
 
 Run the command from Step 2.
 
-Expected: all tests pass; the authoritative applicability matrix covers 9 production,
-15 market, and 3 logistics templates, totaling 27.
+Expected: all tests pass; the public catalog contains exactly 3 production, 3 market,
+and 3 logistics templates. The separate internal applicability matrix still proves the 9 production,
+15 market, and 3 logistics routing combinations without describing them as user templates.
 
 - [ ] **Step 5: Commit only the template contract**
 
@@ -534,7 +535,7 @@ git commit -m "feat: import XLSX records with photos"
 
 **Interfaces:**
 - Consumes: all work completed in Tasks 1–7.
-- Produces: reproducible evidence for 27 templates and two independent sessions.
+- Produces: reproducible evidence for 9 user templates, the separate internal applicability matrix, and two independent sessions.
 
 - [ ] **Step 1: Extend live fixtures to generate valid photos and sparse workbooks**
 

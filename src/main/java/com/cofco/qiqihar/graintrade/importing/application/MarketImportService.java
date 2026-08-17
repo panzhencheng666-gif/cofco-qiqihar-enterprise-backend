@@ -34,15 +34,18 @@ public class MarketImportService implements QueuedImportProcessor {
     private final BusinessAuditRecorder audit;
     private final Clock clock;
     private final BusinessImportLimits limits;
+    private final BusinessImportTemplateCatalog templateCatalog;
 
     public MarketImportService(ImportJobRepository jobs, MarketImportPort market,
-            AccessControl access, BusinessAuditRecorder audit, Clock clock, BusinessImportLimits limits) {
+            AccessControl access, BusinessAuditRecorder audit, Clock clock, BusinessImportLimits limits,
+            BusinessImportTemplateCatalog templateCatalog) {
         this.jobs = jobs;
         this.market = market;
         this.access = access;
         this.audit = audit;
         this.clock = clock;
         this.limits = limits;
+        this.templateCatalog = templateCatalog;
     }
 
     public String template() { return MarketImportTemplate.csv(); }
@@ -51,6 +54,15 @@ public class MarketImportService implements QueuedImportProcessor {
             String productCode, String objectTypeCode) {
         access.require("BUSINESS_IMPORT", null);
         return MarketImportTemplate.workbook(market.definition(productCode, objectTypeCode));
+    }
+
+    public com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook.Template productWorkbook(
+            String productCode) {
+        access.require("BUSINESS_IMPORT", null);
+        var objectTypes = templateCatalog.objectTypes(MarketImportTemplate.DOMAIN, productCode);
+        var definitions = objectTypes.stream()
+                .map(option -> market.definition(productCode, option.code())).toList();
+        return MarketImportTemplate.productWorkbook(productCode, definitions, objectTypes);
     }
 
     @Transactional

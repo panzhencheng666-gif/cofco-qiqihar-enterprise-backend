@@ -36,8 +36,13 @@ public final class LogisticsImportTemplate {
     }
 
     public static BusinessImportWorkbook.Template workbook(LogisticsImportDefinition definition) {
+        return workbook(null, definition);
+    }
+
+    public static BusinessImportWorkbook.Template workbook(
+            String productCode, LogisticsImportDefinition definition) {
         List<LogisticsImportDefinition.Field> fields = workbookFields(definition);
-        return new BusinessImportWorkbook.Template(DOMAIN, "物流", null, null,
+        return new BusinessImportWorkbook.Template(DOMAIN, "物流", productCode, null,
                 BusinessImportWorkbook.CONTRACT_VERSION, null, headers(definition), labels(definition),
                 java.util.stream.Stream.concat(fields.stream().map(field ->
                                 new BusinessImportWorkbook.ColumnRule(

@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.importing.application;
 
 import java.util.List;
+import com.cofco.qiqihar.graintrade.importing.application.BusinessImportTemplateCatalog.ObjectTypeOption;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
 import com.cofco.qiqihar.graintrade.market.importing.MarketImportDefinition;
 
@@ -68,6 +69,49 @@ public final class MarketImportTemplate {
         return canonicalXlsx(bytes, definition, 5_000);
     }
 
+    public static BusinessImportWorkbook.Template productWorkbook(
+            String productCode, List<MarketImportDefinition> definitions,
+            List<ObjectTypeOption> objectTypes) {
+        List<MarketImportDefinition.Field> fields = productFields(productCode, definitions);
+        List<String> headers = java.util.stream.Stream.of(
+                        java.util.stream.Stream.of("objectTypeCode", "surveyYear", "surveyMonth"),
+                        fields.stream().map(MarketImportDefinition.Field::code),
+                        java.util.stream.Stream.of(BusinessImportWorkbook.PHOTO_FILENAMES_CODE))
+                .flatMap(java.util.function.Function.identity()).toList();
+        List<String> labels = java.util.stream.Stream.of(
+                        java.util.stream.Stream.of("对象类型", "数据年份", "数据月份"),
+                        fields.stream().map(MarketImportTemplate::displayLabel),
+                        java.util.stream.Stream.of(BusinessImportWorkbook.PHOTO_FILENAMES_LABEL))
+                .flatMap(java.util.function.Function.identity()).toList();
+        List<BusinessImportWorkbook.ColumnRule> rules = java.util.stream.Stream.of(
+                        java.util.stream.Stream.of(
+                                new BusinessImportWorkbook.ColumnRule(
+                                        "objectTypeCode", "TEXT", "SELECT", false,
+                                        objectTypes.stream().map(ObjectTypeOption::label).toList(), 0, 0,
+                                        "可留空导入草稿；提升为正式记录前补充"),
+                                new BusinessImportWorkbook.ColumnRule(
+                                        "surveyYear", "TEXT", "YEAR", false, List.of(), 4, 0,
+                                        "可留空；填写时为 1900—2200"),
+                                new BusinessImportWorkbook.ColumnRule(
+                                        "surveyMonth", "TEXT", "MONTH", false, List.of(), 2, 0,
+                                        "可留空；填写时为 1—12 月")),
+                        fields.stream().map(MarketImportTemplate::columnRule),
+                        java.util.stream.Stream.of(BusinessImportWorkbook.photoFilenameRule(
+                                BusinessImportWorkbook.PHOTO_FILENAMES_CODE)))
+                .flatMap(java.util.function.Function.identity()).toList();
+        return new BusinessImportWorkbook.Template(DOMAIN, "市场", productCode, null,
+                BusinessImportWorkbook.CONTRACT_VERSION, null, headers, labels, rules);
+    }
+
+    public static List<String> productCodes(
+            String productCode, List<MarketImportDefinition> definitions) {
+        return java.util.stream.Stream.of(
+                        java.util.stream.Stream.of("objectTypeCode", "surveyYear", "surveyMonth"),
+                        productFields(productCode, definitions).stream().map(MarketImportDefinition.Field::code),
+                        java.util.stream.Stream.of(BusinessImportWorkbook.PHOTO_FILENAMES_CODE))
+                .flatMap(java.util.function.Function.identity()).toList();
+    }
+
     public static List<List<String>> canonicalXlsx(
             byte[] bytes, MarketImportDefinition definition, int maxDataRows) {
         BusinessImportWorkbook.Template template = workbook(definition);
@@ -95,6 +139,18 @@ public final class MarketImportTemplate {
                 .collect(java.util.stream.Collectors.toMap(MarketImportDefinition.Field::code, field -> field));
         return BUSINESS_CODES.stream().map(byCode::get).filter(java.util.Objects::nonNull)
                 .filter(field -> !field.readOnly()).toList();
+    }
+
+    private static List<MarketImportDefinition.Field> productFields(
+            String productCode, List<MarketImportDefinition> definitions) {
+        if (definitions == null || definitions.isEmpty()
+                || definitions.stream().anyMatch(definition -> !productCode.equals(definition.productCode()))) {
+            throw new IllegalArgumentException("INVALID_MARKET_PRODUCT_TEMPLATE");
+        }
+        java.util.Map<String, MarketImportDefinition.Field> fields = new java.util.LinkedHashMap<>();
+        definitions.forEach(definition -> editableFields(definition).forEach(field ->
+                fields.putIfAbsent(field.code(), field)));
+        return BUSINESS_CODES.stream().map(fields::get).filter(java.util.Objects::nonNull).toList();
     }
 
     private static String displayLabel(MarketImportDefinition.Field field) {

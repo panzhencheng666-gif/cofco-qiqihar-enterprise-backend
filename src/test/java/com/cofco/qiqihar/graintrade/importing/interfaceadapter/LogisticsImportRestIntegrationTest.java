@@ -58,7 +58,7 @@ class LogisticsImportRestIntegrationTest {
                 LogisticsImportTemplate.DOMAIN,
                 LogisticsImportTemplate.headers(logisticsDefinition()),
                 LogisticsImportTemplate.labels(logisticsDefinition()));
-        assertThat(empty.productCode()).isNull();
+        assertThat(empty.productCode()).isEqualTo("CORN");
         assertThat(empty.objectTypeCode()).isNull();
         assertThat(LogisticsImportTemplate.headers(logisticsDefinition()))
                 .containsExactly("数据年份", "数据月份", "填报日期", "物流样本点名称", "地区", "填报人",
@@ -67,7 +67,8 @@ class LogisticsImportRestIntegrationTest {
                         "填报状态", BusinessImportWorkbook.PHOTO_FILENAMES_LABEL)
                 .noneMatch(header -> header.matches(".*[A-Za-z_].*"));
         assertThat(XlsxTable.parseWorksheet(template, 2, 2))
-                .noneMatch(row -> row.getFirst().equals("产品品种") || row.getFirst().equals("对象类型"));
+                .anyMatch(row -> row.equals(List.of("产品品种", "玉米")))
+                .noneMatch(row -> row.getFirst().equals("对象类型"));
 
         List<String> row = LogisticsImportTemplate.codes(logisticsDefinition()).stream()
                 .map(this::value).toList();

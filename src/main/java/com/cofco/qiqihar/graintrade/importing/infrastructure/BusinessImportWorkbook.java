@@ -55,7 +55,7 @@ public final class BusinessImportWorkbook {
             domainLabel = required(domainLabel);
             productCode = optional(productCode);
             objectTypeCode = optional(objectTypeCode);
-            if ((productCode == null) != (objectTypeCode == null)
+            if ((productCode == null && objectTypeCode != null)
                     || (productCode == null && !"LOGISTICS".equals(domainCode))) {
                 throw new IllegalArgumentException("INVALID_TEMPLATE_CONTEXT");
             }
@@ -147,7 +147,7 @@ public final class BusinessImportWorkbook {
         if (!domainCode.equals(actualDomain)) throw new IllegalArgumentException("INVALID_XLSX_CONTEXT");
         boolean productMissing = blank(context.get("产品品种"));
         boolean objectTypeMissing = blank(context.get("对象类型"));
-        if (productMissing != objectTypeMissing
+        if ((productMissing && !objectTypeMissing)
                 || (productMissing && !"LOGISTICS".equals(domainCode))) {
             throw new IllegalArgumentException("INVALID_XLSX_CONTEXT");
         }
@@ -273,6 +273,8 @@ public final class BusinessImportWorkbook {
                 List.of("业务类型", publicContextValue(template.domainCode()))));
         if (template.productCode() != null) {
             metadata.add(List.of("产品品种", publicContextValue(template.productCode())));
+        }
+        if (template.objectTypeCode() != null) {
             metadata.add(List.of("对象类型", publicContextValue(template.objectTypeCode())));
         }
         metadata.add(List.of("模板版本", template.contractVersion()));
