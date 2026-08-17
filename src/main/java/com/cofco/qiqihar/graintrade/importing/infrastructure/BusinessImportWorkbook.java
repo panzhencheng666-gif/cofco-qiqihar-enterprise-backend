@@ -148,10 +148,12 @@ public final class BusinessImportWorkbook {
 
     public static Context context(byte[] bytes, String domainCode) {
         Map<String, String> visibleContext = instructionContext(bytes);
-        if (blank(visibleContext.get("业务类型"))) {
+        String domainLabel = visibleContext.get("填报类别");
+        if (blank(domainLabel)) domainLabel = visibleContext.get("业务类型");
+        if (blank(domainLabel)) {
             throw new IllegalArgumentException("INVALID_XLSX_CONTEXT");
         }
-        String actualDomain = internalContextValue(visibleContext.get("业务类型"));
+        String actualDomain = internalContextValue(domainLabel);
         if (!domainCode.equals(actualDomain)) throw new IllegalArgumentException("INVALID_XLSX_CONTEXT");
         boolean productMissing = blank(visibleContext.get("产品品种"));
         boolean objectTypeMissing = blank(visibleContext.get("对象类型"));
@@ -196,6 +198,13 @@ public final class BusinessImportWorkbook {
     }
 
     public static ImportSheet read(byte[] bytes, Template template, int maxDataRows) {
+        ImportSheet sheet = readDraft(bytes, template, maxDataRows);
+        validateRows(sheet.rows(), template.rules());
+        return sheet;
+    }
+
+    /** Reads each product-workbook row independently; row validation is performed by the draft importer. */
+    public static ImportSheet readDraft(byte[] bytes, Template template, int maxDataRows) {
         Context context = context(bytes, template.domainCode());
         if (!java.util.Objects.equals(template.productCode(), context.productCode())
                 || !java.util.Objects.equals(template.objectTypeCode(), context.objectTypeCode())) {
@@ -213,7 +222,6 @@ public final class BusinessImportWorkbook {
         int firstDataRow = legacyInternalHeaderRow(sheet, template.headers()) ? 2 : 1;
         List<List<String>> rows = normalizeRows(
                 boundedDataRows(sheet, firstDataRow, maxDataRows), template.rules());
-        validateRows(rows, template.rules());
         return new ImportSheet(context.productCode(), context.objectTypeCode(), rows);
     }
 
@@ -296,7 +304,7 @@ public final class BusinessImportWorkbook {
 
     private static String instructionSheet(Template template) {
         java.util.ArrayList<List<String>> metadata = new java.util.ArrayList<>(List.of(
-                List.of("业务类型", publicContextValue(template.domainCode()))));
+                List.of("填报类别", publicContextValue(template.domainCode()))));
         if (template.productCode() != null) {
             metadata.add(List.of("产品品种", publicContextValue(template.productCode())));
         }
@@ -564,6 +572,12 @@ public final class BusinessImportWorkbook {
                 validateValue(value, rule, rowIndex + 2);
             }
         }
+    }
+
+    /** Validates one non-blank business cell against the downloaded workbook contract. */
+    public static void validateCell(String value, ColumnRule rule) {
+        if (value == null || value.isBlank()) return;
+        validateValue(value.trim(), rule, 0);
     }
 
     private static String digest(String domainCode, String productCode, String objectTypeCode,

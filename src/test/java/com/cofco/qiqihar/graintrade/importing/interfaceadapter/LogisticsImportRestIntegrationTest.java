@@ -67,8 +67,13 @@ class LogisticsImportRestIntegrationTest {
                         "填报状态", BusinessImportWorkbook.PHOTO_FILENAMES_LABEL)
                 .noneMatch(header -> header.matches(".*[A-Za-z_].*"));
         assertThat(XlsxTable.parseWorksheet(template, 2, 2))
+                .anyMatch(row -> row.equals(List.of("填报类别", "物流")))
                 .anyMatch(row -> row.equals(List.of("产品品种", "玉米")))
+                .noneMatch(row -> row.getFirst().equals("业务类型"))
                 .noneMatch(row -> row.getFirst().equals("对象类型"));
+        assertThat(LogisticsImportTemplate.workbook("CORN", logisticsDefinition()).rules().stream()
+                .filter(rule -> rule.code().equals("运输方式")).findFirst().orElseThrow().options())
+                .containsExactly("铁路", "公路");
 
         List<String> row = LogisticsImportTemplate.codes(logisticsDefinition()).stream()
                 .map(this::value).toList();

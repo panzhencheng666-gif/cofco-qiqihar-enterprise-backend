@@ -298,7 +298,7 @@ class BusinessImportTemplateMatrixIntegrationTest {
             case "LOG_SAMPLE_CONTACT" -> "13900000000";
             case "LOG_SAMPLE_LATITUDE" -> "47.354300";
             case "LOG_SAMPLE_LONGITUDE" -> "123.918200";
-            case "LOG_TRANSPORT_MODE" -> "RAIL";
+            case "LOG_TRANSPORT_MODE" -> "铁路";
             case "LOG_DIRECTION" -> "INFLOW";
             case "LOG_ROUTE_VOLUME" -> "12.5000";
             case "LOG_FREIGHT_RATE" -> "80.2500";

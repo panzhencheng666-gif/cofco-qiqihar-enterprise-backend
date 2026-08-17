@@ -33,4 +33,5 @@ public record ImportJob(
 
     public int importedRows() { return (int) rows.stream().filter(row -> row.outcomeCode().equals("IMPORTED")).count(); }
     public int failedRows() { return (int) rows.stream().filter(row -> row.outcomeCode().equals("ERROR")).count(); }
+    public int warningRows() { return (int) rows.stream().filter(row -> row.warningCode() != null).count(); }
 }

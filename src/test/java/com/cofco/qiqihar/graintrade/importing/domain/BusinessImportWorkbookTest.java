@@ -49,7 +49,7 @@ class BusinessImportWorkbookTest {
                 .containsExactly(ProductionImportTemplate.XLSX_LABELS);
         assertThat(XlsxTable.parseWorksheet(workbook, 2, 2))
                 .contains(
-                        java.util.List.of("业务类型", "产情"),
+                        java.util.List.of("填报类别", "产情"),
                         java.util.List.of("产品品种", "玉米"),
                         java.util.List.of("对象类型", "农户"),
                         java.util.List.of("填报人", "由登录账号自动记录，不得在模板中填写"),
@@ -93,7 +93,7 @@ class BusinessImportWorkbookTest {
             byte[] workbook = BusinessImportWorkbook.create(template);
             List<List<String>> instructions = XlsxTable.parseWorksheet(workbook, 2, 2);
             assertThat(instructions).contains(
-                    List.of("业务类型", expected.get(index).get(0)),
+                    List.of("填报类别", expected.get(index).get(0)),
                     List.of("产品品种", expected.get(index).get(1)),
                     List.of("对象类型", expected.get(index).get(2)));
             assertThat(instructions.toString()).doesNotContain(

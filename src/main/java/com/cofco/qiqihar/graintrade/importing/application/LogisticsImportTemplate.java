@@ -51,7 +51,8 @@ public final class LogisticsImportTemplate {
                                                 : field.controlType().equals("DECIMAL") ? "DECIMAL" : "TEXT",
                                         field.controlType(),
                                         "LOG_SAMPLE_NAME".equals(field.code()) || "LOG_REGION".equals(field.code()),
-                                        List.of(), field.precision() == null ? 0 : field.precision(),
+                                        options(field, productCode != null),
+                                        field.precision() == null ? 0 : field.precision(),
                                         field.scale() == null ? -1 : field.scale(), description(field.code()))),
                         java.util.stream.Stream.of(BusinessImportWorkbook.photoFilenameRule(
                                 BusinessImportWorkbook.PHOTO_FILENAMES_LABEL))).toList());
@@ -83,11 +84,21 @@ public final class LogisticsImportTemplate {
             case "surveyYear" -> "可留空；填写时为 1900—2200";
             case "surveyMonth" -> "可留空表示年度数据";
             case "fillingDate", "LOG_REPORTER", "LOG_STATUS" -> "系统生成，请勿填写或覆盖";
+            case "LOG_TRANSPORT_MODE" -> "业务运输方式，只能选择铁路或公路";
             case "LOG_FREIGHT_RATE" -> "不含车板价";
             case "LOG_BOARD_PRICE" -> "独立车板价，不与物流运价相加或推导";
             case "LOG_SAMPLE_LATITUDE" -> "范围 -90 至 90";
             case "LOG_SAMPLE_LONGITUDE" -> "范围 -180 至 180";
             default -> null;
         };
+    }
+
+    private static List<String> options(LogisticsImportDefinition.Field field, boolean publicProductWorkbook) {
+        if (!publicProductWorkbook || !"LOG_TRANSPORT_MODE".equals(field.code())) return List.of();
+        List<String> labels = field.options().stream().map(LogisticsImportDefinition.Option::label).toList();
+        if (!labels.equals(List.of("铁路", "公路"))) {
+            throw new IllegalArgumentException("INVALID_LOGISTICS_TRANSPORT_MODES");
+        }
+        return labels;
     }
 }

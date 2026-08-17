@@ -42,11 +42,12 @@ public class ProductionImportService implements QueuedImportProcessor {
     private final BusinessImportLimits limits;
     private final RegionImportResolver regions;
     private final BusinessImportTemplateCatalog templateCatalog;
+    private final GovernedDraftImportService draftImports;
 
     public ProductionImportService(ImportJobRepository repository, ProductionImportPort production,
             AccessControl accessControl, BusinessAuditRecorder audit, ObjectMapper objectMapper, Clock clock,
             BusinessImportLimits limits, RegionImportResolver regions,
-            BusinessImportTemplateCatalog templateCatalog) {
+            BusinessImportTemplateCatalog templateCatalog, GovernedDraftImportService draftImports) {
         this.repository = repository;
         this.production = production;
         this.accessControl = accessControl;
@@ -56,6 +57,7 @@ public class ProductionImportService implements QueuedImportProcessor {
         this.limits = limits;
         this.regions = regions;
         this.templateCatalog = templateCatalog;
+        this.draftImports = draftImports;
     }
 
     public String template() { return ProductionImportTemplate.csv(); }
@@ -74,6 +76,35 @@ public class ProductionImportService implements QueuedImportProcessor {
         var definitions = objectTypes.stream()
                 .map(option -> production.importDefinition(productCode, option.code())).toList();
         return ProductionImportTemplate.productWorkbook(productCode, definitions, objectTypes);
+    }
+
+    public ImportJobView importProductWorkbook(String idempotencyKey, String productCode,
+            String filename, String mediaType, byte[] bytes,
+            List<BusinessImportPhotoPackage.PhotoPart> photoParts) {
+        try {
+            var objectTypes = templateCatalog.objectTypes(ProductionImportTemplate.DOMAIN, productCode);
+            var definitions = objectTypes.stream()
+                    .map(option -> production.importDefinition(productCode, option.code())).toList();
+            var template = ProductionImportTemplate.productWorkbook(productCode, definitions, objectTypes);
+            var sheet = com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook
+                    .readDraft(bytes, template, limits.maximumRows());
+            if (sheet.rows().isEmpty()) throw invalid();
+            Map<String, String> objectTypeByLabel = objectTypes.stream().collect(
+                    java.util.stream.Collectors.toMap(
+                            BusinessImportTemplateCatalog.ObjectTypeOption::label,
+                            BusinessImportTemplateCatalog.ObjectTypeOption::code));
+            var rows = DraftWorkbookRows.map(sheet, template,
+                    ProductionImportTemplate.productCodes(productCode, definitions),
+                    "objectTypeCode", objectTypeByLabel, null,
+                    Map.of(),
+                    "PROD_SAMPLE_NAME", "regionCode", Set.of("PROD_REPORTER_NAME"));
+            return draftImports.submit(idempotencyKey, ProductionImportTemplate.DOMAIN, "产情", productCode,
+                    filename, mediaType, bytes, photoParts, rows);
+        } catch (ClientRequestException exception) {
+            throw exception;
+        } catch (IllegalArgumentException exception) {
+            throw new ClientRequestException("INVALID_IMPORT_FORMAT", "XLSX 模板或填写内容无效");
+        }
     }
 
     @Transactional
@@ -162,6 +193,10 @@ public class ProductionImportService implements QueuedImportProcessor {
         var stored = owned(jobId, principal);
         if (!"PROCESSING".equals(stored.job().statusCode())) {
             throw new ConflictException("IMPORT_JOB_NOT_PROCESSING", "Import job is not processing");
+        }
+        if (draftImports.supports(stored.sourceContent())) {
+            draftImports.processQueued(stored, principal);
+            return;
         }
         process(stored.job(), stored.job().idempotencyKey(), stored.sourceContent(),
                 stored.job().contentSha256(), stored.job().retryOf(), null, principal);

@@ -35,20 +35,50 @@ public class LogisticsImportService implements QueuedImportProcessor {
     private final BusinessAuditRecorder audit;
     private final Clock clock;
     private final BusinessImportLimits limits;
+    private final GovernedDraftImportService draftImports;
 
     public LogisticsImportService(ImportJobRepository jobs, LogisticsImportPort logistics,
-            AccessControl access, BusinessAuditRecorder audit, Clock clock, BusinessImportLimits limits) {
+            AccessControl access, BusinessAuditRecorder audit, Clock clock, BusinessImportLimits limits,
+            GovernedDraftImportService draftImports) {
         this.jobs = jobs;
         this.logistics = logistics;
         this.access = access;
         this.audit = audit;
         this.clock = clock;
         this.limits = limits;
+        this.draftImports = draftImports;
     }
 
     public BusinessImportWorkbook.Template template(String productCode) {
         access.require("BUSINESS_IMPORT", null);
         return LogisticsImportTemplate.workbook(productCode, definition(productCode));
+    }
+
+    public ImportJobView importProductWorkbook(String idempotencyKey, String productCode,
+            String filename, String mediaType, byte[] bytes,
+            List<BusinessImportPhotoPackage.PhotoPart> photoParts) {
+        try {
+            LogisticsImportDefinition definition = definition(productCode);
+            var template = LogisticsImportTemplate.workbook(productCode, definition);
+            var sheet = BusinessImportWorkbook.readDraft(bytes, template, limits.maximumRows());
+            if (sheet.rows().isEmpty()) throw invalidRequest();
+            Map<String, String> transportModes = definition.fields().stream()
+                    .filter(field -> "LOG_TRANSPORT_MODE".equals(field.code())).findFirst()
+                    .orElseThrow(() -> new IllegalArgumentException("MISSING_TRANSPORT_MODE"))
+                    .options().stream().collect(java.util.stream.Collectors.toMap(
+                            LogisticsImportDefinition.Option::label,
+                            LogisticsImportDefinition.Option::value));
+            var rows = DraftWorkbookRows.map(sheet, template, LogisticsImportTemplate.codes(definition),
+                    null, Map.of(), null,
+                    Map.of("LOG_TRANSPORT_MODE", transportModes),
+                    "LOG_SAMPLE_NAME", "LOG_REGION", SYSTEM_GENERATED_CODES);
+            return draftImports.submit(idempotencyKey, LogisticsImportTemplate.DOMAIN, "物流", productCode,
+                    filename, mediaType, bytes, photoParts, rows);
+        } catch (ClientRequestException exception) {
+            throw exception;
+        } catch (IllegalArgumentException exception) {
+            throw invalidFormat();
+        }
     }
 
     @Transactional
@@ -135,6 +165,10 @@ public class LogisticsImportService implements QueuedImportProcessor {
         var stored = ownedStored(jobId, principal);
         if (!"PROCESSING".equals(stored.job().statusCode())) {
             throw new ConflictException("IMPORT_JOB_NOT_PROCESSING", "Import job is not processing");
+        }
+        if (draftImports.supports(stored.sourceContent())) {
+            draftImports.processQueued(stored, principal);
+            return;
         }
         Parsed parsed;
         try {

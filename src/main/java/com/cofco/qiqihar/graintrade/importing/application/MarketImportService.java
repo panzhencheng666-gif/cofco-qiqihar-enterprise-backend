@@ -35,10 +35,11 @@ public class MarketImportService implements QueuedImportProcessor {
     private final Clock clock;
     private final BusinessImportLimits limits;
     private final BusinessImportTemplateCatalog templateCatalog;
+    private final GovernedDraftImportService draftImports;
 
     public MarketImportService(ImportJobRepository jobs, MarketImportPort market,
             AccessControl access, BusinessAuditRecorder audit, Clock clock, BusinessImportLimits limits,
-            BusinessImportTemplateCatalog templateCatalog) {
+            BusinessImportTemplateCatalog templateCatalog, GovernedDraftImportService draftImports) {
         this.jobs = jobs;
         this.market = market;
         this.access = access;
@@ -46,6 +47,7 @@ public class MarketImportService implements QueuedImportProcessor {
         this.clock = clock;
         this.limits = limits;
         this.templateCatalog = templateCatalog;
+        this.draftImports = draftImports;
     }
 
     public String template() { return MarketImportTemplate.csv(); }
@@ -63,6 +65,35 @@ public class MarketImportService implements QueuedImportProcessor {
         var definitions = objectTypes.stream()
                 .map(option -> market.definition(productCode, option.code())).toList();
         return MarketImportTemplate.productWorkbook(productCode, definitions, objectTypes);
+    }
+
+    public ImportJobView importProductWorkbook(String idempotencyKey, String productCode,
+            String filename, String mediaType, byte[] bytes,
+            List<BusinessImportPhotoPackage.PhotoPart> photoParts) {
+        try {
+            var objectTypes = templateCatalog.objectTypes(MarketImportTemplate.DOMAIN, productCode);
+            var definitions = objectTypes.stream()
+                    .map(option -> market.definition(productCode, option.code())).toList();
+            var template = MarketImportTemplate.productWorkbook(productCode, definitions, objectTypes);
+            var sheet = com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook
+                    .readDraft(bytes, template, limits.maximumRows());
+            if (sheet.rows().isEmpty()) throw invalid();
+            Map<String, String> objectTypeByLabel = objectTypes.stream().collect(
+                    java.util.stream.Collectors.toMap(
+                            BusinessImportTemplateCatalog.ObjectTypeOption::label,
+                            BusinessImportTemplateCatalog.ObjectTypeOption::code));
+            var rows = DraftWorkbookRows.map(sheet, template,
+                    MarketImportTemplate.productCodes(productCode, definitions),
+                    "objectTypeCode", objectTypeByLabel, null,
+                    Map.of(),
+                    "MKT_SAMPLE_NAME", "MKT_REGION", java.util.Set.of("MKT_REPORTER_NAME"));
+            return draftImports.submit(idempotencyKey, MarketImportTemplate.DOMAIN, "市场", productCode,
+                    filename, mediaType, bytes, photoParts, rows);
+        } catch (ClientRequestException exception) {
+            throw exception;
+        } catch (IllegalArgumentException exception) {
+            throw new ClientRequestException("INVALID_IMPORT_FORMAT", "XLSX 模板或填写内容无效");
+        }
     }
 
     @Transactional
@@ -152,6 +183,10 @@ public class MarketImportService implements QueuedImportProcessor {
         var stored = owned(jobId, principal);
         if (!"PROCESSING".equals(stored.job().statusCode())) {
             throw new ConflictException("IMPORT_JOB_NOT_PROCESSING", "Import job is not processing");
+        }
+        if (draftImports.supports(stored.sourceContent())) {
+            draftImports.processQueued(stored, principal);
+            return;
         }
         process(stored.job(), stored.job().idempotencyKey(), stored.sourceContent(),
                 stored.job().contentSha256(), stored.job().retryOf(), principal);

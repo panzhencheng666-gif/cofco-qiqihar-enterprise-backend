@@ -3,10 +3,12 @@ package com.cofco.qiqihar.graintrade.importing.interfaceadapter;
 import com.cofco.qiqihar.graintrade.importing.application.ImportJobView;
 import com.cofco.qiqihar.graintrade.importing.application.ImportErrorFile;
 import com.cofco.qiqihar.graintrade.importing.application.MarketImportService;
+import com.cofco.qiqihar.graintrade.importing.application.BusinessImportPhotoPackage;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
+import java.util.List;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -50,11 +52,15 @@ public class MarketImportController {
     ResponseEntity<ApiResponse<ImportJobView>> importFile(
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @RequestParam String productCode,
-            @RequestParam String objectTypeCode,
-            @RequestParam("file") MultipartFile file) throws java.io.IOException {
-        return acceptedOrCreated(service.importFile(idempotencyKey, productCode, objectTypeCode,
-                file.getOriginalFilename(),
-                file.getContentType(), file.getBytes()));
+            @RequestParam(required = false) String objectTypeCode,
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(name = "photos", required = false) List<MultipartFile> photos) throws java.io.IOException {
+        ImportJobView job = objectTypeCode == null || objectTypeCode.isBlank()
+                ? service.importProductWorkbook(idempotencyKey, productCode, file.getOriginalFilename(),
+                        file.getContentType(), file.getBytes(), photoParts(photos))
+                : service.importFile(idempotencyKey, productCode, objectTypeCode,
+                        file.getOriginalFilename(), file.getContentType(), file.getBytes());
+        return acceptedOrCreated(job);
     }
 
     @GetMapping("/{importJobId}")
@@ -85,5 +91,16 @@ public class MarketImportController {
     private static ResponseEntity<ApiResponse<ImportJobView>> acceptedOrCreated(ImportJobView job) {
         boolean pending = job.statusCode().equals("QUEUED") || job.statusCode().equals("PROCESSING");
         return ResponseEntity.status(pending ? 202 : 201).body(new ApiResponse<>(job));
+    }
+
+    private static List<BusinessImportPhotoPackage.PhotoPart> photoParts(List<MultipartFile> files)
+            throws java.io.IOException {
+        if (files == null) return List.of();
+        java.util.ArrayList<BusinessImportPhotoPackage.PhotoPart> parts = new java.util.ArrayList<>();
+        for (MultipartFile file : files) {
+            parts.add(new BusinessImportPhotoPackage.PhotoPart(
+                    file.getOriginalFilename(), file.getContentType(), file.getBytes()));
+        }
+        return List.copyOf(parts);
     }
 }
