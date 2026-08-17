@@ -244,25 +244,82 @@ class GovernedProductWorkbookImportIntegrationTest {
                         .value(org.hamcrest.Matchers.hasItem("12.5")));
     }
 
+    @Test
+    void submitsAndIndependentlyApprovesAllNinePublicProductDomainTemplates() throws Exception {
+        for (Map.Entry<String, String> product : Map.of(
+                "CORN", "玉米", "SOYBEAN", "大豆", "RICE", "稻谷").entrySet()) {
+            String productCode = product.getKey();
+            String productLabel = product.getValue();
+            String productionRecord = importSubmitAndApprove(productCode, "production", "PRODUCTION", "产情",
+                    "production-tester", "market-tester", "production-records", productLabel + "正式产情样本",
+                    "样本点名称", completeProductionValues());
+            String marketRecord = importSubmitAndApprove(productCode, "market", "MARKET", "市场",
+                    "market-tester", "production-tester", "market-records", productLabel + "正式市场样本",
+                    "样本点名称", completeMarketValues());
+            String logisticsRecord = importSubmitAndApprove(productCode, "logistics", "LOGISTICS", "物流",
+                    "logistics-tester", "production-tester", "logistics-records", productLabel + "正式物流样本",
+                    "物流样本点名称", completeLogisticsValues());
+
+            assertThat(jdbc.sql("SELECT status_code FROM production.production_record WHERE record_id=:id")
+                    .param("id", productionRecord).query(String.class).single()).isEqualTo("APPROVED");
+            assertThat(jdbc.sql("SELECT status_code FROM market.market_record WHERE record_id=:id")
+                    .param("id", marketRecord).query(String.class).single()).isEqualTo("APPROVED");
+            assertThat(jdbc.sql("SELECT status_code FROM logistics.route_event WHERE event_id::text=:id")
+                    .param("id", logisticsRecord).query(String.class).single()).isEqualTo("APPROVED");
+
+            mvc.perform(get("/api/v1/observable-analysis/snapshots")
+                            .param("productCode", productCode).param("regionCode", "230208")
+                            .param("surveyYear", "2026").principal(() -> "production-tester"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.coverage.recordCount").value(3));
+            mvc.perform(get("/api/v1/overview/dashboard")
+                            .param("productCode", productCode).param("regionCode", "230208")
+                            .param("year", "2026").principal(() -> "production-tester"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].value")
+                            .value(org.hamcrest.Matchers.hasItem("100")))
+                    .andExpect(jsonPath("$.data.metrics[?(@.code == 'MARKET_AVERAGE_PURCHASE_PRICE')].value")
+                            .value(org.hamcrest.Matchers.hasItem("2300")))
+                    .andExpect(jsonPath("$.data.metrics[?(@.code == 'LOGISTICS_INFLOW_VOLUME')].value")
+                            .value(org.hamcrest.Matchers.hasItem("12.5")));
+        }
+
+        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record WHERE status_code='APPROVED'")
+                .query(Long.class).single()).isEqualTo(3);
+        assertThat(jdbc.sql("SELECT count(*) FROM market.market_record WHERE status_code='APPROVED'")
+                .query(Long.class).single()).isEqualTo(3);
+        assertThat(jdbc.sql("SELECT count(*) FROM logistics.route_event WHERE status_code='APPROVED'")
+                .query(Long.class).single()).isEqualTo(3);
+    }
+
     private String importSubmitAndApprove(String route, String domainCode, String domainLabel,
             String operator, String reviewer, String canonicalRoute, String sampleName,
             String sampleLabel, Map<String, String> supplied) throws Exception {
+        return importSubmitAndApprove("CORN", route, domainCode, domainLabel, operator, reviewer,
+                canonicalRoute, sampleName, sampleLabel, supplied);
+    }
+
+    private String importSubmitAndApprove(String productCode, String route, String domainCode,
+            String domainLabel, String operator, String reviewer, String canonicalRoute,
+            String sampleName, String sampleLabel, Map<String, String> supplied) throws Exception {
         byte[] downloaded = mvc.perform(get("/api/v1/imports/" + route + "/template")
-                        .param("format", "xlsx").param("productCode", "CORN").principal(() -> operator))
+                        .param("format", "xlsx").param("productCode", productCode).principal(() -> operator))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
         List<String> labels = withoutTrailingBlanks(XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
         BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, domainCode);
         BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
-                domainCode, domainLabel, "CORN", null, context.contractVersion(), context.contractDigest(),
+                domainCode, domainLabel, productCode, null, context.contractVersion(), context.contractDigest(),
                 labels, labels, List.of());
         List<String> row = sparse(labels, sampleLabel, "地区", sampleName, "");
         for (Map.Entry<String, String> value : supplied.entrySet()) {
             row = withValue(row, labels, value.getKey(), value.getValue());
         }
         mvc.perform(multipart("/api/v1/imports/" + route)
-                        .file(new MockMultipartFile("file", domainLabel + "-玉米-批量导入模板.xlsx", XLSX,
+                        .file(new MockMultipartFile("file", domainLabel + "-"
+                                + BusinessImportWorkbook.businessLabel(productCode) + "-批量导入模板.xlsx", XLSX,
                                 BusinessImportWorkbook.create(template, List.of(row))))
-                        .param("productCode", "CORN").header("Idempotency-Key", "formal-" + route)
+                        .param("productCode", productCode)
+                        .header("Idempotency-Key", "formal-" + route + "-" + productCode)
                         .principal(() -> operator))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.data.importedRows").value(1));
         String draftId = jdbc.sql("""
@@ -281,6 +338,39 @@ class GovernedProductWorkbookImportIntegrationTest {
                         .content("{\"version\":1}"))
                 .andExpect(status().isOk());
         return recordId;
+    }
+
+    private static Map<String, String> completeProductionValues() {
+        return Map.ofEntries(
+                Map.entry("样本点类型", "农户"), Map.entry("数据年份", "2026"),
+                Map.entry("填报人联系方式", "13800000000"),
+                Map.entry("样本点联系方式", "13900000000"),
+                Map.entry("纬度（度）", "47.354300"), Map.entry("经度（度）", "123.918200"),
+                Map.entry("播种面积（亩）", "100"), Map.entry("预计单产（公斤/亩）", "500"));
+    }
+
+    private static Map<String, String> completeMarketValues() {
+        return Map.ofEntries(
+                Map.entry("对象类型", "贸易商"), Map.entry("数据年份", "2026"),
+                Map.entry("数据月份", "8"), Map.entry("填报人联系方式", "13800000000"),
+                Map.entry("样本点联系方式", "13900000000"),
+                Map.entry("纬度（度）", "47.354300"), Map.entry("经度（度）", "123.918200"),
+                Map.entry("采集对象收购价格（元/吨）", "2300"),
+                Map.entry("采集对象销售价格（元/吨）", "2380"),
+                Map.entry("车板组成（元/吨）", "36"), Map.entry("包装形态", "散粮"),
+                Map.entry("运费组成（元/吨）", "72"));
+    }
+
+    private static Map<String, String> completeLogisticsValues() {
+        return Map.ofEntries(
+                Map.entry("数据年份", "2026"), Map.entry("数据月份", "8"),
+                Map.entry("填报人联系方式", "13800000000"),
+                Map.entry("物流样本点联系方式", "13900000000"),
+                Map.entry("纬度（度）", "47.354300"), Map.entry("经度（度）", "123.918200"),
+                Map.entry("运输方式", "铁路"), Map.entry("运输方向", "流入"),
+                Map.entry("运输数量（吨）", "12.5000"),
+                Map.entry("物流运价（不含车板价）（元/吨）", "80.2500"),
+                Map.entry("车板价（元/吨）", "2650.0000"));
     }
 
     private void importTwoRows(String route, String domainCode, String domainLabel, String principal,
