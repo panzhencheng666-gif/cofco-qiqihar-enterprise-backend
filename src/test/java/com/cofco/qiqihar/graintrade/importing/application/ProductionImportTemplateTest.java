@@ -28,6 +28,7 @@ class ProductionImportTemplateTest {
         List<String> row = new ArrayList<>(Collections.nCopies(template.headers().size(), ""));
         row.set(template.headers().indexOf("数据年份"), "2026");
         row.set(template.headers().indexOf("数据月份"), "8");
+        row.set(template.headers().indexOf("样本点名称"), "克山样本点");
         row.set(template.headers().indexOf("地区"), "230208");
         row.set(template.headers().indexOf("填报人联系方式"), "13800000000");
         row.set(template.headers().indexOf("样本点联系方式"), "13900000000");
@@ -59,11 +60,11 @@ class ProductionImportTemplateTest {
 
                     assertThat(context.productCode()).isEqualTo(product.get(0));
                     assertThat(context.objectTypeCode()).isEqualTo("FARMER");
-                    assertThat(context.contractVersion()).isNull();
-                    assertThat(context.contractDigest()).isNull();
+                    assertThat(context.contractVersion()).isEqualTo(BusinessImportWorkbook.CONTRACT_VERSION);
+                    assertThat(context.contractDigest()).startsWith("sha256:");
                     assertThat(com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
                             .parseWorksheet(workbook, 2, 2).toString())
-                            .doesNotContain("模板版本", "字段契约版本", "字段契约摘要", "sha256:");
+                            .contains("模板版本", "契约摘要", "sha256:");
                     assertThat(template.headers()).contains("MOISTURE", "PROTEIN", "MILLING_YIELD");
                     assertThat(product.get(1)).isIn(template.headers());
                 });

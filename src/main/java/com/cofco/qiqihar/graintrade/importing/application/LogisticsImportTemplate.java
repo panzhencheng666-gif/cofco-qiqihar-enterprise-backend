@@ -23,26 +23,33 @@ public final class LogisticsImportTemplate {
     }
 
     public static List<String> codes(LogisticsImportDefinition definition) {
-        return workbookFields(definition).stream().map(LogisticsImportDefinition.Field::code).toList();
+        return java.util.stream.Stream.concat(
+                workbookFields(definition).stream().map(LogisticsImportDefinition.Field::code),
+                java.util.stream.Stream.of(BusinessImportWorkbook.PHOTO_FILENAMES_CODE)).toList();
     }
 
     public static List<String> labels(LogisticsImportDefinition definition) {
-        return workbookFields(definition).stream().map(field -> field.unit() == null || field.unit().isBlank()
-                ? field.label() : field.label() + "（" + field.unit() + "）").toList();
+        return java.util.stream.Stream.concat(
+                workbookFields(definition).stream().map(field -> field.unit() == null || field.unit().isBlank()
+                        ? field.label() : field.label() + "（" + field.unit() + "）"),
+                java.util.stream.Stream.of(BusinessImportWorkbook.PHOTO_FILENAMES_LABEL)).toList();
     }
 
     public static BusinessImportWorkbook.Template workbook(LogisticsImportDefinition definition) {
         List<LogisticsImportDefinition.Field> fields = workbookFields(definition);
         return new BusinessImportWorkbook.Template(DOMAIN, "物流", null, null,
-                null, headers(definition), labels(definition), fields.stream().map(field ->
-                        new BusinessImportWorkbook.ColumnRule(
-                                displayLabel(field),
-                                field.controlType().contains("DATE") ? "DATE"
-                                        : field.controlType().equals("DECIMAL") ? "DECIMAL" : "TEXT",
-                                field.controlType(), field.required(), List.of(),
-                                field.precision() == null ? 0 : field.precision(),
-                                field.scale() == null ? -1 : field.scale(),
-                                description(field.code()))).toList());
+                BusinessImportWorkbook.CONTRACT_VERSION, null, headers(definition), labels(definition),
+                java.util.stream.Stream.concat(fields.stream().map(field ->
+                                new BusinessImportWorkbook.ColumnRule(
+                                        displayLabel(field),
+                                        field.controlType().contains("DATE") ? "DATE"
+                                                : field.controlType().equals("DECIMAL") ? "DECIMAL" : "TEXT",
+                                        field.controlType(),
+                                        "LOG_SAMPLE_NAME".equals(field.code()) || "LOG_REGION".equals(field.code()),
+                                        List.of(), field.precision() == null ? 0 : field.precision(),
+                                        field.scale() == null ? -1 : field.scale(), description(field.code()))),
+                        java.util.stream.Stream.of(BusinessImportWorkbook.photoFilenameRule(
+                                BusinessImportWorkbook.PHOTO_FILENAMES_LABEL))).toList());
     }
 
     private static List<LogisticsImportDefinition.Field> workbookFields(LogisticsImportDefinition definition) {
@@ -68,7 +75,7 @@ public final class LogisticsImportTemplate {
 
     private static String description(String code) {
         return switch (code) {
-            case "surveyYear" -> "必填年份";
+            case "surveyYear" -> "可留空；填写时为 1900—2200";
             case "surveyMonth" -> "可留空表示年度数据";
             case "fillingDate", "LOG_REPORTER", "LOG_STATUS" -> "系统生成，请勿填写或覆盖";
             case "LOG_FREIGHT_RATE" -> "不含车板价";

@@ -38,13 +38,30 @@ public final class MarketImportTemplate {
     public static BusinessImportWorkbook.Template workbook(MarketImportDefinition definition) {
         List<MarketImportDefinition.Field> fields = editableFields(definition);
         List<String> headers = java.util.stream.Stream.concat(
-                java.util.stream.Stream.of("surveyYear", "surveyMonth"),
-                fields.stream().map(MarketImportDefinition.Field::code)).toList();
+                java.util.stream.Stream.concat(
+                        java.util.stream.Stream.of("surveyYear", "surveyMonth"),
+                        fields.stream().map(MarketImportDefinition.Field::code)),
+                java.util.stream.Stream.of(BusinessImportWorkbook.PHOTO_FILENAMES_CODE)).toList();
         List<String> labels = java.util.stream.Stream.concat(
-                java.util.stream.Stream.of("数据年份", "数据月份"),
-                fields.stream().map(MarketImportTemplate::displayLabel)).toList();
+                java.util.stream.Stream.concat(
+                        java.util.stream.Stream.of("数据年份", "数据月份"),
+                        fields.stream().map(MarketImportTemplate::displayLabel)),
+                java.util.stream.Stream.of(BusinessImportWorkbook.PHOTO_FILENAMES_LABEL)).toList();
+        List<BusinessImportWorkbook.ColumnRule> rules = java.util.stream.Stream.concat(
+                java.util.stream.Stream.concat(
+                        java.util.stream.Stream.of(
+                                new BusinessImportWorkbook.ColumnRule(
+                                        "surveyYear", "TEXT", "YEAR", false, List.of(), 4, 0,
+                                        "可留空；填写时为 1900—2200"),
+                                new BusinessImportWorkbook.ColumnRule(
+                                        "surveyMonth", "TEXT", "MONTH", false, List.of(), 2, 0,
+                                        "可留空；填写时为 1—12 月")),
+                        fields.stream().map(MarketImportTemplate::columnRule)),
+                java.util.stream.Stream.of(BusinessImportWorkbook.photoFilenameRule(
+                        BusinessImportWorkbook.PHOTO_FILENAMES_CODE))).toList();
         return new BusinessImportWorkbook.Template(DOMAIN, "市场", definition.productCode(),
-                definition.objectTypeCode(), headers, labels);
+                definition.objectTypeCode(), BusinessImportWorkbook.CONTRACT_VERSION, null,
+                headers, labels, rules);
     }
 
     public static List<List<String>> canonicalXlsx(byte[] bytes, MarketImportDefinition definition) {
@@ -54,7 +71,7 @@ public final class MarketImportTemplate {
     public static List<List<String>> canonicalXlsx(
             byte[] bytes, MarketImportDefinition definition, int maxDataRows) {
         BusinessImportWorkbook.Template template = workbook(definition);
-        var sheet = BusinessImportWorkbook.read(bytes, DOMAIN, template.headers(), template.labels(), maxDataRows);
+        var sheet = BusinessImportWorkbook.read(bytes, template, maxDataRows);
         java.util.ArrayList<List<String>> table = new java.util.ArrayList<>();
         List<String> headers = java.util.stream.Stream.concat(
                 java.util.stream.Stream.of("productCode", "objectTypeCode"),
@@ -83,5 +100,14 @@ public final class MarketImportTemplate {
     private static String displayLabel(MarketImportDefinition.Field field) {
         String label = LABELS.getOrDefault(field.code(), field.label());
         return field.unit() == null || field.unit().isBlank() ? label : label + "（" + field.unit() + "）";
+    }
+
+    private static BusinessImportWorkbook.ColumnRule columnRule(MarketImportDefinition.Field field) {
+        boolean required = "MKT_SAMPLE_NAME".equals(field.code()) || "MKT_REGION".equals(field.code());
+        String valueType = field.controlType().contains("DECIMAL") ? "DECIMAL"
+                : field.controlType().contains("DATE") ? "DATE" : "TEXT";
+        return new BusinessImportWorkbook.ColumnRule(field.code(), valueType, field.controlType(), required,
+                List.of(), field.precision() == null ? 0 : field.precision(),
+                field.scale() == null ? -1 : field.scale(), null);
     }
 }

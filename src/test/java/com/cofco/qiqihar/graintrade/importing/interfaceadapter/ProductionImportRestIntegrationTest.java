@@ -178,6 +178,7 @@ class ProductionImportRestIntegrationTest {
         java.util.ArrayList<String> row = new java.util.ArrayList<>(
                 java.util.Collections.nCopies(template.headers().size(), ""));
         put(row, template.headers(), "地区", "230208");
+        put(row, template.headers(), "样本点名称", "库存合同测试样本点");
         put(row, template.headers(), "具体品种", "条件字段失败样例");
         put(row, template.headers(), "数据年份", "2026");
         put(row, template.headers(), "数据月份", "8");
@@ -280,7 +281,7 @@ class ProductionImportRestIntegrationTest {
                         .header("Idempotency-Key", "obsolete-production-contract")
                         .principal(() -> "production-tester"))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("INVALID_IMPORT_FORMAT"));
+                .andExpect(jsonPath("$.error.code").value("IMPORT_CONTRACT_MISMATCH"));
 
         assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
                 .query(Long.class).single()).isZero();

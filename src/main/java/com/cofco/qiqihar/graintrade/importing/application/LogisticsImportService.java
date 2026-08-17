@@ -215,6 +215,7 @@ public class LogisticsImportService implements QueuedImportProcessor {
             }
             Map<String, String> businessValues = new LinkedHashMap<>(source.values());
             SYSTEM_GENERATED_CODES.forEach(businessValues::remove);
+            businessValues.remove(BusinessImportWorkbook.PHOTO_FILENAMES_CODE);
             LogisticsImportRow draft = new LogisticsImportRow(productCode, Map.copyOf(businessValues));
             logistics.validate(draft);
             return new Row(source.number(), source.values(), draft, null, null);

@@ -3,8 +3,11 @@ package com.cofco.qiqihar.graintrade.importing.infrastructure;
 import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -14,6 +17,9 @@ import java.util.zip.ZipOutputStream;
 
 /** Creates the common business-only XLSX protocol used by every import domain. */
 public final class BusinessImportWorkbook {
+    public static final String CONTRACT_VERSION = "2026.08.17-2";
+    public static final String PHOTO_FILENAMES_CODE = "evidencePhotoNames";
+    public static final String PHOTO_FILENAMES_LABEL = "现场照片文件名（可选，最多5张，分号分隔）";
     private static final Map<String, String> PUBLIC_CONTEXT_VALUES = Map.ofEntries(
             Map.entry("PRODUCTION", "产情"), Map.entry("MARKET", "市场"), Map.entry("LOGISTICS", "物流"),
             Map.entry("CORN", "玉米"), Map.entry("SOYBEAN", "大豆"), Map.entry("RICE", "稻谷"),
@@ -53,10 +59,6 @@ public final class BusinessImportWorkbook {
                     || (productCode == null && !"LOGISTICS".equals(domainCode))) {
                 throw new IllegalArgumentException("INVALID_TEMPLATE_CONTEXT");
             }
-            contractVersion = contractVersion == null || contractVersion.isBlank()
-                    ? null : contractVersion.trim();
-            contractDigest = contractDigest == null || contractDigest.isBlank()
-                    ? null : contractDigest.trim();
             headers = List.copyOf(headers);
             labels = List.copyOf(labels);
             rules = rules == null ? List.of() : List.copyOf(rules);
@@ -66,6 +68,11 @@ public final class BusinessImportWorkbook {
                     || !rules.stream().map(ColumnRule::code).toList().equals(headers))) {
                 throw new IllegalArgumentException("INVALID_TEMPLATE_RULES");
             }
+            contractVersion = contractVersion == null || contractVersion.isBlank()
+                    ? CONTRACT_VERSION : contractVersion.trim();
+            contractDigest = contractDigest == null || contractDigest.isBlank()
+                    ? digest(domainCode, productCode, objectTypeCode, contractVersion, headers, labels, rules)
+                    : contractDigest.trim();
         }
 
         public Template(String domainCode, String domainLabel, String productCode, String objectTypeCode,
@@ -98,6 +105,11 @@ public final class BusinessImportWorkbook {
 
     public static byte[] create(Template template) {
         return create(template, List.of());
+    }
+
+    public static ColumnRule photoFilenameRule(String code) {
+        return new ColumnRule(code, "TEXT", "PHOTO_FILENAMES", false, List.of(), 0, 0,
+                "可留空；有照片时填写最多 5 个文件名，中文或英文分号分隔");
     }
 
     public static byte[] create(Template template, List<List<String>> dataRows) {
@@ -139,9 +151,14 @@ public final class BusinessImportWorkbook {
                 || (productMissing && !"LOGISTICS".equals(domainCode))) {
             throw new IllegalArgumentException("INVALID_XLSX_CONTEXT");
         }
+        String contractVersion = context.get("模板版本");
+        String contractDigest = context.get("契约摘要");
+        if (blank(contractVersion) || blank(contractDigest) || !contractDigest.startsWith("sha256:")) {
+            throw new IllegalArgumentException("INVALID_XLSX_CONTRACT");
+        }
         return new Context(productMissing ? null : internalContextValue(context.get("产品品种")),
                 objectTypeMissing ? null : internalContextValue(context.get("对象类型")),
-                null, null);
+                contractVersion.trim(), contractDigest.trim());
     }
 
     public static ImportSheet read(byte[] bytes, String domainCode, List<String> headers, List<String> labels) {
@@ -170,6 +187,10 @@ public final class BusinessImportWorkbook {
                 || !java.util.Objects.equals(template.objectTypeCode(), context.objectTypeCode())) {
             throw new IllegalArgumentException("XLSX_CONTEXT_MISMATCH");
         }
+        if (!template.contractVersion().equals(context.contractVersion())
+                || !template.contractDigest().equals(context.contractDigest())) {
+            throw new IllegalArgumentException("XLSX_CONTRACT_MISMATCH");
+        }
         List<List<String>> sheet = XlsxTable.parseWorksheet(
                 bytes, 1, template.headers().size(), maxDataRows + 2);
         if (sheet.isEmpty() || !sheet.getFirst().equals(template.labels())) {
@@ -188,7 +209,9 @@ public final class BusinessImportWorkbook {
 
     private static List<List<String>> boundedDataRows(
             List<List<String>> sheet, int firstDataRow, int maxDataRows) {
-        List<List<String>> rows = List.copyOf(sheet.subList(firstDataRow, sheet.size()));
+        List<List<String>> rows = sheet.subList(firstDataRow, sheet.size()).stream()
+                .filter(row -> row.stream().anyMatch(value -> !value.isBlank()))
+                .map(List::copyOf).toList();
         if (rows.size() > maxDataRows) throw new IllegalArgumentException("INVALID_XLSX");
         return rows;
     }
@@ -252,13 +275,16 @@ public final class BusinessImportWorkbook {
             metadata.add(List.of("产品品种", publicContextValue(template.productCode())));
             metadata.add(List.of("对象类型", publicContextValue(template.objectTypeCode())));
         }
+        metadata.add(List.of("模板版本", template.contractVersion()));
+        metadata.add(List.of("契约摘要", template.contractDigest()));
         StringBuilder xml = new StringBuilder();
         for (int index = 0; index < metadata.size(); index++) {
             xml.append(row(index + 1, metadata.get(index), 0, true));
         }
         java.util.ArrayList<List<String>> instructions = new java.util.ArrayList<>(List.of(
                 List.of("填报说明", "请按业务字段名称填写，不得修改表头"),
-                List.of("填报人", "由登录账号自动记录，不得在模板中填写")));
+                List.of("填报人", "由登录账号自动记录，不得在模板中填写"),
+                List.of("现场照片", "可选，最多 5 张；没有照片不影响导入、提交和审核")));
         if ("PRODUCTION".equals(template.domainCode()) && template.headers().contains("regionCode")) {
             instructions.add(List.of("所在地区",
                     "请填写完整行政区划路径，如“齐齐哈尔市 / 梅里斯达斡尔族区 / 雅尔塞镇 / 音钦村”；旧模板可继续填写有效地区代码"));
@@ -453,7 +479,7 @@ public final class BusinessImportWorkbook {
             return "<formula1>36</formula1>";
         }
         if (rule.required()) {
-            return "<formula1>LEN(TRIM(" + column + "3))&gt;0</formula1>";
+            return "<formula1>LEN(TRIM(" + column + "2))&gt;0</formula1>";
         }
         return "";
     }
@@ -488,12 +514,35 @@ public final class BusinessImportWorkbook {
                 if (value.isEmpty()) {
                     if (rule.required()) {
                         throw new IllegalArgumentException(
-                                "XLSX_REQUIRED_VALUE: row " + (rowIndex + 3) + ", field " + rule.code());
+                                "XLSX_REQUIRED_VALUE: row " + (rowIndex + 2) + ", field " + rule.code());
                     }
                     continue;
                 }
-                validateValue(value, rule, rowIndex + 3);
+                validateValue(value, rule, rowIndex + 2);
             }
+        }
+    }
+
+    private static String digest(String domainCode, String productCode, String objectTypeCode,
+            String contractVersion, List<String> headers, List<String> labels, List<ColumnRule> rules) {
+        StringBuilder canonical = new StringBuilder(domainCode).append('\u001f')
+                .append(productCode == null ? "" : productCode).append('\u001f')
+                .append(objectTypeCode == null ? "" : objectTypeCode).append('\u001f')
+                .append(contractVersion).append('\u001e')
+                .append(String.join("\u001f", headers)).append('\u001e')
+                .append(String.join("\u001f", labels));
+        for (ColumnRule rule : rules) {
+            canonical.append('\u001e').append(rule.code()).append('\u001f')
+                    .append(rule.valueType()).append('\u001f').append(rule.controlType()).append('\u001f')
+                    .append(rule.required()).append('\u001f').append(String.join("\u001d", rule.options()))
+                    .append('\u001f').append(rule.precision()).append('\u001f').append(rule.scale())
+                    .append('\u001f').append(rule.description() == null ? "" : rule.description());
+        }
+        try {
+            return "sha256:" + HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
+                    .digest(canonical.toString().getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException exception) {
+            throw new IllegalStateException(exception);
         }
     }
 

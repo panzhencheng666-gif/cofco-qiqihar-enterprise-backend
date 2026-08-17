@@ -112,7 +112,8 @@ Write `模板版本` and `契约摘要` into the instruction sheet and return th
 
 Run the command from Step 2.
 
-Expected: all tests pass; the matrix covers 18 production, 6 market, and 3 logistics templates, totaling 27.
+Expected: all tests pass; the authoritative applicability matrix covers 9 production,
+15 market, and 3 logistics templates, totaling 27.
 
 - [ ] **Step 5: Commit only the template contract**
 

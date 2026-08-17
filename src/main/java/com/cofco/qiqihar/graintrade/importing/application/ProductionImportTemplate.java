@@ -41,7 +41,7 @@ public final class ProductionImportTemplate {
             "PROD_INTENTION_REASON", "MOISTURE", "TEST_WEIGHT", "TOXIN", "IMPURITY", "IMPERFECT_GRAIN",
             "MILDEW", "PROTEIN", "OIL_YIELD", "MILLING_YIELD", "BROWN_RICE_YIELD", "LAND_RENT", "SEED_COST",
             "PESTICIDE_COST", "FERTILIZER_COST", "IRRIGATION_COST", "LABOR_COST", "MACHINERY_COST", "OTHER_COST",
-            "INSURANCE_AMOUNT", "SUBSIDY_AMOUNT", "evidencePhotoId");
+            "INSURANCE_AMOUNT", "SUBSIDY_AMOUNT", BusinessImportWorkbook.PHOTO_FILENAMES_CODE);
     public static final List<String> XLSX_CORE_HEADERS = XLSX_HEADERS.subList(0, 9);
     public static final List<String> XLSX_CANONICAL_HEADERS = java.util.stream.Stream.of(
             List.of("productCode", "objectTypeCode", "PROD_REPORTER_NAME"), XLSX_HEADERS)
@@ -53,25 +53,30 @@ public final class ProductionImportTemplate {
             "下年度意向面积（亩）", "调整原因", "水分（%）", "容重（克/升）", "毒素（%）", "杂质（%）",
             "不完善粒（%）", "霉变（%）", "蛋白（%）", "出油率（%）", "出米率（%）", "糙米率（%）",
             "地租（元/亩）", "种子费用（元/亩）", "农药费用（元/亩）", "化肥费用（元/亩）", "灌溉费用（元/亩）",
-            "人工费用（元/亩）", "机耕费用（元/亩）", "其他成本（元/亩）", "保险金额（元）", "补贴金额（元）", "现场水印照片编号");
+            "人工费用（元/亩）", "机耕费用（元/亩）", "其他成本（元/亩）", "保险金额（元）", "补贴金额（元）",
+            BusinessImportWorkbook.PHOTO_FILENAMES_LABEL);
     public static final List<String> XLSX_CORE_LABELS = XLSX_LABELS.subList(0, 9);
     private ProductionImportTemplate() {}
     public static String csv() { return String.join(",", HEADERS) + "\n"; }
     public static BusinessImportWorkbook.Template workbook(String productCode, String objectTypeCode) {
         return new BusinessImportWorkbook.Template(DOMAIN, "产情", productCode, objectTypeCode,
-                com.cofco.qiqihar.graintrade.production.application.ProductionSurveyFieldContract.VERSION,
-                com.cofco.qiqihar.graintrade.production.application.ProductionSurveyFieldContract.DIGEST,
+                BusinessImportWorkbook.CONTRACT_VERSION, null,
                 XLSX_HEADERS, XLSX_LABELS, List.of());
     }
 
     public static BusinessImportWorkbook.Template workbook(ProductionImportDefinition definition) {
         if (!definition.fields().isEmpty()) {
             List<ProductionSurveyField> fields = auditedFields(definition);
-            List<String> labels = fields.stream().map(ProductionSurveyField::displayLabel).toList();
+            List<String> labels = java.util.stream.Stream.concat(
+                    fields.stream().map(ProductionSurveyField::displayLabel),
+                    java.util.stream.Stream.of(BusinessImportWorkbook.PHOTO_FILENAMES_LABEL)).toList();
+            List<BusinessImportWorkbook.ColumnRule> rules = java.util.stream.Stream.concat(
+                    fields.stream().map(field -> columnRule(field, field.displayLabel())),
+                    java.util.stream.Stream.of(BusinessImportWorkbook.photoFilenameRule(
+                            BusinessImportWorkbook.PHOTO_FILENAMES_LABEL))).toList();
             return new BusinessImportWorkbook.Template(DOMAIN, "产情", definition.productCode(),
-                    definition.objectTypeCode(), definition.contractVersion(), definition.contractDigest(),
-                    labels, labels,
-                    fields.stream().map(field -> columnRule(field, field.displayLabel())).toList());
+                    definition.objectTypeCode(), BusinessImportWorkbook.CONTRACT_VERSION, null,
+                    labels, labels, rules);
         }
         List<ProductionImportDefinition.Field> fields = definition.groups().stream()
                 .flatMap(group -> group.fields().stream())
@@ -80,15 +85,15 @@ public final class ProductionImportTemplate {
         List<String> headers = java.util.stream.Stream.of(
                         XLSX_CORE_HEADERS.stream(),
                         fields.stream().map(ProductionImportDefinition.Field::code),
-                        java.util.stream.Stream.of("evidencePhotoId"))
+                        java.util.stream.Stream.of(BusinessImportWorkbook.PHOTO_FILENAMES_CODE))
                 .flatMap(java.util.function.Function.identity()).toList();
         List<String> labels = java.util.stream.Stream.of(
                         XLSX_CORE_LABELS.stream(),
                         fields.stream().map(ProductionImportDefinition.Field::displayLabel),
-                        java.util.stream.Stream.of("现场水印照片编号"))
+                        java.util.stream.Stream.of(BusinessImportWorkbook.PHOTO_FILENAMES_LABEL))
                 .flatMap(java.util.function.Function.identity()).toList();
         return new BusinessImportWorkbook.Template(DOMAIN, "产情", definition.productCode(),
-                definition.objectTypeCode(), definition.contractVersion(), definition.contractDigest(),
+                definition.objectTypeCode(), BusinessImportWorkbook.CONTRACT_VERSION, null,
                 headers, labels, List.of());
     }
 
@@ -141,7 +146,9 @@ public final class ProductionImportTemplate {
 
     public static List<String> codes(ProductionImportDefinition definition) {
         if (definition.fields().isEmpty()) return workbook(definition).headers();
-        return auditedFields(definition).stream().map(ProductionSurveyField::code).toList();
+        return java.util.stream.Stream.concat(
+                auditedFields(definition).stream().map(ProductionSurveyField::code),
+                java.util.stream.Stream.of(BusinessImportWorkbook.PHOTO_FILENAMES_CODE)).toList();
     }
 
     private static List<ProductionSurveyField> auditedFields(ProductionImportDefinition definition) {
@@ -160,8 +167,9 @@ public final class ProductionImportTemplate {
                     field.options(), field.precision(), field.scale(),
                     "由当前登录人员自动记录；模板中可留空，导入值不会覆盖登录身份");
         }
+        boolean required = "PROD_SAMPLE_NAME".equals(field.code()) || "regionCode".equals(field.code());
         return new BusinessImportWorkbook.ColumnRule(publicColumnName, field.valueType(), field.controlType(),
-                field.required(), field.options(), field.precision(), field.scale(), field.description());
+                required, field.options(), field.precision(), field.scale(), field.description());
     }
 
     private static BusinessImportWorkbook.ImportSheet readCompatible(

@@ -64,7 +64,7 @@ class LogisticsImportRestIntegrationTest {
                 .containsExactly("数据年份", "数据月份", "填报日期", "物流样本点名称", "地区", "填报人",
                         "填报人联系方式", "物流样本点联系方式", "纬度（度）", "经度（度）", "运输方式",
                         "运输方向", "运输数量（吨）", "物流运价（不含车板价）（元/吨）", "车板价（元/吨）",
-                        "填报状态")
+                        "填报状态", BusinessImportWorkbook.PHOTO_FILENAMES_LABEL)
                 .noneMatch(header -> header.matches(".*[A-Za-z_].*"));
         assertThat(XlsxTable.parseWorksheet(template, 2, 2))
                 .noneMatch(row -> row.getFirst().equals("产品品种") || row.getFirst().equals("对象类型"));
