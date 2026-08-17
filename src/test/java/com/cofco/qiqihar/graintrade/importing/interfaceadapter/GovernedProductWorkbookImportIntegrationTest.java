@@ -3,6 +3,7 @@ package com.cofco.qiqihar.graintrade.importing.interfaceadapter;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -13,6 +14,7 @@ import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -20,6 +22,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -114,6 +117,142 @@ class GovernedProductWorkbookImportIntegrationTest {
                 SELECT count(*) FROM platform.import_row_result
                 WHERE outcome_code='ERROR' AND error_message LIKE '%运输方式%'
                 """).query(Long.class).single()).isOne();
+    }
+
+    @Test
+    void incompleteImportedRowRemainsADatabaseDraftAndCreatesNoFormalRecord() throws Exception {
+        importTwoRows("production", "PRODUCTION", "产情", "production-tester",
+                "样本点名称", "地区", "incomplete-production");
+        String draftId = jdbc.sql("""
+                SELECT import_draft_id::text FROM platform.business_import_draft
+                WHERE domain_code='PRODUCTION' ORDER BY source_row_number LIMIT 1
+                """).query(String.class).single();
+
+        mvc.perform(post("/api/v1/import-drafts/{id}/submit", draftId)
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("IMPORT_DRAFT_INCOMPLETE"));
+
+        assertThat(jdbc.sql("""
+                SELECT state_code FROM platform.business_import_draft WHERE import_draft_id=:id
+                """).param("id", java.util.UUID.fromString(draftId)).query(String.class).single())
+                .isEqualTo("DRAFT");
+        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
+                .query(Long.class).single()).isZero();
+    }
+
+    @Test
+    void submitsCompleteWorkbookRowsAndIndependentApprovalPublishesAllThreeDomains() throws Exception {
+        String productionRecord = importSubmitAndApprove("production", "PRODUCTION", "产情",
+                "production-tester", "market-tester", "production-records", "正式产情样本",
+                "样本点名称", Map.ofEntries(
+                        Map.entry("样本点类型", "农户"), Map.entry("数据年份", "2026"),
+                        Map.entry("填报人联系方式", "13800000000"),
+                        Map.entry("样本点联系方式", "13900000000"),
+                        Map.entry("纬度（度）", "47.354300"), Map.entry("经度（度）", "123.918200"),
+                        Map.entry("播种面积（亩）", "100"),
+                        Map.entry("预计单产（公斤/亩）", "500")));
+        String marketRecord = importSubmitAndApprove("market", "MARKET", "市场",
+                "market-tester", "production-tester", "market-records", "正式市场样本",
+                "样本点名称", Map.ofEntries(
+                        Map.entry("对象类型", "贸易商"), Map.entry("数据年份", "2026"),
+                        Map.entry("数据月份", "8"),
+                        Map.entry("填报人联系方式", "13800000000"),
+                        Map.entry("样本点联系方式", "13900000000"),
+                        Map.entry("纬度（度）", "47.354300"), Map.entry("经度（度）", "123.918200"),
+                        Map.entry("采集对象收购价格（元/吨）", "2300"),
+                        Map.entry("采集对象销售价格（元/吨）", "2380"),
+                        Map.entry("车板组成（元/吨）", "36"),
+                        Map.entry("包装形态", "散粮"), Map.entry("运费组成（元/吨）", "72")));
+        String logisticsRecord = importSubmitAndApprove("logistics", "LOGISTICS", "物流",
+                "logistics-tester", "production-tester", "logistics-records", "正式物流样本",
+                "物流样本点名称", Map.ofEntries(
+                        Map.entry("数据年份", "2026"), Map.entry("数据月份", "8"),
+                        Map.entry("填报人联系方式", "13800000000"),
+                        Map.entry("物流样本点联系方式", "13900000000"),
+                        Map.entry("纬度（度）", "47.354300"), Map.entry("经度（度）", "123.918200"),
+                        Map.entry("运输方式", "铁路"), Map.entry("运输方向", "流入"),
+                        Map.entry("运输数量（吨）", "12.5000"),
+                        Map.entry("物流运价（不含车板价）（元/吨）", "80.2500"),
+                        Map.entry("车板价（元/吨）", "2650.0000")));
+
+        assertThat(jdbc.sql("SELECT status_code FROM production.production_record WHERE record_id=:id")
+                .param("id", productionRecord).query(String.class).single()).isEqualTo("APPROVED");
+        assertThat(jdbc.sql("SELECT status_code FROM market.market_record WHERE record_id=:id")
+                .param("id", marketRecord).query(String.class).single()).isEqualTo("APPROVED");
+        assertThat(jdbc.sql("SELECT status_code FROM logistics.route_event WHERE event_id::text=:id")
+                .param("id", logisticsRecord).query(String.class).single()).isEqualTo("APPROVED");
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_event_outbox
+                WHERE (aggregate_type='PRODUCTION_RECORD' AND aggregate_id=:production)
+                   OR (aggregate_type='MARKET_RECORD' AND aggregate_id=:market)
+                   OR (aggregate_type='LOGISTICS_RECORD' AND aggregate_id=:logistics)
+                """).param("production", productionRecord).param("market", marketRecord)
+                .param("logistics", logisticsRecord).query(Long.class).single()).isGreaterThanOrEqualTo(6);
+
+        mvc.perform(get("/api/v1/observable-analysis/snapshots")
+                        .param("productCode", "CORN").param("regionCode", "230208")
+                        .param("surveyYear", "2026").principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.coverage.recordCount").value(3))
+                .andExpect(jsonPath("$.data.production.metrics[?(@.code == 'EXPECTED_OUTPUT')].value")
+                        .value(org.hamcrest.Matchers.hasItem("50.0000")))
+                .andExpect(jsonPath("$.data.market.metrics[?(@.code == 'AVERAGE_PURCHASE_PRICE')].value")
+                        .value(org.hamcrest.Matchers.hasItem("2300.0000")))
+                .andExpect(jsonPath("$.data.logistics.metrics[?(@.code == 'INFLOW_VOLUME')].value")
+                        .value(org.hamcrest.Matchers.hasItem("12.5000")))
+                .andExpect(jsonPath("$.data.supply.calculation.expectedOutputTonnes").value("50.0000"))
+                .andExpect(jsonPath("$.data.supply.calculation.inflowTonnes").value("12.5000"));
+
+        mvc.perform(get("/api/v1/overview/dashboard")
+                        .param("productCode", "CORN").param("regionCode", "230208")
+                        .param("year", "2026").principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].value")
+                        .value(org.hamcrest.Matchers.hasItem("100")))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'MARKET_AVERAGE_PURCHASE_PRICE')].value")
+                        .value(org.hamcrest.Matchers.hasItem("2300")))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'LOGISTICS_INFLOW_VOLUME')].value")
+                        .value(org.hamcrest.Matchers.hasItem("12.5")));
+    }
+
+    private String importSubmitAndApprove(String route, String domainCode, String domainLabel,
+            String operator, String reviewer, String canonicalRoute, String sampleName,
+            String sampleLabel, Map<String, String> supplied) throws Exception {
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/" + route + "/template")
+                        .param("format", "xlsx").param("productCode", "CORN").principal(() -> operator))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        List<String> labels = withoutTrailingBlanks(XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
+        BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, domainCode);
+        BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
+                domainCode, domainLabel, "CORN", null, context.contractVersion(), context.contractDigest(),
+                labels, labels, List.of());
+        List<String> row = sparse(labels, sampleLabel, "地区", sampleName, "");
+        for (Map.Entry<String, String> value : supplied.entrySet()) {
+            row = withValue(row, labels, value.getKey(), value.getValue());
+        }
+        mvc.perform(multipart("/api/v1/imports/" + route)
+                        .file(new MockMultipartFile("file", domainLabel + "-玉米-批量导入模板.xlsx", XLSX,
+                                BusinessImportWorkbook.create(template, List.of(row))))
+                        .param("productCode", "CORN").header("Idempotency-Key", "formal-" + route)
+                        .principal(() -> operator))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.data.importedRows").value(1));
+        String draftId = jdbc.sql("""
+                SELECT import_draft_id::text FROM platform.business_import_draft
+                WHERE domain_code=:domain AND sample_name=:sample
+                """).param("domain", domainCode).param("sample", sampleName).query(String.class).single();
+        mvc.perform(post("/api/v1/import-drafts/{id}/submit", draftId).principal(() -> operator))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.stateCode").value("PROMOTED"))
+                .andExpect(jsonPath("$.data.canonicalRecordId").isNotEmpty());
+        String recordId = jdbc.sql("""
+                SELECT canonical_record_id FROM platform.business_import_draft WHERE import_draft_id=:id
+                """).param("id", java.util.UUID.fromString(draftId)).query(String.class).single();
+        mvc.perform(post("/api/v1/" + canonicalRoute + "/{id}/approve", recordId)
+                        .principal(() -> reviewer).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk());
+        return recordId;
     }
 
     private void importTwoRows(String route, String domainCode, String domainLabel, String principal,

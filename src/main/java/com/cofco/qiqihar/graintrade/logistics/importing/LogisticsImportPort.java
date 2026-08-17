@@ -5,4 +5,5 @@ public interface LogisticsImportPort {
     LogisticsImportDefinition definition(String productCode);
     void validate(LogisticsImportRow row);
     String importRow(LogisticsImportRow row);
+    String importAndSubmit(LogisticsImportRow row);
 }

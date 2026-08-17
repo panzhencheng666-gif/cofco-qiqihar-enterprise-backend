@@ -6,6 +6,7 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.Optional;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 import tools.jackson.databind.ObjectMapper;
@@ -56,6 +57,66 @@ public class JdbcImportDraftRepository implements ImportDraftRepository {
                     .param("sortOrder", index + 1).param("createdAt", Timestamp.from(now)).update();
         }
         return bound;
+    }
+
+    @Override
+    public Optional<ImportDraft> findByIdForUpdate(UUID draftId) {
+        return jdbc.sql("""
+                SELECT import_draft_id,domain_code,product_code,object_type_code,sample_name,region_code,
+                  survey_period,values_json::text,missing_fields_json::text,completeness_percent,state_code,
+                  created_by,import_job_id,source_row_number,version,canonical_record_id,created_at,updated_at
+                FROM platform.business_import_draft WHERE import_draft_id=:id FOR UPDATE
+                """).param("id", draftId).query((row, ignored) -> new ImportDraft(
+                        row.getObject("import_draft_id", UUID.class), row.getString("domain_code"),
+                        row.getString("product_code"), row.getString("object_type_code"),
+                        row.getString("sample_name"), row.getString("region_code"),
+                        row.getString("survey_period"), values(row.getString("values_json")),
+                        strings(row.getString("missing_fields_json")), row.getInt("completeness_percent"),
+                        row.getString("state_code"), row.getString("created_by"),
+                        row.getObject("import_job_id", UUID.class), row.getInt("source_row_number"),
+                        row.getInt("version"), row.getString("canonical_record_id"),
+                        row.getTimestamp("created_at").toInstant(), row.getTimestamp("updated_at").toInstant()))
+                .optional();
+    }
+
+    @Override
+    public List<UUID> evidenceIds(UUID draftId) {
+        return jdbc.sql("""
+                SELECT photo_id FROM platform.business_import_draft_evidence
+                WHERE import_draft_id=:id ORDER BY sort_order
+                """).param("id", draftId).query(UUID.class).list();
+    }
+
+    @Override
+    public ImportDraft markPromoted(
+            UUID draftId, int expectedVersion, String canonicalRecordId, Instant now) {
+        int updated = jdbc.sql("""
+                UPDATE platform.business_import_draft
+                SET state_code='PROMOTED',canonical_record_id=:recordId,
+                  version=version+1,updated_at=:now
+                WHERE import_draft_id=:id AND version=:version AND state_code='DRAFT'
+                """).param("id", draftId).param("version", expectedVersion)
+                .param("recordId", canonicalRecordId).param("now", Timestamp.from(now)).update();
+        if (updated != 1) throw new IllegalStateException("Import draft promotion conflicted");
+        return findByIdForUpdate(draftId).orElseThrow();
+    }
+
+    @SuppressWarnings("unchecked")
+    private java.util.Map<String, String> values(String json) {
+        try {
+            return java.util.Map.copyOf(objectMapper.readValue(json, java.util.Map.class));
+        } catch (Exception exception) {
+            throw new IllegalStateException("Import draft values are invalid", exception);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> strings(String json) {
+        try {
+            return List.copyOf(objectMapper.readValue(json, List.class));
+        } catch (Exception exception) {
+            throw new IllegalStateException("Import draft missing fields are invalid", exception);
+        }
     }
 
     private String json(Object value) {

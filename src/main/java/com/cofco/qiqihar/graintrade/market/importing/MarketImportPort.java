@@ -7,4 +7,6 @@ public interface MarketImportPort {
     void validate(MarketImportRow row);
 
     String importRow(MarketImportRow row);
+
+    String importAndSubmit(MarketImportRow row);
 }

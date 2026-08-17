@@ -169,6 +169,13 @@ public class ProductionRecordService implements ProductionImportPort {
     }
 
     @Override
+    @Transactional
+    public String importAndSubmit(ProductionDraft draft) {
+        ProductionRecordView created = create(draft, false);
+        return submit(created.record().id(), created.record().version()).record().id();
+    }
+
+    @Override
     @Transactional(readOnly = true, noRollbackFor = {
             ClientRequestException.class, ConflictException.class, ResourceNotFoundException.class
     })

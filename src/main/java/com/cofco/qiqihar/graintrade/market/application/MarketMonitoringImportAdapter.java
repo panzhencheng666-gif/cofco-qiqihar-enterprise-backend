@@ -21,11 +21,13 @@ final class MarketMonitoringImportAdapter implements MarketImportPort {
                 definition.objectTypeCode(),
                 definition.coreFields().stream().map(field -> new MarketImportDefinition.Field(
                         field.code(), field.label(), field.controlType(), field.unit(), field.required(),
-                        field.precision(), field.scale())).toList(),
+                        field.precision(), field.scale(), field.options().stream()
+                                .map(option -> new MarketImportDefinition.Option(
+                                        option.value(), option.label())).toList())).toList(),
                 definition.groups().stream().flatMap(group -> group.fields().stream())
                         .map(field -> new MarketImportDefinition.Field(
                                 field.code(), field.label(), field.valueType(), field.unit(), true,
-                                field.precision(), field.scale()))
+                                field.precision(), field.scale(), java.util.List.of()))
                         .toList());
     }
 
@@ -37,6 +39,13 @@ final class MarketMonitoringImportAdapter implements MarketImportPort {
     @Override
     public String importRow(MarketImportRow row) {
         return service.importDraft(toDraft(row));
+    }
+
+    @Override
+    public String importAndSubmit(MarketImportRow row) {
+        String id = service.importDraft(toDraft(row));
+        service.submit(id, 0);
+        return id;
     }
 
     private static MarketMonitoringDraft toDraft(MarketImportRow row) {

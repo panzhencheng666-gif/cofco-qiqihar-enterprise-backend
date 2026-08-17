@@ -299,7 +299,7 @@ class BusinessImportTemplateMatrixIntegrationTest {
             case "LOG_SAMPLE_LATITUDE" -> "47.354300";
             case "LOG_SAMPLE_LONGITUDE" -> "123.918200";
             case "LOG_TRANSPORT_MODE" -> "铁路";
-            case "LOG_DIRECTION" -> "INFLOW";
+            case "LOG_DIRECTION" -> "流入";
             case "LOG_ROUTE_VOLUME" -> "12.5000";
             case "LOG_FREIGHT_RATE" -> "80.2500";
             case "LOG_BOARD_PRICE" -> "2650.0000";

@@ -62,15 +62,20 @@ public class LogisticsImportService implements QueuedImportProcessor {
             var template = LogisticsImportTemplate.workbook(productCode, definition);
             var sheet = BusinessImportWorkbook.readDraft(bytes, template, limits.maximumRows());
             if (sheet.rows().isEmpty()) throw invalidRequest();
-            Map<String, String> transportModes = definition.fields().stream()
-                    .filter(field -> "LOG_TRANSPORT_MODE".equals(field.code())).findFirst()
-                    .orElseThrow(() -> new IllegalArgumentException("MISSING_TRANSPORT_MODE"))
-                    .options().stream().collect(java.util.stream.Collectors.toMap(
-                            LogisticsImportDefinition.Option::label,
-                            LogisticsImportDefinition.Option::value));
+            Map<String, Map<String, String>> optionCodesByLabel = definition.fields().stream()
+                    .filter(field -> !field.options().isEmpty() && !"LOG_REGION".equals(field.code())
+                            && field.options().size() <= 10)
+                    .collect(java.util.stream.Collectors.toMap(
+                            LogisticsImportDefinition.Field::code,
+                            field -> field.options().stream().collect(java.util.stream.Collectors.toMap(
+                                    LogisticsImportDefinition.Option::label,
+                                    LogisticsImportDefinition.Option::value))));
+            if (!optionCodesByLabel.containsKey("LOG_TRANSPORT_MODE")) {
+                throw new IllegalArgumentException("MISSING_TRANSPORT_MODE");
+            }
             var rows = DraftWorkbookRows.map(sheet, template, LogisticsImportTemplate.codes(definition),
                     null, Map.of(), null,
-                    Map.of("LOG_TRANSPORT_MODE", transportModes),
+                    optionCodesByLabel,
                     "LOG_SAMPLE_NAME", "LOG_REGION", SYSTEM_GENERATED_CODES);
             return draftImports.submit(idempotencyKey, LogisticsImportTemplate.DOMAIN, "物流", productCode,
                     filename, mediaType, bytes, photoParts, rows);

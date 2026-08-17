@@ -82,10 +82,19 @@ public class MarketImportService implements QueuedImportProcessor {
                     java.util.stream.Collectors.toMap(
                             BusinessImportTemplateCatalog.ObjectTypeOption::label,
                             BusinessImportTemplateCatalog.ObjectTypeOption::code));
+            Map<String, Map<String, String>> valueCodesByLabel = definitions.stream()
+                    .flatMap(definition -> definition.coreFields().stream())
+                    .filter(field -> !field.options().isEmpty())
+                    .collect(java.util.stream.Collectors.toMap(
+                            MarketImportDefinition.Field::code,
+                            field -> field.options().stream().collect(java.util.stream.Collectors.toMap(
+                                    MarketImportDefinition.Option::label,
+                                    MarketImportDefinition.Option::value)),
+                            (left, right) -> left));
             var rows = DraftWorkbookRows.map(sheet, template,
                     MarketImportTemplate.productCodes(productCode, definitions),
                     "objectTypeCode", objectTypeByLabel, null,
-                    Map.of(),
+                    valueCodesByLabel,
                     "MKT_SAMPLE_NAME", "MKT_REGION", java.util.Set.of("MKT_REPORTER_NAME"));
             return draftImports.submit(idempotencyKey, MarketImportTemplate.DOMAIN, "市场", productCode,
                     filename, mediaType, bytes, photoParts, rows);

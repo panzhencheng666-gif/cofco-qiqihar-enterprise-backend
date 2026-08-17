@@ -57,7 +57,7 @@ public final class MarketImportTemplate {
                                 new BusinessImportWorkbook.ColumnRule(
                                         "surveyMonth", "TEXT", "MONTH", false, List.of(), 2, 0,
                                         "可留空；填写时为 1—12 月")),
-                        fields.stream().map(MarketImportTemplate::columnRule)),
+                        fields.stream().map(field -> columnRule(field, false))),
                 java.util.stream.Stream.of(BusinessImportWorkbook.photoFilenameRule(
                         BusinessImportWorkbook.PHOTO_FILENAMES_CODE))).toList();
         return new BusinessImportWorkbook.Template(DOMAIN, "市场", definition.productCode(),
@@ -95,7 +95,7 @@ public final class MarketImportTemplate {
                                 new BusinessImportWorkbook.ColumnRule(
                                         "surveyMonth", "TEXT", "MONTH", false, List.of(), 2, 0,
                                         "可留空；填写时为 1—12 月")),
-                        fields.stream().map(MarketImportTemplate::columnRule),
+                        fields.stream().map(field -> columnRule(field, true)),
                         java.util.stream.Stream.of(BusinessImportWorkbook.photoFilenameRule(
                                 BusinessImportWorkbook.PHOTO_FILENAMES_CODE)))
                 .flatMap(java.util.function.Function.identity()).toList();
@@ -158,12 +158,20 @@ public final class MarketImportTemplate {
         return field.unit() == null || field.unit().isBlank() ? label : label + "（" + field.unit() + "）";
     }
 
-    private static BusinessImportWorkbook.ColumnRule columnRule(MarketImportDefinition.Field field) {
+    private static BusinessImportWorkbook.ColumnRule columnRule(
+            MarketImportDefinition.Field field, boolean publicProductWorkbook) {
         boolean required = "MKT_SAMPLE_NAME".equals(field.code()) || "MKT_REGION".equals(field.code());
         String valueType = field.controlType().contains("DECIMAL") ? "DECIMAL"
                 : field.controlType().contains("DATE") ? "DATE" : "TEXT";
         return new BusinessImportWorkbook.ColumnRule(field.code(), valueType, field.controlType(), required,
-                List.of(), field.precision() == null ? 0 : field.precision(),
+                options(field, publicProductWorkbook), field.precision() == null ? 0 : field.precision(),
                 field.scale() == null ? -1 : field.scale(), null);
+    }
+
+    private static List<String> options(
+            MarketImportDefinition.Field field, boolean publicProductWorkbook) {
+        if (!publicProductWorkbook || !"SELECT".equals(field.controlType())
+                || "MKT_REGION".equals(field.code()) || field.options().size() > 10) return List.of();
+        return field.options().stream().map(MarketImportDefinition.Option::label).toList();
     }
 }

@@ -94,9 +94,10 @@ public final class LogisticsImportTemplate {
     }
 
     private static List<String> options(LogisticsImportDefinition.Field field, boolean publicProductWorkbook) {
-        if (!publicProductWorkbook || !"LOG_TRANSPORT_MODE".equals(field.code())) return List.of();
+        if (!publicProductWorkbook || !"SELECT".equals(field.controlType())
+                || "LOG_REGION".equals(field.code()) || field.options().size() > 10) return List.of();
         List<String> labels = field.options().stream().map(LogisticsImportDefinition.Option::label).toList();
-        if (!labels.equals(List.of("铁路", "公路"))) {
+        if ("LOG_TRANSPORT_MODE".equals(field.code()) && !labels.equals(List.of("铁路", "公路"))) {
             throw new IllegalArgumentException("INVALID_LOGISTICS_TRANSPORT_MODES");
         }
         return labels;

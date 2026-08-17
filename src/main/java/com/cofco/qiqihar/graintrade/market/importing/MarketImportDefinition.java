@@ -20,13 +20,33 @@ public record MarketImportDefinition(
             String unit,
             boolean required,
             Integer precision,
-            Integer scale) {
+            Integer scale,
+            List<Option> options) {
+        public Field {
+            options = options == null ? List.of() : List.copyOf(options);
+        }
+
+        public Field(String code, String label, String controlType, String unit,
+                boolean required, Integer precision, Integer scale) {
+            this(code, label, controlType, unit, required, precision, scale, List.of());
+        }
+
         public boolean readOnly() {
             return controlType != null && controlType.startsWith("READONLY");
         }
 
         public String displayLabel() {
             return unit == null || unit.isBlank() ? label : label + "（" + unit + "）";
+        }
+    }
+
+    public record Option(String value, String label) {
+        public Option {
+            if (value == null || value.isBlank() || label == null || label.isBlank()) {
+                throw new IllegalArgumentException("INVALID_MARKET_IMPORT_OPTION");
+            }
+            value = value.trim();
+            label = label.trim();
         }
     }
 }

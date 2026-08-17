@@ -28,4 +28,10 @@ final class LogisticsImportAdapter implements LogisticsImportPort {
     @Override public String importRow(LogisticsImportRow row) {
         return service.importDraft(new LogisticsDraft(row.productCode(), row.values()));
     }
+
+    @Override public String importAndSubmit(LogisticsImportRow row) {
+        String id = service.importDraft(new LogisticsDraft(row.productCode(), row.values()));
+        service.submit(id, 0);
+        return id;
+    }
 }

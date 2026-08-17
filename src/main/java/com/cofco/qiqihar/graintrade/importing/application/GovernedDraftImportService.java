@@ -128,7 +128,7 @@ public class GovernedDraftImportService {
             ImportDraft draft = new ImportDraft(UUID.randomUUID(), source.domainCode(), source.productCode(),
                     blank(row.objectTypeCode()) ? null : row.objectTypeCode(), row.sampleName().trim(), regionCode,
                     row.surveyPeriod(), storedValues, row.missingFields(), row.completenessPercent(), "DRAFT",
-                    principal.subjectId(), jobId, row.rowNumber(), 0, now, now);
+                    principal.subjectId(), jobId, row.rowNumber(), 0, null, now, now);
             var created = rows.create(draft, evidenceIds);
             if (created.warningCode() != null) {
                 warningCode = warningCode == null ? created.warningCode() : "IMPORT_PHOTO_WARNING";

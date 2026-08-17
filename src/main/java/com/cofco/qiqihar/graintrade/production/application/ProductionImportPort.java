@@ -6,4 +6,5 @@ public interface ProductionImportPort {
 
     void validateImportDraft(ProductionDraft draft);
     String importDraft(ProductionDraft draft);
+    String importAndSubmit(ProductionDraft draft);
 }

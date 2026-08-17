@@ -23,6 +23,7 @@ public record ImportDraft(
         UUID importJobId,
         int sourceRowNumber,
         int version,
+        String canonicalRecordId,
         Instant createdAt,
         Instant updatedAt) {
     public ImportDraft {
@@ -34,8 +35,12 @@ public record ImportDraft(
         }
         objectTypeCode = blank(objectTypeCode) ? null : objectTypeCode.trim();
         surveyPeriod = blank(surveyPeriod) ? null : surveyPeriod.trim();
+        canonicalRecordId = blank(canonicalRecordId) ? null : canonicalRecordId.trim();
         values = Map.copyOf(new LinkedHashMap<>(values == null ? Map.of() : values));
         missingFields = List.copyOf(missingFields == null ? List.of() : missingFields);
+        if (("PROMOTED".equals(stateCode)) != (canonicalRecordId != null)) {
+            throw new IllegalArgumentException("INVALID_IMPORT_DRAFT_STATE");
+        }
     }
 
     private static boolean blank(String value) {
