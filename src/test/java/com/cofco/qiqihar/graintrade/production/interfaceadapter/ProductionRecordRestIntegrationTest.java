@@ -92,7 +92,10 @@ class ProductionRecordRestIntegrationTest {
             jdbc.sql("DELETE FROM registry.sample_point WHERE sample_point_id IN (:ids)")
                     .param("ids", publicContractPoints).update();
         }
-        jdbc.sql("TRUNCATE evidence.evidence_photo").update();
+        jdbc.sql("""
+                TRUNCATE platform.business_import_draft_evidence,
+                  platform.import_job_photo,evidence.evidence_photo
+                """).update();
         jdbc.sql("DELETE FROM overview.administrative_boundary "
                         + "WHERE source_url='urn:test:production-sample-point'")
                 .update();

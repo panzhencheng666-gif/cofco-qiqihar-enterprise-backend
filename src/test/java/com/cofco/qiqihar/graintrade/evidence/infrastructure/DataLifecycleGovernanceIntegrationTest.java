@@ -27,7 +27,10 @@ class DataLifecycleGovernanceIntegrationTest {
     void setUp() {
         jdbc = JdbcClient.create(dataSource);
         ProtectedTestDatabaseConfiguration.provisionSecurityTestSubjects(jdbc);
-        jdbc.sql("TRUNCATE evidence.evidence_photo").update();
+        jdbc.sql("""
+                TRUNCATE platform.business_import_draft_evidence,
+                  platform.import_job_photo,evidence.evidence_photo
+                """).update();
     }
 
     @Test

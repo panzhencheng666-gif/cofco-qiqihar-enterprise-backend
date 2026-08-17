@@ -34,7 +34,10 @@ class EvidencePhotoRestIntegrationTest {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         if (jdbc.sql("SELECT to_regclass('evidence.evidence_photo') IS NOT NULL")
                 .query(Boolean.class).single()) {
-            jdbc.sql("TRUNCATE evidence.evidence_photo").update();
+            jdbc.sql("""
+                    TRUNCATE platform.business_import_draft_evidence,
+                      platform.import_job_photo,evidence.evidence_photo
+                    """).update();
         }
     }
 

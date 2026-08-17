@@ -52,7 +52,10 @@ class EvidencePhotoExternalStorageIntegrationTest {
     @BeforeEach
     @AfterEach
     void clean() throws Exception {
-        JdbcClient.create(dataSource).sql("TRUNCATE evidence.evidence_photo").update();
+        JdbcClient.create(dataSource).sql("""
+                TRUNCATE platform.business_import_draft_evidence,
+                  platform.import_job_photo,evidence.evidence_photo
+                """).update();
         cleanContentRoot();
     }
 
