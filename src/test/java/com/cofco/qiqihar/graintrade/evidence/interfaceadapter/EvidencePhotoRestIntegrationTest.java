@@ -7,10 +7,16 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
+import com.cofco.qiqihar.graintrade.importing.application.BusinessImportPhotoPackage;
+import com.cofco.qiqihar.graintrade.shared.security.application.InternalSecuritySubjectScope;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.awt.Color;
 import java.awt.image.BufferedImage;
 import java.io.ByteArrayOutputStream;
+import java.io.DataOutputStream;
+import java.util.List;
+import java.util.UUID;
+import java.util.zip.CRC32;
 import javax.imageio.ImageIO;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
@@ -28,6 +34,8 @@ import org.springframework.test.web.servlet.MockMvc;
 class EvidencePhotoRestIntegrationTest {
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
+    @Autowired BusinessImportPhotoPackage importPhotos;
+    @Autowired InternalSecuritySubjectScope subjects;
 
     @AfterEach
     void clean() {
@@ -38,7 +46,45 @@ class EvidencePhotoRestIntegrationTest {
                     TRUNCATE platform.business_import_draft_evidence,
                       platform.import_job_photo,evidence.evidence_photo
                     """).update();
+            jdbc.sql("DELETE FROM platform.import_job WHERE idempotency_key LIKE 'photo-package-%'").update();
         }
+    }
+
+    @Test
+    void stagesImportPhotosWithoutInventingCaptureLocationAndSkipsCorruptFilesAsWarnings() throws Exception {
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        UUID jobId = UUID.randomUUID();
+        jdbc.sql("""
+                INSERT INTO platform.import_job(import_job_id,domain_code,idempotency_key,content_sha256,
+                  source_content,requested_by,work_unit_code,status_code,created_at,completed_at,attempt_count)
+                SELECT :jobId,'PRODUCTION',:key,repeat('a',64),'photo package test',subject_id,
+                  work_unit_code,'COMPLETED',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,1
+                FROM platform.security_user WHERE subject_id='production-tester'
+                """).param("jobId", jobId).param("key", "photo-package-" + jobId).update();
+
+        var staged = subjects.callAs("production-tester", () -> importPhotos.stage(jobId, List.of(
+                new BusinessImportPhotoPackage.PhotoPart("齐齐哈尔样本.png", "image/png", uncheckedPngBytes()),
+                new BusinessImportPhotoPackage.PhotoPart("损坏照片.png", "image/png", "not-image".getBytes()),
+                new BusinessImportPhotoPackage.PhotoPart("伪装照片.jpg", "image/jpeg", uncheckedPngBytes()),
+                new BusinessImportPhotoPackage.PhotoPart("过大照片.png", "image/png", new byte[10 * 1024 * 1024 + 1]),
+                new BusinessImportPhotoPackage.PhotoPart(
+                        "超大像素照片.png", "image/png", oversizedDimensionsPng())),
+                "产情 | 齐齐哈尔样本"));
+
+        assertThat(staged.stagedPhotoIds()).hasSize(1);
+        assertThat(staged.warnings()).hasSize(4).allSatisfy(warning ->
+                assertThat(warning.code()).isEqualTo("INVALID_EVIDENCE_PHOTO"));
+        assertThat(jdbc.sql("""
+                SELECT (photo.captured_at IS NULL) AND (photo.capture_latitude IS NULL)
+                  AND (photo.capture_longitude IS NULL)
+                  AND photo.watermark_text LIKE '%定位待补充%'
+                  AND mapping.normalized_filename='齐齐哈尔样本.png'
+                FROM evidence.evidence_photo photo
+                JOIN platform.import_job_photo mapping ON mapping.photo_id=photo.photo_id
+                WHERE mapping.import_job_id=:jobId
+                """).param("jobId", jobId).query(Boolean.class).single()).isTrue();
+        assertThat(importPhotos.resolve(jobId, "齐齐哈尔样本.png"))
+                .containsExactly(staged.stagedPhotoIds().getFirst());
     }
 
     @Test
@@ -128,6 +174,41 @@ class EvidencePhotoRestIntegrationTest {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         ImageIO.write(image, "png", output);
         return output.toByteArray();
+    }
+
+    private static byte[] uncheckedPngBytes() {
+        try {
+            return pngBytes();
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private static byte[] oversizedDimensionsPng() {
+        try {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            DataOutputStream data = new DataOutputStream(output);
+            data.write(new byte[] {(byte) 0x89, 'P', 'N', 'G', 13, 10, 26, 10});
+            byte[] ihdr = new byte[] {
+                0, 0, 31, 64, 0, 0, 23, 112, 8, 2, 0, 0, 0
+            };
+            writePngChunk(data, "IHDR", ihdr);
+            writePngChunk(data, "IEND", new byte[0]);
+            return output.toByteArray();
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private static void writePngChunk(DataOutputStream data, String type, byte[] payload) throws Exception {
+        byte[] typeBytes = type.getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+        data.writeInt(payload.length);
+        data.write(typeBytes);
+        data.write(payload);
+        CRC32 crc = new CRC32();
+        crc.update(typeBytes);
+        crc.update(payload);
+        data.writeInt((int) crc.getValue());
     }
 
     private void assertContentReadAudit(String photoId, String actor, long expected) {

@@ -9,6 +9,10 @@ public interface EvidencePhotoRepository {
     Optional<StoredEvidencePhoto> find(UUID id);
     List<EvidencePhotoView> findAttached(String domain, String recordId);
     boolean attach(UUID id, String domain, String recordId, String regionCode, String subjectId);
+    void linkToImportJob(UUID jobId, UUID photoId, String originalFilename, String normalizedFilename,
+            java.time.OffsetDateTime capturedAt, String latitude, String longitude,
+            java.time.OffsetDateTime createdAt);
+    Optional<UUID> findImportJobPhoto(UUID jobId, String normalizedFilename);
 
     record EvidencePhotoUpload(
             UUID id, String filename, String mediaType, byte[] originalBytes, byte[] watermarkedBytes,

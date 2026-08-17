@@ -93,6 +93,30 @@ public class JdbcEvidencePhotoRepository implements EvidencePhotoRepository {
                 .param("regionCode", regionCode).param("subject", subjectId).update() == 1;
     }
 
+    @Override
+    public void linkToImportJob(UUID jobId, UUID photoId, String originalFilename, String normalizedFilename,
+            java.time.OffsetDateTime capturedAt, String latitude, String longitude,
+            java.time.OffsetDateTime createdAt) {
+        jdbc.sql("""
+                INSERT INTO platform.import_job_photo(import_job_id,photo_id,original_filename,
+                  normalized_filename,captured_at,capture_latitude,capture_longitude,created_at)
+                VALUES(:jobId,:photoId,:originalFilename,:normalizedFilename,:capturedAt,
+                  CAST(:latitude AS numeric),CAST(:longitude AS numeric),:createdAt)
+                """).param("jobId", jobId).param("photoId", photoId)
+                .param("originalFilename", originalFilename).param("normalizedFilename", normalizedFilename)
+                .param("capturedAt", capturedAt).param("latitude", latitude).param("longitude", longitude)
+                .param("createdAt", createdAt).update();
+    }
+
+    @Override
+    public Optional<UUID> findImportJobPhoto(UUID jobId, String normalizedFilename) {
+        return jdbc.sql("""
+                SELECT photo_id FROM platform.import_job_photo
+                WHERE import_job_id=:jobId AND normalized_filename=:normalizedFilename
+                """).param("jobId", jobId).param("normalizedFilename", normalizedFilename)
+                .query(UUID.class).optional();
+    }
+
     private static EvidencePhotoView view(java.sql.ResultSet row) throws java.sql.SQLException {
         return new EvidencePhotoView(row.getObject("photo_id", UUID.class), row.getString("state_code"),
                 row.getString("original_filename"), row.getString("media_type"), row.getLong("byte_length"),

@@ -65,13 +65,40 @@ public class EvidencePhotoService {
         String subjectId = accessControl.require("BUSINESS_CREATE", null).subjectId();
         validateMetadata(filename, mediaType, bytes, capturedAt, latitude, longitude, watermarkText);
         BufferedImage image = readImage(bytes, mediaType);
-        byte[] watermarked = watermark(image, mediaType, watermarkText, capturedAt, latitude, longitude);
+        byte[] watermarked = watermark(image, mediaType, watermarkText,
+                capturedAt + "  " + latitude + "," + longitude);
         OffsetDateTime uploadedAt = OffsetDateTime.ofInstant(clock.instant(), ZONE);
+        return persist(filename.trim(), mediaType, bytes, watermarked, capturedAt, latitude, longitude,
+                watermarkText.trim(), subjectId, uploadedAt);
+    }
+
+    @Transactional
+    public EvidencePhotoView uploadForImport(UUID jobId, String filename, String normalizedFilename,
+            String mediaType, byte[] bytes, String watermarkPrefix) {
+        if (jobId == null || normalizedFilename == null || normalizedFilename.isBlank()
+                || watermarkPrefix == null || watermarkPrefix.isBlank()) throw invalid();
+        String subjectId = accessControl.require("BUSINESS_CREATE", null).subjectId();
+        validateImportMetadata(filename, mediaType, bytes, watermarkPrefix);
+        BufferedImage image = readImage(bytes, mediaType);
+        OffsetDateTime uploadedAt = OffsetDateTime.ofInstant(clock.instant(), ZONE);
+        String watermarkText = "%s | 导入时间 %s | 定位待补充".formatted(watermarkPrefix.trim(), uploadedAt);
+        BoundedInput.requireText("INVALID_EVIDENCE_PHOTO", watermarkText);
+        byte[] watermarked = watermark(image, mediaType, watermarkText, "定位待补充");
+        EvidencePhotoView view = persist(filename.trim(), mediaType, bytes, watermarked, null, null, null,
+                watermarkText, subjectId, uploadedAt);
+        repository.linkToImportJob(jobId, view.id(), filename.trim(), normalizedFilename,
+                null, null, null, uploadedAt);
+        return view;
+    }
+
+    private EvidencePhotoView persist(String filename, String mediaType, byte[] bytes, byte[] watermarked,
+            OffsetDateTime capturedAt, String latitude, String longitude, String watermarkText,
+            String subjectId, OffsetDateTime uploadedAt) {
         UUID id = UUID.randomUUID();
         if (!contentStorage.external()) {
-            return repository.insert(new EvidencePhotoRepository.EvidencePhotoUpload(id, filename.trim(),
+            return repository.insert(new EvidencePhotoRepository.EvidencePhotoUpload(id, filename,
                     mediaType, bytes.clone(), watermarked, bytes.length, sha256(bytes), sha256(watermarked), capturedAt, latitude,
-                    longitude, watermarkText.trim(), subjectId, uploadedAt, "DATABASE", null));
+                    longitude, watermarkText, subjectId, uploadedAt, "DATABASE", null));
         }
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
             throw new IllegalStateException("Private evidence upload requires transaction synchronization");
@@ -79,7 +106,7 @@ public class EvidencePhotoService {
         String objectKey = contentStorage.key(id);
         contentStorage.put(objectKey, EvidenceContentEnvelope.encode(mediaType, bytes, watermarked));
         registerRollbackCleanup(objectKey);
-        return repository.insert(new EvidencePhotoRepository.EvidencePhotoUpload(id, filename.trim(), mediaType,
+        return repository.insert(new EvidencePhotoRepository.EvidencePhotoUpload(id, filename, mediaType,
                 null, null, bytes.length, sha256(bytes), sha256(watermarked), capturedAt, latitude, longitude, watermarkText.trim(),
                 subjectId, uploadedAt, "EXTERNAL", objectKey));
     }
@@ -181,6 +208,14 @@ public class EvidencePhotoService {
                 || parsedLongitude.compareTo(new java.math.BigDecimal("180")) > 0) throw invalid();
     }
 
+    private static void validateImportMetadata(
+            String filename, String mediaType, byte[] bytes, String watermarkPrefix) {
+        if (filename == null || filename.isBlank() || filename.length() > 255 || mediaType == null
+                || !MEDIA_TYPES.contains(mediaType) || bytes == null || bytes.length == 0 || bytes.length > MAX_BYTES
+                || watermarkPrefix == null || watermarkPrefix.isBlank()) throw invalid();
+        BoundedInput.requireText("INVALID_EVIDENCE_PHOTO", watermarkPrefix);
+    }
+
     private static BufferedImage readImage(byte[] bytes, String mediaType) {
         try (ImageInputStream input = ImageIO.createImageInputStream(new ByteArrayInputStream(bytes))) {
             Iterator<ImageReader> readers = ImageIO.getImageReaders(input);
@@ -204,8 +239,7 @@ public class EvidencePhotoService {
         }
     }
 
-    private static byte[] watermark(BufferedImage source, String mediaType, String text, OffsetDateTime capturedAt,
-            String latitude, String longitude) {
+    private static byte[] watermark(BufferedImage source, String mediaType, String text, String detail) {
         int type = mediaType.equals("image/jpeg") ? BufferedImage.TYPE_INT_RGB : BufferedImage.TYPE_INT_ARGB;
         BufferedImage target = new BufferedImage(source.getWidth(), source.getHeight(), type);
         Graphics2D graphics = target.createGraphics();
@@ -222,7 +256,7 @@ public class EvidencePhotoService {
             graphics.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
             graphics.drawString(text, 10, source.getHeight() - fontSize - 8);
             graphics.setFont(new Font(Font.SANS_SERIF, Font.PLAIN, Math.max(10, fontSize - 4)));
-            graphics.drawString(capturedAt + "  " + latitude + "," + longitude, 10, source.getHeight() - 8);
+            graphics.drawString(detail, 10, source.getHeight() - 8);
         } finally {
             graphics.dispose();
         }
