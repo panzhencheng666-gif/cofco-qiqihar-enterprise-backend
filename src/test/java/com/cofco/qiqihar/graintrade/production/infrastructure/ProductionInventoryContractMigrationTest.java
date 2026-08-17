@@ -34,7 +34,7 @@ class ProductionInventoryContractMigrationTest {
     @Test
     void freshMigrationVersionsPublicProductionInventoryWithoutRemovingBusinessFields() throws Exception {
         resetDatabase();
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(120);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(122);
 
         assertThat(query("""
                 SELECT EXISTS(
@@ -170,7 +170,7 @@ class ProductionInventoryContractMigrationTest {
     @Test
     void freshMigrationGrantsRuntimeOverviewContractReadOnlyAccess() throws Exception {
         resetDatabase();
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(120);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(122);
 
         assertThat(query("""
                 SELECT has_table_privilege('cofco_app',
@@ -192,10 +192,22 @@ class ProductionInventoryContractMigrationTest {
                        has_table_privilege('cofco_app',
                          'market.market_inventory_governance','DELETE')
                 """)).isEqualTo("true:false:false:false");
+        assertThat(query("""
+                SELECT has_table_privilege('cofco_app',
+                         'market.sample_point_inventory_contract','SELECT') || ':' ||
+                       has_table_privilege('cofco_app',
+                         'market.sample_point_inventory_contract','INSERT') || ':' ||
+                       has_table_privilege('cofco_app',
+                         'market.sample_point_inventory_contract','UPDATE') || ':' ||
+                       has_table_privilege('cofco_app',
+                         'market.sample_point_inventory_contract','DELETE')
+                """)).isEqualTo("true:false:false:false");
         assertRuntimeCanReadOverviewRegionSurplusContract();
         assertRuntimeCanReadMarketInventoryGovernance();
+        assertRuntimeCanReadMarketInventoryContract();
         assertRuntimeCannotMutateOverviewRegionSurplusContract();
         assertRuntimeCannotMutateMarketInventoryGovernance();
+        assertRuntimeCannotMutateMarketInventoryContract();
         assertThat(query("""
                 SELECT version || ':' || checksum || ':' || success
                 FROM public.flyway_schema_history
@@ -218,6 +230,31 @@ class ProductionInventoryContractMigrationTest {
         assertRuntimeCanReadMarketInventoryGovernance();
         assertRuntimeCannotMutateOverviewRegionSurplusContract();
         assertRuntimeCannotMutateMarketInventoryGovernance();
+    }
+
+    @Test
+    void upgradesV121WithRuntimeMarketInventoryContractReadOnlyAccess() throws Exception {
+        resetDatabase();
+        DATABASE.flywayToVersion("121").migrate();
+        assertThat(query("""
+                SELECT has_table_privilege('cofco_app',
+                         'market.sample_point_inventory_contract','SELECT')
+                """)).isEqualTo("f");
+
+        assertThat(DATABASE.flywayToVersion("122").migrate().migrationsExecuted).isOne();
+
+        assertThat(query("""
+                SELECT has_table_privilege('cofco_app',
+                         'market.sample_point_inventory_contract','SELECT') || ':' ||
+                       has_table_privilege('cofco_app',
+                         'market.sample_point_inventory_contract','INSERT') || ':' ||
+                       has_table_privilege('cofco_app',
+                         'market.sample_point_inventory_contract','UPDATE') || ':' ||
+                       has_table_privilege('cofco_app',
+                         'market.sample_point_inventory_contract','DELETE')
+                """)).isEqualTo("true:false:false:false");
+        assertRuntimeCanReadMarketInventoryContract();
+        assertRuntimeCannotMutateMarketInventoryContract();
     }
 
     @Test
@@ -580,12 +617,50 @@ class ProductionInventoryContractMigrationTest {
         }
     }
 
+    private void assertRuntimeCanReadMarketInventoryContract() throws Exception {
+        try (Connection connection = DATABASE.openConnection(); Statement statement = connection.createStatement()) {
+            connection.setAutoCommit(false);
+            try {
+                statement.execute("SET LOCAL ROLE cofco_app");
+                try (ResultSet result = statement.executeQuery("""
+                        SELECT count(*)
+                        FROM market.sample_point_inventory_contract
+                        """)) {
+                    assertThat(result.next()).isTrue();
+                    assertThat(result.getInt(1)).isGreaterThanOrEqualTo(0);
+                }
+            } finally {
+                connection.rollback();
+            }
+        }
+    }
+
     private void assertRuntimeCannotMutateMarketInventoryGovernance() throws Exception {
         String[] statements = {
             "INSERT INTO market.market_inventory_governance(record_id,status_code,reason_code) "
                     + "VALUES ('permission-negative','PENDING_REVIEW','permission-negative')",
             "UPDATE market.market_inventory_governance SET reason_code=reason_code WHERE false",
             "DELETE FROM market.market_inventory_governance WHERE false"
+        };
+        for (String sql : statements) {
+            try (Connection connection = DATABASE.openConnection(); Statement statement = connection.createStatement()) {
+                connection.setAutoCommit(false);
+                try {
+                    statement.execute("SET LOCAL ROLE cofco_app");
+                    org.assertj.core.api.Assertions.assertThatThrownBy(() -> statement.execute(sql))
+                            .isInstanceOf(java.sql.SQLException.class)
+                            .hasMessageContaining("permission denied for table");
+                } finally {
+                    connection.rollback();
+                }
+            }
+        }
+    }
+
+    private void assertRuntimeCannotMutateMarketInventoryContract() throws Exception {
+        String[] statements = {
+            "UPDATE market.sample_point_inventory_contract SET policy_attribute=policy_attribute WHERE false",
+            "DELETE FROM market.sample_point_inventory_contract WHERE false"
         };
         for (String sql : statements) {
             try (Connection connection = DATABASE.openConnection(); Statement statement = connection.createStatement()) {
