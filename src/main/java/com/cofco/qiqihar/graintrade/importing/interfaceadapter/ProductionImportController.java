@@ -47,7 +47,9 @@ public class ProductionImportController {
             @RequestParam("file") MultipartFile file,
             @RequestParam(name = "photos", required = false) List<MultipartFile> photos) throws java.io.IOException {
         byte[] bytes = file == null ? null : file.getBytes();
-        ImportJobView job = objectTypeCode == null || objectTypeCode.isBlank()
+        boolean productWorkbook = objectTypeCode == null || objectTypeCode.isBlank()
+                || hasProductWorkbookContext(bytes, "PRODUCTION");
+        ImportJobView job = productWorkbook
                 ? service.importProductWorkbook(idempotencyKey, productCode,
                         file == null ? null : file.getOriginalFilename(),
                         file == null ? null : file.getContentType(), bytes, photoParts(photos))
@@ -55,6 +57,15 @@ public class ProductionImportController {
                         file == null ? null : file.getOriginalFilename(),
                         file == null ? null : file.getContentType(), bytes);
         return acceptedOrCreated(job);
+    }
+
+    private static boolean hasProductWorkbookContext(byte[] bytes, String domainCode) {
+        try {
+            BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(bytes, domainCode);
+            return context.productCode() != null && context.objectTypeCode() == null;
+        } catch (IllegalArgumentException exception) {
+            return false;
+        }
     }
 
     @GetMapping("/{importJobId}")

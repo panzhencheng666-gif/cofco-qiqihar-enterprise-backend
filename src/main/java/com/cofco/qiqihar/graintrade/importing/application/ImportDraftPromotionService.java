@@ -83,6 +83,12 @@ public class ImportDraftPromotionService {
         return promoted;
     }
 
+    @Transactional(readOnly = true)
+    public List<ImportDraft> listByJob(UUID importJobId) {
+        SecurityPrincipal principal = access.require("BUSINESS_IMPORT", null);
+        return drafts.findByJob(importJobId, principal.subjectId());
+    }
+
     private ProductionDraft productionRow(ImportDraft draft, List<UUID> evidenceIds) {
         String objectType = required(draft.objectTypeCode());
         ProductionImportDefinition definition = production.importDefinition(draft.productCode(), objectType);

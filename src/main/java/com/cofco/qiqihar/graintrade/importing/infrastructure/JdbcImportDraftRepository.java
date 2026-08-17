@@ -61,22 +61,17 @@ public class JdbcImportDraftRepository implements ImportDraftRepository {
 
     @Override
     public Optional<ImportDraft> findByIdForUpdate(UUID draftId) {
-        return jdbc.sql("""
-                SELECT import_draft_id,domain_code,product_code,object_type_code,sample_name,region_code,
-                  survey_period,values_json::text,missing_fields_json::text,completeness_percent,state_code,
-                  created_by,import_job_id,source_row_number,version,canonical_record_id,created_at,updated_at
-                FROM platform.business_import_draft WHERE import_draft_id=:id FOR UPDATE
-                """).param("id", draftId).query((row, ignored) -> new ImportDraft(
-                        row.getObject("import_draft_id", UUID.class), row.getString("domain_code"),
-                        row.getString("product_code"), row.getString("object_type_code"),
-                        row.getString("sample_name"), row.getString("region_code"),
-                        row.getString("survey_period"), values(row.getString("values_json")),
-                        strings(row.getString("missing_fields_json")), row.getInt("completeness_percent"),
-                        row.getString("state_code"), row.getString("created_by"),
-                        row.getObject("import_job_id", UUID.class), row.getInt("source_row_number"),
-                        row.getInt("version"), row.getString("canonical_record_id"),
-                        row.getTimestamp("created_at").toInstant(), row.getTimestamp("updated_at").toInstant()))
-                .optional();
+        return jdbc.sql(SELECT + " WHERE import_draft_id=:id FOR UPDATE")
+                .param("id", draftId).query(this::draft).optional();
+    }
+
+    @Override
+    public List<ImportDraft> findByJob(UUID importJobId, String createdBy) {
+        return jdbc.sql(SELECT + """
+                 WHERE import_job_id=:job AND created_by=:createdBy
+                 ORDER BY source_row_number
+                """).param("job", importJobId).param("createdBy", createdBy)
+                .query(this::draft).list();
     }
 
     @Override
@@ -118,6 +113,26 @@ public class JdbcImportDraftRepository implements ImportDraftRepository {
             throw new IllegalStateException("Import draft missing fields are invalid", exception);
         }
     }
+
+    private ImportDraft draft(java.sql.ResultSet row, int ignored) throws java.sql.SQLException {
+        return new ImportDraft(
+                row.getObject("import_draft_id", UUID.class), row.getString("domain_code"),
+                row.getString("product_code"), row.getString("object_type_code"),
+                row.getString("sample_name"), row.getString("region_code"),
+                row.getString("survey_period"), values(row.getString("values_json")),
+                strings(row.getString("missing_fields_json")), row.getInt("completeness_percent"),
+                row.getString("state_code"), row.getString("created_by"),
+                row.getObject("import_job_id", UUID.class), row.getInt("source_row_number"),
+                row.getInt("version"), row.getString("canonical_record_id"),
+                row.getTimestamp("created_at").toInstant(), row.getTimestamp("updated_at").toInstant());
+    }
+
+    private static final String SELECT = """
+            SELECT import_draft_id,domain_code,product_code,object_type_code,sample_name,region_code,
+              survey_period,values_json::text,missing_fields_json::text,completeness_percent,state_code,
+              created_by,import_job_id,source_row_number,version,canonical_record_id,created_at,updated_at
+            FROM platform.business_import_draft
+            """;
 
     private String json(Object value) {
         try {

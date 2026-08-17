@@ -120,6 +120,24 @@ class GovernedProductWorkbookImportIntegrationTest {
     }
 
     @Test
+    void publicProductWorkbooksRemainCompatibleWithOlderClientsThatSendAnObjectTypeParameter()
+            throws Exception {
+        importOnePublicWorkbookWithLegacyObjectTypeParameter(
+                "production", "PRODUCTION", "产情", "production-tester",
+                "样本点名称", "旧客户端产情样本", "FARMER");
+        importOnePublicWorkbookWithLegacyObjectTypeParameter(
+                "market", "MARKET", "市场", "market-tester",
+                "样本点名称", "旧客户端市场样本", "TRADER");
+
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.business_import_draft")
+                .query(Long.class).single()).isEqualTo(2);
+        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
+                .query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM market.market_record")
+                .query(Long.class).single()).isZero();
+    }
+
+    @Test
     void incompleteImportedRowRemainsADatabaseDraftAndCreatesNoFormalRecord() throws Exception {
         importTwoRows("production", "PRODUCTION", "产情", "production-tester",
                 "样本点名称", "地区", "incomplete-production");
@@ -127,6 +145,16 @@ class GovernedProductWorkbookImportIntegrationTest {
                 SELECT import_draft_id::text FROM platform.business_import_draft
                 WHERE domain_code='PRODUCTION' ORDER BY source_row_number LIMIT 1
                 """).query(String.class).single();
+        String importJobId = jdbc.sql("""
+                SELECT import_job_id::text FROM platform.business_import_draft WHERE import_draft_id=:id
+                """).param("id", java.util.UUID.fromString(draftId)).query(String.class).single();
+
+        mvc.perform(get("/api/v1/import-drafts").param("importJobId", importJobId)
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[0].stateCode").value("DRAFT"))
+                .andExpect(jsonPath("$.data[0].sampleName").value("产情样本一"));
 
         mvc.perform(post("/api/v1/import-drafts/{id}/submit", draftId)
                         .principal(() -> "production-tester"))
@@ -290,6 +318,29 @@ class GovernedProductWorkbookImportIntegrationTest {
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM platform.business_import_draft WHERE domain_code=:domain
                 """).param("domain", domainCode).query(Long.class).single()).isEqualTo(2);
+    }
+
+    private void importOnePublicWorkbookWithLegacyObjectTypeParameter(
+            String route, String domainCode, String domainLabel, String principal,
+            String sampleLabel, String sampleName, String objectTypeCode) throws Exception {
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/" + route + "/template")
+                        .param("format", "xlsx").param("productCode", "CORN")
+                        .param("objectTypeCode", objectTypeCode).principal(() -> principal))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        List<String> labels = withoutTrailingBlanks(XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
+        BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, domainCode);
+        BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
+                domainCode, domainLabel, "CORN", null, context.contractVersion(), context.contractDigest(),
+                labels, labels, List.of());
+        List<String> row = sparse(labels, sampleLabel, "地区", sampleName, "");
+
+        mvc.perform(multipart("/api/v1/imports/" + route)
+                        .file(new MockMultipartFile("file", domainLabel + "-玉米-批量导入模板.xlsx", XLSX,
+                                BusinessImportWorkbook.create(template, List.of(row))))
+                        .param("productCode", "CORN").param("objectTypeCode", objectTypeCode)
+                        .header("Idempotency-Key", "legacy-client-" + route).principal(() -> principal))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(1));
     }
 
     private static List<String> sparse(List<String> labels, String sampleLabel, String regionLabel,

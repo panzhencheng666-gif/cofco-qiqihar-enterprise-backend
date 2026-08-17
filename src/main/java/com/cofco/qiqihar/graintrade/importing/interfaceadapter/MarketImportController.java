@@ -55,12 +55,24 @@ public class MarketImportController {
             @RequestParam(required = false) String objectTypeCode,
             @RequestParam("file") MultipartFile file,
             @RequestParam(name = "photos", required = false) List<MultipartFile> photos) throws java.io.IOException {
-        ImportJobView job = objectTypeCode == null || objectTypeCode.isBlank()
+        byte[] bytes = file.getBytes();
+        boolean productWorkbook = objectTypeCode == null || objectTypeCode.isBlank()
+                || hasProductWorkbookContext(bytes, "MARKET");
+        ImportJobView job = productWorkbook
                 ? service.importProductWorkbook(idempotencyKey, productCode, file.getOriginalFilename(),
-                        file.getContentType(), file.getBytes(), photoParts(photos))
+                        file.getContentType(), bytes, photoParts(photos))
                 : service.importFile(idempotencyKey, productCode, objectTypeCode,
-                        file.getOriginalFilename(), file.getContentType(), file.getBytes());
+                        file.getOriginalFilename(), file.getContentType(), bytes);
         return acceptedOrCreated(job);
+    }
+
+    private static boolean hasProductWorkbookContext(byte[] bytes, String domainCode) {
+        try {
+            BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(bytes, domainCode);
+            return context.productCode() != null && context.objectTypeCode() == null;
+        } catch (IllegalArgumentException exception) {
+            return false;
+        }
     }
 
     @GetMapping("/{importJobId}")
