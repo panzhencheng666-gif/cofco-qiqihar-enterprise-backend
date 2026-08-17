@@ -34,7 +34,7 @@ class ProductionInventoryContractMigrationTest {
     @Test
     void freshMigrationVersionsPublicProductionInventoryWithoutRemovingBusinessFields() throws Exception {
         resetDatabase();
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(122);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(123);
 
         assertThat(query("""
                 SELECT EXISTS(
@@ -170,7 +170,7 @@ class ProductionInventoryContractMigrationTest {
     @Test
     void freshMigrationGrantsRuntimeOverviewContractReadOnlyAccess() throws Exception {
         resetDatabase();
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(122);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(123);
 
         assertThat(query("""
                 SELECT has_table_privilege('cofco_app',
@@ -183,6 +183,22 @@ class ProductionInventoryContractMigrationTest {
                          'overview.region_surplus_calculation_contract','DELETE')
                 """)).isEqualTo("true:false:false:false");
         assertThat(query("""
+                SELECT has_column_privilege('cofco_app',
+                         'market.market_inventory_governance','record_id','INSERT') || ':' ||
+                       has_column_privilege('cofco_app',
+                         'market.market_inventory_governance','status_code','INSERT,UPDATE') || ':' ||
+                       has_column_privilege('cofco_app',
+                         'market.market_inventory_governance','reason_code','INSERT,UPDATE') || ':' ||
+                       has_column_privilege('cofco_app',
+                         'market.market_inventory_governance','sample_point_id','INSERT,UPDATE') || ':' ||
+                       has_column_privilege('cofco_app',
+                         'market.market_inventory_governance','resolved_by','INSERT,UPDATE') || ':' ||
+                       has_column_privilege('cofco_app',
+                         'market.market_inventory_governance','resolved_at','INSERT,UPDATE') || ':' ||
+                       has_column_privilege('cofco_app',
+                         'market.market_inventory_governance','record_id','UPDATE')
+                """)).isEqualTo("true:true:true:true:true:true:false");
+        assertThat(query("""
                 SELECT has_table_privilege('cofco_app',
                          'market.market_inventory_governance','SELECT') || ':' ||
                        has_table_privilege('cofco_app',
@@ -191,7 +207,7 @@ class ProductionInventoryContractMigrationTest {
                          'market.market_inventory_governance','UPDATE') || ':' ||
                        has_table_privilege('cofco_app',
                          'market.market_inventory_governance','DELETE')
-                """)).isEqualTo("true:false:false:false");
+                """)).isEqualTo("true:false:false:true");
         assertThat(query("""
                 SELECT has_table_privilege('cofco_app',
                          'market.sample_point_inventory_contract','SELECT') || ':' ||
@@ -206,7 +222,7 @@ class ProductionInventoryContractMigrationTest {
         assertRuntimeCanReadMarketInventoryGovernance();
         assertRuntimeCanReadMarketInventoryContract();
         assertRuntimeCannotMutateOverviewRegionSurplusContract();
-        assertRuntimeCannotMutateMarketInventoryGovernance();
+        assertRuntimeCanManageMarketInventoryGovernance();
         assertRuntimeCannotMutateMarketInventoryContract();
         assertThat(query("""
                 SELECT version || ':' || checksum || ':' || success
@@ -254,6 +270,18 @@ class ProductionInventoryContractMigrationTest {
                          'market.sample_point_inventory_contract','DELETE')
                 """)).isEqualTo("true:false:false:false");
         assertRuntimeCanReadMarketInventoryContract();
+        assertRuntimeCannotMutateMarketInventoryContract();
+    }
+
+    @Test
+    void upgradesV122WithScopedRuntimeMarketInventoryGovernanceLifecycle() throws Exception {
+        resetDatabase();
+        DATABASE.flywayToVersion("122").migrate();
+        assertRuntimeCannotMutateMarketInventoryGovernance();
+
+        assertThat(DATABASE.flywayToVersion("123").migrate().migrationsExecuted).isOne();
+
+        assertRuntimeCanManageMarketInventoryGovernance();
         assertRuntimeCannotMutateMarketInventoryContract();
     }
 
@@ -650,6 +678,31 @@ class ProductionInventoryContractMigrationTest {
                     org.assertj.core.api.Assertions.assertThatThrownBy(() -> statement.execute(sql))
                             .isInstanceOf(java.sql.SQLException.class)
                             .hasMessageContaining("permission denied for table");
+                } finally {
+                    connection.rollback();
+                }
+            }
+        }
+    }
+
+    private void assertRuntimeCanManageMarketInventoryGovernance() throws Exception {
+        String[] statements = {
+            """
+            INSERT INTO market.market_inventory_governance(record_id,status_code,reason_code)
+            SELECT record_id,'PENDING_REVIEW','SUBJECT_RESOLUTION_REQUIRED'
+            FROM market.market_record WHERE false
+            ON CONFLICT(record_id) DO UPDATE SET status_code='PENDING_REVIEW',
+              reason_code=excluded.reason_code,sample_point_id=NULL,resolved_by=NULL,resolved_at=NULL
+            """,
+            "UPDATE market.market_inventory_governance SET reason_code=reason_code WHERE false",
+            "DELETE FROM market.market_inventory_governance WHERE false"
+        };
+        for (String sql : statements) {
+            try (Connection connection = DATABASE.openConnection(); Statement statement = connection.createStatement()) {
+                connection.setAutoCommit(false);
+                try {
+                    statement.execute("SET LOCAL ROLE cofco_app");
+                    statement.execute(sql);
                 } finally {
                     connection.rollback();
                 }
