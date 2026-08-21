@@ -128,7 +128,7 @@ class QueuedBusinessImportIntegrationTest {
         node("ASYNC_ORIGIN", "异步始发点", "RAIL_NODE");
         node("ASYNC_DEST", "异步到达点", "ROAD_NODE");
         LogisticsImportDefinition definition = logistics.definition("CORN");
-        var row = LogisticsImportTemplate.headers(definition).stream().map(this::logisticsValue).toList();
+        var row = LogisticsImportTemplate.codes(definition).stream().map(this::logisticsValue).toList();
         byte[] workbook = BusinessImportWorkbook.create(LogisticsImportTemplate.workbook(definition),
                 java.util.List.of(row, row));
 
@@ -224,17 +224,19 @@ class QueuedBusinessImportIntegrationTest {
 
     private String logisticsValue(String code) {
         return switch (code) {
-            case "LOG_PERIOD" -> "2026-W32";
-            case "LOG_COLLECTION_DATE" -> "2026-08-09";
-            case "LOG_ORIGIN" -> "ASYNC_ORIGIN";
-            case "LOG_DESTINATION" -> "ASYNC_DEST";
+            case "surveyYear" -> "2026";
+            case "surveyMonth" -> "8";
+            case "LOG_SAMPLE_NAME" -> "齐齐哈尔物流中心";
+            case "LOG_REGION" -> "230200";
+            case "LOG_REPORTER_PHONE" -> "13800000000";
+            case "LOG_SAMPLE_CONTACT" -> "13900000000";
+            case "LOG_SAMPLE_LATITUDE" -> "47.354300";
+            case "LOG_SAMPLE_LONGITUDE" -> "123.918200";
             case "LOG_TRANSPORT_MODE" -> "RAIL";
             case "LOG_DIRECTION" -> "INFLOW";
             case "LOG_ROUTE_VOLUME" -> "12.5000";
             case "LOG_FREIGHT_RATE" -> "80.2500";
-            case "LOG_TRANSIT_TIME" -> "2.5000";
-            case "LOG_SOURCE_ORGANIZATION" -> "齐齐哈尔物流中心";
-            case "LOG_REFERENCE" -> "ASYNC-2026-001";
+            case "LOG_BOARD_PRICE" -> "2650.0000";
             default -> "";
         };
     }

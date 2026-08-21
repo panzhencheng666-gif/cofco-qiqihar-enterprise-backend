@@ -27,6 +27,11 @@ import org.springframework.stereotype.Repository;
 @Repository
 public class JdbcLogisticsRepository implements LogisticsRepository {
     private static final Pattern STORAGE_KEY = Pattern.compile("^[A-Za-z_][A-Za-z0-9_]*$");
+    private static final List<String> PUBLIC_FIELD_CODES = List.of(
+            "surveyYear", "surveyMonth", "fillingDate", "LOG_SAMPLE_NAME", "LOG_REGION",
+            "LOG_REPORTER", "LOG_REPORTER_PHONE", "LOG_SAMPLE_CONTACT", "LOG_SAMPLE_LATITUDE",
+            "LOG_SAMPLE_LONGITUDE", "LOG_TRANSPORT_MODE", "LOG_DIRECTION", "LOG_ROUTE_VOLUME",
+            "LOG_FREIGHT_RATE", "LOG_BOARD_PRICE", "LOG_STATUS");
     private final JdbcClient jdbc;
 
     public JdbcLogisticsRepository(JdbcClient jdbc) {
@@ -42,7 +47,7 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
                 WITH eligible AS (
                   SELECT definition.code,definition.option_source FROM platform.logistics_core_field_definition definition
                   JOIN platform.logistics_core_field_applicability applicability ON applicability.field_code=definition.code
-                  WHERE applicability.product_code=:product
+                  WHERE applicability.product_code=:product AND definition.code IN (:publicFields)
                 )
                 SELECT option.field_code,option.value,option.label,option.sort_order
                 FROM platform.logistics_core_field_option option JOIN eligible ON eligible.code=option.field_code
@@ -55,8 +60,12 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
                 UNION ALL
                 SELECT eligible.code,mode.code,mode.name,mode.sort_order FROM eligible
                   CROSS JOIN platform.transport_mode mode WHERE eligible.option_source='TRANSPORT_MODE'
+                UNION ALL
+                SELECT eligible.code,region.code,region.name,region.sort_order FROM eligible
+                  CROSS JOIN platform.region region WHERE eligible.option_source='REGION'
                 ORDER BY field_code,sort_order
-                """).param("product", productCode).query((row, index) -> new OptionRow(
+                """).param("product", productCode).param("publicFields", PUBLIC_FIELD_CODES)
+                .query((row, index) -> new OptionRow(
                         row.getString("field_code"), row.getString("value"), row.getString("label"),
                         row.getInt("sort_order"))).list().forEach(option -> options
                         .computeIfAbsent(option.field, key -> new ArrayList<>())
@@ -82,7 +91,7 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
         Map<String, FieldMeta> byCode = new LinkedHashMap<>();
         fields.forEach(field -> byCode.put(field.code, field));
         if (draft.values().keySet().stream().anyMatch(code -> !byCode.containsKey(code)
-                || byCode.get(code).control.startsWith("READONLY"))) return false;
+                || (byCode.get(code).control.startsWith("READONLY") && !code.equals("LOG_REPORTER")))) return false;
         if (fields.stream().filter(field -> field.required && !field.control.startsWith("READONLY"))
                 .anyMatch(field -> blank(draft.values().get(field.code)))) return false;
         LogisticsDefinitionView definition = definition(draft.productCode());
@@ -103,9 +112,25 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
                 return false;
             }
         }
-        String origin = valueForBinding(fields, draft.values(), "EVENT.origin_node_code");
-        String destination = valueForBinding(fields, draft.values(), "EVENT.destination_node_code");
-        return origin != null && !origin.equals(destination);
+        try {
+            int surveyYear = Integer.parseInt(draft.values().get("surveyYear"));
+            String monthValue = draft.values().get("surveyMonth");
+            if (surveyYear < 1900 || surveyYear > 2200) return false;
+            if (!blank(monthValue)) {
+                int surveyMonth = Integer.parseInt(monthValue);
+                if (surveyMonth < 1 || surveyMonth > 12) return false;
+            }
+            BigDecimal latitude = new BigDecimal(draft.values().get("LOG_SAMPLE_LATITUDE"));
+            BigDecimal longitude = new BigDecimal(draft.values().get("LOG_SAMPLE_LONGITUDE"));
+            if (latitude.compareTo(BigDecimal.valueOf(-90)) < 0
+                    || latitude.compareTo(BigDecimal.valueOf(90)) > 0
+                    || longitude.compareTo(BigDecimal.valueOf(-180)) < 0
+                    || longitude.compareTo(BigDecimal.valueOf(180)) > 0) return false;
+        } catch (RuntimeException exception) {
+            return false;
+        }
+        return Boolean.TRUE.equals(jdbc.sql("SELECT EXISTS(SELECT 1 FROM platform.region WHERE code=:code)")
+                .param("code", draft.values().get("LOG_REGION")).query(Boolean.class).single());
     }
 
     @Override
@@ -130,25 +155,19 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
 
     @Override
     public Set<String> regionsForDraft(LogisticsDraft draft) {
-        return regionsForNodes(List.of(draft.values().get("LOG_ORIGIN"), draft.values().get("LOG_DESTINATION")));
+        String region = draft.values().get("LOG_REGION");
+        return blank(region) ? Set.of() : Set.of(region);
     }
 
     @Override
     public Set<String> regionsForRecord(String id) {
         return new LinkedHashSet<>(jdbc.sql("""
-                SELECT event.origin_region_code FROM logistics.route_event event
-                WHERE event.event_id::text = :id
-                UNION
-                SELECT event.destination_region_code FROM logistics.route_event event
+                SELECT COALESCE(event.business_region_code,
+                  CASE event.direction_code WHEN 'INFLOW' THEN event.destination_region_code
+                    ELSE event.origin_region_code END)
+                FROM logistics.route_event event
                 WHERE event.event_id::text = :id
                 """).param("id", id).query(String.class).list());
-    }
-
-    private Set<String> regionsForNodes(List<String> nodeCodes) {
-        List<String> present = nodeCodes.stream().filter(value -> value != null && !value.isBlank()).toList();
-        if (present.size() != 2) return Set.of();
-        return new LinkedHashSet<>(jdbc.sql("SELECT region_code FROM logistics.logistics_node WHERE node_code IN (:nodes)")
-                .param("nodes", present).query(String.class).list());
     }
 
     @Override
@@ -220,12 +239,15 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
         jdbc.sql("""
                 WITH raw_value AS (
                   SELECT event.event_id::text id,definition.code,definition.option_source,
-                    CASE split_part(definition.binding,'.',1)
+                    CASE
+                    WHEN definition.code='fillingDate' THEN
+                      to_char(event.created_at AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD')
+                    ELSE CASE split_part(definition.binding,'.',1)
                     WHEN 'EVENT' THEN to_jsonb(event)->>split_part(definition.binding,'.',2)
                     WHEN 'READONLY' THEN to_jsonb(event)->>split_part(definition.binding,'.',2)
                     WHEN 'FACT' THEN fact.value::text
                     WHEN 'EXTENSION' THEN extension.value
-                    END value,applicability.sort_order
+                    END END value,applicability.sort_order
                   FROM logistics.route_event event
                   JOIN platform.logistics_core_field_applicability applicability ON applicability.product_code=event.product_code
                   JOIN platform.logistics_core_field_definition definition ON definition.code=applicability.field_code
@@ -233,10 +255,10 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
                     AND fact.fact_code=split_part(definition.binding,'.',2)
                   LEFT JOIN logistics.route_event_core_value extension ON extension.event_id=event.event_id
                     AND extension.field_code=definition.code
-                  WHERE event.event_id::text IN (:ids)
+                  WHERE event.event_id::text IN (:ids) AND definition.code IN (:publicFields)
                 )
                 SELECT raw.id,raw.code,raw.value,
-                  COALESCE(option.label,period.name,node.node_name,mode.name,raw.value) display_value
+                  COALESCE(option.label,period.name,node.node_name,mode.name,region.name,raw.value) display_value
                 FROM raw_value raw
                 LEFT JOIN platform.logistics_core_field_option option
                   ON option.field_code=raw.code AND option.value=raw.value
@@ -246,8 +268,11 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
                   ON raw.option_source='LOGISTICS_NODE' AND node.node_code=raw.value
                 LEFT JOIN platform.transport_mode mode
                   ON raw.option_source='TRANSPORT_MODE' AND mode.code=raw.value
+                LEFT JOIN platform.region region
+                  ON raw.code='LOG_REGION' AND region.code=raw.value
                 ORDER BY raw.id,raw.sort_order
-                """).param("ids", ids).query((row, index) -> new ValueRow(row.getString("id"),
+                """).param("ids", ids).param("publicFields", PUBLIC_FIELD_CODES)
+                .query((row, index) -> new ValueRow(row.getString("id"),
                         row.getString("code"), row.getString("value"), row.getString("display_value")))
                 .list().forEach(value -> {
                             if (value.value != null) values.computeIfAbsent(value.id, key -> new LinkedHashMap<>())
@@ -259,22 +284,17 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
         headers.forEach(header -> {
             Map<String, String> raw = values.computeIfAbsent(header.id, key -> new LinkedHashMap<>());
             Map<String, String> display = displayValues.computeIfAbsent(header.id, key -> new LinkedHashMap<>());
-            raw.put("LOG_SURVEY_YEAR", Integer.toString(header.surveyYear));
-            display.put("LOG_SURVEY_YEAR", Integer.toString(header.surveyYear));
+            raw.put("surveyYear", Integer.toString(header.surveyYear));
+            display.put("surveyYear", Integer.toString(header.surveyYear));
             if (header.surveyMonth != null) {
-                raw.put("LOG_SURVEY_MONTH", Integer.toString(header.surveyMonth));
-                display.put("LOG_SURVEY_MONTH", Integer.toString(header.surveyMonth));
+                raw.put("surveyMonth", Integer.toString(header.surveyMonth));
+                display.put("surveyMonth", Integer.toString(header.surveyMonth));
             }
-            raw.put("LOG_SURVEY_PERIOD_PRECISION", header.surveyPeriodPrecision);
-            display.put("LOG_SURVEY_PERIOD_PRECISION", header.surveyPeriodPrecision);
-            raw.put("LOG_SURVEY_PERIOD_GOVERNANCE_STATE", header.surveyPeriodGovernanceState);
-            display.put("LOG_SURVEY_PERIOD_GOVERNANCE_STATE", header.surveyPeriodGovernanceState);
             OffsetDateTime fillingAt = header.submittedAt == null ? header.createdAt : header.submittedAt;
-            String fillingBasis = fillingTimeBasis(header.status, header.submittedAt);
-            raw.put("LOG_FILLING_AT", fillingAt.toString());
-            display.put("LOG_FILLING_AT", fillingAt.toString());
-            raw.put("LOG_FILLING_TIME_BASIS", fillingBasis);
-            display.put("LOG_FILLING_TIME_BASIS", fillingBasis);
+            String fillingDate = fillingAt.atZoneSameInstant(ZoneId.of("Asia/Shanghai"))
+                    .toLocalDate().toString();
+            raw.put("fillingDate", fillingDate);
+            display.put("fillingDate", fillingDate);
         });
         Map<String, List<String>> allowedActions = new LinkedHashMap<>();
         jdbc.sql("""
@@ -310,10 +330,14 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
             assignments.add(column + "=" + parameterExpression(parameter, field.control));
             parameters.put(parameter, databaseValue(draft.values().get(field.code), field));
         }
-        String origin = valueForBinding(fields, draft.values(), "EVENT.origin_node_code");
-        String destination = valueForBinding(fields, draft.values(), "EVENT.destination_node_code");
-        parameters.put("originCode", origin);
-        parameters.put("destinationCode", destination);
+        int surveyYear = Integer.parseInt(draft.values().get("surveyYear"));
+        String surveyMonthValue = draft.values().get("surveyMonth");
+        Integer surveyMonth = blank(surveyMonthValue) ? null : Integer.valueOf(surveyMonthValue);
+        String businessRegion = draft.values().get("LOG_REGION");
+        parameters.put("compatYear", surveyYear);
+        parameters.put("compatMonth", surveyMonth);
+        parameters.put("businessRegion", businessRegion);
+        parameters.put("reporter", draft.values().get("LOG_REPORTER"));
         parameters.put("id", id);
         parameters.put("product", draft.productCode());
         parameters.put("actor", actor);
@@ -326,12 +350,12 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
                 String parameter = "field_" + fields.get(index).code.toLowerCase(java.util.Locale.ROOT);
                 values.add(parameterExpression(parameter, fields.get(index).control));
             }
-            columns.addAll(List.of("origin_region_code", "destination_region_code", "origin_node_id", "destination_node_id",
-                    "reported_at", "status_code", "created_by", "last_modified_by", "created_at", "updated_at"));
-            values.addAll(List.of("(SELECT region_code FROM logistics.logistics_node WHERE node_code=:originCode)",
-                    "(SELECT region_code FROM logistics.logistics_node WHERE node_code=:destinationCode)",
-                    "(SELECT node_id FROM logistics.logistics_node WHERE node_code=:originCode)",
-                    "(SELECT node_id FROM logistics.logistics_node WHERE node_code=:destinationCode)",
+            columns.addAll(List.of("reporter", "collection_date", "origin_region_code", "destination_region_code",
+                    "survey_period_precision", "survey_period_governance_state", "reported_at", "status_code",
+                    "created_by", "last_modified_by", "created_at", "updated_at"));
+            values.addAll(List.of(":reporter", "make_date(:compatYear,COALESCE(:compatMonth,1),1)",
+                    ":businessRegion", ":businessRegion",
+                    "CASE WHEN :compatMonth IS NULL THEN 'YEAR' ELSE 'YEAR_MONTH' END", "'CONFIRMED'",
                     ":now", "'DRAFT'", ":actor", ":actor", ":now", ":now"));
             jdbc.sql("INSERT INTO logistics.route_event(" + String.join(",", columns) + ") VALUES(" +
                     String.join(",", values) + ")").params(parameters).update();
@@ -339,10 +363,11 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
             parameters.put("status", status.name());
             parameters.put("returnReason", returnReason);
             assignments.addAll(List.of(
-                    "origin_region_code=(SELECT region_code FROM logistics.logistics_node WHERE node_code=:originCode)",
-                    "destination_region_code=(SELECT region_code FROM logistics.logistics_node WHERE node_code=:destinationCode)",
-                    "origin_node_id=(SELECT node_id FROM logistics.logistics_node WHERE node_code=:originCode)",
-                    "destination_node_id=(SELECT node_id FROM logistics.logistics_node WHERE node_code=:destinationCode)",
+                    "reporter=:reporter",
+                    "collection_date=make_date(:compatYear,COALESCE(:compatMonth,1),1)",
+                    "origin_region_code=:businessRegion", "destination_region_code=:businessRegion",
+                    "survey_period_precision=CASE WHEN :compatMonth IS NULL THEN 'YEAR' ELSE 'YEAR_MONTH' END",
+                    "survey_period_governance_state='CONFIRMED'",
                     "reported_at=:now", "status_code=:status", "return_reason=:returnReason", "last_modified_by=:actor",
                     "updated_at=:now", "version=version+1"));
             parameters.put("version", expectedVersion);
@@ -381,8 +406,10 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
                   definition.required,applicability.sort_order
                 FROM platform.logistics_core_field_applicability applicability
                 JOIN platform.logistics_core_field_definition definition ON definition.code=applicability.field_code
-                WHERE applicability.product_code=:product ORDER BY applicability.sort_order
-                """).param("product", productCode).query((row, index) -> new FieldMeta(row.getString("code"),
+                WHERE applicability.product_code=:product AND definition.code IN (:publicFields)
+                ORDER BY applicability.sort_order
+                """).param("product", productCode).param("publicFields", PUBLIC_FIELD_CODES)
+                .query((row, index) -> new FieldMeta(row.getString("code"),
                         row.getString("label"), row.getString("control_type"), row.getString("binding"),
                         row.getString("option_source"), row.getString("unit"),
                         (Integer) row.getObject("decimal_precision"), (Integer) row.getObject("decimal_scale"),
@@ -397,7 +424,7 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
         catch (IllegalArgumentException exception) { return false; }
         if (field.control.startsWith("READONLY")) return prefix.equals("READONLY") && eventColumn(key);
         if (prefix.equals("EVENT")) return eventColumn(key);
-        if (prefix.equals("FACT")) return Set.of("ROUTE_VOLUME", "FREIGHT_RATE", "TRANSIT_TIME").contains(key);
+        if (prefix.equals("FACT")) return Set.of("ROUTE_VOLUME", "FREIGHT_RATE", "TRANSIT_TIME", "BOARD_PRICE").contains(key);
         return prefix.equals("EXTENSION");
     }
 

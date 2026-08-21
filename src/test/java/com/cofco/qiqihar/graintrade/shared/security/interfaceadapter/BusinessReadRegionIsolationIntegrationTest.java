@@ -242,8 +242,8 @@ class BusinessReadRegionIsolationIntegrationTest {
                         .queryParam("marketingYear", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_OUTFLOW_VOLUME')].value")
-                        .value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.nullValue())))
-                .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_OUTFLOW_VOLUME')].sourceCount").value(0));
+                        .value(org.hamcrest.Matchers.hasItem("999")))
+                .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_OUTFLOW_VOLUME')].sourceCount").value(1));
         mockMvc.perform(get("/api/v1/overview/indicators")
                         .principal(() -> READER_B)
                         .queryParam("productCode", "CORN")

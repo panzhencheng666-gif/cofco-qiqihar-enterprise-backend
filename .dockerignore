@@ -1,5 +1,6 @@
 .git
 .mvn
-target
+target/*
+!target/grain-trade-enterprise-backend-0.0.1-SNAPSHOT.jar
 *.log
 .DS_Store

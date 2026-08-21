@@ -21,22 +21,39 @@ public final class RegionSurplusCalculator {
 
     public RegionSurplusCalculation calculate(List<RegionSurplusSource> suppliedSources) {
         List<RegionSurplusSource> sources = suppliedSources == null ? List.of() : List.copyOf(suppliedSources);
-        if (sources.isEmpty()) return unavailable("NO_APPROVED_SOURCES", sources, null);
+        String calculationVersion = sources.isEmpty() ? CALCULATION_VERSION : sources.getFirst().calculationVersion();
+        return calculate(sources, calculationVersion);
+    }
+
+    public RegionSurplusCalculation calculate(
+            List<RegionSurplusSource> suppliedSources, String selectedCalculationVersion) {
+        List<RegionSurplusSource> sources = suppliedSources == null ? List.of() : List.copyOf(suppliedSources);
+        if (blank(selectedCalculationVersion)) {
+            return unavailable("CALCULATION_CONTRACT_UNAVAILABLE", sources, commonCutoff(sources),
+                    "地区余粮口径不可用");
+        }
+        String calculationVersion = selectedCalculationVersion;
+        if (sources.isEmpty()) return unavailable("NO_APPROVED_SOURCES", sources, null, calculationVersion);
+
+        if (sources.stream().map(RegionSurplusSource::calculationVersion).distinct().count() != 1
+                || sources.stream().anyMatch(source -> !calculationVersion.equals(source.calculationVersion()))) {
+            return unavailable("CALCULATION_VERSION_MISMATCH", sources, commonCutoff(sources), calculationVersion);
+        }
 
         if (sources.stream().anyMatch(source -> contractIssue(source) != null)
                 || sources.stream().map(RegionSurplusSource::sourceRecordId).distinct().count() != sources.size()) {
-            return unavailable("UNRELIABLE_SOURCE_CONTRACT", sources, commonCutoff(sources));
+            return unavailable("UNRELIABLE_SOURCE_CONTRACT", sources, commonCutoff(sources), calculationVersion);
         }
 
         Set<LocalDate> cutoffs = sources.stream().map(RegionSurplusSource::dataCutoff)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
-        if (cutoffs.size() != 1) return unavailable("CUTOFF_MISMATCH", sources, null);
+        if (cutoffs.size() != 1) return unavailable("CUTOFF_MISMATCH", sources, null, calculationVersion);
         LocalDate cutoff = cutoffs.iterator().next();
 
         boolean productionPresent = sources.stream().anyMatch(source -> source.sourceDomain().equals("PRODUCTION"));
         boolean marketPresent = sources.stream().anyMatch(source -> source.sourceDomain().equals("MARKET"));
         if (!productionPresent || !marketPresent) {
-            return unavailable("INSUFFICIENT_COVERAGE", sources, cutoff);
+            return unavailable("INSUFFICIENT_COVERAGE", sources, cutoff, calculationVersion);
         }
 
         Set<String> productionSubjects = sources.stream()
@@ -44,7 +61,7 @@ public final class RegionSurplusCalculator {
                 .map(RegionSurplusSource::subjectKey).collect(Collectors.toSet());
         boolean overlaps = sources.stream().filter(source -> source.sourceDomain().equals("MARKET"))
                 .map(RegionSurplusSource::cargoOwnerKey).anyMatch(productionSubjects::contains);
-        if (overlaps) return unavailable("MUTUAL_EXCLUSIVITY_VIOLATION", sources, cutoff);
+        if (overlaps) return unavailable("MUTUAL_EXCLUSIVITY_VIOLATION", sources, cutoff, calculationVersion);
 
         Map<String, Decision> decisions = new LinkedHashMap<>();
         adoptLatestProductionSources(sources, decisions);
@@ -60,7 +77,7 @@ public final class RegionSurplusCalculator {
         BigDecimal total = adopted.stream().map(RegionSurplusSource::valueTonnes)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         return new RegionSurplusCalculation(
-                total, adopted.size(), cutoff, "AVAILABLE", CALCULATION_VERSION, auditSources);
+                total, adopted.size(), cutoff, "AVAILABLE", calculationVersion, auditSources);
     }
 
     private static void adoptLatestProductionSources(
@@ -118,6 +135,9 @@ public final class RegionSurplusCalculator {
                 || blank(source.regionCode()) || source.dataCutoff() == null || source.valueTonnes() == null
                 || source.valueTonnes().signum() < 0 || source.approvedAt() == null) return "REQUIRED_FIELD_MISSING";
         if (source.sourceDomain().equals("PRODUCTION")) {
+            if (source.calculationVersion().equals("地区余粮口径第2版") && blank(source.sampleTypeCode())) {
+                return "PRODUCTION_SAMPLE_TYPE_MISSING";
+            }
             return source.inventoryHolderKey() == null
                     && source.ownershipType().equals("PRODUCTION_SURPLUS")
                     && source.subjectKey().equals(source.cargoOwnerKey()) ? null : "INVALID_PRODUCTION_OWNERSHIP";
@@ -137,12 +157,12 @@ public final class RegionSurplusCalculator {
     }
 
     private static RegionSurplusCalculation unavailable(
-            String status, List<RegionSurplusSource> sources, LocalDate cutoff) {
+            String status, List<RegionSurplusSource> sources, LocalDate cutoff, String calculationVersion) {
         List<RegionSurplusAuditSource> audit = sources.stream().filter(java.util.Objects::nonNull)
                 .map(source -> audit(source, new Decision(false,
                         contractIssue(source) == null ? status : contractIssue(source))))
                 .toList();
-        return new RegionSurplusCalculation(null, 0, cutoff, status, CALCULATION_VERSION, audit);
+        return new RegionSurplusCalculation(null, 0, cutoff, status, calculationVersion, audit);
     }
 
     private static LocalDate commonCutoff(List<RegionSurplusSource> sources) {

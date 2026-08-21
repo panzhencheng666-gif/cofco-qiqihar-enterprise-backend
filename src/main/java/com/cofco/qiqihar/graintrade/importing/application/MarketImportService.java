@@ -17,6 +17,7 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Clock;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -317,9 +318,15 @@ public class MarketImportService implements QueuedImportProcessor {
                             "IMPORT_ROW_VALUE_FORMAT"));
                 }
             });
-            String evidence = values.get(MarketImportTemplate.EVIDENCE_PHOTO_ID);
-            return new MarketImportRow(definition.productCode(), core, facts,
-                    List.of(UUID.fromString(evidence)));
+            String year = values.get("surveyYear");
+            String month = values.get("surveyMonth");
+            int parsedYear = Integer.parseInt(year);
+            int parsedMonth = month == null || month.isBlank() ? 1 : Integer.parseInt(month);
+            if (parsedYear < 1900 || parsedYear > 2200 || parsedMonth < 1 || parsedMonth > 12) {
+                throw new IllegalArgumentException("invalid survey period");
+            }
+            core.put("MKT_TRADE_DATE", LocalDate.of(parsedYear, parsedMonth, 1).toString());
+            return new MarketImportRow(definition.productCode(), core, facts, List.of());
         } catch (RuntimeException exception) {
             throw new ClientRequestException(
                     "IMPORT_ROW_VALUE_FORMAT", "Market import row is invalid");

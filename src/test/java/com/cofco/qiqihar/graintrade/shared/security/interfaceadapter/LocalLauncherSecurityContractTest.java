@@ -6,9 +6,12 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class LocalLauncherSecurityContractTest {
     private static final Path START_SCRIPT = Path.of("scripts/start-local.sh");
@@ -18,6 +21,10 @@ class LocalLauncherSecurityContractTest {
     private static final Path HEALTHCHECK = Path.of("scripts/healthcheck-local.sh");
     private static final Path RUNTIME_MANAGER = Path.of("scripts/local-runtime.sh");
     private static final Path REGION_HIERARCHY_VERIFIER = Path.of("scripts/verify-local-region-hierarchy.sh");
+    private static final Path REAL_LSOF = Path.of("/usr/sbin/lsof");
+
+    @TempDir
+    Path tempDir;
 
     @Test
     void bothViteLaunchesOverrideConfigurationWithNumericLoopback() throws IOException {
@@ -112,6 +119,29 @@ class LocalLauncherSecurityContractTest {
     }
 
     @Test
+    void listenerGuardRetriesTransientEmptyDiscoveryForRealLoopbackSocket() throws Exception {
+        try (ServerSocket socket = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))) {
+            ControlledProbeResult result = runListenerGuardWithFirstEmptyDiscovery(
+                    socket.getLocalPort(), "loopback");
+
+            assertThat(result.exitCode()).as(result.output()).isZero();
+            assertThat(result.invocationCount()).isGreaterThanOrEqualTo(2);
+        }
+    }
+
+    @Test
+    void listenerGuardAfterTransientEmptyDiscoveryStillRejectsWildcardSocket() throws Exception {
+        try (ServerSocket socket = new ServerSocket(0, 50, InetAddress.getByName("0.0.0.0"))) {
+            ControlledProbeResult result = runListenerGuardWithFirstEmptyDiscovery(
+                    socket.getLocalPort(), "wildcard");
+
+            assertThat(result.exitCode()).as(result.output()).isNotZero();
+            assertThat(result.output()).contains("outside numeric loopback");
+            assertThat(result.invocationCount()).isGreaterThanOrEqualTo(2);
+        }
+    }
+
+    @Test
     void ownedStopNeverEscalatesToAnUnrecoverableSignal() throws IOException {
         String script = java.nio.file.Files.readString(OWNERSHIP_SCRIPT);
 
@@ -167,6 +197,47 @@ class LocalLauncherSecurityContractTest {
                 new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
     }
 
+    private ControlledProbeResult runListenerGuardWithFirstEmptyDiscovery(int port, String scenario)
+            throws Exception {
+        assertThat(Files.isExecutable(REAL_LSOF)).isTrue();
+        Path fixtureDir = Files.createDirectories(tempDir.resolve(scenario));
+        Path marker = fixtureDir.resolve("first-query-completed");
+        Path invocationLog = fixtureDir.resolve("invocations.log");
+        Path fixtureLsof = fixtureDir.resolve("lsof");
+        Files.writeString(fixtureLsof, """
+                #!/bin/bash
+                set -euo pipefail
+                printf '%s\\n' "$*" >> "${COFCO_LSOF_INVOCATION_LOG:?}"
+                if [[ ! -e "${COFCO_LSOF_FIRST_EMPTY_MARKER:?}" ]]; then
+                  : > "${COFCO_LSOF_FIRST_EMPTY_MARKER}"
+                  exit 0
+                fi
+                exec "${COFCO_REAL_LSOF:?}" "$@"
+                """);
+        Files.setPosixFilePermissions(fixtureLsof, PosixFilePermissions.fromString("rwx------"));
+
+        ProcessBuilder builder = new ProcessBuilder(
+                "bash", LISTENER_GUARD.toAbsolutePath().toString(), Integer.toString(port), "test listener")
+                .redirectErrorStream(true);
+        builder.environment().put("PATH", fixtureDir.toAbsolutePath()
+                + ":/usr/bin:/bin:/usr/sbin:/sbin");
+        builder.environment().put("COFCO_LSOF_FIRST_EMPTY_MARKER", marker.toAbsolutePath().toString());
+        builder.environment().put("COFCO_LSOF_INVOCATION_LOG", invocationLog.toAbsolutePath().toString());
+        builder.environment().put("COFCO_REAL_LSOF", REAL_LSOF.toAbsolutePath().toString());
+
+        System.out.printf("deterministic-listener-probe scenario=%s port=%d fixture=%s%n",
+                scenario, port, fixtureLsof.toAbsolutePath());
+        Process process = builder.start();
+        assertThat(process.waitFor(5, TimeUnit.SECONDS)).isTrue();
+        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        int invocationCount = Files.readAllLines(invocationLog).size();
+        return new ControlledProbeResult(process.exitValue(),
+                output + "fixture invocation count=" + invocationCount, invocationCount);
+    }
+
     private record ProcessResult(int exitCode, String output) {
+    }
+
+    private record ControlledProbeResult(int exitCode, String output, int invocationCount) {
     }
 }

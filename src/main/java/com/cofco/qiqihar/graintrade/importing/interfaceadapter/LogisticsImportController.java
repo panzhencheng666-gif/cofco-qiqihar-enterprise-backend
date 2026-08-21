@@ -35,7 +35,8 @@ public class LogisticsImportController {
         return ResponseEntity.ok().contentType(MediaType.parseMediaType(
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                 .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
-                        .filename("物流-" + productCode + "-批量导入模板.xlsx", StandardCharsets.UTF_8)
+                        .filename("物流-" + BusinessImportWorkbook.businessLabel(productCode)
+                                + "-批量导入模板.xlsx", StandardCharsets.UTF_8)
                         .build().toString()).body(bytes);
     }
 

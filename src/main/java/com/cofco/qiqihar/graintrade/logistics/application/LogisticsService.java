@@ -24,7 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class LogisticsService {
     private static final Set<String> FILTERS = Set.of(
-            "regionCode", "periodCode", "nodeTypeCode", "transportModeCode", "status",
+            "regionCode", "transportModeCode", "status",
             "surveyYear", "surveyMonth", "fillingDateFrom", "fillingDateTo");
     private final LogisticsRepository repository;
     private final PageDefinitionQuery pages;
@@ -135,7 +135,7 @@ public class LogisticsService {
         if(audit==null)return;
         String regions=repository.regionsForRecord(record.id()).stream().sorted()
                 .map(region->"\""+region+"\"").collect(java.util.stream.Collectors.joining(","));
-        String surveyYear=record.values().get("LOG_SURVEY_YEAR");
+        String surveyYear=record.values().get("surveyYear");
         if(blank(surveyYear))throw new IllegalStateException("Logistics survey year is missing");
         audit.record(principal,"LOGISTICS_RECORD",record.id(),action,clock.instant(),
                 "{\"regionCodes\":["+regions+"],\"productCode\":\""+record.productCode()

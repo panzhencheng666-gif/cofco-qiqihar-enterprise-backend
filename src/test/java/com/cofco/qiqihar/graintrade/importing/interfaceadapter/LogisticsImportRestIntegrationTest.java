@@ -10,6 +10,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.importing.application.LogisticsImportTemplate;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
+import com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable;
 import com.cofco.qiqihar.graintrade.logistics.importing.LogisticsImportDefinition;
 import com.cofco.qiqihar.graintrade.logistics.importing.LogisticsImportPort;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
@@ -20,6 +21,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.mock.web.MockMultipartFile;
@@ -45,20 +48,28 @@ class LogisticsImportRestIntegrationTest {
 
     @Test
     void publishesAProductSpecificWorkbookAndImportsAllRowsAtomically() throws Exception {
-        byte[] template = mvc.perform(get("/api/v1/imports/logistics/template")
+        var response = mvc.perform(get("/api/v1/imports/logistics/template")
                         .queryParam("productCode", "CORN").principal(() -> "logistics-tester"))
-                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+                .andExpect(status().isOk()).andReturn().getResponse();
+        assertThat(ContentDisposition.parse(response.getHeader(HttpHeaders.CONTENT_DISPOSITION)).getFilename())
+                .isEqualTo("物流-玉米-批量导入模板.xlsx");
+        byte[] template = response.getContentAsByteArray();
         BusinessImportWorkbook.ImportSheet empty = BusinessImportWorkbook.read(template,
                 LogisticsImportTemplate.DOMAIN,
                 LogisticsImportTemplate.headers(logisticsDefinition()),
                 LogisticsImportTemplate.labels(logisticsDefinition()));
-        assertThat(empty.productCode()).isEqualTo("CORN");
-        assertThat(empty.objectTypeCode()).isEqualTo(LogisticsImportTemplate.OBJECT_TYPE);
+        assertThat(empty.productCode()).isNull();
+        assertThat(empty.objectTypeCode()).isNull();
         assertThat(LogisticsImportTemplate.headers(logisticsDefinition()))
-                .contains("LOG_ORIGIN", "LOG_DESTINATION", "LOG_ROUTE_VOLUME")
-                .doesNotContain("LOG_REPORTER", "LOG_STATUS");
+                .containsExactly("数据年份", "数据月份", "填报日期", "物流样本点名称", "地区", "填报人",
+                        "填报人联系方式", "物流样本点联系方式", "纬度（度）", "经度（度）", "运输方式",
+                        "运输方向", "运输数量（吨）", "物流运价（不含车板价）（元/吨）", "车板价（元/吨）",
+                        "填报状态")
+                .noneMatch(header -> header.matches(".*[A-Za-z_].*"));
+        assertThat(XlsxTable.parseWorksheet(template, 2, 2))
+                .noneMatch(row -> row.getFirst().equals("产品品种") || row.getFirst().equals("对象类型"));
 
-        List<String> row = LogisticsImportTemplate.headers(logisticsDefinition()).stream()
+        List<String> row = LogisticsImportTemplate.codes(logisticsDefinition()).stream()
                 .map(this::value).toList();
         byte[] workbook = BusinessImportWorkbook.create(
                 LogisticsImportTemplate.workbook(logisticsDefinition()), List.of(row));
@@ -82,12 +93,11 @@ class LogisticsImportRestIntegrationTest {
     }
 
     @Test
-    void rejectsASoybeanWorkbookFromTheCornMenuBeforeAnyDurableEffect() throws Exception {
+    void locksAProductNeutralWorkbookToTheSelectedMenuProduct() throws Exception {
         var soybeanDefinition = logistics.definition("SOYBEAN");
         byte[] workbook = BusinessImportWorkbook.create(
                 LogisticsImportTemplate.workbook(soybeanDefinition),
-                List.of(java.util.Collections.nCopies(
-                        LogisticsImportTemplate.headers(soybeanDefinition).size(), "")));
+                List.of(LogisticsImportTemplate.codes(soybeanDefinition).stream().map(this::value).toList()));
 
         mvc.perform(multipart("/api/v1/imports/logistics")
                         .file(new MockMultipartFile("file", "soybean-logistics.xlsx",
@@ -95,20 +105,20 @@ class LogisticsImportRestIntegrationTest {
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", "logistics-context-mismatch")
                         .principal(() -> "logistics-tester"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("IMPORT_CONTEXT_MISMATCH"));
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(1))
+                .andExpect(jsonPath("$.data.failedRows").value(0));
 
-        assertThat(jdbc.sql("SELECT count(*) FROM logistics.route_event").query(Long.class).single()).isZero();
-        assertThat(jdbc.sql("SELECT count(*) FROM platform.import_job").query(Long.class).single()).isZero();
-        assertThat(jdbc.sql("SELECT count(*) FROM platform.import_row_result").query(Long.class).single()).isZero();
-        assertThat(jdbc.sql("SELECT count(*) FROM platform.business_audit_event").query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT product_code FROM logistics.route_event").query(String.class).single())
+                .isEqualTo("CORN");
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.import_job").query(Long.class).single()).isOne();
     }
 
     @Test
     void rejectsOneInvalidRowWithoutWritingTheOtherwiseValidRow() throws Exception {
         var definition = logisticsDefinition();
-        List<String> valid = LogisticsImportTemplate.headers(definition).stream().map(this::value).toList();
-        List<String> invalid = LogisticsImportTemplate.headers(definition).stream()
+        List<String> valid = LogisticsImportTemplate.codes(definition).stream().map(this::value).toList();
+        List<String> invalid = LogisticsImportTemplate.codes(definition).stream()
                 .map(code -> code.equals("LOG_ROUTE_VOLUME") ? "not-a-number" : value(code)).toList();
         byte[] workbook = BusinessImportWorkbook.create(
                 LogisticsImportTemplate.workbook(definition), List.of(valid, invalid));
@@ -148,23 +158,52 @@ class LogisticsImportRestIntegrationTest {
                 .query(Long.class).single()).isZero();
     }
 
+    @Test
+    void rejectsAttemptsToOverrideSystemGeneratedWorkbookColumns() throws Exception {
+        var definition = logisticsDefinition();
+        List<String> row = LogisticsImportTemplate.codes(definition).stream()
+                .map(code -> code.equals("fillingDate") ? "2026-08-13" : value(code)).toList();
+        byte[] workbook = BusinessImportWorkbook.create(
+                LogisticsImportTemplate.workbook(definition), List.of(row));
+
+        String response = mvc.perform(multipart("/api/v1/imports/logistics")
+                        .file(new MockMultipartFile("file", "logistics.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", "logistics-system-column")
+                        .principal(() -> "logistics-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(0))
+                .andExpect(jsonPath("$.data.failedRows").value(1))
+                .andReturn().getResponse().getContentAsString();
+        String jobId = response.replaceFirst("(?s).*?\"id\":\"([^\"]+)\".*", "$1");
+
+        mvc.perform(get("/api/v1/imports/logistics/{jobId}/errors", jobId)
+                        .principal(() -> "logistics-tester"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("READONLY_IMPORT_FIELD")));
+        assertThat(jdbc.sql("SELECT count(*) FROM logistics.route_event").query(Long.class).single()).isZero();
+    }
+
     private LogisticsImportDefinition logisticsDefinition() {
         return logistics.definition("CORN");
     }
 
     private String value(String code) {
         return switch (code) {
-            case "LOG_PERIOD" -> "2026-W32";
-            case "LOG_COLLECTION_DATE" -> "2026-08-09";
-            case "LOG_ORIGIN" -> "LOG_RAIL";
-            case "LOG_DESTINATION" -> "LOG_ROAD";
+            case "surveyYear" -> "2026";
+            case "surveyMonth" -> "8";
+            case "LOG_SAMPLE_NAME" -> "齐齐哈尔物流中心";
+            case "LOG_REGION" -> "230200";
+            case "LOG_REPORTER_PHONE" -> "13800000000";
+            case "LOG_SAMPLE_CONTACT" -> "13900000000";
+            case "LOG_SAMPLE_LATITUDE" -> "47.354300";
+            case "LOG_SAMPLE_LONGITUDE" -> "123.918200";
             case "LOG_TRANSPORT_MODE" -> "RAIL";
             case "LOG_DIRECTION" -> "INFLOW";
             case "LOG_ROUTE_VOLUME" -> "12.5000";
             case "LOG_FREIGHT_RATE" -> "80.2500";
-            case "LOG_TRANSIT_TIME" -> "2.5000";
-            case "LOG_SOURCE_ORGANIZATION" -> "齐齐哈尔物流中心";
-            case "LOG_REFERENCE" -> "WB-2026-001";
+            case "LOG_BOARD_PRICE" -> "2650.0000";
             default -> "";
         };
     }

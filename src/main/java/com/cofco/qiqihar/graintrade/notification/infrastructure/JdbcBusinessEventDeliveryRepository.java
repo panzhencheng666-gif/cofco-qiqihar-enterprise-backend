@@ -155,13 +155,6 @@ public class JdbcBusinessEventDeliveryRepository implements BusinessEventDeliver
             Instant now,
             Instant leaseUntil) {
         UUID leaseToken = UUID.randomUUID();
-        jdbc.sql("""
-                UPDATE platform.business_event_delivery_checkpoint
-                SET last_observed_sequence=GREATEST(last_observed_sequence,:eventSequence),
-                    last_instance_id=:instanceId,updated_at=:now
-                WHERE consumer_id=:consumerId
-                """).param("consumerId", consumerId).param("eventSequence", event.sequence())
-                .param("instanceId", instanceId).param("now", Timestamp.from(now)).update();
         Optional<Integer> attemptNo = jdbc.sql("""
                 INSERT INTO platform.business_event_delivery_state(
                   consumer_id,event_id,event_sequence,status_code,attempt_count,
@@ -181,6 +174,13 @@ public class JdbcBusinessEventDeliveryRepository implements BusinessEventDeliver
                 .param("eventSequence", event.sequence()).param("instanceId", instanceId)
                 .param("leaseToken", leaseToken).param("leaseUntil", Timestamp.from(leaseUntil))
                 .param("now", Timestamp.from(now)).query(Integer.class).optional();
+        jdbc.sql("""
+                UPDATE platform.business_event_delivery_checkpoint
+                SET last_observed_sequence=GREATEST(last_observed_sequence,:eventSequence),
+                    last_instance_id=:instanceId,updated_at=:now
+                WHERE consumer_id=:consumerId
+                """).param("consumerId", consumerId).param("eventSequence", event.sequence())
+                .param("instanceId", instanceId).param("now", Timestamp.from(now)).update();
         if (attemptNo.isEmpty()) {
             String status = jdbc.sql("""
                     SELECT status_code FROM platform.business_event_delivery_state
@@ -223,20 +223,20 @@ public class JdbcBusinessEventDeliveryRepository implements BusinessEventDeliver
                 .param("deliveredAt", Timestamp.from(deliveredAt)).update();
         if (updated == 0) return false;
         jdbc.sql("""
-                UPDATE platform.business_event_delivery_attempt
-                SET status_code='DELIVERED',completed_at=:deliveredAt
-                WHERE consumer_id=:consumerId AND event_id=:eventId AND attempt_no=:attemptNo
-                  AND lease_token=:leaseToken AND status_code='IN_PROGRESS'
-                """).param("consumerId", claim.consumerId()).param("eventId", claim.eventId())
-                .param("attemptNo", claim.attemptNo()).param("leaseToken", claim.leaseToken())
-                .param("deliveredAt", Timestamp.from(deliveredAt)).update();
-        jdbc.sql("""
                 UPDATE platform.business_event_delivery_checkpoint
                 SET last_delivered_sequence=GREATEST(last_delivered_sequence,:eventSequence),
                     delivered_count=delivered_count+1,last_instance_id=:instanceId,updated_at=:deliveredAt
                 WHERE consumer_id=:consumerId
                 """).param("consumerId", claim.consumerId()).param("instanceId", claim.instanceId())
                 .param("eventSequence", claim.eventSequence())
+                .param("deliveredAt", Timestamp.from(deliveredAt)).update();
+        jdbc.sql("""
+                UPDATE platform.business_event_delivery_attempt
+                SET status_code='DELIVERED',completed_at=:deliveredAt
+                WHERE consumer_id=:consumerId AND event_id=:eventId AND attempt_no=:attemptNo
+                  AND lease_token=:leaseToken AND status_code='IN_PROGRESS'
+                """).param("consumerId", claim.consumerId()).param("eventId", claim.eventId())
+                .param("attemptNo", claim.attemptNo()).param("leaseToken", claim.leaseToken())
                 .param("deliveredAt", Timestamp.from(deliveredAt)).update();
         return true;
     }
@@ -265,6 +265,15 @@ public class JdbcBusinessEventDeliveryRepository implements BusinessEventDeliver
                 .param("failureCode", failureCode).param("failureMessage", failureMessage)
                 .param("failedAt", Timestamp.from(failedAt)).update();
         if (updated == 0) return false;
+        if (quarantine) {
+            jdbc.sql("""
+                    UPDATE platform.business_event_delivery_checkpoint
+                    SET quarantined_count=quarantined_count+1,last_instance_id=:instanceId,
+                        updated_at=:failedAt
+                    WHERE consumer_id=:consumerId
+                    """).param("consumerId", claim.consumerId()).param("instanceId", claim.instanceId())
+                    .param("failedAt", Timestamp.from(failedAt)).update();
+        }
         jdbc.sql("""
                 UPDATE platform.business_event_delivery_attempt
                 SET status_code=:status,completed_at=:failedAt,next_retry_at=:nextRetryAt,
@@ -276,15 +285,6 @@ public class JdbcBusinessEventDeliveryRepository implements BusinessEventDeliver
                 .param("leaseToken", claim.leaseToken()).param("failedAt", Timestamp.from(failedAt))
                 .param("nextRetryAt", timestamp(nextRetryAt)).param("failureCode", failureCode)
                 .param("failureMessage", failureMessage).update();
-        if (quarantine) {
-            jdbc.sql("""
-                    UPDATE platform.business_event_delivery_checkpoint
-                    SET quarantined_count=quarantined_count+1,last_instance_id=:instanceId,
-                        updated_at=:failedAt
-                    WHERE consumer_id=:consumerId
-                    """).param("consumerId", claim.consumerId()).param("instanceId", claim.instanceId())
-                    .param("failedAt", Timestamp.from(failedAt)).update();
-        }
         return true;
     }
 

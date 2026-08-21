@@ -300,16 +300,15 @@ public class ProductionImportService implements QueuedImportProcessor {
         ProductionImportDefinition definition = null;
         if (!legacy) {
             if (table.size() < 2 || headers.size() < 5
-                    || !headers.subList(0, 3).equals(
-                            List.of("productCode", "objectTypeCode", "PROD_REPORTER_NAME"))) {
+                    || !headers.subList(0, 2).equals(List.of("productCode", "objectTypeCode"))) {
                 throw new ClientRequestException(
                         "INVALID_IMPORT_TEMPLATE", "Workbook fields do not match the current production form");
             }
             definition = production.importDefinition(
                     table.get(1).get(0).trim(), table.get(1).get(1).trim());
             List<String> expected = java.util.stream.Stream.concat(
-                    java.util.stream.Stream.of("productCode", "objectTypeCode", "PROD_REPORTER_NAME"),
-                    ProductionImportTemplate.workbook(definition).headers().stream()).toList();
+                    java.util.stream.Stream.of("productCode", "objectTypeCode"),
+                    ProductionImportTemplate.codes(definition).stream()).toList();
             if (!headers.equals(expected)) {
                 throw new ClientRequestException(
                         "INVALID_IMPORT_TEMPLATE", "Workbook fields do not match the current production form");
@@ -343,10 +342,9 @@ public class ProductionImportService implements QueuedImportProcessor {
                         "IMPORT_ROW_CONTEXT_MISMATCH", "Workbook row context is inconsistent");
             }
             BoundedInput.requireMapText("IMPORT_ROW_VALUE_FORMAT", values);
-            if (required(values, "regionCode") || required(values, "surveyDate")
+            if (required(values, "regionCode") || required(values, "surveyYear")
                     || required(values, "cultivatedAreaMu")
                     || required(values, "yieldPerMuKilograms")
-                    || required(values, "evidencePhotoId")
                     || ProductionImportTemplate.SUBMISSION_METADATA_HEADERS.stream()
                             .filter(header -> !header.equals("PROD_REPORTER_NAME"))
                             .anyMatch(header -> required(values, header))) {
@@ -387,11 +385,13 @@ public class ProductionImportService implements QueuedImportProcessor {
             }
             return ParsedRow.valid(number, values, new ProductionDraft(
                     definition.productCode(), definition.objectTypeCode(), regionCode,
-                    null, LocalDate.parse(values.get("surveyDate")),
+                    null, surveyDate(values),
                     PlainDecimal.parse(values.get("cultivatedAreaMu"), 14, 4, "IMPORT_ROW_VALUE_FORMAT"),
                     PlainDecimal.parse(values.get("yieldPerMuKilograms"), 14, 4, "IMPORT_ROW_VALUE_FORMAT"),
                     Map.copyOf(quality), Map.copyOf(costs), Map.copyOf(insurance), Map.copyOf(subsidies),
-                    submissionMetadata, List.of(UUID.fromString(values.get("evidencePhotoId")))));
+                    submissionMetadata, evidenceIds(values), Integer.parseInt(values.get("surveyYear")),
+                    values.get("surveyMonth") == null || values.get("surveyMonth").isBlank()
+                            ? null : Integer.parseInt(values.get("surveyMonth"))));
         } catch (ClientRequestException exception) {
             return ParsedRow.error(number, values, exception.code(), exception.clientMessage());
         } catch (RuntimeException exception) {
@@ -435,7 +435,23 @@ public class ProductionImportService implements QueuedImportProcessor {
         }
     }
 
-    private static boolean required(Map<String, String> values, String name) { return values.get(name).isBlank(); }
+    private static boolean required(Map<String, String> values, String name) {
+        String value = values.get(name);
+        return value == null || value.isBlank();
+    }
+    private static LocalDate surveyDate(Map<String, String> values) {
+        int year = Integer.parseInt(values.get("surveyYear"));
+        String monthValue = values.get("surveyMonth");
+        int month = monthValue == null || monthValue.isBlank() ? 1 : Integer.parseInt(monthValue);
+        if (year < 1900 || year > 2200 || month < 1 || month > 12) {
+            throw new IllegalArgumentException("invalid survey period");
+        }
+        return LocalDate.of(year, month, 1);
+    }
+    private static List<UUID> evidenceIds(Map<String, String> values) {
+        String evidence = values.get("evidencePhotoId");
+        return evidence == null || evidence.isBlank() ? List.of() : List.of(UUID.fromString(evidence));
+    }
     private static void putIfPresent(Map<String, String> target, String code, Map<String, String> values) {
         String value = values.get(code);
         if (value != null && !value.isBlank()) target.put(code, value);

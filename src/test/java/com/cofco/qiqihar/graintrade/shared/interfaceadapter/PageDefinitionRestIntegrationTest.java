@@ -41,6 +41,16 @@ class PageDefinitionRestIntegrationTest {
     }
 
     @Test
+    void enumeratesEveryEnabledProductionMonitoringProductFromTheAuthoritativeCatalog() throws Exception {
+        mockMvc.perform(get("/api/v1/master-data/products")
+                        .queryParam("domain", "PRODUCTION")
+                        .queryParam("pageKind", "MONITORING"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$..code", contains("CORN", "SOYBEAN", "RICE")))
+                .andExpect(jsonPath("$..name", contains("玉米", "大豆", "稻谷")));
+    }
+
+    @Test
     void unknownDefinitionUsesTheControlledNotFoundEnvelope() throws Exception {
         mockMvc.perform(get("/api/v1/page-definitions/MARKET/QUALITY")
                         .queryParam("productCode", "CORN")

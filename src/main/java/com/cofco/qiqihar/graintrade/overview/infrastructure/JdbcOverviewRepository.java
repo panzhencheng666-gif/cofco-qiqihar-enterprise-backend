@@ -129,6 +129,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   AND definition.source_domain=:domain
                   AND (
                     binding.storage_code IN ('PRODUCTION_CORE','MARKET_CORE')
+                    OR binding.storage_code='LOGISTICS_FACT'
                     OR binding.storage_code LIKE 'PRODUCTION_%' AND EXISTS (
                       SELECT 1 FROM platform.production_fact_applicability applicability
                       WHERE applicability.product_code=:product
@@ -345,8 +346,9 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 SELECT definition.code,definition.name,definition.unit_code,definition.source_domain,
                   definition.formula,definition.source_relation,definition.calculation_version,
                   CASE definition.code
-                    WHEN 'LOGISTICS_INFLOW_VOLUME' THEN (SELECT SUM(CASE fact.unit_code WHEN '吨' THEN fact.value WHEN '万吨' THEN fact.value*10000 END) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND event.origin_region_code IN(SELECT region_code FROM monitoring_scope) AND event.destination_region_code IN(SELECT code FROM scope) AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
-                    WHEN 'LOGISTICS_OUTFLOW_VOLUME' THEN (SELECT SUM(CASE fact.unit_code WHEN '吨' THEN fact.value WHEN '万吨' THEN fact.value*10000 END) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND event.origin_region_code IN(SELECT code FROM scope) AND event.destination_region_code IN(SELECT region_code FROM monitoring_scope) AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
+                    WHEN 'LOGISTICS_INFLOW_VOLUME' THEN (SELECT SUM(CASE fact.unit_code WHEN '吨' THEN fact.value WHEN '万吨' THEN fact.value*10000 END) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND COALESCE(event.business_region_code,event.destination_region_code) IN(SELECT code FROM scope) AND event.direction_code='INFLOW' AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
+                    WHEN 'LOGISTICS_OUTFLOW_VOLUME' THEN (SELECT SUM(CASE fact.unit_code WHEN '吨' THEN fact.value WHEN '万吨' THEN fact.value*10000 END) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND COALESCE(event.business_region_code,event.origin_region_code) IN(SELECT code FROM scope) AND event.direction_code='OUTFLOW' AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
+                    WHEN 'LOGISTICS_AVERAGE_FREIGHT_RATE' THEN (SELECT AVG(fact.value) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND COALESCE(event.business_region_code,CASE event.direction_code WHEN 'INFLOW' THEN event.destination_region_code ELSE event.origin_region_code END) IN(SELECT code FROM scope) AND event.survey_year=:year AND fact.fact_code='FREIGHT_RATE')
                     WHEN 'SUPPLY_TOTAL_SUPPLY' THEN (SELECT SUM(total_supply) FROM latest_supply)
                     WHEN 'SUPPLY_TOTAL_USE' THEN (SELECT SUM(total_use) FROM latest_supply)
                     WHEN 'SUPPLY_ADOPTED_ENDING_INVENTORY' THEN (SELECT SUM(adopted_ending_inventory) FROM latest_supply)
@@ -354,8 +356,9 @@ public class JdbcOverviewRepository implements OverviewRepository {
                     ELSE (SELECT value FROM aggregated_metric_fact metric WHERE metric.metric_code=definition.code)
                   END AS value,
                   CASE definition.code
-                    WHEN 'LOGISTICS_INFLOW_VOLUME' THEN (SELECT COUNT(*) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND event.origin_region_code IN(SELECT region_code FROM monitoring_scope) AND event.destination_region_code IN(SELECT code FROM scope) AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
-                    WHEN 'LOGISTICS_OUTFLOW_VOLUME' THEN (SELECT COUNT(*) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND event.origin_region_code IN(SELECT code FROM scope) AND event.destination_region_code IN(SELECT region_code FROM monitoring_scope) AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
+                    WHEN 'LOGISTICS_INFLOW_VOLUME' THEN (SELECT COUNT(*) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND COALESCE(event.business_region_code,event.destination_region_code) IN(SELECT code FROM scope) AND event.direction_code='INFLOW' AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
+                    WHEN 'LOGISTICS_OUTFLOW_VOLUME' THEN (SELECT COUNT(*) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND COALESCE(event.business_region_code,event.origin_region_code) IN(SELECT code FROM scope) AND event.direction_code='OUTFLOW' AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
+                    WHEN 'LOGISTICS_AVERAGE_FREIGHT_RATE' THEN (SELECT COUNT(*) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND COALESCE(event.business_region_code,CASE event.direction_code WHEN 'INFLOW' THEN event.destination_region_code ELSE event.origin_region_code END) IN(SELECT code FROM scope) AND event.survey_year=:year AND fact.fact_code='FREIGHT_RATE')
                     WHEN 'SUPPLY_TOTAL_SUPPLY' THEN (SELECT COUNT(*) FROM latest_supply)
                     WHEN 'SUPPLY_TOTAL_USE' THEN (SELECT COUNT(*) FROM latest_supply)
                     WHEN 'SUPPLY_ADOPTED_ENDING_INVENTORY' THEN (SELECT COUNT(*) FROM latest_supply)
@@ -363,8 +366,9 @@ public class JdbcOverviewRepository implements OverviewRepository {
                     ELSE COALESCE((SELECT source_count FROM aggregated_metric_fact metric WHERE metric.metric_code=definition.code),0)
                   END AS source_count,
                   CASE definition.code
-                    WHEN 'LOGISTICS_INFLOW_VOLUME' THEN (SELECT MAX(event.reported_at) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND event.origin_region_code IN(SELECT region_code FROM monitoring_scope) AND event.destination_region_code IN(SELECT code FROM scope) AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
-                    WHEN 'LOGISTICS_OUTFLOW_VOLUME' THEN (SELECT MAX(event.reported_at) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND event.origin_region_code IN(SELECT code FROM scope) AND event.destination_region_code IN(SELECT region_code FROM monitoring_scope) AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
+                    WHEN 'LOGISTICS_INFLOW_VOLUME' THEN (SELECT MAX(event.reported_at) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND COALESCE(event.business_region_code,event.destination_region_code) IN(SELECT code FROM scope) AND event.direction_code='INFLOW' AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
+                    WHEN 'LOGISTICS_OUTFLOW_VOLUME' THEN (SELECT MAX(event.reported_at) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND COALESCE(event.business_region_code,event.origin_region_code) IN(SELECT code FROM scope) AND event.direction_code='OUTFLOW' AND event.survey_year=:year AND fact.fact_code='ROUTE_VOLUME')
+                    WHEN 'LOGISTICS_AVERAGE_FREIGHT_RATE' THEN (SELECT MAX(event.reported_at) FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.product_code=:product AND event.status_code='APPROVED' AND event.survey_period_governance_state='CONFIRMED' AND COALESCE(event.business_region_code,CASE event.direction_code WHEN 'INFLOW' THEN event.destination_region_code ELSE event.origin_region_code END) IN(SELECT code FROM scope) AND event.survey_year=:year AND fact.fact_code='FREIGHT_RATE')
                     WHEN 'SUPPLY_TOTAL_SUPPLY' THEN (SELECT MAX(created_at) FROM latest_supply)
                     WHEN 'SUPPLY_TOTAL_USE' THEN (SELECT MAX(created_at) FROM latest_supply)
                     WHEN 'SUPPLY_ADOPTED_ENDING_INVENTORY' THEN (SELECT MAX(created_at) FROM latest_supply)
@@ -429,7 +433,24 @@ public class JdbcOverviewRepository implements OverviewRepository {
                     make_date(:surveyYear-year_offset,12,31) ends_on
                   FROM generate_series(0,3) year_offset
                 ), approved AS (
-                  SELECT record.* FROM overview.approved_annual_metric_fact record
+                  SELECT record.* FROM (
+                    SELECT fact.* FROM overview.approved_annual_metric_fact fact
+                    UNION ALL
+                    SELECT CASE
+                        WHEN route_fact.fact_code='FREIGHT_RATE' THEN 'LOGISTICS_AVERAGE_FREIGHT_RATE'
+                        WHEN event.direction_code='INFLOW' THEN 'LOGISTICS_INFLOW_VOLUME'
+                        ELSE 'LOGISTICS_OUTFLOW_VOLUME' END metric_code,
+                      event.product_code,NULL::varchar cultivar_code,
+                      COALESCE(event.business_region_code,CASE event.direction_code
+                        WHEN 'INFLOW' THEN event.destination_region_code ELSE event.origin_region_code END) region_code,
+                      make_date(event.survey_year,COALESCE(event.survey_month,1),1) occurred_on,
+                      event.event_id::text record_id,event.version,event.reported_at,route_fact.value
+                    FROM logistics.route_event event
+                    JOIN logistics.route_fact route_fact ON route_fact.event_id=event.event_id
+                    WHERE event.status_code='APPROVED'
+                      AND event.survey_period_governance_state='CONFIRMED'
+                      AND route_fact.fact_code IN ('ROUTE_VOLUME','FREIGHT_RATE')
+                  ) record
                   WHERE record.metric_code=:metric AND record.product_code=:product
                     AND record.region_code IN (SELECT code FROM scope)
                     AND record.occurred_on BETWEEN make_date(:surveyYear-3,1,1) AND make_date(:surveyYear,12,31)
@@ -444,6 +465,11 @@ public class JdbcOverviewRepository implements OverviewRepository {
                       OR :sourceDomain='MARKET' AND EXISTS(
                         SELECT 1 FROM market.market_record source
                         WHERE source.record_id=record.record_id
+                          AND source.status_code='APPROVED'
+                          AND source.survey_period_governance_state='CONFIRMED')
+                      OR :sourceDomain='LOGISTICS' AND EXISTS(
+                        SELECT 1 FROM logistics.route_event source
+                        WHERE source.event_id::text=record.record_id
                           AND source.status_code='APPROVED'
                           AND source.survey_period_governance_state='CONFIRMED'))
                 )
@@ -520,7 +546,9 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 productCode, regionCode, year, authorizedRegionCodes).stream()
                 .filter(indicator -> switch (indicator.code()) {
                     case "PRODUCTION_CULTIVATED_AREA", "PRODUCTION_ESTIMATED_OUTPUT",
-                            "MARKET_AVERAGE_TRADE_PRICE", "SUPPLY_TOTAL_SUPPLY",
+                            "MARKET_AVERAGE_PURCHASE_PRICE", "MARKET_AVERAGE_SALE_PRICE",
+                            "LOGISTICS_INFLOW_VOLUME",
+                            "LOGISTICS_OUTFLOW_VOLUME", "LOGISTICS_AVERAGE_FREIGHT_RATE", "SUPPLY_TOTAL_SUPPLY",
                             "SUPPLY_TOTAL_USE", "SUPPLY_ADOPTED_ENDING_INVENTORY" -> true;
                     default -> false;
                 })
@@ -531,8 +559,10 @@ public class JdbcOverviewRepository implements OverviewRepository {
                         indicator.sourcePath(), indicator.sourceRelation(), indicator.coverageScope(),
                         indicator.calculationVersion(), List.of()))
                 .toList());
+        RegionSurplusSourceSelection surplusSources = regionSurplusSources(
+                productCode, year, regionCode, authorizedRegionCodes);
         RegionSurplusCalculation surplus = new RegionSurplusCalculator().calculate(
-                regionSurplusSources(productCode, year, regionCode, authorizedRegionCodes));
+                surplusSources.sources(), surplusSources.calculationVersion());
         metrics.add(new OverviewDashboard.Metric(
                 "REGION_SURPLUS", "地区余粮", "吨",
                 surplus.valueTonnes() == null ? null : decimal(surplus.valueTonnes()),
@@ -547,11 +577,24 @@ public class JdbcOverviewRepository implements OverviewRepository {
         return List.copyOf(metrics);
     }
 
-    private List<RegionSurplusSource> regionSurplusSources(
+    private RegionSurplusSourceSelection regionSurplusSources(
             String productCode, int year, String regionCode,
             Set<String> authorizedRegionCodes) {
-        return jdbc.sql(AUTHORIZED_REQUEST_SCOPE + """
-                , production_metadata AS (
+        List<RegionSurplusContract> contracts = jdbc.sql("""
+                        SELECT version_code,name
+                        FROM overview.region_surplus_calculation_contract
+                        WHERE status_code='ACTIVE' AND effective_from<=CURRENT_TIMESTAMP
+                          AND (effective_to IS NULL OR CURRENT_TIMESTAMP<effective_to)
+                        ORDER BY version_code
+                        """).query((row, ignored) -> new RegionSurplusContract(
+                        row.getString("version_code"), row.getString("name"))).list();
+        if (contracts.size() != 1) return new RegionSurplusSourceSelection(List.of(), null);
+        RegionSurplusContract selected = contracts.getFirst();
+        List<RegionSurplusSource> sources = jdbc.sql(AUTHORIZED_REQUEST_SCOPE + """
+                , selected_contract AS (
+                  SELECT CAST(:contractVersion AS varchar) version_code,
+                         CAST(:contractName AS varchar) name
+                ), production_metadata AS (
                   SELECT metadata.record_id,
                     max(metadata.value) FILTER(WHERE metadata.field_code='PROD_ENDING_INVENTORY') ending_value,
                     max(metadata.value) FILTER(WHERE metadata.field_code='PROD_SURPLUS_SUBJECT_CODE') subject_code,
@@ -575,14 +618,23 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 ), sources AS (
                   SELECT 'PRODUCTION'::varchar source_domain,record.record_id source_record_id,
                     record.version source_version,
-                    metadata.subject_code subject_key,
+                    CASE WHEN contract.version_code='REGION_SURPLUS_V2'
+                      THEN record.sample_point_id::text ELSE metadata.subject_code END subject_key,
                     NULL::varchar inventory_holder_key,
-                    metadata.subject_code cargo_owner_key,
+                    CASE WHEN contract.version_code='REGION_SURPLUS_V2'
+                      THEN record.sample_point_id::text ELSE metadata.subject_code END cargo_owner_key,
                     'PRODUCTION_SURPLUS'::varchar ownership_type,record.region_code,
-                    metadata.cutoff_date,metadata.ending_value,
-                    approval.occurred_at approved_at,NULL::varchar contract_issue
+                    CASE WHEN contract.version_code='REGION_SURPLUS_V2' THEN
+                      (make_date(record.survey_year,coalesce(record.survey_month,12),1)
+                        + interval '1 month - 1 day')::date::text
+                      ELSE metadata.cutoff_date END cutoff_date,metadata.ending_value,
+                    approval.occurred_at approved_at,
+                    CASE WHEN contract.version_code='REGION_SURPLUS_V2' AND record.sample_point_id IS NULL
+                      THEN 'UNRESOLVED_SAMPLE_POINT' ELSE NULL::varchar END contract_issue,
+                    contract.name calculation_version,record.object_type_code sample_type_code
                   FROM production.production_record record
                   JOIN production_metadata metadata ON metadata.record_id=record.record_id
+                  CROSS JOIN selected_contract contract
                   LEFT JOIN LATERAL (
                     SELECT event.occurred_at FROM platform.business_event_outbox event
                     WHERE event.aggregate_type='PRODUCTION_RECORD'
@@ -598,11 +650,14 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   SELECT 'MARKET',record.record_id,record.version,
                     context.holder_code,context.holder_code,context.cargo_owner_code,
                     context.ownership_type,context.storage_region_code,
-                    context.cutoff_date,fact.value::text,approval.occurred_at,NULL::varchar
+                    context.cutoff_date,fact.value::text,approval.occurred_at,NULL::varchar,
+                    contract.name,record.object_type_code
                   FROM market.market_record record
                   JOIN market.market_record_fact fact ON fact.record_id=record.record_id
                     AND fact.fact_code='ENDING_INVENTORY'
                   LEFT JOIN market_context context ON context.record_id=record.record_id
+                  LEFT JOIN market.market_inventory_governance governance
+                    ON governance.record_id=record.record_id
                   LEFT JOIN LATERAL (
                     SELECT event.occurred_at FROM platform.business_event_outbox event
                     WHERE event.aggregate_type='MARKET_RECORD'
@@ -610,16 +665,20 @@ public class JdbcOverviewRepository implements OverviewRepository {
                       AND event.action_code='MARKET_RECORD_APPROVED'
                     ORDER BY event.event_sequence DESC LIMIT 1
                   ) approval ON true
+                  CROSS JOIN selected_contract contract
                   WHERE record.product_code=:product AND record.status_code='APPROVED'
                     AND record.survey_year=:year AND record.survey_period_governance_state='CONFIRMED'
+                    AND (contract.version_code<>'REGION_SURPLUS_V2' OR governance.status_code='READY')
                     AND (context.storage_region_code IN(SELECT code FROM scope)
                       OR (context.storage_region_code IS NULL AND record.region_code IN(SELECT code FROM scope)))
                 )
                 SELECT * FROM sources ORDER BY source_domain,source_record_id
                 """).param("region", regionCode).param("year", year).param("product", productCode)
+                .param("contractVersion", selected.versionCode()).param("contractName", selected.name())
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
                 .param("authorizedRegions", authorizedRegionCodes)
                 .query(this::regionSurplusSource).list();
+        return new RegionSurplusSourceSelection(sources, selected.name());
     }
 
     private RegionSurplusSource regionSurplusSource(ResultSet row, int ignored) throws SQLException {
@@ -643,8 +702,13 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 row.getLong("source_version"), row.getString("subject_key"),
                 row.getString("inventory_holder_key"), row.getString("cargo_owner_key"),
                 row.getString("ownership_type"), row.getString("region_code"), cutoff, value,
-                row.getObject("approved_at", OffsetDateTime.class), issue);
+                row.getObject("approved_at", OffsetDateTime.class), issue,
+                row.getString("calculation_version"), row.getString("sample_type_code"));
     }
+
+    private record RegionSurplusContract(String versionCode, String name) {}
+    private record RegionSurplusSourceSelection(
+            List<RegionSurplusSource> sources, String calculationVersion) {}
 
     private List<OverviewOption> dashboardRegionPath(String regionCode) {
         if (regionCode == null) return List.of();

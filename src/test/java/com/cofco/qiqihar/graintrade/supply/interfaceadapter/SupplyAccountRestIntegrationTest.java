@@ -142,6 +142,39 @@ class SupplyAccountRestIntegrationTest {
     }
 
     @Test
+    void acceptsThePublicLogisticsSurveyContractAsAGovernedSupplySource() throws Exception {
+        String record = publicLogisticsRecord("CORN", "12500.000", "INFLOW");
+
+        release("LOGISTICS", record, 0, "CORN", "EXTERNAL_INFLOW", "ROUTE_VOLUME", "PASSED")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.value").value("1.2500"))
+                .andExpect(jsonPath("$.data.unitCode").value("万吨"));
+
+        release("LOGISTICS", record, 0, "RICE", "EXTERNAL_INFLOW", "ROUTE_VOLUME", "PASSED")
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/v1/supply-sources/releases").principal(() -> "supply-reviewer")
+                        .contentType(MediaType.APPLICATION_JSON).content("""
+                                {"sourceDomain":"LOGISTICS","sourceRecordId":"%s","sourceVersion":0,
+                                 "productCode":"CORN","regionCode":"230202","periodCode":"2026",
+                                 "roleCode":"EXTERNAL_INFLOW","sourceFieldCode":"ROUTE_VOLUME","qualityState":"PASSED"}
+                                """.formatted(record)))
+                .andExpect(status().isBadRequest());
+        mvc.perform(post("/api/v1/supply-sources/releases").principal(() -> "supply-reviewer")
+                        .contentType(MediaType.APPLICATION_JSON).content("""
+                                {"sourceDomain":"LOGISTICS","sourceRecordId":"%s","sourceVersion":0,
+                                 "productCode":"CORN","regionCode":"230200","periodCode":"2026-Q4",
+                                 "roleCode":"EXTERNAL_INFLOW","sourceFieldCode":"ROUTE_VOLUME","qualityState":"PASSED"}
+                                """.formatted(record)))
+                .andExpect(status().isBadRequest());
+
+        String unapproved = publicLogisticsRecord("CORN", "9000.000", "INFLOW");
+        jdbc.sql("UPDATE logistics.route_event SET status_code='DRAFT' WHERE event_id::text=:id")
+                .param("id", unapproved).update();
+        release("LOGISTICS", unapproved, 0, "CORN", "EXTERNAL_INFLOW", "ROUTE_VOLUME", "PASSED")
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void rejectsUnapprovedOrInexactProvenanceAndHistoryUsesImmutableSnapshots() throws Exception {
         String priceRecord = marketRecord("CORN", "APPROVED", "3.000");
         release("MARKET", priceRecord, 0, "CORN", "OPENING_INVENTORY",
@@ -354,6 +387,25 @@ class SupplyAccountRestIntegrationTest {
                 """).param("id", publishedRun).update()).hasMessageContaining("immutable");
     }
 
+    @Test
+    void adoptsProductionByExplicitDataYearAndMonthInsteadOfCompatibilitySurveyDate() throws Exception {
+        String august = productionRecordAtDataTime("CORN", 2026, 8, "3.000");
+        releaseAtPeriod("PRODUCTION", august, "CORN", "2026-Q3", "LOCAL_PRODUCTION",
+                "PROD_ESTIMATED_OUTPUT")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.value").value("3.0000"));
+
+        String annual = productionRecordAtDataTime("CORN", 2026, null, "4.000");
+        releaseAtPeriod("PRODUCTION", annual, "CORN", "2026", "LOCAL_PRODUCTION",
+                "PROD_ESTIMATED_OUTPUT")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.value").value("4.0000"));
+        releaseAtPeriod("PRODUCTION", annual, "CORN", "2026-Q3", "LOCAL_PRODUCTION",
+                "PROD_ESTIMATED_OUTPUT")
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_SUPPLY_SOURCE_PROVENANCE"));
+    }
+
     private void controlledCornSources() throws Exception {
         String production = productionRecord("CORN", "APPROVED", "3.000");
         release("PRODUCTION", production, 0, "CORN", "LOCAL_PRODUCTION", "PROD_ESTIMATED_OUTPUT", "PASSED")
@@ -410,6 +462,16 @@ class SupplyAccountRestIntegrationTest {
                         """.formatted(domain, record, version, product, role, field, quality)));
     }
 
+    private org.springframework.test.web.servlet.ResultActions releaseAtPeriod(String domain, String record,
+            String product, String period, String role, String field) throws Exception {
+        return mvc.perform(post("/api/v1/supply-sources/releases").principal(() -> "supply-reviewer")
+                .contentType(MediaType.APPLICATION_JSON).content("""
+                        {"sourceDomain":"%s","sourceRecordId":"%s","sourceVersion":0,"productCode":"%s",
+                         "regionCode":"230200","periodCode":"%s","roleCode":"%s",
+                         "sourceFieldCode":"%s","qualityState":"PASSED"}
+                        """.formatted(domain, record, product, period, role, field)));
+    }
+
     private void installFormulaV2() {
         jdbc.sql("""
                 INSERT INTO supply.formula_version(code,version_no,name,precision_value,scale_value,tolerance,
@@ -447,6 +509,22 @@ class SupplyAccountRestIntegrationTest {
         return id;
     }
 
+    private String productionRecordAtDataTime(String product, int year, Integer month, String output) {
+        String id = UUID.randomUUID().toString();
+        String object = objectType(product, "PRODUCTION");
+        jdbc.sql("""
+                INSERT INTO production.production_record(record_id,product_code,object_type_code,region_code,
+                  survey_date,survey_year,survey_month,survey_period_precision,survey_period_governance_state,
+                  reported_at,cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by)
+                VALUES(:id,:product,:object,'230200',make_date(:year,1,1),:year,:month,
+                  CASE WHEN :month IS NULL THEN 'YEAR' ELSE 'YEAR_MONTH' END,'CONFIRMED',
+                  now(),10000000,:output,'APPROVED','tester')
+                """).param("id", id).param("product", product).param("object", object)
+                .param("year", year).param("month", month, java.sql.Types.INTEGER)
+                .param("output", new BigDecimal(output)).update();
+        return id;
+    }
+
     private String marketRecord(String product, String status, String price) {
         String id = UUID.randomUUID().toString();
         String object = objectType(product, "MARKET");
@@ -469,15 +547,37 @@ class SupplyAccountRestIntegrationTest {
         String id = UUID.randomUUID().toString();
         jdbc.sql("""
                 INSERT INTO logistics.route_event(event_id,product_code,monitoring_period_code,collection_date,reported_at,
-                  origin_region_code,origin_node_id,origin_node_code,destination_region_code,destination_node_id,destination_node_code,transport_mode_code,
-                  direction_code,source_organization,reporter,status_code,created_by,last_modified_by,created_at,updated_at)
+                  business_region_code,origin_region_code,origin_node_id,origin_node_code,destination_region_code,destination_node_id,destination_node_code,transport_mode_code,
+                  direction_code,source_organization,reporter,status_code,created_by,last_modified_by,created_at,updated_at,
+                  survey_year,survey_month,survey_period_precision,survey_period_governance_state)
                 SELECT CAST(:id AS uuid),:product,(SELECT code FROM platform.business_period LIMIT 1),current_date,now(),
-                  o.region_code,o.node_id,o.node_code,d.region_code,d.node_id,d.node_code,'RAIL',:direction,'测试单位','tester',:status,'tester','tester',now(),now()
+                  '230200',
+                  o.region_code,o.node_id,o.node_code,d.region_code,d.node_id,d.node_code,'RAIL',:direction,'测试单位','tester',:status,'tester','tester',now(),now(),
+                  2026,8,'YEAR_MONTH','CONFIRMED'
                 FROM logistics.logistics_node o,logistics.logistics_node d WHERE o.node_code='N-A' AND d.node_code='N-B'
                 """).param("id", id).param("product", product).param("direction", direction)
                 .param("status", status).update();
         jdbc.sql("INSERT INTO logistics.route_fact(event_id,fact_code,value,unit_code) VALUES(CAST(:id AS uuid),'ROUTE_VOLUME',:value,:unit)")
                 .param("id", id).param("value", new BigDecimal(value)).param("unit", unit).update();
+        return id;
+    }
+
+    private String publicLogisticsRecord(String product, String value, String direction) {
+        String id = UUID.randomUUID().toString();
+        jdbc.sql("""
+                INSERT INTO logistics.route_event(
+                  event_id,product_code,collection_date,reported_at,business_region_code,
+                  origin_region_code,destination_region_code,transport_mode_code,direction_code,
+                  source_organization,reporter,status_code,created_by,last_modified_by,created_at,updated_at,
+                  survey_year,survey_month,survey_period_precision,survey_period_governance_state)
+                VALUES(CAST(:id AS uuid),:product,DATE '2026-08-01',now(),'230200','230200','230200',
+                  'RAIL',:direction,'齐齐哈尔物流样本点','tester','APPROVED','tester','tester',now(),now(),
+                  2026,8,'YEAR_MONTH','CONFIRMED')
+                """).param("id", id).param("product", product).param("direction", direction).update();
+        jdbc.sql("""
+                INSERT INTO logistics.route_fact(event_id,fact_code,value,unit_code)
+                VALUES(CAST(:id AS uuid),'ROUTE_VOLUME',:value,'吨')
+                """).param("id", id).param("value", new BigDecimal(value)).update();
         return id;
     }
 

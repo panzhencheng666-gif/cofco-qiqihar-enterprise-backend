@@ -28,4 +28,9 @@ public interface MarketMonitoringRepository {
             MarketMonitoringRecord record, long expectedVersion, String actorId, Instant updatedAt);
     void linkApprovedSamplePoint(MarketMonitoringRecord record, Map<String, String> extensionCoreValues,
             String approvingActorId, Instant approvedAt);
+    void reconcileInventoryGovernance(
+            MarketMonitoringRecord record, Map<String, String> extensionCoreValues,
+            String actorId, Instant reconciledAt);
+    String inventoryGovernanceStatus(String id);
+    boolean inventoryGovernanceReady(String id);
 }

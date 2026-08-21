@@ -38,7 +38,8 @@ public class MarketImportController {
             return ResponseEntity.ok().contentType(MediaType.parseMediaType(
                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                     .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
-                            .filename("市场-" + productCode + "-" + objectTypeCode + "-批量导入模板.xlsx",
+                            .filename("市场-" + BusinessImportWorkbook.businessLabel(productCode) + "-"
+                                    + BusinessImportWorkbook.businessLabel(objectTypeCode) + "-批量导入模板.xlsx",
                                     StandardCharsets.UTF_8).build().toString())
                     .body(bytes);
         }

@@ -10,6 +10,17 @@ public final class ProductionImportTemplate {
     public static final List<String> SUBMISSION_METADATA_HEADERS = List.of(
             "PROD_REPORTER_NAME", "PROD_REPORTER_PHONE", "PROD_SAMPLE_CONTACT",
             "PROD_SAMPLE_LATITUDE", "PROD_SAMPLE_LONGITUDE");
+    private static final List<String> BUSINESS_HEADERS = List.of(
+            "surveyYear", "surveyMonth", "PROD_SAMPLE_NAME", "regionCode", "PROD_CULTIVAR_NAME",
+            "PROD_REPORTER_NAME",
+            "PROD_REPORTER_PHONE", "PROD_SAMPLE_CONTACT", "PROD_SAMPLE_LATITUDE", "PROD_SAMPLE_LONGITUDE",
+            "cultivatedAreaMu", "PROD_HARVEST_AREA_MU", "PROD_AFFECTED_AREA_MU", "PROD_GROWTH_STATUS",
+            "PROD_GROWTH_STAGE", "yieldPerMuKilograms", "MOISTURE", "TEST_WEIGHT", "TOXIN", "IMPURITY",
+            "IMPERFECT_GRAIN", "MILDEW", "PROTEIN", "OIL_YIELD", "MILLING_YIELD", "BROWN_RICE_YIELD",
+            "PROD_OPENING_INVENTORY", "PROD_SALES_VOLUME", "PROD_SELF_USE", "PROD_ENDING_INVENTORY",
+            "PROD_INTENDED_AREA_MU", "PROD_INTENTION_REASON", "LAND_RENT", "SEED_COST", "PESTICIDE_COST",
+            "FERTILIZER_COST", "IRRIGATION_COST", "LABOR_COST", "MACHINERY_COST", "OTHER_COST",
+            "SUBSIDY_AMOUNT", "INSURANCE_AMOUNT", "PROD_SOURCE_NOTE");
     public static final List<String> DETAIL_HEADERS = List.of("PROD_CULTIVAR_NAME", "PROD_SAMPLE_NAME", "PROD_HARVEST_AREA_MU",
             "PROD_AFFECTED_AREA_MU", "PROD_GROWTH_STATUS", "PROD_GROWTH_STAGE", "PROD_OPENING_INVENTORY",
             "PROD_SALES_VOLUME", "PROD_SELF_USE", "PROD_ENDING_INVENTORY", "PROD_INTENDED_AREA_MU",
@@ -48,19 +59,19 @@ public final class ProductionImportTemplate {
     public static String csv() { return String.join(",", HEADERS) + "\n"; }
     public static BusinessImportWorkbook.Template workbook(String productCode, String objectTypeCode) {
         return new BusinessImportWorkbook.Template(DOMAIN, "产情", productCode, objectTypeCode,
-                XLSX_HEADERS, XLSX_LABELS);
+                com.cofco.qiqihar.graintrade.production.application.ProductionSurveyFieldContract.VERSION,
+                com.cofco.qiqihar.graintrade.production.application.ProductionSurveyFieldContract.DIGEST,
+                XLSX_HEADERS, XLSX_LABELS, List.of());
     }
 
     public static BusinessImportWorkbook.Template workbook(ProductionImportDefinition definition) {
         if (!definition.fields().isEmpty()) {
-            List<ProductionSurveyField> fields = definition.fields().stream()
-                    .filter(ProductionSurveyField::importable)
-                    .toList();
+            List<ProductionSurveyField> fields = auditedFields(definition);
+            List<String> labels = fields.stream().map(ProductionSurveyField::displayLabel).toList();
             return new BusinessImportWorkbook.Template(DOMAIN, "产情", definition.productCode(),
-                    definition.objectTypeCode(), definition.contractVersion(),
-                    fields.stream().map(ProductionSurveyField::code).toList(),
-                    fields.stream().map(ProductionSurveyField::displayLabel).toList(),
-                    fields.stream().map(ProductionImportTemplate::columnRule).toList());
+                    definition.objectTypeCode(), definition.contractVersion(), definition.contractDigest(),
+                    labels, labels,
+                    fields.stream().map(field -> columnRule(field, field.displayLabel())).toList());
         }
         List<ProductionImportDefinition.Field> fields = definition.groups().stream()
                 .flatMap(group -> group.fields().stream())
@@ -77,7 +88,8 @@ public final class ProductionImportTemplate {
                         java.util.stream.Stream.of("现场水印照片编号"))
                 .flatMap(java.util.function.Function.identity()).toList();
         return new BusinessImportWorkbook.Template(DOMAIN, "产情", definition.productCode(),
-                definition.objectTypeCode(), headers, labels);
+                definition.objectTypeCode(), definition.contractVersion(), definition.contractDigest(),
+                headers, labels, List.of());
     }
 
     public static List<List<String>> canonicalXlsx(byte[] bytes) {
@@ -105,12 +117,13 @@ public final class ProductionImportTemplate {
     public static List<List<String>> canonicalXlsx(
             byte[] bytes, ProductionImportDefinition definition, int maxDataRows) {
         BusinessImportWorkbook.Template template = workbook(definition);
+        List<String> codes = codes(definition);
         var sheet = definition.fields().isEmpty()
                 ? readCompatible(bytes, template.headers(), template.labels(), maxDataRows)
                 : BusinessImportWorkbook.read(bytes, template, maxDataRows);
         List<String> canonicalHeaders = java.util.stream.Stream.concat(
-                java.util.stream.Stream.of("productCode", "objectTypeCode", "PROD_REPORTER_NAME"),
-                template.headers().stream()).toList();
+                java.util.stream.Stream.of("productCode", "objectTypeCode"),
+                codes.stream()).toList();
         java.util.ArrayList<List<String>> table = new java.util.ArrayList<>();
         table.add(canonicalHeaders);
         for (List<String> row : sheet.rows()) {
@@ -118,16 +131,36 @@ public final class ProductionImportTemplate {
             values.put("productCode", sheet.productCode());
             values.put("objectTypeCode", sheet.objectTypeCode());
             values.put("PROD_REPORTER_NAME", "");
-            for (int index = 0; index < template.headers().size(); index++) {
-                values.put(template.headers().get(index), row.get(index));
+            for (int index = 0; index < codes.size(); index++) {
+                values.put(codes.get(index), row.get(index));
             }
             table.add(canonicalHeaders.stream().map(header -> values.getOrDefault(header, "")).toList());
         }
         return List.copyOf(table);
     }
 
-    private static BusinessImportWorkbook.ColumnRule columnRule(ProductionSurveyField field) {
-        return new BusinessImportWorkbook.ColumnRule(field.code(), field.valueType(), field.controlType(),
+    public static List<String> codes(ProductionImportDefinition definition) {
+        if (definition.fields().isEmpty()) return workbook(definition).headers();
+        return auditedFields(definition).stream().map(ProductionSurveyField::code).toList();
+    }
+
+    private static List<ProductionSurveyField> auditedFields(ProductionImportDefinition definition) {
+        java.util.Map<String, ProductionSurveyField> byCode = definition.fields().stream()
+                .collect(java.util.stream.Collectors.toMap(ProductionSurveyField::code, field -> field));
+        return BUSINESS_HEADERS.stream()
+                .map(byCode::get).filter(java.util.Objects::nonNull)
+                .filter(field -> field.importable() || "PROD_REPORTER_NAME".equals(field.code())).toList();
+    }
+
+    private static BusinessImportWorkbook.ColumnRule columnRule(
+            ProductionSurveyField field, String publicColumnName) {
+        if ("PROD_REPORTER_NAME".equals(field.code())) {
+            return new BusinessImportWorkbook.ColumnRule(
+                    publicColumnName, field.valueType(), field.controlType(), false,
+                    field.options(), field.precision(), field.scale(),
+                    "由当前登录人员自动记录；模板中可留空，导入值不会覆盖登录身份");
+        }
+        return new BusinessImportWorkbook.ColumnRule(publicColumnName, field.valueType(), field.controlType(),
                 field.required(), field.options(), field.precision(), field.scale(), field.description());
     }
 

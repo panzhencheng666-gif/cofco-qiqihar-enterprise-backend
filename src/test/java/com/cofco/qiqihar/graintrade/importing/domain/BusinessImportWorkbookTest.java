@@ -32,23 +32,60 @@ class BusinessImportWorkbookTest {
                 ProductionImportTemplate.workbook("CORN", "FARMER"));
 
         assertThat(XlsxTable.parseWorksheet(workbook, 1, ProductionImportTemplate.XLSX_HEADERS.size()))
-                .containsExactly(ProductionImportTemplate.XLSX_LABELS, ProductionImportTemplate.XLSX_HEADERS);
+                .containsExactly(ProductionImportTemplate.XLSX_LABELS);
         assertThat(XlsxTable.parseWorksheet(workbook, 2, 2))
                 .contains(
-                        java.util.List.of("模板版本", "1"),
-                        java.util.List.of("业务类型", "PRODUCTION"),
-                        java.util.List.of("产品品种", "CORN"),
-                        java.util.List.of("对象类型", "FARMER"),
+                        java.util.List.of("业务类型", "产情"),
+                        java.util.List.of("产品品种", "玉米"),
+                        java.util.List.of("对象类型", "农户"),
                         java.util.List.of("填报人", "由登录账号自动记录，不得在模板中填写"),
                         java.util.List.of("处理方式", "5000 条以内即时处理；5001 至 50000 条转入后台任务处理"));
+        assertThat(XlsxTable.parseWorksheet(workbook, 2, 2).toString())
+                .doesNotContain("模板版本", "字段契约版本", "字段契约摘要", "sha256:");
         assertThat(ProductionImportTemplate.XLSX_HEADERS)
                 .doesNotContain("productCode", "objectTypeCode", "PROD_REPORTER_NAME");
+        assertThat(zipEntry(workbook, "xl/worksheets/sheet1.xml"))
+                .doesNotContain("hidden=\"1\"", "PROD_", "MKT_", "LOG_", "surveyYear", "regionCode");
 
         var imported = BusinessImportWorkbook.read(workbook, "PRODUCTION",
                 ProductionImportTemplate.XLSX_HEADERS, ProductionImportTemplate.XLSX_LABELS);
         assertThat(imported.productCode()).isEqualTo("CORN");
         assertThat(imported.objectTypeCode()).isEqualTo("FARMER");
         assertThat(imported.rows()).isEmpty();
+    }
+
+    @Test
+    void keepsThreeSurveyWorkbookContextsBusinessReadableWithoutLosingStrictContextValidation() {
+        List<BusinessImportWorkbook.Template> templates = List.of(
+                new BusinessImportWorkbook.Template("PRODUCTION", "产情", "CORN", "FARMER",
+                        ProductionSurveyFieldContract.VERSION, List.of("业务字段"), List.of("业务字段"), List.of()),
+                new BusinessImportWorkbook.Template("MARKET", "市场", "SOYBEAN", "TRADER",
+                        List.of("业务字段"), List.of("业务字段")),
+                new BusinessImportWorkbook.Template("LOGISTICS", "物流", "RICE", "ROUTE_EVENT",
+                        List.of("业务字段"), List.of("业务字段")));
+        List<List<String>> expected = List.of(
+                List.of("产情", "玉米", "农户"),
+                List.of("市场", "大豆", "贸易商"),
+                List.of("物流", "稻谷", "物流业务记录"));
+
+        for (int index = 0; index < templates.size(); index++) {
+            BusinessImportWorkbook.Template template = templates.get(index);
+            byte[] workbook = BusinessImportWorkbook.create(template);
+            List<List<String>> instructions = XlsxTable.parseWorksheet(workbook, 2, 2);
+            assertThat(instructions).contains(
+                    List.of("业务类型", expected.get(index).get(0)),
+                    List.of("产品品种", expected.get(index).get(1)),
+                    List.of("对象类型", expected.get(index).get(2)));
+            assertThat(instructions.toString()).doesNotContain(
+                    "PRODUCTION", "MARKET", "LOGISTICS", "CORN", "SOYBEAN", "RICE",
+                    "FARMER", "TRADER", "ROUTE_EVENT", "production-survey-fields-v1");
+            BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(
+                    workbook, template.domainCode());
+            assertThat(context.productCode()).isEqualTo(template.productCode());
+            assertThat(context.objectTypeCode()).isEqualTo(template.objectTypeCode());
+            assertThat(context.contractVersion()).isNull();
+            assertThat(context.contractDigest()).isNull();
+        }
     }
 
     @Test
@@ -78,76 +115,86 @@ class BusinessImportWorkbookTest {
         BusinessImportWorkbook.Template template = ProductionImportTemplate.workbook(definition);
 
         assertThat(template.contractVersion()).isEqualTo(ProductionSurveyFieldContract.VERSION);
-        assertThat(template.headers()).isEqualTo(fields.stream()
-                .filter(com.cofco.qiqihar.graintrade.production.application.ProductionSurveyField::importable)
-                .map(com.cofco.qiqihar.graintrade.production.application.ProductionSurveyField::code)
-                .toList());
-        assertThat(template.headers())
-                .contains("PROD_SAMPLE_NAME", "surveyDate", "cultivatedAreaMu")
-                .doesNotContain("PROD_SAMPLE_SUBJECT_CODE", "PROD_REPORTER_NAME",
-                        "estimatedOutputKilograms", "sample_point_id");
+        assertThat(ProductionImportTemplate.codes(definition)).containsExactly(
+                "surveyYear", "surveyMonth", "PROD_SAMPLE_NAME", "regionCode", "PROD_CULTIVAR_NAME",
+                "PROD_REPORTER_NAME", "PROD_REPORTER_PHONE", "PROD_SAMPLE_CONTACT", "PROD_SAMPLE_LATITUDE",
+                "PROD_SAMPLE_LONGITUDE", "cultivatedAreaMu", "yieldPerMuKilograms");
+        assertThat(template.headers()).containsExactlyElementsOf(template.labels())
+                .contains("样本点名称", "数据年份", "数据月份", "播种面积（亩）")
+                .allMatch(header -> !header.matches(".*[A-Za-z_].*"));
+        assertThat(ProductionImportTemplate.codes(definition))
+                .doesNotContain("PROD_SAMPLE_SUBJECT_CODE",
+                        "surveyDate", "estimatedOutputKilograms", "evidencePhotoId", "sample_point_id");
 
         ArrayList<String> row = new ArrayList<>(Collections.nCopies(template.headers().size(), ""));
-        put(row, template.headers(), "regionCode", "230208");
-        put(row, template.headers(), "surveyDate", "2026-08-13");
-        put(row, template.headers(), "PROD_SAMPLE_NAME", "权威契约测试主体");
-        put(row, template.headers(), "PROD_REPORTER_PHONE", "13800000000");
-        put(row, template.headers(), "PROD_SAMPLE_CONTACT", "13900000000");
-        put(row, template.headers(), "PROD_SAMPLE_LATITUDE", "47.3543");
-        put(row, template.headers(), "PROD_SAMPLE_LONGITUDE", "123.9182");
-        put(row, template.headers(), "cultivatedAreaMu", "100.25");
-        put(row, template.headers(), "yieldPerMuKilograms", "500");
-        put(row, template.headers(), "evidencePhotoId", "00000000-0000-0000-0000-000000000011");
+        put(row, template.headers(), "地区", "230208");
+        put(row, template.headers(), "数据年份", "2026");
+        put(row, template.headers(), "数据月份", "8");
+        put(row, template.headers(), "样本点名称", "权威契约测试主体");
+        put(row, template.headers(), "填报人联系方式", "13800000000");
+        put(row, template.headers(), "样本点联系方式", "13900000000");
+        put(row, template.headers(), "纬度（度）", "47.3543");
+        put(row, template.headers(), "经度（度）", "123.9182");
+        put(row, template.headers(), "播种面积（亩）", "100.25");
+        put(row, template.headers(), "预计单产（公斤/亩）", "500");
         byte[] workbook = BusinessImportWorkbook.create(template, List.of(row));
 
-        assertThat(XlsxTable.parseWorksheet(workbook, 2, 2))
-                .contains(List.of("字段契约版本", ProductionSurveyFieldContract.VERSION));
+        assertThat(XlsxTable.parseWorksheet(workbook, 2, 2).toString())
+                .doesNotContain("模板版本", "字段契约版本", "字段契约摘要", "sha256:",
+                        "production-survey-fields");
         assertThat(zipEntry(workbook, "xl/worksheets/sheet1.xml"))
-                .contains("<dataValidations", "promptTitle=\"必填字段\"", "type=\"decimal\"",
-                        "type=\"date\"");
+                .contains("<dataValidations", "promptTitle=\"必填字段\"", "type=\"decimal\"");
         assertThat(zipEntry(workbook, "xl/styles.xml"))
-                .contains("yyyy-mm-dd", "0.##################");
+                .contains("0.##################");
         assertThat(BusinessImportWorkbook.read(workbook, template).rows())
                 .containsExactly(row);
 
-        String dateColumn = columnName(template.headers().indexOf("surveyDate") + 1);
-        byte[] excelDateWorkbook = replaceZipEntry(workbook, "xl/worksheets/sheet1.xml", xml -> xml.replace(
-                "<c r=\"" + dateColumn + "3\" t=\"inlineStr\" s=\"2\"><is><t>2026-08-13</t></is></c>",
-                "<c r=\"" + dateColumn + "3\" t=\"n\" s=\"2\"><v>46247</v></c>"));
-        assertThat(BusinessImportWorkbook.read(excelDateWorkbook, template).rows().getFirst())
-                .element(template.headers().indexOf("surveyDate"))
-                .isEqualTo("2026-08-13");
-
         ArrayList<String> missingRequired = new ArrayList<>(row);
-        put(missingRequired, template.headers(), "PROD_REPORTER_PHONE", "");
+        put(missingRequired, template.headers(), "填报人联系方式", "");
         assertThatThrownBy(() -> BusinessImportWorkbook.read(
                 BusinessImportWorkbook.create(template, List.of(missingRequired)), template))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("XLSX_REQUIRED_VALUE");
 
         ArrayList<String> badDecimal = new ArrayList<>(row);
-        put(badDecimal, template.headers(), "cultivatedAreaMu", "not-a-number");
+        put(badDecimal, template.headers(), "播种面积（亩）", "not-a-number");
         assertThatThrownBy(() -> BusinessImportWorkbook.read(
                 BusinessImportWorkbook.create(template, List.of(badDecimal)), template))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("XLSX_VALUE_FORMAT");
 
-        BusinessImportWorkbook.Template wrongVersion = new BusinessImportWorkbook.Template(
+        ArrayList<String> obsoleteLabels = new ArrayList<>(template.labels());
+        obsoleteLabels.set(0, "旧调查日期");
+        BusinessImportWorkbook.Template obsoleteBusinessColumns = new BusinessImportWorkbook.Template(
                 template.domainCode(), template.domainLabel(), template.productCode(), template.objectTypeCode(),
-                "production-survey-fields-v2", template.headers(), template.labels(), template.rules());
-        assertThatThrownBy(() -> BusinessImportWorkbook.read(workbook, wrongVersion))
+                template.contractVersion(), template.headers(), obsoleteLabels, template.rules());
+        assertThatThrownBy(() -> BusinessImportWorkbook.read(workbook, obsoleteBusinessColumns))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("XLSX_CONTRACT_MISMATCH");
+                .hasMessageContaining("INVALID_XLSX_TEMPLATE");
     }
 
     @Test
-    void derivesMarketColumnsAndExcludesOnlyMenuAccountAndSystemOwnedFields() {
+    void derivesTheAuditedMarketColumnsAndKeepsGovernanceFieldsInternal() {
         MarketImportDefinition.Field objectType = marketField(
                 "MKT_OBJECT_TYPE", "对象类型", "SELECT");
         MarketImportDefinition.Field reporter = marketField(
                 "MKT_REPORTER_NAME", "填报人", "TEXT");
         MarketImportDefinition.Field sample = marketField(
                 "MKT_SAMPLE_NAME", "填报对象", "TEXT");
+        MarketImportDefinition.Field reporterPhone = marketField(
+                "MKT_REPORTER_PHONE", "填报人联系方式", "TEXT");
+        MarketImportDefinition.Field sampleContact = marketField(
+                "MKT_SAMPLE_CONTACT", "样本点联系方式", "TEXT");
+        MarketImportDefinition.Field latitude = marketField(
+                "MKT_SAMPLE_LATITUDE", "样本点纬度", "DECIMAL");
+        MarketImportDefinition.Field longitude = marketField(
+                "MKT_SAMPLE_LONGITUDE", "样本点经度", "DECIMAL");
+        MarketImportDefinition.Field region = marketField(
+                "MKT_REGION", "行政区划", "REGION_HIERARCHY");
+        MarketImportDefinition.Field cultivar = marketField(
+                "MKT_CULTIVAR_NAME", "具体品种", "TEXT");
+        MarketImportDefinition.Field storage = marketField(
+                "MKT_STORAGE_REGION_CODE", "库存存放地区", "REGION_HIERARCHY");
         MarketImportDefinition.Field purchasePrice = marketField(
                 "MKT_PURCHASE_BASE_PRICE", "对象采购价格", "DECIMAL");
         MarketImportDefinition.Field salePrice = marketField(
@@ -156,33 +203,106 @@ class BusinessImportWorkbookTest {
                 "MKT_ACTUAL_TRADE_PRICE", "实际成交价", "READONLY_DECIMAL");
         MarketImportDefinition.Field fact = marketField(
                 "ENDING_INVENTORY", "期末库存", "DECIMAL");
+        MarketImportDefinition.Field outflow = marketField(
+                "STOCK_OUTFLOW", "出库量", "DECIMAL");
+        MarketImportDefinition.Field processing = marketField(
+                "PROCESSING_INPUT", "加工投入量", "DECIMAL");
         MarketImportDefinition definition = new MarketImportDefinition(
                 "CORN", "TRADER",
-                List.of(objectType, reporter, sample, purchasePrice, salePrice, calculated),
-                List.of(fact));
+                List.of(objectType, reporter, region, cultivar, sample, reporterPhone,
+                        sampleContact, latitude, longitude, storage,
+                        purchasePrice, salePrice, calculated),
+                List.of(fact, outflow, processing));
 
-        assertThat(MarketImportTemplate.workbook(definition).headers())
-                .containsExactly("MKT_SAMPLE_NAME", "MKT_PURCHASE_BASE_PRICE",
-                        "MKT_SALE_BASE_PRICE", "ENDING_INVENTORY", "evidencePhotoId")
-                .doesNotContain("MKT_TRADE_DIRECTION", "MKT_ACTUAL_TRADE_PRICE");
+        BusinessImportWorkbook.Template template = MarketImportTemplate.workbook(definition);
+        assertThat(template.headers())
+                .containsExactly("surveyYear", "surveyMonth", "MKT_SAMPLE_NAME", "MKT_REGION",
+                        "MKT_REPORTER_NAME",
+                        "MKT_REPORTER_PHONE", "MKT_SAMPLE_CONTACT", "MKT_SAMPLE_LATITUDE",
+                        "MKT_SAMPLE_LONGITUDE",
+                        "MKT_PURCHASE_BASE_PRICE", "MKT_SALE_BASE_PRICE", "ENDING_INVENTORY")
+                .doesNotContain("MKT_CULTIVAR_NAME", "MKT_STORAGE_REGION_CODE", "STOCK_OUTFLOW",
+                        "PROCESSING_INPUT", "MKT_ACTUAL_TRADE_PRICE", "evidencePhotoId");
+        assertThat(template.labels())
+                .containsExactly("数据年份", "数据月份", "样本点名称", "地区",
+                        "填报人",
+                        "填报人联系方式", "样本点联系方式", "纬度（度）", "经度（度）",
+                        "采集对象收购价格（元/吨）", "采集对象销售价格（元/吨）", "现有库存")
+                .doesNotContain("具体品种", "库存量", "期末库存", "库存存放地", "出库量");
     }
 
     @Test
-    void derivesLogisticsColumnsAndExcludesOnlyAccountAndSystemOwnedFields() {
+    void derivesTheAuditedLogisticsColumnsAndExcludesLegacyAndInternalFields() {
         LogisticsImportDefinition definition = new LogisticsImportDefinition("CORN", List.of(
+                new LogisticsImportDefinition.Field("surveyYear", "数据年份", null, true, false),
+                new LogisticsImportDefinition.Field("surveyMonth", "数据月份", null, false, false),
+                new LogisticsImportDefinition.Field("LOG_SAMPLE_NAME", "物流样本点名称", null, true, false),
+                new LogisticsImportDefinition.Field("LOG_REGION", "地区", null, true, false),
+                new LogisticsImportDefinition.Field("LOG_REPORTER", "填报人", "READONLY_TEXT",
+                        null, null, null, false, true),
+                new LogisticsImportDefinition.Field("LOG_REPORTER_PHONE", "填报人联系方式", null, true, false),
+                new LogisticsImportDefinition.Field("LOG_SAMPLE_CONTACT", "物流样本点联系方式", null, true, false),
+                new LogisticsImportDefinition.Field("LOG_SAMPLE_LATITUDE", "纬度", "度", true, false),
+                new LogisticsImportDefinition.Field("LOG_SAMPLE_LONGITUDE", "经度", "度", true, false),
+                new LogisticsImportDefinition.Field("LOG_TRANSPORT_MODE", "运输方式", null, true, false),
+                new LogisticsImportDefinition.Field("LOG_DIRECTION", "运输方向", null, true, false),
+                new LogisticsImportDefinition.Field("LOG_ROUTE_VOLUME", "运输数量", "吨", true, false),
+                new LogisticsImportDefinition.Field("LOG_FREIGHT_RATE", "物流运价（不含车板价）", "元/吨", true, false),
+                new LogisticsImportDefinition.Field("LOG_BOARD_PRICE", "车板价", "元/吨", true, false),
+                new LogisticsImportDefinition.Field("fillingDate", "填报日期", "READONLY_DATE",
+                        null, null, null, false, true),
+                new LogisticsImportDefinition.Field("LOG_STATUS", "填报状态", "READONLY_STATUS",
+                        null, null, null, false, true),
                 new LogisticsImportDefinition.Field("LOG_PERIOD", "物流监测期", null, true, false),
-                new LogisticsImportDefinition.Field("LOG_REPORTER", "物流填报人", null, true, false),
-                new LogisticsImportDefinition.Field("LOG_REPORTED_AT", "填报时间", null, false, true),
-                new LogisticsImportDefinition.Field("LOG_ROUTE_VOLUME", "运输数量", "吨", true, false)));
+                new LogisticsImportDefinition.Field("LOG_COLLECTION_DATE", "物流采集期", null, true, false),
+                new LogisticsImportDefinition.Field("LOG_ORIGIN", "物流起运节点", null, true, false),
+                new LogisticsImportDefinition.Field("LOG_DESTINATION", "物流到达节点", null, true, false),
+                new LogisticsImportDefinition.Field("LOG_TRANSIT_TIME", "物流在途时间", "小时", true, false),
+                new LogisticsImportDefinition.Field("LOG_INTERNAL_LOCATION_KEY", "内部位置键", null, false, false)));
 
-        assertThat(LogisticsImportTemplate.workbook(definition).headers())
-                .containsExactly("LOG_PERIOD", "LOG_ROUTE_VOLUME");
+        BusinessImportWorkbook.Template template = LogisticsImportTemplate.workbook(definition);
+        assertThat(template.headers()).containsExactly(
+                "数据年份", "数据月份", "填报日期", "物流样本点名称", "地区", "填报人",
+                "填报人联系方式",
+                "物流样本点联系方式", "纬度（度）", "经度（度）", "运输方式", "运输方向",
+                "运输数量（吨）", "物流运价（不含车板价）（元/吨）", "车板价（元/吨）", "填报状态");
+        assertThat(template.labels()).containsExactly(
+                "数据年份", "数据月份", "填报日期", "物流样本点名称", "地区", "填报人",
+                "填报人联系方式",
+                "物流样本点联系方式", "纬度（度）", "经度（度）", "运输方式", "运输方向",
+                "运输数量（吨）", "物流运价（不含车板价）（元/吨）", "车板价（元/吨）", "填报状态");
+        assertThat(template.headers())
+                .noneMatch(header -> header.matches(".*[A-Za-z_].*"))
+                .doesNotContain("物流监测期", "物流采集期", "物流起运节点", "物流到达节点",
+                        "物流在途时间", "内部位置键");
+        List<BusinessImportWorkbook.ColumnRule> readOnlyRules = template.rules().stream()
+                .filter(rule -> rule.controlType().startsWith("READONLY"))
+                .toList();
+        List<BusinessImportWorkbook.ColumnRule> editableRules = template.rules().stream()
+                .filter(rule -> !rule.controlType().startsWith("READONLY"))
+                .toList();
+        assertThat(editableRules).hasSize(13);
+        assertThat(readOnlyRules).hasSize(3)
+                .extracting(BusinessImportWorkbook.ColumnRule::code)
+                .containsExactly("填报日期", "填报人", "填报状态");
+        assertThat(readOnlyRules).allMatch(rule -> !rule.required());
+        assertThat(template.rules().get(0).required()).isTrue();
+        assertThat(template.rules().get(1).required()).isFalse();
+        assertThat(template.rules().stream()
+                .filter(rule -> rule.code().equals("运输数量（吨）")))
+                .singleElement().extracting(BusinessImportWorkbook.ColumnRule::valueType)
+                .isEqualTo("DECIMAL");
     }
 
     private static MarketImportDefinition.Field marketField(
             String code, String label, String controlType) {
+        String unit = switch (code) {
+            case "MKT_SAMPLE_LATITUDE", "MKT_SAMPLE_LONGITUDE" -> "度";
+            case "MKT_PURCHASE_BASE_PRICE", "MKT_SALE_BASE_PRICE" -> "元/吨";
+            default -> null;
+        };
         return new MarketImportDefinition.Field(
-                code, label, controlType, null, false, 18, 4);
+                code, label, controlType, unit, false, 18, 4);
     }
 
     private static void put(List<String> row, List<String> headers, String code, String value) {

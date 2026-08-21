@@ -12,6 +12,15 @@ class RegionSurplusCalculatorTest {
     private static final LocalDate CUTOFF = LocalDate.of(2026, 8, 10);
 
     @Test
+    void failsClosedWhenNoUniqueCalculationContractWasSelected() {
+        RegionSurplusCalculation result = new RegionSurplusCalculator().calculate(List.of(), null);
+
+        assertThat(result.coverageStatus()).isEqualTo("CALCULATION_CONTRACT_UNAVAILABLE");
+        assertThat(result.valueTonnes()).isNull();
+        assertThat(result.calculationVersion()).isEqualTo("地区余粮口径不可用");
+    }
+
+    @Test
     void adoptsTheLatestProductionSourceAndPrefersOwnerReportedInventoryOverCustodyDuplicates() {
         RegionSurplusCalculation result = new RegionSurplusCalculator().calculate(List.of(
                 production("production-old", 2, "farmer-1", "10", "2026-08-10T08:00:00+08:00"),
@@ -87,11 +96,41 @@ class RegionSurplusCalculatorTest {
                 .contains("SUPERSEDED_BY_LATEST_CUSTODIAL_SOURCE");
     }
 
+    @Test
+    void reconcilesTheSameInventorySnapshotAcrossLegacyAndCurrentContracts() {
+        List<RegionSurplusSource> legacySnapshot = List.of(
+                production("production", 2, "legacy-farmer-1", "12", "2026-08-10T10:00:00+08:00"),
+                enterprise("market", 2, "owner-1", "owner-1", "OWNED", "20",
+                        "2026-08-10T11:00:00+08:00"));
+        List<RegionSurplusSource> currentSnapshot = List.of(
+                new RegionSurplusSource("PRODUCTION", "production", 2, "sample-point-1", null,
+                        "sample-point-1", "PRODUCTION_SURPLUS", "230208101001", CUTOFF,
+                        new BigDecimal("12"), OffsetDateTime.parse("2026-08-10T10:00:00+08:00"),
+                        null, "地区余粮口径第2版", "FARMER"),
+                new RegionSurplusSource("MARKET", "market", 2, "owner-1", "owner-1", "owner-1",
+                        "OWNED", "230208101001", CUTOFF, new BigDecimal("20"),
+                        OffsetDateTime.parse("2026-08-10T11:00:00+08:00"), null,
+                        "地区余粮口径第2版", "TRADER"));
+
+        RegionSurplusCalculation legacy = new RegionSurplusCalculator().calculate(legacySnapshot);
+        RegionSurplusCalculation current = new RegionSurplusCalculator().calculate(currentSnapshot);
+
+        assertThat(legacy.valueTonnes()).isEqualByComparingTo(current.valueTonnes());
+        assertThat(legacy.sourceCount()).isEqualTo(current.sourceCount()).isEqualTo(2);
+        assertThat(legacy.coverageStatus()).isEqualTo(current.coverageStatus()).isEqualTo("AVAILABLE");
+        assertThat(legacy.calculationVersion()).isEqualTo("地区余粮口径第1版");
+        assertThat(current.calculationVersion()).isEqualTo("地区余粮口径第2版");
+        assertThat(legacy.auditSources()).extracting(RegionSurplusAuditSource::subjectKey)
+                .contains("legacy-farmer-1");
+        assertThat(current.auditSources()).extracting(RegionSurplusAuditSource::subjectKey)
+                .contains("sample-point-1");
+    }
+
     private static RegionSurplusSource production(
             String id, long version, String subject, String value, String approvedAt) {
         return new RegionSurplusSource("PRODUCTION", id, version, subject, null, subject,
                 "PRODUCTION_SURPLUS", "230208101001", CUTOFF, new BigDecimal(value),
-                OffsetDateTime.parse(approvedAt), null);
+                OffsetDateTime.parse(approvedAt), null, "地区余粮口径第1版", "FARMER");
     }
 
     private static RegionSurplusSource enterprise(
@@ -104,6 +143,7 @@ class RegionSurplusCalculatorTest {
             String id, long version, String holder, String owner, String ownership,
             String value, String approvedAt, LocalDate cutoff) {
         return new RegionSurplusSource("MARKET", id, version, holder, holder, owner, ownership,
-                "230208101001", cutoff, new BigDecimal(value), OffsetDateTime.parse(approvedAt), null);
+                "230208101001", cutoff, new BigDecimal(value), OffsetDateTime.parse(approvedAt), null,
+                "地区余粮口径第1版", "TRADER");
     }
 }

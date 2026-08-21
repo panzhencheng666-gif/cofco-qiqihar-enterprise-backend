@@ -704,23 +704,27 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                     JOIN platform.supply_survey_period period ON period.code=:period
                     WHERE record.record_id=:record AND record.version=:version AND record.product_code=:product
                       AND record.region_code=:region AND record.status_code='APPROVED'
-                      AND EXTRACT(YEAR FROM record.survey_date)=period.survey_year
-                      AND (period.survey_quarter IS NULL
-                        OR period.survey_quarter='Q'||EXTRACT(QUARTER FROM record.survey_date)::integer::text)
+                      AND record.survey_period_governance_state='CONFIRMED'
+                      AND record.survey_year=period.survey_year
+                      AND (period.survey_quarter IS NULL OR (record.survey_month IS NOT NULL
+                        AND period.survey_quarter='Q'||EXTRACT(QUARTER FROM
+                          make_date(record.survey_year,record.survey_month,1))::integer::text))
                     """;
             case "LOGISTICS" -> """
                     SELECT fact.value,fact.unit_code,event.direction_code
                     FROM logistics.route_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id
-                    JOIN platform.business_period source_period ON source_period.code=event.monitoring_period_code
                     JOIN platform.supply_survey_period period ON period.code=:period
                     WHERE event.event_id::text=:record AND event.version=:version AND event.product_code=:product
-                      AND event.status_code='APPROVED' AND :region IN(event.origin_region_code,event.destination_region_code)
+                      AND event.status_code='APPROVED'
+                      AND COALESCE(event.business_region_code,
+                        CASE event.direction_code WHEN 'INFLOW' THEN event.destination_region_code
+                          ELSE event.origin_region_code END)=:region
                       AND fact.fact_code=:field
-                      AND EXTRACT(YEAR FROM source_period.starts_on)=period.survey_year
-                      AND EXTRACT(YEAR FROM source_period.ends_on)=period.survey_year
-                      AND (period.survey_quarter IS NULL OR (
-                        period.survey_quarter='Q'||EXTRACT(QUARTER FROM source_period.starts_on)::integer::text
-                        AND period.survey_quarter='Q'||EXTRACT(QUARTER FROM source_period.ends_on)::integer::text))
+                      AND event.survey_period_governance_state='CONFIRMED'
+                      AND event.survey_year=period.survey_year
+                      AND (period.survey_quarter IS NULL OR (event.survey_month IS NOT NULL
+                        AND period.survey_quarter='Q'||EXTRACT(QUARTER FROM
+                          make_date(event.survey_year,event.survey_month,1))::integer::text))
                     """;
             default -> null;
         };

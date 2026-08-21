@@ -90,6 +90,34 @@ class AnnualComparisonRestIntegrationTest {
                     .param("volume", year - 2015).update();
         }
         jdbc.sql("""
+                INSERT INTO logistics.logistics_node(node_code,node_name,node_type_code,region_code)
+                VALUES ('ANNUAL-ORIGIN','年度物流起点','RAIL_NODE',:region),
+                       ('ANNUAL-DESTINATION','年度物流终点','ROAD_NODE',:region)
+                """).param("region", REGION).update();
+        for (int year = 2023; year <= 2026; year++) {
+            String id = "30000000-0000-0000-0000-00000000" + year;
+            jdbc.sql("""
+                    INSERT INTO logistics.route_event(event_id,product_code,collection_date,
+                      origin_region_code,origin_node_id,destination_region_code,destination_node_id,
+                      transport_mode_code,direction_code,source_organization,reporter,reported_at,status_code,
+                      version,created_by,last_modified_by,created_at,updated_at,origin_node_code,destination_node_code,
+                      survey_year,survey_month,survey_period_precision,survey_period_governance_state,business_region_code)
+                    SELECT CAST(:id AS uuid),'SOYBEAN',make_date(:year,8,1),:region,origin.node_id,:region,destination.node_id,
+                      'RAIL','INFLOW','年度物流样本点','年度物流填报员',make_timestamptz(:year,8,11,8,0,0,'Asia/Shanghai'),
+                      'APPROVED',0,:reader,:reader,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,origin.node_code,destination.node_code,
+                      :year,8,'YEAR_MONTH','CONFIRMED',:region
+                    FROM logistics.logistics_node origin,logistics.logistics_node destination
+                    WHERE origin.node_code='ANNUAL-ORIGIN' AND destination.node_code='ANNUAL-DESTINATION'
+                    """).param("id", id).param("year", year).param("region", REGION).param("reader", READER).update();
+            jdbc.sql("""
+                    INSERT INTO logistics.route_fact(event_id,fact_code,value,unit_code)
+                    VALUES (CAST(:id AS uuid),'ROUTE_VOLUME',:volume,'吨'),
+                           (CAST(:id AS uuid),'FREIGHT_RATE',:freight,'元/吨'),
+                           (CAST(:id AS uuid),'BOARD_PRICE',:board,'元/吨')
+                    """).param("id", id).param("volume", year - 2020)
+                    .param("freight", 80 + year - 2023).param("board", 900000 + year).update();
+        }
+        jdbc.sql("""
                 INSERT INTO production.production_record(record_id,product_code,object_type_code,region_code,cultivar_code,
                   survey_date,reported_at,cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by)
                 VALUES ('annual-production-draft','SOYBEAN','FARMER',:region,'HEINONG_84',DATE '2026-08-10','2026-08-11T08:00:00+08:00',999,999,'DRAFT',:reader),
@@ -123,6 +151,15 @@ class AnnualComparisonRestIntegrationTest {
                 .andExpect(jsonPath("$.data[?(@.code == 'MARKET_STOCK_INFLOW')]").isEmpty())
                 .andExpect(jsonPath("$.data[?(@.code == 'MARKET_STORAGE_LOSS')]").isEmpty());
 
+        mvc.perform(get("/api/v1/overview/annual-comparison-definitions").principal(() -> READER)
+                        .queryParam("sourceDomain", "LOGISTICS").queryParam("productCode", "SOYBEAN"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_INFLOW_VOLUME')].name")
+                        .value("核定物流流入量"))
+                .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_AVERAGE_FREIGHT_RATE')].name")
+                        .value("核定平均物流运价（不含车板价）"))
+                .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_BOARD_PRICE')]").isEmpty());
+
         mvc.perform(get("/api/v1/overview/annual-comparisons").principal(() -> READER)
                         .queryParam("productCode", "SOYBEAN").queryParam("cultivarCode", "HEINONG_84")
                         .queryParam("regionCode", REGION).queryParam("periodCode", PERIOD)
@@ -130,6 +167,20 @@ class AnnualComparisonRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.points[0].value").value(11.0))
                 .andExpect(jsonPath("$.data.points[3].value").value(8.0));
+
+        mvc.perform(get("/api/v1/overview/annual-comparisons").principal(() -> READER)
+                        .queryParam("productCode", "SOYBEAN").queryParam("regionCode", REGION)
+                        .queryParam("periodCode", PERIOD).queryParam("indicatorCode", "LOGISTICS_INFLOW_VOLUME"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.points[0].value").value(6.0))
+                .andExpect(jsonPath("$.data.points[3].value").value(3.0));
+        mvc.perform(get("/api/v1/overview/annual-comparisons").principal(() -> READER)
+                        .queryParam("productCode", "SOYBEAN").queryParam("regionCode", REGION)
+                        .queryParam("periodCode", PERIOD)
+                        .queryParam("indicatorCode", "LOGISTICS_AVERAGE_FREIGHT_RATE"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.points[0].value").value(83.0))
+                .andExpect(jsonPath("$.data.points[3].value").value(80.0));
 
         mvc.perform(get("/api/v1/overview/annual-comparisons").principal(() -> READER)
                         .queryParam("productCode", "SOYBEAN").queryParam("regionCode", REGION)
@@ -267,6 +318,8 @@ class AnnualComparisonRestIntegrationTest {
         if (jdbc == null) return;
         jdbc.sql("DELETE FROM market.market_record WHERE record_id LIKE 'annual-market-%'").update();
         jdbc.sql("DELETE FROM production.production_record WHERE record_id LIKE 'annual-production-%'").update();
+        jdbc.sql("DELETE FROM logistics.route_event WHERE source_organization='年度物流样本点'").update();
+        jdbc.sql("DELETE FROM logistics.logistics_node WHERE node_code IN ('ANNUAL-ORIGIN','ANNUAL-DESTINATION')").update();
         jdbc.sql("DELETE FROM platform.business_period WHERE code=:period").param("period", PERIOD).update();
         jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id=:reader").param("reader", READER).update();
         jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:reader").param("reader", READER).update();

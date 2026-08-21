@@ -17,6 +17,7 @@ import java.math.BigDecimal;
 import java.sql.Types;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
@@ -286,115 +287,173 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
     @Override
     public void linkApprovedSamplePoint(MarketMonitoringRecord record,
             Map<String, String> extensionCoreValues, String approvingActorId, Instant approvedAt) {
-        String canonicalName = extensionCoreValues.get("MKT_SAMPLE_NAME");
-        String subjectId = extensionCoreValues.get("MKT_SAMPLE_SUBJECT_CODE");
-        String latitudeValue = extensionCoreValues.get("MKT_SAMPLE_LATITUDE");
-        String longitudeValue = extensionCoreValues.get("MKT_SAMPLE_LONGITUDE");
-        if (subjectId == null || subjectId.isBlank()
-                || canonicalName == null || canonicalName.isBlank()
-                || latitudeValue == null || longitudeValue == null) return;
-        subjectId = subjectId.trim();
-        BigDecimal latitude = new BigDecimal(latitudeValue);
-        BigDecimal longitude = new BigDecimal(longitudeValue);
-        boolean contained = jdbc.sql("""
-                        SELECT EXISTS(
-                            SELECT 1 FROM overview.administrative_boundary
-                            WHERE region_code=:regionCode
-                              AND ST_Covers(geometry,
-                                  ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326)))
-                        """).param("regionCode", record.regionCode()).param("longitude", longitude)
-                .param("latitude", latitude).query(Boolean.class).single();
-        if (!contained) return;
-        String identityLock = "MARKET:" + subjectId;
-        jdbc.sql("SELECT pg_advisory_xact_lock(hashtextextended(:identity,0))")
-                .param("identity", identityLock)
-                .query((row, index) -> Boolean.TRUE).single();
-        Optional<ExistingSamplePoint> existing = jdbc.sql("""
-                        SELECT point.sample_point_id,point.owner_party_id,point.region_code,
-                               ST_X(point.governed_point) longitude,ST_Y(point.governed_point) latitude,
-                               (SELECT count(DISTINCT linked.object_type_code)=1
-                                          AND min(linked.object_type_code)=:objectTypeCode
-                                FROM market.market_record linked
-                                WHERE linked.sample_point_id=point.sample_point_id) object_type_matches
-                        FROM registry.sample_point_subject_identity identity
+        List<ResolvedSamplePoint> resolved = jdbc.sql("""
+                        SELECT point.sample_point_id,point.owner_party_id,resolution.actor
+                        FROM registry.current_sample_subject_resolution resolution
                         JOIN registry.sample_point point
-                          ON point.sample_point_id=identity.sample_point_id
-                        WHERE identity.business_domain='MARKET' AND identity.subject_id=:subjectId
-                        """).param("subjectId", subjectId)
-                .param("objectTypeCode", record.objectTypeCode())
-                .query((row, index) -> new ExistingSamplePoint(
+                          ON point.sample_point_id=resolution.target_sample_point_id
+                        WHERE resolution.source_domain='MARKET'
+                          AND resolution.source_record_id=:recordId
+                          AND resolution.resolution_action='LINK'
+                          AND resolution.source_version=:sourceVersion
+                          AND point.owner_party_id IS NOT NULL
+                          AND point.region_code=:regionCode
+                          AND point.approval_state='APPROVED'
+                          AND point.location_state='VALID'
+                          AND point.effective_from<=:tradeDate
+                        """).param("recordId", record.id())
+                .param("sourceVersion", Math.max(0, record.version() - 1))
+                .param("regionCode", record.regionCode()).param("tradeDate", record.tradeDate())
+                .query((row, ignored) -> new ResolvedSamplePoint(
                         row.getObject("sample_point_id", UUID.class),
-                        row.getObject("owner_party_id", UUID.class), row.getString("region_code"),
-                        row.getBigDecimal("longitude"), row.getBigDecimal("latitude"),
-                        row.getBoolean("object_type_matches")))
-                .optional();
-        if (existing.isPresent()) {
-            ExistingSamplePoint point = existing.get();
-            if (point.partyId() == null || !point.objectTypeMatches()
-                    || !point.regionCode().equals(record.regionCode())
-                    || point.longitude().compareTo(longitude) != 0
-                    || point.latitude().compareTo(latitude) != 0) return;
-            int linked = jdbc.sql("""
-                            UPDATE market.market_record
-                            SET party_id=:partyId,sample_point_id=:samplePointId
-                            WHERE record_id=:recordId AND status_code='APPROVED'
-                              AND party_id IS NULL AND sample_point_id IS NULL
-                            """).param("partyId", point.partyId())
-                    .param("samplePointId", point.samplePointId())
-                    .param("recordId", record.id()).update();
-            requireUpdated(linked);
-            return;
-        }
-        String submittingActorId = jdbc.sql("""
-                        SELECT actor_subject_id
-                        FROM platform.business_event_outbox
-                        WHERE aggregate_type='MARKET_RECORD' AND aggregate_id=:recordId
-                          AND action_code='MARKET_RECORD_SUBMITTED'
-                        ORDER BY event_sequence DESC
-                        LIMIT 1
-                        """).param("recordId", record.id()).query(String.class).single();
-        UUID partyId = UUID.randomUUID();
-        UUID samplePointId = UUID.randomUUID();
-        OffsetDateTime approvedTime = OffsetDateTime.ofInstant(approvedAt, ZoneOffset.UTC);
-        jdbc.sql("""
-                        INSERT INTO market.business_party(
-                            party_id,current_name,version,created_at,created_by,updated_at,updated_by)
-                        VALUES(:partyId,:canonicalName,0,:approvedAt,:submittingActorId,
-                            :approvedAt,:approvingActorId)
-                        """).param("partyId", partyId).param("canonicalName", canonicalName)
-                .param("approvedAt", approvedTime).param("submittingActorId", submittingActorId)
-                .param("approvingActorId", approvingActorId).update();
-        jdbc.sql("""
-                        INSERT INTO registry.sample_point(
-                            sample_point_id,kind_code,owner_party_id,canonical_name,region_code,
-                            approval_state,location_state,governed_point,effective_from,version,
-                            created_by,created_at,updated_by,updated_at)
-                        VALUES(:samplePointId,'SURVEY_SITE',:partyId,:canonicalName,:regionCode,
-                            'APPROVED','VALID',ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326),
-                            :effectiveFrom,0,:submittingActorId,:approvedAt,:approvingActorId,:approvedAt)
-                        """).param("samplePointId", samplePointId).param("partyId", partyId)
-                .param("canonicalName", canonicalName).param("regionCode", record.regionCode())
-                .param("longitude", longitude).param("latitude", latitude)
-                .param("effectiveFrom", record.tradeDate()).param("submittingActorId", submittingActorId)
-                .param("approvedAt", approvedTime).param("approvingActorId", approvingActorId).update();
-        jdbc.sql("""
-                        SELECT platform.register_approved_sample_subject(
-                          'MARKET',:recordId,:samplePointId)
-                        """).param("recordId", record.id()).param("samplePointId", samplePointId)
-                .query(Long.class).single();
+                        row.getObject("owner_party_id", UUID.class), row.getString("actor")))
+                .list();
+        if (resolved.size() != 1) return;
+        ResolvedSamplePoint point = resolved.getFirst();
         int linked = jdbc.sql("""
                         UPDATE market.market_record
                         SET party_id=:partyId,sample_point_id=:samplePointId
                         WHERE record_id=:recordId AND status_code='APPROVED'
-                          AND party_id IS NULL AND sample_point_id IS NULL
-                        """).param("partyId", partyId).param("samplePointId", samplePointId)
+                          AND ((party_id IS NULL AND sample_point_id IS NULL)
+                            OR (party_id=:partyId AND sample_point_id=:samplePointId))
+                        """).param("partyId", point.partyId())
+                .param("samplePointId", point.samplePointId())
                 .param("recordId", record.id()).update();
         requireUpdated(linked);
     }
 
-    private record ExistingSamplePoint(
-            UUID samplePointId, UUID partyId, String regionCode,
-            BigDecimal longitude, BigDecimal latitude, boolean objectTypeMatches) {}
+    @Override
+    public void reconcileInventoryGovernance(
+            MarketMonitoringRecord record, Map<String, String> extensionCoreValues,
+            String actorId, Instant reconciledAt) {
+        if (!record.facts().containsKey("ENDING_INVENTORY")) {
+            jdbc.sql("DELETE FROM market.market_inventory_governance WHERE record_id=:recordId")
+                    .param("recordId", record.id()).update();
+            return;
+        }
+        List<InventoryProfile> profiles = jdbc.sql("""
+                        SELECT point.sample_point_id,point.owner_party_id,point.region_code,
+                               profile.ownership_type,profile.cargo_owner_party_id,
+                               profile.policy_attribute,resolution.actor
+                        FROM registry.current_sample_subject_resolution resolution
+                        JOIN registry.sample_point point
+                          ON point.sample_point_id=resolution.target_sample_point_id
+                        JOIN market.sample_point_inventory_contract profile
+                          ON profile.sample_point_id=point.sample_point_id
+                         AND profile.object_type_code=:objectTypeCode
+                         AND profile.effective_from<=:tradeDate
+                        WHERE resolution.source_domain='MARKET'
+                          AND resolution.source_record_id=:recordId
+                          AND resolution.resolution_action='LINK'
+                          AND resolution.source_version=:sourceVersion
+                          AND point.approval_state='APPROVED' AND point.location_state='VALID'
+                          AND point.effective_from<=:tradeDate
+                          AND point.region_code=:regionCode
+                """).param("recordId", record.id()).param("sourceVersion", record.version())
+                .param("objectTypeCode", record.objectTypeCode())
+                .param("tradeDate", record.tradeDate())
+                .param("regionCode", record.regionCode())
+                .query((row, ignored) -> new InventoryProfile(
+                        row.getObject("sample_point_id", UUID.class),
+                        row.getObject("owner_party_id", UUID.class), row.getString("region_code"),
+                        row.getString("ownership_type"),
+                        row.getObject("cargo_owner_party_id", UUID.class),
+                        row.getString("policy_attribute"), row.getString("actor"))).list();
+        if (profiles.size() != 1) {
+            boolean hasResolution = jdbc.sql("""
+                            SELECT EXISTS(SELECT 1 FROM registry.current_sample_subject_resolution
+                              WHERE source_domain='MARKET' AND source_record_id=:recordId)
+                            """).param("recordId", record.id()).query(Boolean.class).single();
+            markInventoryGovernancePending(record.id(), hasResolution
+                    ? "SUBJECT_RESOLUTION_INVALID" : "SUBJECT_RESOLUTION_REQUIRED");
+            return;
+        }
+        InventoryProfile profile = profiles.getFirst();
+        boolean ownershipConsistent = profile.partyId() != null
+                && (("OWNED".equals(profile.ownershipType())
+                        && profile.partyId().equals(profile.cargoOwnerPartyId()))
+                    || ("CUSTODIAL".equals(profile.ownershipType())
+                        && !profile.partyId().equals(profile.cargoOwnerPartyId())));
+        if (!ownershipConsistent) {
+            markInventoryGovernancePending(record.id(), "INVENTORY_PROFILE_INCONSISTENT");
+            return;
+        }
+        int linked = jdbc.sql("""
+                        UPDATE market.market_record
+                        SET party_id=:partyId,sample_point_id=:samplePointId
+                        WHERE record_id=:recordId
+                          AND (party_id IS NULL OR party_id=:partyId)
+                          AND (sample_point_id IS NULL OR sample_point_id=:samplePointId)
+                        """).param("partyId", profile.partyId())
+                .param("samplePointId", profile.samplePointId()).param("recordId", record.id()).update();
+        if (linked != 1) {
+            markInventoryGovernancePending(record.id(), "RECORD_IDENTITY_CONFLICT");
+            return;
+        }
+        LocalDate cutoff = record.tradeDate().withDayOfMonth(
+                YearMonth.from(record.tradeDate()).lengthOfMonth());
+        Map<String, String> governedValues = Map.of(
+                "MKT_INVENTORY_HOLDER_CODE", profile.partyId().toString(),
+                "MKT_INVENTORY_OWNERSHIP_TYPE", profile.ownershipType(),
+                "MKT_STORAGE_REGION_CODE", profile.regionCode(),
+                "MKT_CARGO_OWNER_CODE", profile.cargoOwnerPartyId().toString(),
+                "MKT_INVENTORY_CUTOFF_DATE", cutoff.toString(),
+                "MKT_INVENTORY_POLICY_ATTRIBUTE", profile.policyAttribute());
+        governedValues.forEach((code, value) -> jdbc.sql("""
+                        INSERT INTO market.market_record_core_value(
+                          record_id,product_code,field_code,domain_binding,value)
+                        VALUES(:recordId,:productCode,:code,'EXTENSION',:value)
+                        ON CONFLICT(record_id,field_code) DO UPDATE SET value=excluded.value
+                        """).param("recordId", record.id()).param("productCode", record.productCode())
+                .param("code", code).param("value", value).update());
+        jdbc.sql("""
+                        INSERT INTO market.market_inventory_governance(
+                          record_id,status_code,reason_code,sample_point_id,resolved_by,resolved_at)
+                        VALUES(:recordId,'READY','APPROVED_SAMPLE_POINT_PROFILE',:samplePointId,:actorId,:resolvedAt)
+                        ON CONFLICT(record_id) DO UPDATE SET status_code='READY',
+                          reason_code='APPROVED_SAMPLE_POINT_PROFILE',sample_point_id=excluded.sample_point_id,
+                          resolved_by=excluded.resolved_by,resolved_at=excluded.resolved_at
+                        """).param("recordId", record.id()).param("samplePointId", profile.samplePointId())
+                .param("actorId", profile.resolutionActor())
+                .param("resolvedAt", OffsetDateTime.ofInstant(reconciledAt, ZoneOffset.UTC)).update();
+    }
+
+    @Override
+    public String inventoryGovernanceStatus(String id) {
+        return jdbc.sql("""
+                        SELECT CASE
+                          WHEN NOT EXISTS(SELECT 1 FROM market.market_record_fact
+                            WHERE record_id=:recordId AND fact_code='ENDING_INVENTORY') THEN '不适用'
+                          WHEN EXISTS(SELECT 1 FROM market.market_inventory_governance
+                            WHERE record_id=:recordId AND status_code='READY') THEN '库存权属已核定'
+                          ELSE '待库存权属核定' END
+                        """).param("recordId", id).query(String.class).single();
+    }
+
+    @Override
+    public boolean inventoryGovernanceReady(String id) {
+        return jdbc.sql("""
+                        SELECT NOT EXISTS(SELECT 1 FROM market.market_record_fact
+                            WHERE record_id=:recordId AND fact_code='ENDING_INVENTORY')
+                          OR EXISTS(SELECT 1 FROM market.market_inventory_governance
+                            WHERE record_id=:recordId AND status_code='READY')
+                        """).param("recordId", id).query(Boolean.class).single();
+    }
+
+    private void markInventoryGovernancePending(String recordId, String reasonCode) {
+        jdbc.sql("""
+                        INSERT INTO market.market_inventory_governance(record_id,status_code,reason_code)
+                        VALUES(:recordId,'PENDING_REVIEW',:reasonCode)
+                        ON CONFLICT(record_id) DO UPDATE SET status_code='PENDING_REVIEW',
+                          reason_code=excluded.reason_code,sample_point_id=NULL,
+                          resolved_by=NULL,resolved_at=NULL
+                        """).param("recordId", recordId).param("reasonCode", reasonCode).update();
+    }
+
+    private record ResolvedSamplePoint(UUID samplePointId, UUID partyId, String resolutionActor) {}
+    private record InventoryProfile(
+            UUID samplePointId, UUID partyId, String regionCode, String ownershipType,
+            UUID cargoOwnerPartyId, String policyAttribute, String resolutionActor) {}
 
     private Map<String, List<MarketFieldOption>> coreOptions(String productCode) {
         Map<String, List<MarketFieldOption>> options = new LinkedHashMap<>();

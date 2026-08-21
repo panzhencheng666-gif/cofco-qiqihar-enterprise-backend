@@ -117,14 +117,14 @@ public class ProductionRecordService implements ProductionImportPort {
                         .sorted(Comparator.comparingInt(ProductionFactDefinition::sortOrder)
                                 .thenComparing(ProductionFactDefinition::code)).toList())).toList();
         return new ProductionFormDefinition(productCode, objectTypeCode, ProductionSurveyFieldContract.VERSION,
-                ProductionSurveyFieldContract.fields(groups), groups);
+                ProductionSurveyFieldContract.DIGEST, ProductionSurveyFieldContract.fields(groups), groups);
     }
 
     @Override
     public ProductionImportDefinition importDefinition(String productCode, String objectTypeCode) {
         ProductionFormDefinition definition = factDefinition(productCode, objectTypeCode);
         return new ProductionImportDefinition(definition.productCode(), definition.objectTypeCode(),
-                definition.contractVersion(), definition.fields(),
+                definition.contractVersion(), definition.contractDigest(), definition.fields(),
                 definition.groups().stream().map(group -> new ProductionImportDefinition.Group(
                         group.category(), group.label(), group.fields().stream()
                                 .map(field -> new ProductionImportDefinition.Field(
@@ -135,22 +135,27 @@ public class ProductionRecordService implements ProductionImportPort {
 
     @Transactional
     public ProductionRecordView create(ProductionDraft draft) {
+        return create(draft, true);
+    }
+
+    private ProductionRecordView create(ProductionDraft draft, boolean requireEvidence) {
         SecurityPrincipal principal = authorize("BUSINESS_CREATE", draft.regionCode());
         Map<String, String> submissionMetadata = canonicalSubmissionMetadata(
                 draft.submissionMetadata(), principal.displayName());
         validateDraft(draft, submissionMetadata);
-        validateEvidence(draft, principal);
+        if (requireEvidence || !draft.evidencePhotoIds().isEmpty()) validateEvidence(draft, principal);
         ProductionRecord record;
         try {
             record = ProductionRecord.draft(UUID.randomUUID().toString(), draft.productCode(),
-                    draft.objectTypeCode(), draft.regionCode(), draft.cultivarCode(), draft.surveyDate(), now(),
+                    draft.objectTypeCode(), draft.regionCode(), draft.cultivarCode(),
+                    draft.surveyYear(), draft.surveyMonth(), draft.surveyDate(), now(),
                     draft.cultivatedAreaMu(), draft.yieldPerMuKilograms(), draft.quality(), draft.costs(),
                     draft.insurance(), draft.subsidies(), submissionMetadata);
         } catch (ProductionValidationException exception) {
             throw invalidDraft(exception.getMessage());
         }
         ProductionRecord persisted = repository.insert(record, principal.subjectId());
-        if (evidencePhotos != null) {
+        if (evidencePhotos != null && !draft.evidencePhotoIds().isEmpty()) {
             evidencePhotos.attachToProduction(
                     draft.evidencePhotoIds(), persisted.id(), persisted.regionCode(), principal.subjectId());
         }
@@ -160,7 +165,7 @@ public class ProductionRecordService implements ProductionImportPort {
 
     @Override
     public String importDraft(ProductionDraft draft) {
-        return create(draft).record().id();
+        return create(draft, false).record().id();
     }
 
     @Override
@@ -171,7 +176,7 @@ public class ProductionRecordService implements ProductionImportPort {
         SecurityPrincipal principal = authorize("BUSINESS_IMPORT", draft.regionCode());
         validateDraft(draft, canonicalSubmissionMetadata(
                 draft.submissionMetadata(), principal.displayName()));
-        validateEvidence(draft, principal);
+        if (!draft.evidencePhotoIds().isEmpty()) validateEvidence(draft, principal);
     }
 
     @Transactional
@@ -187,8 +192,9 @@ public class ProductionRecordService implements ProductionImportPort {
         ProductionRecord revised;
         try {
             revised = existing.revise(draft.productCode(), draft.objectTypeCode(), draft.regionCode(),
-                    draft.cultivarCode(), draft.surveyDate(), now(), draft.cultivatedAreaMu(),
-                    draft.yieldPerMuKilograms(), draft.quality(), draft.costs(), draft.insurance(), draft.subsidies(),
+                    draft.cultivarCode(), draft.surveyYear(), draft.surveyMonth(), draft.surveyDate(), now(),
+                    draft.cultivatedAreaMu(), draft.yieldPerMuKilograms(), draft.quality(), draft.costs(),
+                    draft.insurance(), draft.subsidies(),
                     submissionMetadata);
         } catch (ProductionValidationException exception) {
             throw invalidDraft(exception.getMessage());

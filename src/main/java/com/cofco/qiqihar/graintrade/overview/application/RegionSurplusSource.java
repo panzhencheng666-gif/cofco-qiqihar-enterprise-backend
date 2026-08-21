@@ -16,4 +16,6 @@ public record RegionSurplusSource(
         LocalDate dataCutoff,
         BigDecimal valueTonnes,
         OffsetDateTime approvedAt,
-        String contractIssue) {}
+        String contractIssue,
+        String calculationVersion,
+        String sampleTypeCode) {}

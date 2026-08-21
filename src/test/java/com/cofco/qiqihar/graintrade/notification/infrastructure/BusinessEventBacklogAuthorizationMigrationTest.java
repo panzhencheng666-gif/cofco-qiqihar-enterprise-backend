@@ -8,6 +8,7 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
@@ -26,7 +27,8 @@ class BusinessEventBacklogAuthorizationMigrationTest {
     }
 
     @Test
-    void upgradesAnInstalledV112ConsumerThroughV113V114AndV115WithoutChangingHistory() throws Exception {
+    @DisplayName("Upgrades an installed V112 consumer through the complete V112-to-V118 path without changing history")
+    void upgradesAnInstalledV112ConsumerThroughTheCompleteV118PathWithoutChangingHistory() throws Exception {
         resetDatabase();
         assertThat(DATABASE.flywayToVersion("112").migrate().migrationsExecuted)
                 .isGreaterThan(100);
@@ -90,11 +92,16 @@ class BusinessEventBacklogAuthorizationMigrationTest {
                          'EXECUTE')
                 """)).isTrue();
 
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isOne();
+        assertThat(DATABASE.flywayToVersion("118").migrate().migrationsExecuted).isEqualTo(3);
+        assertThat(queryString("""
+                SELECT string_agg(version, ',' ORDER BY installed_rank)
+                FROM public.flyway_schema_history
+                WHERE success AND version IN ('116','117','118')
+                """)).isEqualTo("116,117,118");
         assertThat(queryString("""
                 SELECT version FROM public.flyway_schema_history
                 WHERE success ORDER BY installed_rank DESC LIMIT 1
-                """)).isEqualTo("116");
+                """)).isEqualTo("118");
     }
 
     private void resetDatabase() throws Exception {

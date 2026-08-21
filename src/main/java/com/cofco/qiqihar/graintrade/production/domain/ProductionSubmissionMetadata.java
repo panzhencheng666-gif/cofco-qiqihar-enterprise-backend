@@ -19,12 +19,11 @@ public record ProductionSubmissionMetadata(
     private static final Set<String> ALLOWED_KEYS = Set.of(
             "PROD_REPORTER_NAME", "PROD_REPORTER_PHONE", "PROD_SAMPLE_CONTACT",
             "PROD_SAMPLE_LATITUDE", "PROD_SAMPLE_LONGITUDE", "PROD_SAMPLE_NAME",
-            "PROD_SAMPLE_SUBJECT_CODE",
             "PROD_CULTIVAR_NAME",
             "PROD_HARVEST_AREA_MU", "PROD_AFFECTED_AREA_MU", "PROD_GROWTH_STATUS",
             "PROD_GROWTH_STAGE", "PROD_OPENING_INVENTORY", "PROD_SALES_VOLUME",
             "PROD_SELF_USE", "PROD_ENDING_INVENTORY", "PROD_INTENDED_AREA_MU",
-            "PROD_INTENTION_REASON", "PROD_SURPLUS_SUBJECT_CODE", "PROD_SURPLUS_CUTOFF_DATE");
+            "PROD_INTENTION_REASON");
     private static final Set<String> DECIMAL_DETAILS = Set.of(
             "PROD_HARVEST_AREA_MU", "PROD_AFFECTED_AREA_MU", "PROD_OPENING_INVENTORY",
             "PROD_SALES_VOLUME", "PROD_SELF_USE", "PROD_ENDING_INVENTORY", "PROD_INTENDED_AREA_MU");
@@ -56,18 +55,6 @@ public record ProductionSubmissionMetadata(
             normalized.put(code, text);
         });
         surveyDetails = Map.copyOf(normalized);
-        if (surveyDetails.containsKey("PROD_ENDING_INVENTORY")) {
-            required(surveyDetails.get("PROD_SURPLUS_SUBJECT_CODE"), "PROD_SURPLUS_SUBJECT_CODE");
-            required(surveyDetails.get("PROD_SURPLUS_CUTOFF_DATE"), "PROD_SURPLUS_CUTOFF_DATE");
-        }
-        String cutoffDate = surveyDetails.get("PROD_SURPLUS_CUTOFF_DATE");
-        if (cutoffDate != null) {
-            try {
-                java.time.LocalDate.parse(cutoffDate);
-            } catch (java.time.DateTimeException exception) {
-                throw new IllegalArgumentException("PROD_SURPLUS_CUTOFF_DATE is invalid", exception);
-            }
-        }
     }
 
     public static ProductionSubmissionMetadata from(Map<String, String> values) {

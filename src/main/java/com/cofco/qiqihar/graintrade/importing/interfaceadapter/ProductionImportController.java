@@ -32,7 +32,8 @@ public class ProductionImportController {
                                     @RequestParam(required = false) String objectTypeCode) {
         if ("xlsx".equalsIgnoreCase(format)) {
             byte[] bytes = BusinessImportWorkbook.create(service.workbook(productCode, objectTypeCode));
-            return xlsx("产情-" + productCode + "-" + objectTypeCode + "-批量导入模板.xlsx", bytes);
+            return xlsx("产情-" + BusinessImportWorkbook.businessLabel(productCode) + "-"
+                    + BusinessImportWorkbook.businessLabel(objectTypeCode) + "-批量导入模板.xlsx", bytes);
         }
         return csv("production-import-template.csv", service.template().getBytes(StandardCharsets.UTF_8));
     }

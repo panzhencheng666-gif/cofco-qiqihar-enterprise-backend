@@ -14,7 +14,8 @@ final class LogisticsImportAdapter implements LogisticsImportPort {
     @Override public LogisticsImportDefinition definition(String productCode) {
         LogisticsDefinitionView definition=service.definition(productCode);
         return new LogisticsImportDefinition(definition.productCode(), definition.fields().stream().map(field ->
-                new LogisticsImportDefinition.Field(field.code(),field.label(),field.unit(),field.required(),field.readOnly()))
+                new LogisticsImportDefinition.Field(field.code(), field.label(), field.controlType(), field.unit(),
+                        field.precision(), field.scale(), field.required(), field.readOnly()))
                 .toList());
     }
 

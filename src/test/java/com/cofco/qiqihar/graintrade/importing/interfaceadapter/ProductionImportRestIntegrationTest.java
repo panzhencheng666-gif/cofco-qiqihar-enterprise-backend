@@ -19,6 +19,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
@@ -81,28 +83,30 @@ class ProductionImportRestIntegrationTest {
 
     @Test
     void downloadsAProductSpecificXlsxTemplateWithoutAReporterInput() throws Exception {
-        byte[] workbook = mvc.perform(get("/api/v1/imports/production/template")
+        var response = mvc.perform(get("/api/v1/imports/production/template")
                         .param("format", "xlsx")
                         .param("productCode", "CORN")
                         .param("objectTypeCode", "FARMER")
                         .principal(() -> "production-tester"))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
-                .andReturn().getResponse().getContentAsByteArray();
+                .andReturn().getResponse();
+        assertThat(ContentDisposition.parse(response.getHeader(HttpHeaders.CONTENT_DISPOSITION)).getFilename())
+                .isEqualTo("产情-玉米-农户-批量导入模板.xlsx");
+        byte[] workbook = response.getContentAsByteArray();
 
         var template = template(workbook, "产情", "CORN", "FARMER");
         assertThat(XlsxTable.parseWorksheet(workbook, 1, template.headers().size()))
-                .containsExactly(template.labels(), template.headers());
-        assertThat(template.headers())
-                .contains("PROD_CULTIVAR_NAME", "PROD_OPENING_INVENTORY", "PROD_ENDING_INVENTORY",
-                        "PROD_SURPLUS_SUBJECT_CODE", "PROD_SURPLUS_CUTOFF_DATE", "MOISTURE", "TOXIN")
-                .doesNotContain("cultivarCode")
-                .doesNotContain("PROD_REPORTER_NAME", "PROTEIN", "OIL_YIELD",
-                        "MILLING_YIELD", "BROWN_RICE_YIELD");
-        assertThat(template.labels().getFirst()).isEqualTo("所在地区");
+                .containsExactly(template.labels());
+        assertThat(template.headers()).isEqualTo(template.labels())
+                .allSatisfy(header -> assertThat(header)
+                        .doesNotContain("_")
+                        .doesNotMatch(".*[A-Za-z].*"));
+        assertThat(template.labels()).startsWith("数据年份", "数据月份", "样本点名称", "地区", "具体品种");
         assertThat(template.labels())
-                .contains("预计收获面积（亩）", "水分（%）", "地租（元/亩）")
-                .doesNotContain("所在地区代码");
+                .contains("预计收获面积（亩）", "水分（%）", "地租（元/亩）",
+                        "期初库存（吨）", "期末余粮（吨）")
+                .doesNotContain("所在地区代码", "未销售余粮（吨）");
     }
 
     @Test
@@ -116,24 +120,22 @@ class ProductionImportRestIntegrationTest {
         var template = template(downloaded, "产情", "CORN", "FARMER");
         java.util.ArrayList<String> row = new java.util.ArrayList<>(
                 java.util.Collections.nCopies(template.headers().size(), ""));
-        put(row, template.headers(), "regionCode",
+        put(row, template.headers(), "地区",
                 "齐齐哈尔市 / 梅里斯达斡尔族区");
-        put(row, template.headers(), "PROD_CULTIVAR_NAME", "龙单86");
-        put(row, template.headers(), "surveyDate", "2026-08-09");
-        put(row, template.headers(), "cultivatedAreaMu", "100");
-        put(row, template.headers(), "yieldPerMuKilograms", "500");
-        put(row, template.headers(), "PROD_REPORTER_PHONE", "13800000000");
-        put(row, template.headers(), "PROD_SAMPLE_CONTACT", "13900000000");
-        put(row, template.headers(), "PROD_SAMPLE_LATITUDE", "47.3543");
-        put(row, template.headers(), "PROD_SAMPLE_LONGITUDE", "123.9182");
-        put(row, template.headers(), "PROD_SAMPLE_NAME", "龙江县第一调查户");
-        put(row, template.headers(), "PROD_HARVEST_AREA_MU", "96.5");
-        put(row, template.headers(), "PROD_GROWTH_STAGE", "灌浆期");
-        put(row, template.headers(), "PROD_ENDING_INVENTORY", "12");
-        put(row, template.headers(), "PROD_SURPLUS_SUBJECT_CODE", "farmer-longjiang-xlsx-1");
-        put(row, template.headers(), "PROD_SURPLUS_CUTOFF_DATE", "2026-08-09");
-        put(row, template.headers(), "MOISTURE", "14.2");
-        put(row, template.headers(), "evidencePhotoId", PHOTO_ID);
+        put(row, template.headers(), "具体品种", "龙单86");
+        put(row, template.headers(), "数据年份", "2026");
+        put(row, template.headers(), "数据月份", "8");
+        put(row, template.headers(), "播种面积（亩）", "100");
+        put(row, template.headers(), "预计单产（公斤/亩）", "500");
+        put(row, template.headers(), "填报人联系方式", "13800000000");
+        put(row, template.headers(), "样本点联系方式", "13900000000");
+        put(row, template.headers(), "纬度（度）", "47.3543");
+        put(row, template.headers(), "经度（度）", "123.9182");
+        put(row, template.headers(), "样本点名称", "龙江县第一调查户");
+        put(row, template.headers(), "预计收获面积（亩）", "96.5");
+        put(row, template.headers(), "生育阶段", "灌浆期");
+        put(row, template.headers(), "销售数量（吨）", "12");
+        put(row, template.headers(), "水分（%）", "14.2");
         byte[] workbook = BusinessImportWorkbook.create(
                 template, java.util.List.of(row));
 
@@ -156,8 +158,7 @@ class ProductionImportRestIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].values.PROD_SAMPLE_NAME").value("龙江县第一调查户"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_HARVEST_AREA_MU").value("96.5"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_GROWTH_STAGE").value("灌浆期"))
-                .andExpect(jsonPath("$.data.items[0].values.PROD_SURPLUS_SUBJECT_CODE")
-                        .value("farmer-longjiang-xlsx-1"))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_SALES_VOLUME").value("12"))
                 .andExpect(jsonPath("$.data.items[0].values.MOISTURE").value("14.2000"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_REPORTER_NAME").value("产情测试员"));
 
@@ -166,7 +167,7 @@ class ProductionImportRestIntegrationTest {
     }
 
     @Test
-    void reportsMissingConditionalSurplusFieldsAsARowErrorInsteadOfServerFailure() throws Exception {
+    void importsOptionalUnsoldSurplusWithoutAskingForInternalGovernanceKeys() throws Exception {
         byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
                         .param("format", "xlsx")
                         .param("productCode", "CORN")
@@ -176,20 +177,21 @@ class ProductionImportRestIntegrationTest {
         var template = template(downloaded, "产情", "CORN", "FARMER");
         java.util.ArrayList<String> row = new java.util.ArrayList<>(
                 java.util.Collections.nCopies(template.headers().size(), ""));
-        put(row, template.headers(), "regionCode", "230208");
-        put(row, template.headers(), "PROD_CULTIVAR_NAME", "条件字段失败样例");
-        put(row, template.headers(), "surveyDate", "2026-08-09");
-        put(row, template.headers(), "cultivatedAreaMu", "100");
-        put(row, template.headers(), "yieldPerMuKilograms", "500");
-        put(row, template.headers(), "PROD_REPORTER_PHONE", "13800000000");
-        put(row, template.headers(), "PROD_SAMPLE_CONTACT", "13900000000");
-        put(row, template.headers(), "PROD_SAMPLE_LATITUDE", "47.3543");
-        put(row, template.headers(), "PROD_SAMPLE_LONGITUDE", "123.9182");
-        put(row, template.headers(), "PROD_ENDING_INVENTORY", "12");
-        put(row, template.headers(), "evidencePhotoId", PHOTO_ID);
+        put(row, template.headers(), "地区", "230208");
+        put(row, template.headers(), "具体品种", "条件字段失败样例");
+        put(row, template.headers(), "数据年份", "2026");
+        put(row, template.headers(), "数据月份", "8");
+        put(row, template.headers(), "播种面积（亩）", "100");
+        put(row, template.headers(), "预计单产（公斤/亩）", "500");
+        put(row, template.headers(), "填报人联系方式", "13800000000");
+        put(row, template.headers(), "样本点联系方式", "13900000000");
+        put(row, template.headers(), "纬度（度）", "47.3543");
+        put(row, template.headers(), "经度（度）", "123.9182");
+        put(row, template.headers(), "期初库存（吨）", "20");
+        put(row, template.headers(), "期末余粮（吨）", "12");
         byte[] workbook = BusinessImportWorkbook.create(template, java.util.List.of(row));
 
-        String response = mvc.perform(multipart("/api/v1/imports/production")
+        mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "missing-surplus-contract.xlsx",
                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
                         .param("productCode", "CORN")
@@ -197,23 +199,20 @@ class ProductionImportRestIntegrationTest {
                         .header("Idempotency-Key", "missing-surplus-contract")
                         .principal(() -> "production-tester"))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.statusCode").value("COMPLETED_WITH_ERRORS"))
-                .andExpect(jsonPath("$.data.importedRows").value(0))
-                .andExpect(jsonPath("$.data.failedRows").value(1))
-                .andReturn().getResponse().getContentAsString();
-        String jobId = response.replaceFirst("(?s).*?\"id\":\"([^\"]+)\".*", "$1");
+                .andExpect(jsonPath("$.data.statusCode").value("COMPLETED"))
+                .andExpect(jsonPath("$.data.importedRows").value(1))
+                .andExpect(jsonPath("$.data.failedRows").value(0));
 
-        mvc.perform(get("/api/v1/imports/production/{jobId}/errors", jobId)
-                        .principal(() -> "production-tester"))
+        mvc.perform(get("/api/v1/production-records")
+                        .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
                 .andExpect(status().isOk())
-                .andExpect(content().string(org.hamcrest.Matchers.containsString("INVALID_PRODUCTION_RECORD")));
-
-        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
-                .query(Long.class).single()).isZero();
+                .andExpect(jsonPath("$.data.items[0].values.PROD_ENDING_INVENTORY").value("12"))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_OPENING_INVENTORY").value("20"));
     }
 
     @Test
-    void reportsUnavailableEvidenceAsARowErrorInsteadOfServerFailure() throws Exception {
+    void neverExposesAttachmentOrSurplusGovernanceKeysInTheBusinessWorkbook() throws Exception {
         byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
                         .param("format", "xlsx")
                         .param("productCode", "CORN")
@@ -221,41 +220,11 @@ class ProductionImportRestIntegrationTest {
                         .principal(() -> "production-tester"))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
         var template = template(downloaded, "产情", "CORN", "FARMER");
-        java.util.ArrayList<String> row = new java.util.ArrayList<>(
-                java.util.Collections.nCopies(template.headers().size(), ""));
-        put(row, template.headers(), "regionCode", "230208");
-        put(row, template.headers(), "PROD_CULTIVAR_NAME", "照片失败样例");
-        put(row, template.headers(), "surveyDate", "2026-08-09");
-        put(row, template.headers(), "cultivatedAreaMu", "100");
-        put(row, template.headers(), "yieldPerMuKilograms", "500");
-        put(row, template.headers(), "PROD_REPORTER_PHONE", "13800000000");
-        put(row, template.headers(), "PROD_SAMPLE_CONTACT", "13900000000");
-        put(row, template.headers(), "PROD_SAMPLE_LATITUDE", "47.3543");
-        put(row, template.headers(), "PROD_SAMPLE_LONGITUDE", "123.9182");
-        put(row, template.headers(), "evidencePhotoId", "00000000-0000-0000-0000-000000000099");
-        byte[] workbook = BusinessImportWorkbook.create(template, java.util.List.of(row));
-
-        String response = mvc.perform(multipart("/api/v1/imports/production")
-                        .file(new MockMultipartFile("file", "missing-evidence.xlsx",
-                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
-                        .param("productCode", "CORN")
-                        .param("objectTypeCode", "FARMER")
-                        .header("Idempotency-Key", "missing-evidence")
-                        .principal(() -> "production-tester"))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.statusCode").value("COMPLETED_WITH_ERRORS"))
-                .andExpect(jsonPath("$.data.importedRows").value(0))
-                .andExpect(jsonPath("$.data.failedRows").value(1))
-                .andReturn().getResponse().getContentAsString();
-        String jobId = response.replaceFirst("(?s).*?\"id\":\"([^\"]+)\".*", "$1");
-
-        mvc.perform(get("/api/v1/imports/production/{jobId}/errors", jobId)
-                        .principal(() -> "production-tester"))
-                .andExpect(status().isOk())
-                .andExpect(content().string(org.hamcrest.Matchers.containsString("EVIDENCE_PHOTO_NOT_FOUND")));
-
-        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
-                .query(Long.class).single()).isZero();
+        assertThat(template.headers())
+                .allSatisfy(header -> assertThat(header)
+                        .doesNotContain("_")
+                        .doesNotMatch(".*[A-Za-z].*"))
+                .doesNotContain("现场水印照片编号", "稳定主体码", "内部治理截止日期");
     }
 
     @Test
@@ -287,7 +256,7 @@ class ProductionImportRestIntegrationTest {
     }
 
     @Test
-    void rejectsAnObsoleteProductionFieldContractWithoutFallingBackToLegacyXlsxParsing() throws Exception {
+    void rejectsObsoleteBusinessColumnsWithoutFallingBackToLegacyXlsxParsing() throws Exception {
         byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
                         .param("format", "xlsx")
                         .param("productCode", "CORN")
@@ -295,9 +264,11 @@ class ProductionImportRestIntegrationTest {
                         .principal(() -> "production-tester"))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
         var current = template(downloaded, "产情", "CORN", "FARMER");
+        var obsoleteLabels = new java.util.ArrayList<>(current.labels());
+        obsoleteLabels.set(0, "旧调查日期");
         var obsolete = new BusinessImportWorkbook.Template(
                 current.domainCode(), current.domainLabel(), current.productCode(), current.objectTypeCode(),
-                "production-survey-fields-obsolete", current.headers(), current.labels(), java.util.List.of());
+                current.headers(), obsoleteLabels);
         byte[] workbook = BusinessImportWorkbook.create(obsolete, java.util.List.of(
                 java.util.Collections.nCopies(obsolete.headers().size(), "")));
 
@@ -309,7 +280,7 @@ class ProductionImportRestIntegrationTest {
                         .header("Idempotency-Key", "obsolete-production-contract")
                         .principal(() -> "production-tester"))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("IMPORT_CONTRACT_MISMATCH"));
+                .andExpect(jsonPath("$.error.code").value("INVALID_IMPORT_FORMAT"));
 
         assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
                 .query(Long.class).single()).isZero();
@@ -326,13 +297,9 @@ class ProductionImportRestIntegrationTest {
             String productCode, String objectTypeCode) {
         var rows = XlsxTable.parseWorksheet(workbook, 1, 256);
         java.util.List<String> labels = withoutTrailingBlanks(rows.get(0));
-        java.util.List<String> headers = withoutTrailingBlanks(rows.get(1));
-        assertThat(headers).hasSameSizeAs(labels);
-        String contractVersion = XlsxTable.parseWorksheet(workbook, 2, 2).stream()
-                .filter(row -> "字段契约版本".equals(row.getFirst()))
-                .map(row -> row.get(1)).findFirst().orElse(null);
+        BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(workbook, "PRODUCTION");
         return new BusinessImportWorkbook.Template("PRODUCTION", label, productCode, objectTypeCode,
-                contractVersion, headers, labels, java.util.List.of());
+                context.contractVersion(), context.contractDigest(), labels, labels, java.util.List.of());
     }
 
     private static java.util.List<String> withoutTrailingBlanks(java.util.List<String> values) {

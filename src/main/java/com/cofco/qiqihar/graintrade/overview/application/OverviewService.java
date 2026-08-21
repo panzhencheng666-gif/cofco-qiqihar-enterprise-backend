@@ -79,7 +79,8 @@ public class OverviewService {
 
     @Transactional(readOnly = true)
     public List<AnnualComparisonDefinition> annualComparisonDefinitions(String sourceDomain, String productCode) {
-        if (!("PRODUCTION".equals(sourceDomain) || "MARKET".equals(sourceDomain))
+        if (!("PRODUCTION".equals(sourceDomain) || "MARKET".equals(sourceDomain)
+                || "LOGISTICS".equals(sourceDomain))
                 || blank(productCode) || !repository.knownProduct(productCode)) throw invalid();
         if (readScope().regionCodes().isEmpty()) return List.of();
         return repository.annualComparisonDefinitions(sourceDomain, productCode);
@@ -98,8 +99,9 @@ public class OverviewService {
         if (effectiveSurveyYear == null || effectiveSurveyYear < 1900 || effectiveSurveyYear > 2200) throw invalid();
         AnnualComparisonDefinition definition = repository.annualComparisonDefinition(indicatorCode)
                 .orElseThrow(OverviewService::invalid);
-        if (!("PRODUCTION".equals(definition.sourceDomain()) || "MARKET".equals(definition.sourceDomain()))
-                || ("MARKET".equals(definition.sourceDomain()) && !blank(cultivarCode))) throw invalid();
+        if (!("PRODUCTION".equals(definition.sourceDomain()) || "MARKET".equals(definition.sourceDomain())
+                || "LOGISTICS".equals(definition.sourceDomain()))
+                || (!"PRODUCTION".equals(definition.sourceDomain()) && !blank(cultivarCode))) throw invalid();
         AuthorizedReadScope scope = readScope();
         scope.requireRegion(regionCode);
         return new AnnualComparisonView(definition.code(), definition.name(), definition.sourceDomain(), productCode,

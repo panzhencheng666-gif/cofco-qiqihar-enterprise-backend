@@ -12,9 +12,19 @@ import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-/** Creates the common, versioned XLSX protocol used by every business import domain. */
+/** Creates the common business-only XLSX protocol used by every import domain. */
 public final class BusinessImportWorkbook {
-    public static final String VERSION = "1";
+    private static final Map<String, String> PUBLIC_CONTEXT_VALUES = Map.ofEntries(
+            Map.entry("PRODUCTION", "产情"), Map.entry("MARKET", "市场"), Map.entry("LOGISTICS", "物流"),
+            Map.entry("CORN", "玉米"), Map.entry("SOYBEAN", "大豆"), Map.entry("RICE", "稻谷"),
+            Map.entry("FARMER", "农户"), Map.entry("VILLAGE_COMMITTEE", "村委会"),
+            Map.entry("AGRICULTURAL_TECH_STATION", "农技站"), Map.entry("TRADER", "贸易商"),
+            Map.entry("DEEP_PROCESSOR", "深加工"), Map.entry("WHOLESALE_MARKET", "批发市场"),
+            Map.entry("RESERVE_ENTERPRISE", "承储企业"), Map.entry("RICE_MILL", "米厂"),
+            Map.entry("BREEDING_FACTORY", "养殖厂"), Map.entry("FEED_MILL", "饲料厂"),
+            Map.entry("RAIL_NODE", "铁路站点"), Map.entry("ROAD_NODE", "公路物流节点"),
+            Map.entry("ROUTE_EVENT", "物流业务记录"));
+    private static final Map<String, String> INTERNAL_CONTEXT_VALUES = reverse(PUBLIC_CONTEXT_VALUES);
 
     public record ColumnRule(String code, String valueType, String controlType, boolean required,
                              List<String> options, int precision, int scale, String description) {
@@ -32,15 +42,21 @@ public final class BusinessImportWorkbook {
     }
 
     public record Template(String domainCode, String domainLabel, String productCode, String objectTypeCode,
-                           String contractVersion, List<String> headers, List<String> labels,
+                           String contractVersion, String contractDigest, List<String> headers, List<String> labels,
                            List<ColumnRule> rules) {
         public Template {
             domainCode = required(domainCode);
             domainLabel = required(domainLabel);
-            productCode = required(productCode);
-            objectTypeCode = required(objectTypeCode);
+            productCode = optional(productCode);
+            objectTypeCode = optional(objectTypeCode);
+            if ((productCode == null) != (objectTypeCode == null)
+                    || (productCode == null && !"LOGISTICS".equals(domainCode))) {
+                throw new IllegalArgumentException("INVALID_TEMPLATE_CONTEXT");
+            }
             contractVersion = contractVersion == null || contractVersion.isBlank()
                     ? null : contractVersion.trim();
+            contractDigest = contractDigest == null || contractDigest.isBlank()
+                    ? null : contractDigest.trim();
             headers = List.copyOf(headers);
             labels = List.copyOf(labels);
             rules = rules == null ? List.of() : List.copyOf(rules);
@@ -53,17 +69,32 @@ public final class BusinessImportWorkbook {
         }
 
         public Template(String domainCode, String domainLabel, String productCode, String objectTypeCode,
+                String contractVersion, List<String> headers, List<String> labels, List<ColumnRule> rules) {
+            this(domainCode, domainLabel, productCode, objectTypeCode, contractVersion, null,
+                    headers, labels, rules);
+        }
+
+        public Template(String domainCode, String domainLabel, String productCode, String objectTypeCode,
                 List<String> headers, List<String> labels) {
-            this(domainCode, domainLabel, productCode, objectTypeCode, null, headers, labels, List.of());
+            this(domainCode, domainLabel, productCode, objectTypeCode, null, null, headers, labels, List.of());
         }
 
         private static String required(String value) {
             if (value == null || value.isBlank()) throw new IllegalArgumentException("INVALID_TEMPLATE_CONTEXT");
             return value.trim();
         }
+
+        private static String optional(String value) {
+            return value == null || value.isBlank() ? null : value.trim();
+        }
     }
 
     private BusinessImportWorkbook() {}
+
+    /** Returns the business-facing Chinese label for a template context code. */
+    public static String businessLabel(String internalValue) {
+        return publicContextValue(internalValue);
+    }
 
     public static byte[] create(Template template) {
         return create(template, List.of());
@@ -93,15 +124,24 @@ public final class BusinessImportWorkbook {
 
     public record ImportSheet(String productCode, String objectTypeCode, List<List<String>> rows) {}
 
-    public record Context(String productCode, String objectTypeCode, String contractVersion) {}
+    public record Context(String productCode, String objectTypeCode, String contractVersion, String contractDigest) {}
 
     public static Context context(byte[] bytes, String domainCode) {
         Map<String, String> context = instructionContext(bytes);
-        if (!VERSION.equals(context.get("模板版本")) || !domainCode.equals(context.get("业务类型"))
-                || blank(context.get("产品品种")) || blank(context.get("对象类型"))) {
+        if (blank(context.get("业务类型"))) {
             throw new IllegalArgumentException("INVALID_XLSX_CONTEXT");
         }
-        return new Context(context.get("产品品种"), context.get("对象类型"), context.get("字段契约版本"));
+        String actualDomain = internalContextValue(context.get("业务类型"));
+        if (!domainCode.equals(actualDomain)) throw new IllegalArgumentException("INVALID_XLSX_CONTEXT");
+        boolean productMissing = blank(context.get("产品品种"));
+        boolean objectTypeMissing = blank(context.get("对象类型"));
+        if (productMissing != objectTypeMissing
+                || (productMissing && !"LOGISTICS".equals(domainCode))) {
+            throw new IllegalArgumentException("INVALID_XLSX_CONTEXT");
+        }
+        return new Context(productMissing ? null : internalContextValue(context.get("产品品种")),
+                objectTypeMissing ? null : internalContextValue(context.get("对象类型")),
+                null, null);
     }
 
     public static ImportSheet read(byte[] bytes, String domainCode, List<String> headers, List<String> labels) {
@@ -112,11 +152,12 @@ public final class BusinessImportWorkbook {
             int maxDataRows) {
         Context context = context(bytes, domainCode);
         List<List<String>> sheet = XlsxTable.parseWorksheet(bytes, 1, headers.size(), maxDataRows + 2);
-        if (sheet.size() < 2 || !sheet.get(0).equals(labels) || !sheet.get(1).equals(headers)) {
+        if (sheet.isEmpty() || !sheet.getFirst().equals(labels)) {
             throw new IllegalArgumentException("INVALID_XLSX_TEMPLATE");
         }
+        int firstDataRow = legacyInternalHeaderRow(sheet, headers) ? 2 : 1;
         return new ImportSheet(context.productCode(), context.objectTypeCode(),
-                List.copyOf(sheet.subList(2, sheet.size())));
+                boundedDataRows(sheet, firstDataRow, maxDataRows));
     }
 
     public static ImportSheet read(byte[] bytes, Template template) {
@@ -125,24 +166,31 @@ public final class BusinessImportWorkbook {
 
     public static ImportSheet read(byte[] bytes, Template template, int maxDataRows) {
         Context context = context(bytes, template.domainCode());
-        if (!template.productCode().equals(context.productCode())
-                || !template.objectTypeCode().equals(context.objectTypeCode())) {
+        if (!java.util.Objects.equals(template.productCode(), context.productCode())
+                || !java.util.Objects.equals(template.objectTypeCode(), context.objectTypeCode())) {
             throw new IllegalArgumentException("XLSX_CONTEXT_MISMATCH");
-        }
-        if (template.contractVersion() != null
-                && !template.contractVersion().equals(context.contractVersion())) {
-            throw new IllegalArgumentException("XLSX_CONTRACT_MISMATCH");
         }
         List<List<String>> sheet = XlsxTable.parseWorksheet(
                 bytes, 1, template.headers().size(), maxDataRows + 2);
-        if (sheet.size() < 2 || !sheet.get(0).equals(template.labels())
-                || !sheet.get(1).equals(template.headers())) {
+        if (sheet.isEmpty() || !sheet.getFirst().equals(template.labels())) {
             throw new IllegalArgumentException("INVALID_XLSX_TEMPLATE");
         }
+        int firstDataRow = legacyInternalHeaderRow(sheet, template.headers()) ? 2 : 1;
         List<List<String>> rows = normalizeRows(
-                List.copyOf(sheet.subList(2, sheet.size())), template.rules());
+                boundedDataRows(sheet, firstDataRow, maxDataRows), template.rules());
         validateRows(rows, template.rules());
         return new ImportSheet(context.productCode(), context.objectTypeCode(), rows);
+    }
+
+    private static boolean legacyInternalHeaderRow(List<List<String>> sheet, List<String> headers) {
+        return sheet.size() > 1 && sheet.get(1).equals(headers);
+    }
+
+    private static List<List<String>> boundedDataRows(
+            List<List<String>> sheet, int firstDataRow, int maxDataRows) {
+        List<List<String>> rows = List.copyOf(sheet.subList(firstDataRow, sheet.size()));
+        if (rows.size() > maxDataRows) throw new IllegalArgumentException("INVALID_XLSX");
+        return rows;
     }
 
     private static List<List<String>> normalizeRows(List<List<String>> rows, List<ColumnRule> rules) {
@@ -181,7 +229,7 @@ public final class BusinessImportWorkbook {
     private static String dataSheet(Template template, List<List<String>> dataRows) {
         StringBuilder rows = new StringBuilder();
         for (int index = 0; index < dataRows.size(); index++) {
-            rows.append(dataRow(index + 3, dataRows.get(index), template.rules()));
+            rows.append(dataRow(index + 2, dataRows.get(index), template.rules()));
         }
         return """
                 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -193,25 +241,23 @@ public final class BusinessImportWorkbook {
                   %s
                 </worksheet>
                 """.formatted(columns(template), row(1, template.labels(), 1, false),
-                row(2, template.headers(), 0, true) + rows, columnName(template.headers().size()),
+                rows, columnName(template.headers().size()),
                 dataValidations(template));
     }
 
     private static String instructionSheet(Template template) {
         java.util.ArrayList<List<String>> metadata = new java.util.ArrayList<>(List.of(
-                List.of("模板版本", VERSION),
-                List.of("业务类型", template.domainCode()),
-                List.of("产品品种", template.productCode()),
-                List.of("对象类型", template.objectTypeCode())));
-        if (template.contractVersion() != null) {
-            metadata.add(List.of("字段契约版本", template.contractVersion()));
+                List.of("业务类型", publicContextValue(template.domainCode()))));
+        if (template.productCode() != null) {
+            metadata.add(List.of("产品品种", publicContextValue(template.productCode())));
+            metadata.add(List.of("对象类型", publicContextValue(template.objectTypeCode())));
         }
         StringBuilder xml = new StringBuilder();
         for (int index = 0; index < metadata.size(); index++) {
             xml.append(row(index + 1, metadata.get(index), 0, true));
         }
         java.util.ArrayList<List<String>> instructions = new java.util.ArrayList<>(List.of(
-                List.of("填报说明", "请按字段名称填写，不得修改表头或隐藏的模板校验信息"),
+                List.of("填报说明", "请按业务字段名称填写，不得修改表头"),
                 List.of("填报人", "由登录账号自动记录，不得在模板中填写")));
         if ("PRODUCTION".equals(template.domainCode()) && template.headers().contains("regionCode")) {
             instructions.add(List.of("所在地区",
@@ -285,6 +331,26 @@ public final class BusinessImportWorkbook {
                 """.formatted(xml(template.domainLabel()));
     }
 
+    private static String publicContextValue(String internalValue) {
+        String value = PUBLIC_CONTEXT_VALUES.get(internalValue);
+        if (value == null) throw new IllegalArgumentException("INVALID_PUBLIC_XLSX_CONTEXT");
+        return value;
+    }
+
+    private static String internalContextValue(String publicValue) {
+        String value = INTERNAL_CONTEXT_VALUES.get(publicValue);
+        if (value == null) throw new IllegalArgumentException("INVALID_XLSX_CONTEXT");
+        return value;
+    }
+
+    private static Map<String, String> reverse(Map<String, String> values) {
+        Map<String, String> reversed = new LinkedHashMap<>();
+        values.forEach((internal, business) -> {
+            if (reversed.put(business, internal) != null) throw new IllegalStateException("DUPLICATE_XLSX_CONTEXT");
+        });
+        return Map.copyOf(reversed);
+    }
+
     private static String contentTypes() {
         return """
                 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -347,7 +413,7 @@ public final class BusinessImportWorkbook {
                     .append(" prompt=\"").append(xml(prompt)).append("\"")
                     .append(" errorTitle=\"字段校验失败\" error=\"").append(xml(prompt)).append("\"");
             validations.append(validationAttributes(rule)).append(" sqref=\"")
-                    .append(column).append("3:").append(column).append("5002\">")
+                    .append(column).append("2:").append(column).append("5001\">")
                     .append(validationFormula(rule, column)).append("</dataValidation>");
         }
         return "<dataValidations count=\"" + template.rules().size() + "\">"

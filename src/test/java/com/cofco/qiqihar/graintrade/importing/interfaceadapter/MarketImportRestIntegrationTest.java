@@ -11,6 +11,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.importing.application.MarketImportTemplate;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
+import com.cofco.qiqihar.graintrade.market.importing.MarketImportPort;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.awt.Color;
 import java.awt.image.BufferedImage;
@@ -26,6 +27,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.mock.web.MockMultipartFile;
@@ -37,6 +40,7 @@ import org.springframework.test.web.servlet.MockMvc;
 class MarketImportRestIntegrationTest {
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
+    @Autowired MarketImportPort market;
     private JdbcClient jdbc;
 
     @BeforeEach
@@ -113,6 +117,8 @@ class MarketImportRestIntegrationTest {
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
         var template = template(downloaded, "CORN", "FEED_MILL");
         java.util.Map<String, String> fields = new java.util.HashMap<>();
+        fields.put("surveyYear", "2026");
+        fields.put("surveyMonth", "8");
         fields.put("MKT_REGION", "230200");
         fields.put("MKT_TRADE_DATE", "2026-08-01");
         fields.put("MKT_PURCHASE_BASE_PRICE", "2300");
@@ -123,19 +129,12 @@ class MarketImportRestIntegrationTest {
         fields.put("MKT_PACKAGING_FORM", "BULK");
         fields.put("MKT_REPORTER_PHONE", "13800000000");
         fields.put("MKT_SAMPLE_NAME", "齐齐哈尔第一粮店");
-        fields.put("MKT_CULTIVAR_NAME", "龙单86");
         fields.put("MKT_SAMPLE_CONTACT", "13900000000");
         fields.put("MKT_SAMPLE_LATITUDE", "47.3543");
         fields.put("MKT_SAMPLE_LONGITUDE", "123.9182");
         fields.put("PURCHASE_VOLUME", "12");
         fields.put("MOISTURE", "14.6");
         fields.put("ENDING_INVENTORY", "20");
-        fields.put("MKT_INVENTORY_HOLDER_CODE", "feed-mill-qiqihar-xlsx-1");
-        fields.put("MKT_INVENTORY_OWNERSHIP_TYPE", "OWNED");
-        fields.put("MKT_STORAGE_REGION_CODE", "230200");
-        fields.put("MKT_CARGO_OWNER_CODE", "feed-mill-qiqihar-xlsx-1");
-        fields.put("MKT_INVENTORY_CUTOFF_DATE", "2026-08-01");
-        fields.put("MKT_INVENTORY_POLICY_ATTRIBUTE", "COMMERCIAL");
         fields.put(MarketImportTemplate.EVIDENCE_PHOTO_ID, photoId);
         List<String> values = template.headers().stream()
                 .map(header -> fields.getOrDefault(header, "")).toList();
@@ -158,14 +157,11 @@ class MarketImportRestIntegrationTest {
                         .queryParam("pageSize", "20")
                         .principal(() -> "market-tester"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[0].values.MKT_CULTIVAR_NAME").value("龙单86"))
-                .andExpect(jsonPath("$.data.items[0].values.MKT_INVENTORY_HOLDER_CODE")
-                        .value("feed-mill-qiqihar-xlsx-1"));
+                .andExpect(jsonPath("$.data.items[0].values.MKT_STORAGE_REGION_CODE").doesNotExist());
     }
 
     @Test
-    void reportsMissingConditionalInventoryFieldsAsARowErrorInsteadOfServerFailure() throws Exception {
-        String photoId = uploadEvidence();
+    void automaticallyMapsBusinessRegionToInternalStorageRegionForInventoryImports() throws Exception {
         byte[] downloaded = mvc.perform(get("/api/v1/imports/market/template")
                         .param("format", "xlsx")
                         .param("productCode", "CORN")
@@ -174,6 +170,8 @@ class MarketImportRestIntegrationTest {
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
         var template = template(downloaded, "CORN", "FEED_MILL");
         java.util.Map<String, String> fields = new java.util.HashMap<>();
+        fields.put("surveyYear", "2026");
+        fields.put("surveyMonth", "8");
         fields.put("MKT_REGION", "230200");
         fields.put("MKT_TRADE_DATE", "2026-08-01");
         fields.put("MKT_PURCHASE_BASE_PRICE", "2300");
@@ -188,7 +186,6 @@ class MarketImportRestIntegrationTest {
         fields.put("MKT_SAMPLE_LATITUDE", "47.3543");
         fields.put("MKT_SAMPLE_LONGITUDE", "123.9182");
         fields.put("ENDING_INVENTORY", "20");
-        fields.put(MarketImportTemplate.EVIDENCE_PHOTO_ID, photoId);
         List<String> values = template.headers().stream()
                 .map(header -> fields.getOrDefault(header, "")).toList();
         byte[] workbook = BusinessImportWorkbook.create(template, List.of(values));
@@ -201,19 +198,19 @@ class MarketImportRestIntegrationTest {
                         .header("Idempotency-Key", "missing-inventory-contract")
                         .principal(() -> "market-tester"))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.statusCode").value("COMPLETED_WITH_ERRORS"))
-                .andExpect(jsonPath("$.data.importedRows").value(0))
-                .andExpect(jsonPath("$.data.failedRows").value(1))
+                .andExpect(jsonPath("$.data.statusCode").value("COMPLETED"))
+                .andExpect(jsonPath("$.data.importedRows").value(1))
+                .andExpect(jsonPath("$.data.failedRows").value(0))
                 .andReturn().getResponse().getContentAsString();
-        String jobId = response.replaceFirst("(?s).*?\"id\":\"([^\"]+)\".*", "$1");
-
-        mvc.perform(get("/api/v1/imports/market/{jobId}/errors", jobId)
-                        .principal(() -> "market-tester"))
+        assertThat(response).contains("COMPLETED");
+        String recordId = jdbc.sql("SELECT record_id FROM market.market_record").query(String.class).single();
+        mvc.perform(post("/api/v1/market-records/{id}/submit", recordId)
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"version\":0}"))
                 .andExpect(status().isOk())
-                .andExpect(content().string(org.hamcrest.Matchers.containsString("INVALID_MARKET_RECORD")));
-
-        assertThat(jdbc.sql("SELECT count(*) FROM market.market_record")
-                .query(Long.class).single()).isZero();
+                .andExpect(jsonPath("$.data.inventoryGovernanceStatus").value("待库存权属核定"))
+                .andExpect(jsonPath("$.data.coreValues.MKT_STORAGE_REGION_CODE").doesNotExist())
+                .andExpect(jsonPath("$.data.coreValues.MKT_INVENTORY_HOLDER_CODE").doesNotExist());
     }
 
     @Test
@@ -246,39 +243,43 @@ class MarketImportRestIntegrationTest {
 
     @Test
     void workbookFieldsExactlyFollowTheActiveReserveEnterpriseDefinition() throws Exception {
-        byte[] workbook = mvc.perform(get("/api/v1/imports/market/template")
+        var response = mvc.perform(get("/api/v1/imports/market/template")
                         .param("format", "xlsx")
                         .param("productCode", "CORN")
                         .param("objectTypeCode", "RESERVE_ENTERPRISE")
                         .principal(() -> "market-tester"))
                 .andExpect(status().isOk())
-                .andReturn().getResponse().getContentAsByteArray();
+                .andReturn().getResponse();
+        assertThat(ContentDisposition.parse(response.getHeader(HttpHeaders.CONTENT_DISPOSITION)).getFilename())
+                .isEqualTo("市场-玉米-承储企业-批量导入模板.xlsx");
+        byte[] workbook = response.getContentAsByteArray();
 
         var template = template(workbook, "CORN", "RESERVE_ENTERPRISE");
         assertThat(com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
                         .parseWorksheet(workbook, 1, template.headers().size()))
-                .containsExactly(template.labels(), template.headers());
+                .containsExactly(template.labels());
         assertThat(template.headers())
-                .contains("MKT_REGION", "MKT_TRADE_DATE", "MKT_SAMPLE_NAME", "MKT_CULTIVAR_NAME",
-                        "MKT_PURCHASE_BASE_PRICE", "MKT_SALE_BASE_PRICE",
-                        "OPENING_INVENTORY", "STOCK_OUTFLOW", "ENDING_INVENTORY",
+                .contains("surveyYear", "surveyMonth", "MKT_REGION", "MKT_SAMPLE_NAME",
+                        "MKT_REPORTER_NAME", "MKT_REPORTER_PHONE", "MKT_SAMPLE_CONTACT", "MKT_SAMPLE_LATITUDE",
+                        "MKT_SAMPLE_LONGITUDE", "MKT_PURCHASE_BASE_PRICE", "MKT_SALE_BASE_PRICE",
+                        "ENDING_INVENTORY")
+                .doesNotContain("MKT_TRADE_DATE", "MKT_CULTIVAR_NAME", "OPENING_INVENTORY", "STOCK_OUTFLOW",
                         "MKT_INVENTORY_HOLDER_CODE", "MKT_INVENTORY_OWNERSHIP_TYPE",
-                        "MKT_STORAGE_REGION_CODE", "MKT_CARGO_OWNER_CODE",
-                        "MKT_INVENTORY_CUTOFF_DATE", "MKT_INVENTORY_POLICY_ATTRIBUTE",
-                        MarketImportTemplate.EVIDENCE_PHOTO_ID)
-                .doesNotContain("MKT_REPORTER_NAME", "MKT_TRADE_DIRECTION", "MKT_ACTUAL_TRADE_PRICE",
+                        "MKT_STORAGE_REGION_CODE", "MKT_CARGO_OWNER_CODE", "MKT_INVENTORY_CUTOFF_DATE",
+                        "MKT_INVENTORY_POLICY_ATTRIBUTE", MarketImportTemplate.EVIDENCE_PHOTO_ID,
+                        "MKT_TRADE_DIRECTION", "MKT_ACTUAL_TRADE_PRICE",
                         "STOCK_INFLOW", "STORAGE_LOSS");
     }
 
-    private static BusinessImportWorkbook.Template template(byte[] workbook,
+    private BusinessImportWorkbook.Template template(byte[] workbook,
             String productCode, String objectTypeCode) {
         var rows = com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
                 .parseWorksheet(workbook, 1, 256);
         java.util.List<String> labels = withoutTrailingBlanks(rows.get(0));
-        java.util.List<String> headers = withoutTrailingBlanks(rows.get(1));
-        assertThat(headers).hasSameSizeAs(labels);
-        return new BusinessImportWorkbook.Template("MARKET", "市场", productCode, objectTypeCode,
-                headers, labels);
+        BusinessImportWorkbook.Template template = MarketImportTemplate.workbook(
+                market.definition(productCode, objectTypeCode));
+        assertThat(labels).isEqualTo(template.labels());
+        return template;
     }
 
     private static java.util.List<String> withoutTrailingBlanks(java.util.List<String> values) {

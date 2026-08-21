@@ -102,7 +102,7 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
     public Optional<ProductionRecord> findById(String id) {
         return jdbc.sql("""
                         SELECT record_id, product_code, object_type_code, region_code, cultivar_code,
-                               survey_date, reported_at, cultivated_area_mu, yield_per_mu_kg,
+                               survey_date, survey_year, survey_month, reported_at, cultivated_area_mu, yield_per_mu_kg,
                                estimated_output_kg, status_code, return_reason, version
                         FROM production.production_record WHERE record_id = :id
                         """).param("id", id).query((row, ignored) -> {
@@ -110,6 +110,7 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
                     return new ProductionRecord(row.getString("record_id"), row.getString("product_code"),
                             row.getString("object_type_code"), row.getString("region_code"),
                             row.getString("cultivar_code"), row.getObject("survey_date", LocalDate.class),
+                            row.getInt("survey_year"), (Integer) row.getObject("survey_month"),
                             row.getObject("reported_at", OffsetDateTime.class), row.getBigDecimal("cultivated_area_mu"),
                             row.getBigDecimal("yield_per_mu_kg"), row.getBigDecimal("estimated_output_kg"),
                             ProductionStatus.valueOf(row.getString("status_code")), row.getString("return_reason"),
@@ -196,9 +197,11 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         jdbc.sql("""
                         INSERT INTO production.production_record
                             (record_id, product_code, object_type_code, region_code, cultivar_code, survey_date,
+                             survey_year, survey_month, survey_period_precision, survey_period_governance_state,
                              reported_at, cultivated_area_mu, yield_per_mu_kg, status_code, return_reason,
                              last_modified_by, version)
                         VALUES (:id, :productCode, :objectTypeCode, :regionCode, :cultivarCode, :surveyDate,
+                                :surveyYear, :surveyMonth, :surveyPrecision, 'CONFIRMED',
                                 :reportedAt, :area, :yield, :status, :returnReason, :actorId, 0)
                         """).params(header(record, actorId)).update();
         replaceFacts(record);
@@ -211,7 +214,10 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         int updated = jdbc.sql("""
                         UPDATE production.production_record SET
                             object_type_code = :objectTypeCode, region_code = :regionCode, cultivar_code = :cultivarCode,
-                            survey_date = :surveyDate, reported_at = :reportedAt, cultivated_area_mu = :area,
+                            survey_date = :surveyDate, survey_year = :surveyYear, survey_month = :surveyMonth,
+                            survey_period_precision = :surveyPrecision,
+                            survey_period_governance_state = 'CONFIRMED',
+                            reported_at = :reportedAt, cultivated_area_mu = :area,
                             yield_per_mu_kg = :yield, status_code = :status, return_reason = :returnReason,
                             last_modified_by = :actorId, updated_at = now(), version = version + 1
                         WHERE record_id = :id AND version = :expectedVersion
@@ -343,10 +349,9 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         String canonicalName = record.submissionMetadata().get("PROD_SAMPLE_NAME");
         String latitudeValue = record.submissionMetadata().get("PROD_SAMPLE_LATITUDE");
         String longitudeValue = record.submissionMetadata().get("PROD_SAMPLE_LONGITUDE");
-        if (subjectId == null || subjectId.isBlank()
-                || canonicalName == null || canonicalName.isBlank()
+        if (canonicalName == null || canonicalName.isBlank()
                 || latitudeValue == null || longitudeValue == null) return;
-        subjectId = subjectId.trim();
+        subjectId = subjectId == null || subjectId.isBlank() ? null : subjectId.trim();
         BigDecimal latitude = new BigDecimal(latitudeValue);
         BigDecimal longitude = new BigDecimal(longitudeValue);
         boolean contained = jdbc.sql("""
@@ -359,9 +364,9 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         if (!contained) return;
 
         jdbc.sql("SELECT pg_advisory_xact_lock(hashtextextended(:identity,0))")
-                .param("identity", "PRODUCTION:" + subjectId)
+                .param("identity", subjectId == null ? "PRODUCTION_RECORD:" + record.id() : "PRODUCTION:" + subjectId)
                 .query((row, index) -> Boolean.TRUE).single();
-        Optional<ExistingSamplePoint> existing = jdbc.sql("""
+        Optional<ExistingSamplePoint> existing = subjectId == null ? Optional.empty() : jdbc.sql("""
                 SELECT point.sample_point_id,point.region_code,
                        ST_X(point.governed_point) longitude,ST_Y(point.governed_point) latitude,
                        (SELECT count(DISTINCT linked.object_type_code)=1
@@ -412,11 +417,13 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
                 .param("latitude", latitude).param("effectiveFrom", record.surveyDate())
                 .param("submittingActorId", submittingActorId).param("approvedAt", approvedTime)
                 .param("approvingActorId", approvingActorId).update();
-        jdbc.sql("""
-                SELECT platform.register_approved_sample_subject(
-                  'PRODUCTION',:recordId,:samplePointId)
-                """).param("recordId", record.id()).param("samplePointId", samplePointId)
-                .query(Long.class).single();
+        if (subjectId != null) {
+            jdbc.sql("""
+                    SELECT platform.register_approved_sample_subject(
+                      'PRODUCTION',:recordId,:samplePointId)
+                    """).param("recordId", record.id()).param("samplePointId", samplePointId)
+                    .query(Long.class).single();
+        }
         int linked = jdbc.sql("""
                 UPDATE production.production_record SET sample_point_id=:samplePointId
                 WHERE record_id=:recordId AND status_code='APPROVED' AND sample_point_id IS NULL
@@ -436,6 +443,8 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         values.put("id", record.id()); values.put("productCode", record.productCode());
         values.put("objectTypeCode", record.objectTypeCode()); values.put("regionCode", record.regionCode());
         values.put("cultivarCode", record.cultivarCode()); values.put("surveyDate", record.surveyDate());
+        values.put("surveyYear", record.surveyYear()); values.put("surveyMonth", record.surveyMonth());
+        values.put("surveyPrecision", record.surveyMonth() == null ? "YEAR" : "YEAR_MONTH");
         values.put("reportedAt", record.reportedAt()); values.put("area", record.cultivatedAreaMu());
         values.put("yield", record.yieldPerMuKilograms()); values.put("status", record.status().name());
         values.put("returnReason", record.returnReason()); values.put("actorId", actorId);

@@ -181,14 +181,14 @@ public class MarketMonitoringCommandController {
             String id, String productCode, Map<String, String> coreValues,
             String status, String returnReason,
             Map<String, String> facts, List<EvidencePhotoResponse> evidencePhotos,
-            List<String> allowedActions, long version) {
+            List<String> allowedActions, String inventoryGovernanceStatus, long version) {
         static RecordResponse from(MarketRecordView view) {
             return new RecordResponse(
                     view.record().id(), view.record().productCode(), view.coreValues(),
                     view.record().status().name(), view.record().returnReason(),
                     formatDecimals(view.record().facts()),
                     view.evidencePhotos().stream().map(EvidencePhotoResponse::from).toList(),
-                    view.allowedActions(), view.record().version());
+                    view.allowedActions(), view.inventoryGovernanceStatus(), view.record().version());
         }
     }
 

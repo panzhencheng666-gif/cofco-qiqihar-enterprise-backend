@@ -128,7 +128,7 @@ class LogisticsRestIntegrationTest {
         String id = mvc.perform(post("/api/v1/logistics-records").principal(() -> "logistics-tester")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("CORN", "RAIL", "TEST_RAIL", "TEST_ROAD", "12.500", true, null)
-                                .replace("测试填报人", "客户端伪造姓名")))
+                                .replace("客户端伪造账号", "客户端伪造姓名")))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.values.LOG_REPORTER").value("物流测试员"))
                 .andReturn().getResponse().getContentAsString().replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
@@ -136,19 +136,120 @@ class LogisticsRestIntegrationTest {
         mvc.perform(put("/api/v1/logistics-records/{id}", id).principal(() -> "logistics-tester")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("CORN", "RAIL", "TEST_RAIL", "TEST_ROAD", "12.500", true, 0)
-                                .replace("测试填报人", "再次伪造姓名")))
+                                .replace("客户端伪造账号", "再次伪造姓名")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.values.LOG_REPORTER").value("物流测试员"));
     }
 
     @Test
-    void databaseDefinitionControlsCodeKeyedFieldsNodeCodesExtensionsWorkflowAndCas() throws Exception {
+    void exposesAndPersistsOnlyThePublicLogisticsSurveyContract() throws Exception {
         mvc.perform(get("/api/v1/logistics-record-definitions").queryParam("productCode", "CORN"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_ORIGIN')].controlType").value("SELECT"))
-                .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_ORIGIN')].options[?(@.value == 'TEST_RAIL')]").exists())
+                .andExpect(jsonPath("$.data.fields[?(@.code == 'surveyYear')].label").value("数据年份"))
+                .andExpect(jsonPath("$.data.fields[?(@.code == 'surveyMonth')].label").value("数据月份"))
+                .andExpect(jsonPath("$.data.fields[?(@.code == 'fillingDate')].label").value("填报日期"))
+                .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_FREIGHT_RATE')].label")
+                        .value("物流运价（不含车板价）"))
+                .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_BOARD_PRICE')].label").value("车板价"))
+                .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_REPORTER_PHONE')].label")
+                        .value("填报人联系方式"))
+                .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_SAMPLE_CONTACT')].label")
+                        .value("物流样本点联系方式"))
+                .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_REGION')].controlType").value("SELECT"))
+                .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_REGION')].options[?(@.value == '230200')].label")
+                        .value("齐齐哈尔市"))
+                .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_PERIOD')]").doesNotExist())
+                .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_COLLECTION_DATE')]").doesNotExist())
+                .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_ORIGIN')]").doesNotExist())
+                .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_DESTINATION')]").doesNotExist())
+                .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_TRANSIT_TIME')]").doesNotExist());
+
+        String id = mvc.perform(post("/api/v1/logistics-records").principal(() -> "logistics-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(publicBody(null)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.values.surveyYear").value("2026"))
+                .andExpect(jsonPath("$.data.values.surveyMonth").value("8"))
+                .andExpect(jsonPath("$.data.values.LOG_REPORTER").value("物流测试员"))
+                .andExpect(jsonPath("$.data.values.LOG_REPORTER_PHONE").value("13800000000"))
+                .andExpect(jsonPath("$.data.values.LOG_SAMPLE_CONTACT").value("13900000000"))
+                .andExpect(jsonPath("$.data.values.LOG_FREIGHT_RATE").value("80.2500"))
+                .andExpect(jsonPath("$.data.values.LOG_BOARD_PRICE").value("2650.0000"))
+                .andExpect(jsonPath("$.data.values.LOG_PERIOD").doesNotExist())
+                .andExpect(jsonPath("$.data.values.LOG_ORIGIN").doesNotExist())
+                .andExpect(jsonPath("$.data.values.LOG_TRANSIT_TIME").doesNotExist())
+                .andExpect(jsonPath("$.data.values.__locationKey").doesNotExist())
+                .andReturn().getResponse().getContentAsString()
+                .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql("""
+                SELECT fact_code,value FROM logistics.route_fact
+                WHERE event_id::text=:id AND fact_code IN ('FREIGHT_RATE','BOARD_PRICE')
+                ORDER BY fact_code
+                """).param("id", id).query((row, index) ->
+                row.getString("fact_code") + "=" + row.getBigDecimal("value").toPlainString()).list())
+                .containsExactly("BOARD_PRICE=2650.0000", "FREIGHT_RATE=80.2500");
+
+        mvc.perform(post("/api/v1/logistics-records").principal(() -> "logistics-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(publicBody(null).replace("47.354300", "91.000000")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_LOGISTICS_RECORD"));
+    }
+
+    @Test
+    void publicDirectionAndRegionContinueToFeedTheLogisticsOverviewVolume() throws Exception {
+        String id = mvc.perform(post("/api/v1/logistics-records").principal(() -> "logistics-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(publicBody(null)))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()
+                .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+        transition(id, "submit", 0, null);
+        transition(id, "approve", 1, null);
+
+        String outflow = mvc.perform(post("/api/v1/logistics-records").principal(() -> "logistics-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(publicBody(null).replace("INFLOW", "OUTFLOW")
+                                .replace("12.5000", "7.0000")
+                                .replace("80.2500", "70.0000")
+                                .replace("2650.0000", "999999.0000")))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()
+                .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+        transition(outflow, "submit", 0, null);
+        transition(outflow, "approve", 1, null);
+
+        mvc.perform(get("/api/v1/overview/indicators").principal(() -> "logistics-tester")
+                        .queryParam("productCode", "CORN").queryParam("regionCode", "230200")
+                        .queryParam("periodCode", "LOG-2026-08").queryParam("marketingYear", "2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_INFLOW_VOLUME')].value")
+                        .value(org.hamcrest.Matchers.hasItem("12.5")))
+                .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_INFLOW_VOLUME')].sourceCount").value(1))
+                .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_OUTFLOW_VOLUME')].value")
+                        .value(org.hamcrest.Matchers.hasItem("7")))
+                .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_OUTFLOW_VOLUME')].sourceCount").value(1))
+                .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_AVERAGE_FREIGHT_RATE')].value")
+                        .value(org.hamcrest.Matchers.hasItem("75.125")))
+                .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_AVERAGE_FREIGHT_RATE')].sourceCount")
+                        .value(2));
+
+        mvc.perform(get("/api/v1/overview/dashboard").principal(() -> "logistics-tester")
+                        .queryParam("productCode", "CORN").queryParam("regionCode", "230200")
+                        .queryParam("year", "2026").queryParam("periodCode", "LOG-2026-08"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'LOGISTICS_INFLOW_VOLUME')].value")
+                        .value(org.hamcrest.Matchers.hasItem("12.5")))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'LOGISTICS_OUTFLOW_VOLUME')].value")
+                        .value(org.hamcrest.Matchers.hasItem("7")))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'LOGISTICS_AVERAGE_FREIGHT_RATE')].value")
+                        .value(org.hamcrest.Matchers.hasItem("75.125")));
+    }
+
+    @Test
+    void publicDefinitionRejectsInjectedMetadataAndPreservesWorkflowAndCas() throws Exception {
+        mvc.perform(get("/api/v1/logistics-record-definitions").queryParam("productCode", "CORN"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.fields[?(@.code == 'surveyYear')].label").value("数据年份"))
                 .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_STATUS')].readOnly").value(true))
-                .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_REFERENCE')].label").value("运单编号"))
+                .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_REFERENCE')]").doesNotExist())
                 .andExpect(jsonPath("$.data.actions[?(@.code == 'APPROVE')]").exists());
         mvc.perform(post("/api/v1/logistics-records/not-disclosed/submit")
                         .contentType(MediaType.APPLICATION_JSON).content("{"))
@@ -196,17 +297,18 @@ class LogisticsRestIntegrationTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code").value("LOGISTICS_RECORD_VERSION_CONFLICT"));
         mvc.perform(get("/api/v1/logistics-records/{id}", corn))
-                .andExpect(jsonPath("$.data.values.LOG_ORIGIN").value("TEST_RAIL"))
+                .andExpect(jsonPath("$.data.values.LOG_REGION").value("230200"))
                 .andExpect(jsonPath("$.data.values.LOG_TRANSPORT_MODE").value("RAIL"))
                 .andExpect(jsonPath("$.data.values.LOG_DIRECTION").value("INFLOW"))
-                .andExpect(jsonPath("$.data.values.LOG_PERIOD").value("LOG-2026-08"))
-                .andExpect(jsonPath("$.data.displayValues.LOG_ORIGIN").value("测试铁路站"))
+                .andExpect(jsonPath("$.data.values.surveyYear").value("2026"))
+                .andExpect(jsonPath("$.data.values.surveyMonth").value("8"))
+                .andExpect(jsonPath("$.data.displayValues.LOG_REGION").value("齐齐哈尔市"))
                 .andExpect(jsonPath("$.data.displayValues.LOG_TRANSPORT_MODE").value("铁路"))
                 .andExpect(jsonPath("$.data.displayValues.LOG_DIRECTION").value("流入"))
-                .andExpect(jsonPath("$.data.displayValues.LOG_PERIOD").value("2026年8月物流监测期"))
                 .andExpect(jsonPath("$.data.displayValues.LOG_STATUS").value("已审核"))
                 .andExpect(jsonPath("$.data.values.LOG_ROUTE_VOLUME").value("13.5000"))
-                .andExpect(jsonPath("$.data.values.LOG_REFERENCE").value("WB-2026-001"))
+                .andExpect(jsonPath("$.data.values.LOG_BOARD_PRICE").value("2650.0000"))
+                .andExpect(jsonPath("$.data.values.LOG_REFERENCE").doesNotExist())
                 .andExpect(jsonPath("$.data.values.__originNodeId").doesNotExist());
         org.assertj.core.api.Assertions.assertThat(jdbc.sql("""
                 SELECT count(*) FROM platform.business_audit_event
@@ -216,7 +318,7 @@ class LogisticsRestIntegrationTest {
         mvc.perform(post("/api/v1/logistics-records").principal(() -> "logistics-tester")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("CORN", "RAIL", "TEST_RAIL", "TEST_ROAD", "12.500", true, null)
-                                .replace("\"LOG_REFERENCE\":\"WB-2026-001\"",
+                                .replace("\"LOG_BOARD_PRICE\":\"2650.0000\"",
                                         "\"UNKNOWN_FIELD\":\"not-authorized\"")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("INVALID_LOGISTICS_RECORD"));
@@ -236,14 +338,25 @@ class LogisticsRestIntegrationTest {
                         .queryParam("productCode", "CORN").queryParam("pageNumber", "0")
                         .queryParam("pageSize", "20").queryParam("filter.surveyYear", "2026")
                         .queryParam("filter.surveyMonth", "8")
+                        .queryParam("filter.regionCode", "230200")
                         .queryParam("filter.fillingDateFrom", "2026-08-05")
                         .queryParam("filter.fillingDateTo", "2026-08-05")
                         .queryParam("filter.status", "DRAFT"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(1))
-                .andExpect(jsonPath("$.data.items[0].values.LOG_SURVEY_YEAR").value("2026"))
-                .andExpect(jsonPath("$.data.items[0].values.LOG_SURVEY_MONTH").value("8"))
-                .andExpect(jsonPath("$.data.items[0].values.LOG_SURVEY_PERIOD_PRECISION").value("YEAR_MONTH"))
-                .andExpect(jsonPath("$.data.items[0].values.LOG_FILLING_TIME_BASIS").value("DRAFT_CREATED_AT"));
+                .andExpect(jsonPath("$.data.items[0].values.surveyYear").value("2026"))
+                .andExpect(jsonPath("$.data.items[0].values.surveyMonth").value("8"))
+                .andExpect(jsonPath("$.data.items[0].values.fillingDate").value("2026-08-05"))
+                .andExpect(jsonPath("$.data.items[0].values.LOG_SURVEY_PERIOD_PRECISION").doesNotExist())
+                .andExpect(jsonPath("$.data.items[0].values.LOG_FILLING_TIME_BASIS").doesNotExist());
+
+        mvc.perform(get("/api/v1/logistics-records")
+                        .queryParam("productCode", "CORN").queryParam("pageNumber", "0")
+                        .queryParam("pageSize", "20").queryParam("filter.periodCode", "LOG-2026-08"))
+                .andExpect(status().isBadRequest());
+        mvc.perform(get("/api/v1/logistics-records")
+                        .queryParam("productCode", "CORN").queryParam("pageNumber", "0")
+                        .queryParam("pageSize", "20").queryParam("filter.nodeTypeCode", "RAIL_NODE"))
+                .andExpect(status().isBadRequest());
 
         jdbc.sql("""
                 UPDATE logistics.route_event SET survey_month=NULL,survey_period_precision='YEAR'
@@ -274,7 +387,8 @@ class LogisticsRestIntegrationTest {
                         .queryParam("filter.fillingDateTo", "2026-08-06")
                         .queryParam("filter.status", "PENDING_REVIEW"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(1))
-                .andExpect(jsonPath("$.data.items[0].values.LOG_FILLING_TIME_BASIS").value("SUBMITTED_AT"));
+                .andExpect(jsonPath("$.data.items[0].values.fillingDate").value("2026-08-06"))
+                .andExpect(jsonPath("$.data.items[0].values.LOG_FILLING_TIME_BASIS").doesNotExist());
     }
 
     private String create(String product, String mode, String origin, String destination, boolean extension)
@@ -306,13 +420,28 @@ class LogisticsRestIntegrationTest {
 
     private static String body(String product, String mode, String origin, String destination,
             String volume, boolean extension, Integer version) {
-        String extensionValue = extension ? ",\"LOG_REFERENCE\":\"WB-2026-001\"" : "";
         String versionValue = version == null ? "" : ",\"version\":" + version;
         return """
-                {"productCode":"%s","values":{"LOG_PERIOD":"LOG-2026-08","LOG_COLLECTION_DATE":"2026-08-01",
-                 "LOG_ORIGIN":"%s","LOG_DESTINATION":"%s","LOG_TRANSPORT_MODE":"%s","LOG_DIRECTION":"INFLOW",
-                 "LOG_ROUTE_VOLUME":"%s","LOG_FREIGHT_RATE":"80.25","LOG_TRANSIT_TIME":"2.50",
-                 "LOG_SOURCE_ORGANIZATION":"测试来源单位","LOG_REPORTER":"测试填报人"%s}%s}
-                """.formatted(product, origin, destination, mode, volume, extensionValue, versionValue);
+                {"productCode":"%s","values":{"surveyYear":"2026","surveyMonth":"8",
+                 "LOG_SAMPLE_NAME":"齐齐哈尔物流样本点","LOG_REGION":"230200",
+                 "LOG_TRANSPORT_MODE":"%s","LOG_DIRECTION":"INFLOW","LOG_ROUTE_VOLUME":"%s",
+                 "LOG_FREIGHT_RATE":"80.2500","LOG_BOARD_PRICE":"2650.0000",
+                 "LOG_REPORTER":"客户端伪造账号","LOG_REPORTER_PHONE":"13800000000",
+                 "LOG_SAMPLE_CONTACT":"13900000000","LOG_SAMPLE_LATITUDE":"47.354300",
+                 "LOG_SAMPLE_LONGITUDE":"123.918200"}%s}
+                """.formatted(product, mode, volume, versionValue);
+    }
+
+    private static String publicBody(Integer version) {
+        String versionValue = version == null ? "" : ",\"version\":" + version;
+        return """
+                {"productCode":"CORN","values":{"surveyYear":"2026","surveyMonth":"8",
+                 "LOG_SAMPLE_NAME":"齐齐哈尔物流样本点","LOG_REGION":"230200",
+                 "LOG_TRANSPORT_MODE":"RAIL","LOG_DIRECTION":"INFLOW",
+                 "LOG_ROUTE_VOLUME":"12.5000","LOG_FREIGHT_RATE":"80.2500",
+                 "LOG_BOARD_PRICE":"2650.0000","LOG_REPORTER":"客户端伪造账号",
+                 "LOG_REPORTER_PHONE":"13800000000","LOG_SAMPLE_CONTACT":"13900000000",
+                 "LOG_SAMPLE_LATITUDE":"47.354300","LOG_SAMPLE_LONGITUDE":"123.918200"}%s}
+                """.formatted(versionValue);
     }
 }

@@ -50,6 +50,10 @@ public class MarketMonitoringService {
             "OBJECT_TYPE", "REGION", "TRADE_DATE", "REPORTED_AT",
             "PURCHASE_BASE_PRICE", "SALE_BASE_PRICE", "CARRIAGE_BOARD_AMOUNT",
             "PACKAGING_FORM", "PACKAGING_AMOUNT", "FREIGHT_AMOUNT");
+    private static final Set<String> SYSTEM_MANAGED_OR_RETIRED_INPUT_CODES = Set.of(
+            "MKT_CULTIVAR_NAME", "MKT_SAMPLE_SUBJECT_CODE", "MKT_STORAGE_REGION_CODE",
+            "MKT_INVENTORY_HOLDER_CODE", "MKT_INVENTORY_OWNERSHIP_TYPE", "MKT_CARGO_OWNER_CODE",
+            "MKT_INVENTORY_CUTOFF_DATE", "MKT_INVENTORY_POLICY_ATTRIBUTE");
     private final MarketMonitoringRepository repository;
     private final PageDefinitionQuery pageDefinitions;
     private final CurrentActor currentActor;
@@ -100,7 +104,7 @@ public class MarketMonitoringService {
         if (regionCode != null) scope.requireRegion(regionCode);
         PagedResult<MarketListRow> page = repository.findPage(query.authorizedFor(scope.regionCodes()));
         List<MarketListItem> items = page.items().stream().map(row -> new MarketListItem(
-                row.id(), row.values(), MarketActionPolicy.allowedActions(row.status()).stream()
+                row.id(), publicValues(row.values()), MarketActionPolicy.allowedActions(row.status()).stream()
                         .filter(row.configuredActions()::contains)
                         .filter(action -> actionAllowed(action, row.id()))
                         .toList(), row.version())).toList();
@@ -147,7 +151,7 @@ public class MarketMonitoringService {
                         .sorted(Comparator.comparingInt(MarketFactDefinition::sortOrder)
                                 .thenComparing(MarketFactDefinition::code)).toList())).toList();
         return new MarketFormDefinition(
-                productCode, objectTypeCode, coreFields(productCode), groups);
+                productCode, objectTypeCode, publicCoreFields(coreFields(productCode)), groups);
     }
 
     /** Used by the write interceptor before request-body conversion. */
@@ -157,13 +161,17 @@ public class MarketMonitoringService {
 
     @Transactional
     public MarketRecordView create(MarketMonitoringDraft draft) {
+        return create(draft, true);
+    }
+
+    private MarketRecordView create(MarketMonitoringDraft draft, boolean requireEvidence) {
         SecurityPrincipal principal = authorize("BUSINESS_CREATE", null);
         MarketMonitoringDraft securedDraft = withReporter(draft, principal.displayName());
         List<MarketCoreFieldDefinition> definitions = coreDefinitions(securedDraft);
         ParsedDraft parsed = parseDraft(securedDraft, definitions);
         validate(parsed);
         principal = authorize("BUSINESS_CREATE", parsed.regionCode());
-        validateEvidence(securedDraft, principal);
+        if (requireEvidence || !securedDraft.evidencePhotoIds().isEmpty()) validateEvidence(securedDraft, principal);
         try {
             MarketMonitoringRecord record = MarketMonitoringRecord.draft(
                     UUID.randomUUID().toString(), parsed.productCode(), parsed.objectTypeCode(),
@@ -171,12 +179,14 @@ public class MarketMonitoringService {
                     parsed.purchaseBasePrice(), parsed.saleBasePrice(), parsed.carriageBoardAmount(),
                     parsed.packagingAmount(), parsed.freightAmount(), parsed.packagingForm(), parsed.facts());
             MarketMonitoringRecord persisted = repository.insert(record, principal.subjectId(), parsed.extensions());
-            if (evidencePhotos != null) {
+            repository.reconcileInventoryGovernance(
+                    persisted, parsed.extensions(), principal.subjectId(), clock.instant());
+            if (evidencePhotos != null && !securedDraft.evidencePhotoIds().isEmpty()) {
                 evidencePhotos.attachToMarket(
                         securedDraft.evidencePhotoIds(), persisted.id(), persisted.regionCode(), principal.subjectId());
             }
             audit(principal, persisted, "MARKET_RECORD_CREATED");
-            return view(persisted, definitions, parsed.extensions());
+            return view(persisted, definitions, repository.findExtensionCoreValues(persisted.id()));
         } catch (MarketValidationException exception) {
             throw invalid(exception.getMessage());
         }
@@ -193,12 +203,12 @@ public class MarketMonitoringService {
         ParsedDraft parsed = parseDraft(securedDraft, definitions);
         validate(parsed);
         principal = authorize("BUSINESS_IMPORT", parsed.regionCode());
-        validateEvidence(securedDraft, principal);
+        if (!securedDraft.evidencePhotoIds().isEmpty()) validateEvidence(securedDraft, principal);
     }
 
     @Transactional
     public String importDraft(MarketMonitoringDraft draft) {
-        return create(draft).record().id();
+        return create(draft, false).record().id();
     }
 
     @Transactional
@@ -226,8 +236,10 @@ public class MarketMonitoringService {
                     parsed.packagingAmount(), parsed.freightAmount(), parsed.packagingForm(), parsed.facts());
             MarketMonitoringRecord persisted = repository.updateFacts(
                     revised, expectedVersion, principal.subjectId(), parsed.extensions());
+            repository.reconcileInventoryGovernance(
+                    persisted, parsed.extensions(), principal.subjectId(), clock.instant());
             audit(principal, persisted, "MARKET_RECORD_UPDATED");
-            return view(persisted, definitions, parsed.extensions());
+            return view(persisted, definitions, repository.findExtensionCoreValues(persisted.id()));
         } catch (MarketValidationException exception) {
             throw invalid(exception.getMessage());
         } catch (IllegalStateException exception) {
@@ -237,11 +249,19 @@ public class MarketMonitoringService {
 
     @Transactional
     public MarketRecordView submit(String id, long expectedVersion) {
+        reconcileInventoryGovernance(id, expectedVersion, "BUSINESS_SUBMIT");
         return transition(id, expectedVersion, "BUSINESS_SUBMIT", "MARKET_RECORD_SUBMITTED", MarketMonitoringRecord::submit);
     }
 
     @Transactional
     public MarketRecordView approve(String id, long expectedVersion) {
+        MarketMonitoringRecord existing = reconcileInventoryGovernance(id, expectedVersion, "BUSINESS_APPROVE");
+        if (existing.facts().containsKey("ENDING_INVENTORY")
+                && !repository.inventoryGovernanceReady(id)) {
+            throw new ConflictException(
+                    "MARKET_INVENTORY_GOVERNANCE_PENDING",
+                    "库存权属尚未核定，暂不能审核通过");
+        }
         return transition(id, expectedVersion, "BUSINESS_APPROVE", "MARKET_RECORD_APPROVED",
                 MarketMonitoringRecord::approve, (record, principal) -> repository.linkApprovedSamplePoint(
                         record, repository.findExtensionCoreValues(record.id()),
@@ -308,18 +328,16 @@ public class MarketMonitoringService {
             throw new ClientRequestException("INAPPLICABLE_MARKET_FACT",
                     "One or more facts are not applicable to this market context");
         }
-        if (draft.facts().containsKey("ENDING_INVENTORY")) {
-            Set<String> requiredInventoryContract = Set.of(
-                    "MKT_INVENTORY_HOLDER_CODE", "MKT_INVENTORY_OWNERSHIP_TYPE",
-                    "MKT_STORAGE_REGION_CODE", "MKT_CARGO_OWNER_CODE",
-                    "MKT_INVENTORY_CUTOFF_DATE", "MKT_INVENTORY_POLICY_ATTRIBUTE");
-            if (!draft.extensions().keySet().containsAll(requiredInventoryContract)) {
-                throw invalid("Ending inventory ownership and storage contract is required");
-            }
-            if (!repository.isKnownRegion(draft.extensions().get("MKT_STORAGE_REGION_CODE"))) {
-                throw invalid("Unknown inventory storage region");
-            }
-        }
+    }
+
+    private MarketMonitoringRecord reconcileInventoryGovernance(
+            String id, long expectedVersion, String permissionCode) {
+        MarketMonitoringRecord record = required(id);
+        SecurityPrincipal principal = authorize(permissionCode, record.regionCode());
+        if (expectedVersion != record.version()) throw stale();
+        repository.reconcileInventoryGovernance(
+                record, repository.findExtensionCoreValues(id), principal.subjectId(), clock.instant());
+        return record;
     }
 
     private List<MarketCoreFieldDefinition> coreDefinitions(MarketMonitoringDraft draft) {
@@ -404,6 +422,9 @@ public class MarketMonitoringService {
         });
         for (String code : draft.coreValues().keySet()) {
             if (!byCode.containsKey(code)) throw invalid("Unknown market core field: " + code);
+            if (SYSTEM_MANAGED_OR_RETIRED_INPUT_CODES.contains(code)) {
+                throw invalid("System-managed market core field cannot be submitted: " + code);
+            }
         }
 
         Map<String, String> normalized = new LinkedHashMap<>();
@@ -416,6 +437,11 @@ public class MarketMonitoringService {
                 return;
             }
             if (value == null || value.isBlank()) {
+                if (definition.code().equals("MKT_PACKAGING_AMOUNT")) {
+                    normalized.put(definition.code(), "0");
+                    return;
+                }
+                if (SYSTEM_MANAGED_OR_RETIRED_INPUT_CODES.contains(definition.code())) return;
                 if (definition.required()) throw invalid(definition.label() + " is required");
                 return;
             }
@@ -497,6 +523,10 @@ public class MarketMonitoringService {
             }
             case "TEXT" -> {
                 BoundedInput.requireText("INVALID_MARKET_RECORD", value);
+                if (Set.of("MKT_REPORTER_PHONE", "MKT_SAMPLE_CONTACT").contains(definition.code())
+                        && !value.matches("^[0-9+()\\- ]{6,32}$")) {
+                    throw invalid("Invalid contact value for market core field: " + definition.code());
+                }
                 yield value;
             }
             default -> throw invalid("Unsupported market core control type: " + definition.controlType());
@@ -541,7 +571,7 @@ public class MarketMonitoringService {
                     "MARKET_DATA_INTEGRITY", "Market record data is inconsistent");
         }
         Map<String, String> values = new LinkedHashMap<>();
-        definitions.stream().sorted(Comparator.comparingInt(MarketCoreFieldDefinition::sortOrder)
+        publicCoreFields(definitions).stream().sorted(Comparator.comparingInt(MarketCoreFieldDefinition::sortOrder)
                         .thenComparing(MarketCoreFieldDefinition::code))
                 .forEach(definition -> values.put(definition.code(), switch (definition.domainBinding()) {
                     case "OBJECT_TYPE" -> record.objectTypeCode();
@@ -563,7 +593,23 @@ public class MarketMonitoringService {
         return new MarketRecordView(record, values,
                 evidencePhotos == null ? List.of() : evidencePhotos.marketPhotos(record.id()),
                 MarketActionPolicy.allowedActions(record.status()).stream()
-                        .filter(action -> actionAllowed(action, record.id())).toList());
+                        .filter(action -> actionAllowed(action, record.id())).toList(),
+                repository.inventoryGovernanceStatus(record.id()));
+    }
+
+    private static List<MarketCoreFieldDefinition> publicCoreFields(
+            List<MarketCoreFieldDefinition> definitions) {
+        return definitions.stream()
+                .filter(definition -> !SYSTEM_MANAGED_OR_RETIRED_INPUT_CODES.contains(definition.code()))
+                .toList();
+    }
+
+    private static Map<String, String> publicValues(Map<String, String> values) {
+        Map<String, String> visible = new LinkedHashMap<>();
+        values.forEach((code, value) -> {
+            if (!SYSTEM_MANAGED_OR_RETIRED_INPUT_CODES.contains(code)) visible.put(code, value);
+        });
+        return visible;
     }
 
     private boolean actionAllowed(String action, String recordId) {

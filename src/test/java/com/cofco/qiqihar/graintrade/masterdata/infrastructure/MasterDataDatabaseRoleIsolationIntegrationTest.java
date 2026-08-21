@@ -88,15 +88,19 @@ class MasterDataDatabaseRoleIsolationIntegrationTest {
                 .doesNotContain("last_modified_by", "business_event_outbox",
                         "point.created_by", "point.updated_by");
 
-        for (Path repository : List.of(
-                Path.of("src/main/java/com/cofco/qiqihar/graintrade/production/infrastructure/"
-                        + "JdbcProductionRecordRepository.java"),
-                Path.of("src/main/java/com/cofco/qiqihar/graintrade/market/infrastructure/"
-                        + "JdbcMarketMonitoringRepository.java"))) {
-            String source = Files.readString(repository);
-            assertThat(source).doesNotContain("govern_master_data_change")
-                    .contains("register_approved_sample_subject");
-        }
+        String productionRepository = Files.readString(Path.of(
+                "src/main/java/com/cofco/qiqihar/graintrade/production/infrastructure/"
+                        + "JdbcProductionRecordRepository.java"));
+        assertThat(productionRepository)
+                .doesNotContain("govern_master_data_change")
+                .contains("register_approved_sample_subject");
+        String marketRepository = Files.readString(Path.of(
+                "src/main/java/com/cofco/qiqihar/graintrade/market/infrastructure/"
+                        + "JdbcMarketMonitoringRepository.java"));
+        assertThat(marketRepository)
+                .contains("current_sample_subject_resolution")
+                .doesNotContain("govern_master_data_change", "register_approved_sample_subject",
+                        "sample_point_subject_identity");
     }
 
     @Test

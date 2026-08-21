@@ -26,6 +26,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class LogisticsImportService implements QueuedImportProcessor {
+    private static final String SOURCE_PREFIX = "LOGISTICS-V1:";
+    private static final java.util.Set<String> SYSTEM_GENERATED_CODES = java.util.Set.of(
+            "fillingDate", "LOG_REPORTER", "LOG_STATUS");
     private final ImportJobRepository jobs;
     private final LogisticsImportPort logistics;
     private final AccessControl access;
@@ -76,7 +79,7 @@ public class LogisticsImportService implements QueuedImportProcessor {
         SecurityPrincipal principal = access.require("BUSINESS_IMPORT", null);
         Parsed parsed = parse(bytes, expectedContext);
         String digest = digest(bytes);
-        String sourceContent = java.util.Base64.getEncoder().encodeToString(parsed.sourceBytes());
+        String sourceContent = encodeSource(parsed.productCode(), parsed.sourceBytes());
         if (limits.queued(parsed.rows().size())) {
             return ImportJobView.from(jobs.queue(principal.subjectId(), LogisticsImportTemplate.DOMAIN, key, digest,
                     principal.workUnitCode(), null, sourceContent, clock.instant()).stored().job());
@@ -105,7 +108,9 @@ public class LogisticsImportService implements QueuedImportProcessor {
             throw new ConflictException("IMPORT_RETRY_NOT_AVAILABLE", "Import job has no failed rows to retry");
         Parsed parsed;
         try {
-            parsed = parse(java.util.Base64.getDecoder().decode(stored.sourceContent()), null);
+            SourceFile source = decodeSource(stored.sourceContent());
+            parsed = parse(source.bytes(), source.productCode() == null ? null
+                    : new ImportMenuContext(source.productCode(), LogisticsImportTemplate.OBJECT_TYPE));
         } catch (IllegalArgumentException exception) {
             throw invalidFormat();
         }
@@ -132,7 +137,11 @@ public class LogisticsImportService implements QueuedImportProcessor {
             throw new ConflictException("IMPORT_JOB_NOT_PROCESSING", "Import job is not processing");
         }
         Parsed parsed;
-        try { parsed = parse(java.util.Base64.getDecoder().decode(stored.sourceContent()), null); }
+        try {
+            SourceFile source = decodeSource(stored.sourceContent());
+            parsed = parse(source.bytes(), source.productCode() == null ? null
+                    : new ImportMenuContext(source.productCode(), LogisticsImportTemplate.OBJECT_TYPE));
+        }
         catch (IllegalArgumentException exception) { throw invalidFormat(); }
         process(stored.job(), stored.job().idempotencyKey(), parsed, stored.job().contentSha256(),
                 stored.job().retryOf(), principal);
@@ -158,7 +167,7 @@ public class LogisticsImportService implements QueuedImportProcessor {
                 hasErrors ? "COMPLETED_WITH_ERRORS" : "COMPLETED", reserved.createdAt(), now, outcomes,
                 reserved.startedAt(), reserved.attemptCount(), null, null,
                 reserved.leaseToken(), reserved.leaseUntil()),
-                java.util.Base64.getEncoder().encodeToString(parsed.sourceBytes()));
+                encodeSource(parsed.productCode(), parsed.sourceBytes()));
         audit.record(principal, "IMPORT_JOB", job.id().toString(), "IMPORT_JOB_COMPLETED", now,
                 "{\"importedRows\":" + job.importedRows() + ",\"failedRows\":" + job.failedRows() + "}");
         return ImportJobView.from(job);
@@ -167,12 +176,17 @@ public class LogisticsImportService implements QueuedImportProcessor {
     private Parsed parse(byte[] bytes, ImportMenuContext expectedContext) {
         try {
             BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(bytes, LogisticsImportTemplate.DOMAIN);
+            String productCode;
             if (expectedContext != null) {
-                expectedContext.requireMatches(context.productCode(), context.objectTypeCode());
+                productCode = expectedContext.productCode();
+            } else {
+                if (context.productCode() == null
+                        || !LogisticsImportTemplate.OBJECT_TYPE.equals(context.objectTypeCode())) throw invalidFormat();
+                productCode = context.productCode();
             }
-            if (!LogisticsImportTemplate.OBJECT_TYPE.equals(context.objectTypeCode())) throw invalidFormat();
-            LogisticsImportDefinition definition = definition(context.productCode());
+            LogisticsImportDefinition definition = definition(productCode);
             List<String> headers = LogisticsImportTemplate.headers(definition);
+            List<String> codes = LogisticsImportTemplate.codes(definition);
             var sheet = BusinessImportWorkbook.read(bytes, LogisticsImportTemplate.DOMAIN,
                     headers, LogisticsImportTemplate.labels(definition), limits.maximumRows());
             if (sheet.rows().isEmpty()) throw invalidFormat();
@@ -180,10 +194,10 @@ public class LogisticsImportService implements QueuedImportProcessor {
             for (int index = 0; index < sheet.rows().size(); index++) {
                 Map<String, String> values = new LinkedHashMap<>();
                 for (int column = 0; column < headers.size(); column++)
-                    values.put(headers.get(column), sheet.rows().get(index).get(column).trim());
+                    values.put(codes.get(column), sheet.rows().get(index).get(column).trim());
                 rows.add(new SourceRow(index + 3, Map.copyOf(values)));
             }
-            return new Parsed(sheet.productCode(), List.copyOf(rows), bytes.clone());
+            return new Parsed(productCode, List.copyOf(rows), bytes.clone());
         } catch (ClientRequestException exception) {
             throw exception;
         } catch (RuntimeException exception) {
@@ -193,7 +207,15 @@ public class LogisticsImportService implements QueuedImportProcessor {
 
     private Row validate(String productCode, SourceRow source) {
         try {
-            LogisticsImportRow draft = new LogisticsImportRow(productCode, source.values());
+            for (String code : SYSTEM_GENERATED_CODES) {
+                if (!source.values().getOrDefault(code, "").isBlank()) {
+                    return new Row(source.number(), source.values(), null, "READONLY_IMPORT_FIELD",
+                            "系统生成字段不得通过导入覆盖");
+                }
+            }
+            Map<String, String> businessValues = new LinkedHashMap<>(source.values());
+            SYSTEM_GENERATED_CODES.forEach(businessValues::remove);
+            LogisticsImportRow draft = new LogisticsImportRow(productCode, Map.copyOf(businessValues));
             logistics.validate(draft);
             return new Row(source.number(), source.values(), draft, null, null);
         } catch (ClientRequestException exception) {
@@ -247,8 +269,24 @@ public class LogisticsImportService implements QueuedImportProcessor {
         catch (Exception exception) { throw new IllegalStateException(exception); }
     }
 
+    private static String encodeSource(String productCode, byte[] bytes) {
+        return SOURCE_PREFIX + productCode + ":" + java.util.Base64.getEncoder().encodeToString(bytes);
+    }
+
+    private static SourceFile decodeSource(String sourceContent) {
+        if (sourceContent != null && sourceContent.startsWith(SOURCE_PREFIX)) {
+            int separator = sourceContent.indexOf(':', SOURCE_PREFIX.length());
+            if (separator < 0) throw new IllegalArgumentException("INVALID_LOGISTICS_SOURCE");
+            String productCode = sourceContent.substring(SOURCE_PREFIX.length(), separator);
+            byte[] bytes = java.util.Base64.getDecoder().decode(sourceContent.substring(separator + 1));
+            return new SourceFile(productCode, bytes);
+        }
+        return new SourceFile(null, java.util.Base64.getDecoder().decode(sourceContent));
+    }
+
     private record SourceRow(int number, Map<String, String> values) {}
     private record Parsed(String productCode, List<SourceRow> rows, byte[] sourceBytes) {}
+    private record SourceFile(String productCode, byte[] bytes) {}
     private record Row(int number, Map<String, String> values, LogisticsImportRow draft,
                        String errorCode, String errorMessage) {}
 }

@@ -13,6 +13,7 @@ import com.cofco.qiqihar.graintrade.production.domain.ProductionRecord;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionRecordQuery;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.BoundedInput;
+import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import com.cofco.qiqihar.graintrade.shared.application.PlainDecimal;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
@@ -20,6 +21,7 @@ import com.cofco.qiqihar.graintrade.shared.interfaceadapter.StrictQueryParameter
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,6 +43,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 public class ProductionRecordController {
     private static final Set<String> CORE = Set.of("productCode", "pageKind", "pageNumber", "pageSize");
+    private static final Set<String> PRIVATE_METADATA = Set.of(
+            "PROD_SAMPLE_SUBJECT_CODE", "PROD_SURPLUS_SUBJECT_CODE", "PROD_SURPLUS_CUTOFF_DATE");
     private static final Pattern FILTER = Pattern.compile("^filter\\.([A-Za-z0-9][A-Za-z0-9_-]*)$");
     private final ProductionRecordService service;
 
@@ -75,8 +79,32 @@ public class ProductionRecordController {
     @GetMapping("/api/v1/production-record-definitions")
     ApiResponse<DefinitionResponse> definition(
             @RequestParam String productCode,
-            @RequestParam(required = false) String objectTypeCode) {
-        return new ApiResponse<>(DefinitionResponse.from(service.factDefinition(productCode, objectTypeCode)));
+            @RequestParam(required = false) String objectTypeCode,
+            @RequestParam(required = false) String contractVersion,
+            @RequestParam(required = false) String contractDigest) {
+        ProductionFormDefinition definition = service.factDefinition(productCode, objectTypeCode);
+        validateContractHandshake(contractVersion, contractDigest,
+                definition.contractVersion(), definition.contractDigest());
+        return new ApiResponse<>(DefinitionResponse.from(definition));
+    }
+
+    private static void validateContractHandshake(
+            String requestedVersion, String requestedDigest, String actualVersion, String actualDigest) {
+        boolean hasVersion = requestedVersion != null && !requestedVersion.isBlank();
+        boolean hasDigest = requestedDigest != null && !requestedDigest.isBlank();
+        if (!hasVersion && !hasDigest) {
+            // Legacy readers predate the handshake; an unambiguous read remains compatible.
+            return;
+        }
+        if (!hasVersion || !hasDigest
+                || !actualVersion.equals(requestedVersion)
+                || !actualDigest.equals(requestedDigest)) {
+            throw new ConflictException(
+                    "CONTRACT_MISMATCH",
+                    hasVersion && hasDigest
+                            ? "Production definition contract does not match the requested client contract"
+                            : "Both contractVersion and contractDigest are required for a contract handshake");
+        }
     }
 
     @PostMapping("/api/v1/production-records")
@@ -116,7 +144,8 @@ public class ProductionRecordController {
     }
 
     record DraftRequest(String productCode, String objectTypeCode, String regionCode, String cultivarCode,
-                        LocalDate surveyDate, String cultivatedAreaMu, String yieldPerMuKilograms,
+                        Integer surveyYear, Integer surveyMonth, LocalDate surveyDate,
+                        String cultivatedAreaMu, String yieldPerMuKilograms,
                         Map<String, String> quality, Map<String, String> costs, Map<String, String> insurance,
                         Map<String, String> subsidies, Map<String, String> submissionMetadata,
                         List<UUID> evidencePhotoIds, Long version) {
@@ -126,9 +155,11 @@ public class ProductionRecordController {
             BoundedInput.requireText(code, productCode, objectTypeCode, regionCode, cultivarCode);
             BoundedInput.requireMapText(code, quality, costs, insurance, subsidies, submissionMetadata);
             validateCoordinates(submissionMetadata);
-            return new ProductionDraft(productCode, objectTypeCode, regionCode, cultivarCode, surveyDate,
+            SurveyTime time = surveyTime();
+            return new ProductionDraft(productCode, objectTypeCode, regionCode, cultivarCode, time.compatibilityDate(),
                     decimal(cultivatedAreaMu), decimal(yieldPerMuKilograms), values(quality), values(costs),
-                    values(insurance), values(subsidies), submissionMetadata, evidencePhotoIds);
+                    values(insurance), values(subsidies), submissionMetadata, evidencePhotoIds,
+                    time.year(), time.month());
         }
         long requiredVersion() {
             if (version == null || version < 0) throw new ClientRequestException(
@@ -150,7 +181,23 @@ public class ProductionRecordController {
             if (latitude != null) PlainDecimal.parse(latitude, 3, 7, "INVALID_PRODUCTION_RECORD");
             if (longitude != null) PlainDecimal.parse(longitude, 3, 7, "INVALID_PRODUCTION_RECORD");
         }
+        private SurveyTime surveyTime() {
+            if (surveyYear == null) {
+                if (surveyMonth != null || surveyDate == null) throw new ClientRequestException(
+                        "INVALID_PRODUCTION_RECORD", "Data year is required");
+                return new SurveyTime(surveyDate.getYear(), surveyDate.getMonthValue(), surveyDate);
+            }
+            if (surveyYear < 1900 || surveyYear > 2200
+                    || (surveyMonth != null && (surveyMonth < 1 || surveyMonth > 12))) {
+                throw new ClientRequestException("INVALID_PRODUCTION_RECORD", "Data time is outside range");
+            }
+            LocalDate compatibilityDate = LocalDate.of(surveyYear, surveyMonth == null ? 1 : surveyMonth, 1);
+            if (surveyDate != null && !surveyDate.equals(compatibilityDate)) throw new ClientRequestException(
+                    "INVALID_PRODUCTION_RECORD", "Legacy survey date conflicts with data time");
+            return new SurveyTime(surveyYear, surveyMonth, compatibilityDate);
+        }
     }
+    private record SurveyTime(int year, Integer month, LocalDate compatibilityDate) { }
     record VersionRequest(Long version) {
         long requiredVersion() {
             if (version == null || version < 0) throw new ClientRequestException(
@@ -166,6 +213,7 @@ public class ProductionRecordController {
         }
     }
     record RecordResponse(String id, String productCode, String objectTypeCode, String regionCode, String cultivarCode,
+                          int surveyYear, Integer surveyMonth, LocalDate fillingDate,
                           LocalDate surveyDate, OffsetDateTime reportedAt, String cultivatedAreaMu,
                           String yieldPerMuKilograms, String estimatedOutputKilograms, String status,
                           String returnReason, Map<String, String> quality, Map<String, String> costs,
@@ -175,10 +223,12 @@ public class ProductionRecordController {
         static RecordResponse from(ProductionRecordView view) {
             ProductionRecord record = view.record();
             return new RecordResponse(record.id(), record.productCode(), record.objectTypeCode(), record.regionCode(),
-                    record.cultivarCode(), record.surveyDate(), record.reportedAt(), decimal(record.cultivatedAreaMu()),
+                    record.cultivarCode(), record.surveyYear(), record.surveyMonth(),
+                    record.reportedAt().atZoneSameInstant(ZoneId.of("Asia/Shanghai")).toLocalDate(),
+                    record.surveyDate(), record.reportedAt(), decimal(record.cultivatedAreaMu()),
                     decimal(record.yieldPerMuKilograms()), decimal(record.estimatedOutputKilograms()),
                     record.status().name(), record.returnReason(), values(record.quality()), values(record.costs()),
-                    values(record.insurance()), values(record.subsidies()), record.submissionMetadata(),
+                    values(record.insurance()), values(record.subsidies()), publicMetadata(record.submissionMetadata()),
                     view.evidencePhotos().stream().map(EvidencePhotoResponse::from).toList(),
                     view.allowedActions(), record.version());
         }
@@ -186,6 +236,13 @@ public class ProductionRecordController {
         private static Map<String, String> values(Map<String, BigDecimal> values) {
             Map<String, String> response = new LinkedHashMap<>();
             values.forEach((code, value) -> response.put(code, decimal(value)));
+            return response;
+        }
+        private static Map<String, String> publicMetadata(Map<String, String> values) {
+            Map<String, String> response = new LinkedHashMap<>();
+            values.forEach((code, value) -> {
+                if (!PRIVATE_METADATA.contains(code)) response.put(code, value);
+            });
             return response;
         }
     }
@@ -200,7 +257,10 @@ public class ProductionRecordController {
     }
     record ListItemResponse(String id, Map<String, String> values, List<String> allowedActions, long version) {
         static ListItemResponse from(ProductionListItem item) {
-            return new ListItemResponse(item.id(), item.values(), item.allowedActions(), item.version());
+            Map<String, String> values = new LinkedHashMap<>(item.values());
+            PRIVATE_METADATA.forEach(values::remove);
+            return new ListItemResponse(item.id(), java.util.Collections.unmodifiableMap(values),
+                    item.allowedActions(), item.version());
         }
     }
     record PageResponse(List<ListItemResponse> items, int pageNumber, int pageSize, long totalElements, int totalPages) {
@@ -209,13 +269,19 @@ public class ProductionRecordController {
                     page.pageSize(), page.totalElements(), page.totalPages());
         }
     }
-    record DefinitionResponse(String productCode, String objectTypeCode, String contractVersion,
+    record DefinitionResponse(String productCode, String objectTypeCode, String contractVersion, String contractDigest,
                               List<ContractFieldResponse> fields, List<GroupResponse> groups) {
         static DefinitionResponse from(ProductionFormDefinition definition) {
+            Set<String> publicCodes = definition.fields().stream()
+                    .filter(ProductionSurveyField::displayed)
+                    .map(ProductionSurveyField::code)
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
             return new DefinitionResponse(definition.productCode(), definition.objectTypeCode(),
                     definition.contractVersion(),
-                    definition.fields().stream().map(ContractFieldResponse::from).toList(),
-                    definition.groups().stream().map(GroupResponse::from).toList());
+                    definition.contractDigest(),
+                    definition.fields().stream().filter(ProductionSurveyField::displayed)
+                            .map(ContractFieldResponse::from).toList(),
+                    definition.groups().stream().map(group -> GroupResponse.from(group, publicCodes)).toList());
         }
     }
     record ContractFieldResponse(
@@ -231,9 +297,10 @@ public class ProductionRecordController {
         }
     }
     record GroupResponse(String category, String label, int sortOrder, List<FieldResponse> fields) {
-        static GroupResponse from(ProductionFactGroup group) {
+        static GroupResponse from(ProductionFactGroup group, Set<String> publicCodes) {
             return new GroupResponse(group.category(), group.label(), group.sortOrder(),
-                    group.fields().stream().map(FieldResponse::from).toList());
+                    group.fields().stream().filter(field -> publicCodes.contains(field.code()))
+                            .map(FieldResponse::from).toList());
         }
     }
     record FieldResponse(String code, String label, String valueType, String unit, String description,

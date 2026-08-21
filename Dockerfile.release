@@ -1,0 +1,17 @@
+FROM eclipse-temurin:21-jre
+
+ARG RELEASE_SOURCE_COMMIT
+ARG RELEASE_ARTIFACT_SHA256
+
+LABEL org.opencontainers.image.title="cofco-backend"
+LABEL org.opencontainers.image.revision="${RELEASE_SOURCE_COMMIT}"
+LABEL org.opencontainers.image.artifact-sha256="${RELEASE_ARTIFACT_SHA256}"
+
+RUN useradd --system --uid 10001 graintrade
+WORKDIR /app
+COPY target/grain-trade-enterprise-backend-0.0.1-SNAPSHOT.jar /app/application.jar
+RUN test "$(sha256sum /app/application.jar | cut -d ' ' -f 1)" = "${RELEASE_ARTIFACT_SHA256}"
+
+USER graintrade
+EXPOSE 8090
+ENTRYPOINT ["java", "-jar", "/app/application.jar"]
