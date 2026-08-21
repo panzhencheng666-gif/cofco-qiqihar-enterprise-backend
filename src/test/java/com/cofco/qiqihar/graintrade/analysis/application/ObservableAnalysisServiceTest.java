@@ -114,14 +114,19 @@ class ObservableAnalysisServiceTest {
                 AnalysisQualityState.AVAILABLE,
                 List.of(),
                 List.of(),
-                new AnalysisCoverage(1, 1, 1, 0),
+                new AnalysisCoverage(1, 1, 1, 0, 0),
                 new ProductionAnalysisView(List.of(output), List.of()),
                 new MarketAnalysisView(List.of()),
                 new LogisticsAnalysisView(List.of()),
                 new ObservableSupplyView(ObservableSupplyCalculator.calculate(
                         new ObservableQuantityInput(
                                 decimal("10"), decimal("50"), decimal("5"),
-                                decimal("5"), decimal("15"), decimal("25"), true, 1))),
+                                decimal("5"), decimal("15"), decimal("25"),
+                                true, true, 0, 1)),
+                        new ObservableInventoryBreakdown(
+                                decimal("10"), null, decimal("25"), null,
+                                false, false, 1, 0,
+                                null, null, null, null)),
                 List.of(new AnalysisLineage(
                         "PRODUCTION", "record-1", recordVersion, List.of("EXPECTED_OUTPUT"),
                         "农户样本1", "齐齐哈尔市", "2026年8月", CUTOFF)));

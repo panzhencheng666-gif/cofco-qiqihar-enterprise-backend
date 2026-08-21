@@ -151,8 +151,10 @@ class LogisticsRestIntegrationTest {
                 .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_FREIGHT_RATE')].label")
                         .value("物流运价（不含车板价）"))
                 .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_BOARD_PRICE')].label").value("车板价"))
-                .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_REPORTER_PHONE')].label")
-                        .value("填报人联系方式"))
+                .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_SURVEYOR_NAME')].label")
+                        .value("调研人"))
+                .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_SURVEYOR_PHONE')].label")
+                        .value("调研人联系方式"))
                 .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_SAMPLE_CONTACT')].label")
                         .value("物流样本点联系方式"))
                 .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_REGION')].controlType").value("SELECT"))
@@ -170,7 +172,7 @@ class LogisticsRestIntegrationTest {
                 .andExpect(jsonPath("$.data.values.surveyYear").value("2026"))
                 .andExpect(jsonPath("$.data.values.surveyMonth").value("8"))
                 .andExpect(jsonPath("$.data.values.LOG_REPORTER").value("物流测试员"))
-                .andExpect(jsonPath("$.data.values.LOG_REPORTER_PHONE").value("13800000000"))
+                .andExpect(jsonPath("$.data.values.LOG_SURVEYOR_PHONE").value("13800000000"))
                 .andExpect(jsonPath("$.data.values.LOG_SAMPLE_CONTACT").value("13900000000"))
                 .andExpect(jsonPath("$.data.values.LOG_FREIGHT_RATE").value("80.2500"))
                 .andExpect(jsonPath("$.data.values.LOG_BOARD_PRICE").value("2650.0000"))
@@ -426,7 +428,8 @@ class LogisticsRestIntegrationTest {
                  "LOG_SAMPLE_NAME":"齐齐哈尔物流样本点","LOG_REGION":"230200",
                  "LOG_TRANSPORT_MODE":"%s","LOG_DIRECTION":"INFLOW","LOG_ROUTE_VOLUME":"%s",
                  "LOG_FREIGHT_RATE":"80.2500","LOG_BOARD_PRICE":"2650.0000",
-                 "LOG_REPORTER":"客户端伪造账号","LOG_REPORTER_PHONE":"13800000000",
+                 "LOG_REPORTER":"客户端伪造账号","LOG_SURVEYOR_NAME":"王雷",
+                 "LOG_SURVEYOR_PHONE":"13800000000",
                  "LOG_SAMPLE_CONTACT":"13900000000","LOG_SAMPLE_LATITUDE":"47.354300",
                  "LOG_SAMPLE_LONGITUDE":"123.918200"}%s}
                 """.formatted(product, mode, volume, versionValue);
@@ -440,7 +443,8 @@ class LogisticsRestIntegrationTest {
                  "LOG_TRANSPORT_MODE":"RAIL","LOG_DIRECTION":"INFLOW",
                  "LOG_ROUTE_VOLUME":"12.5000","LOG_FREIGHT_RATE":"80.2500",
                  "LOG_BOARD_PRICE":"2650.0000","LOG_REPORTER":"客户端伪造账号",
-                 "LOG_REPORTER_PHONE":"13800000000","LOG_SAMPLE_CONTACT":"13900000000",
+                 "LOG_SURVEYOR_NAME":"王雷","LOG_SURVEYOR_PHONE":"13800000000",
+                 "LOG_SAMPLE_CONTACT":"13900000000",
                  "LOG_SAMPLE_LATITUDE":"47.354300","LOG_SAMPLE_LONGITUDE":"123.918200"}%s}
                 """.formatted(versionValue);
     }

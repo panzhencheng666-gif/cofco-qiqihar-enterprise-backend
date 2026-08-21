@@ -26,11 +26,15 @@ public record ObservableAnalysisSnapshot(
 
     public ObservableAnalysisSnapshot {
         if (scope == null || blank(analysisVersion) || blank(methodologyVersion)
-                || dataCutoffAt == null || generatedAt == null || qualityState == null
+                || generatedAt == null || qualityState == null
                 || blockingReasons == null || warnings == null || coverage == null
                 || production == null || market == null || logistics == null || supply == null
                 || lineage == null) {
             throw new IllegalArgumentException("Observable analysis snapshot is incomplete");
+        }
+        if (lineage.isEmpty() != (dataCutoffAt == null)) {
+            throw new IllegalArgumentException(
+                    "Observable analysis cutoff must match the adopted lineage");
         }
         blockingReasons = List.copyOf(blockingReasons);
         warnings = List.copyOf(warnings);
@@ -51,13 +55,19 @@ public record ObservableAnalysisSnapshot(
             LogisticsAnalysisView logistics,
             ObservableSupplyView supply,
             List<AnalysisLineage> lineage) {
-        if (scope == null || blank(methodologyVersion) || dataCutoffAt == null || lineage == null) {
+        if (scope == null || blank(methodologyVersion) || lineage == null) {
             throw new IllegalArgumentException("Analysis version inputs are incomplete");
+        }
+        if (lineage.isEmpty() != (dataCutoffAt == null)) {
+            throw new IllegalArgumentException(
+                    "Analysis cutoff must be absent exactly when the adopted lineage is empty");
         }
         String factVersions = lineage.stream().map(AnalysisLineage::canonicalKey).sorted()
                 .collect(java.util.stream.Collectors.joining("|"));
         String version = digest(String.join("|",
-                scope.canonicalKey(), methodologyVersion, dataCutoffAt.toInstant().toString(), factVersions));
+                scope.canonicalKey(), methodologyVersion,
+                dataCutoffAt == null ? "NO_APPROVED_DATA" : dataCutoffAt.toInstant().toString(),
+                factVersions));
         return new ObservableAnalysisSnapshot(
                 scope, version, methodologyVersion, dataCutoffAt, generatedAt, qualityState,
                 blockingReasons, warnings, coverage, production, market, logistics, supply, lineage);

@@ -7,8 +7,7 @@ import java.util.Map;
 
 public record MarketRecordView(
         MarketMonitoringRecord record, Map<String, String> coreValues,
-        List<EvidencePhotoView> evidencePhotos, List<String> allowedActions,
-        String inventoryGovernanceStatus) {
+        List<EvidencePhotoView> evidencePhotos, List<String> allowedActions) {
     public MarketRecordView {
         coreValues = java.util.Collections.unmodifiableMap(
                 new java.util.LinkedHashMap<>(coreValues));

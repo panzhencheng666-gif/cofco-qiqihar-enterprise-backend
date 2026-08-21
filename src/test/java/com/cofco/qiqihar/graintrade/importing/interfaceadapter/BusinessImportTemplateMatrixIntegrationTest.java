@@ -93,7 +93,7 @@ class BusinessImportTemplateMatrixIntegrationTest {
                                 "PRODUCTION", "MARKET", "LOGISTICS", "CORN", "SOYBEAN", "RICE",
                                 "FARMER", "TRADER", "ROUTE_EVENT", "version", "digest", "test");
                 if ("production".equals(domain)) assertThat(labels).contains("样本点类型");
-                if ("market".equals(domain)) assertThat(labels).contains("对象类型");
+                if ("market".equals(domain)) assertThat(labels).contains("样本点类型");
             }
         }
 
@@ -257,7 +257,8 @@ class BusinessImportTemplateMatrixIntegrationTest {
             case "样本点名称" -> "产情矩阵-" + suffix;
             case "地区" -> "230208";
             case "具体品种" -> "矩阵品种";
-            case "填报人联系方式" -> "13800000000";
+            case "调研人" -> "王雷";
+            case "调研人联系方式" -> "13800000000";
             case "样本点联系方式" -> "13900000000";
             case "纬度（度）" -> "47.354300";
             case "经度（度）" -> "123.918200";
@@ -273,7 +274,8 @@ class BusinessImportTemplateMatrixIntegrationTest {
             case "surveyMonth" -> "8";
             case "MKT_SAMPLE_NAME" -> "市场矩阵-" + suffix;
             case "MKT_REGION" -> "230208";
-            case "MKT_REPORTER_PHONE" -> "13800000000";
+            case "MKT_SURVEYOR_NAME" -> "王雷";
+            case "MKT_SURVEYOR_PHONE" -> "13800000000";
             case "MKT_SAMPLE_CONTACT" -> "13900000000";
             case "MKT_SAMPLE_LATITUDE" -> "47.354300";
             case "MKT_SAMPLE_LONGITUDE" -> "123.918200";
@@ -294,7 +296,8 @@ class BusinessImportTemplateMatrixIntegrationTest {
             case "surveyMonth" -> "8";
             case "LOG_SAMPLE_NAME" -> "物流矩阵-" + suffix;
             case "LOG_REGION" -> "230208";
-            case "LOG_REPORTER_PHONE" -> "13800000000";
+            case "LOG_SURVEYOR_NAME" -> "王雷";
+            case "LOG_SURVEYOR_PHONE" -> "13800000000";
             case "LOG_SAMPLE_CONTACT" -> "13900000000";
             case "LOG_SAMPLE_LATITUDE" -> "47.354300";
             case "LOG_SAMPLE_LONGITUDE" -> "123.918200";

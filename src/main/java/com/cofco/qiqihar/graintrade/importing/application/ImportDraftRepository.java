@@ -11,6 +11,9 @@ public interface ImportDraftRepository {
     int bindEvidence(UUID draftId, List<UUID> evidenceIds, Instant now);
     Optional<ImportDraft> findByIdForUpdate(UUID draftId);
     List<ImportDraft> findByJob(UUID importJobId, String createdBy);
+    List<ImportDraft> findByOwnerAndScope(
+            String createdBy, String domainCode, String productCode, String stateCode);
+    List<ImportDraft> findPendingIdentityReviews();
     List<UUID> evidenceIds(UUID draftId);
     ImportDraft markPromoted(UUID draftId, int expectedVersion, String canonicalRecordId, Instant now);
 }

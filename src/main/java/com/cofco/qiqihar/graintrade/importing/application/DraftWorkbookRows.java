@@ -33,7 +33,7 @@ final class DraftWorkbookRows {
             if (objectTypeField != null && !objectTypeField.isBlank()) {
                 String supplied = values.getOrDefault(objectTypeField, "").trim();
                 if (supplied.isBlank()) {
-                    objectType = null;
+                    objectType = fixedObjectType;
                 } else {
                     objectType = objectTypeByLabel.get(supplied);
                     if (objectType == null && objectTypeByLabel.containsValue(supplied)) objectType = supplied;
@@ -50,22 +50,25 @@ final class DraftWorkbookRows {
                 if (systemGeneratedCodes.contains(code)) continue;
                 String supplied = values.getOrDefault(code, "").trim();
                 if (supplied.isBlank()) continue;
-                try {
-                    BusinessImportWorkbook.validateCell(supplied, template.rules().get(column));
-                } catch (IllegalArgumentException invalidValue) {
-                    errorCode = "IMPORT_VALUE_FORMAT_INVALID";
-                    errorMessage = "“" + template.labels().get(column) + "”填写格式或选项不正确";
-                    continue;
-                }
                 Map<String, String> translations = valueCodesByLabel.get(code);
                 if (translations != null) {
                     String normalized = translations.get(supplied);
                     if (normalized == null) {
                         errorCode = "IMPORT_VALUE_FORMAT_INVALID";
-                        errorMessage = "“" + template.labels().get(column) + "”不在受控选项内";
+                        errorMessage = "“" + template.labels().get(column) + "”不在受控选项内；可填写："
+                                + String.join("、", translations.keySet());
                     } else {
                         normalizedValues.put(code, normalized);
                     }
+                    continue;
+                }
+                try {
+                    BusinessImportWorkbook.validateCell(supplied, template.rules().get(column));
+                } catch (IllegalArgumentException invalidValue) {
+                    errorCode = "IMPORT_VALUE_FORMAT_INVALID";
+                    errorMessage = "“" + template.labels().get(column) + "”填写不正确："
+                            + BusinessImportWorkbook.validationHint(template.rules().get(column));
+                    continue;
                 }
             }
             List<String> missing = new ArrayList<>();

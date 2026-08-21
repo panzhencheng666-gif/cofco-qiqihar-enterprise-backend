@@ -18,9 +18,11 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.security.MessageDigest;
+import java.text.Normalizer;
 import java.time.Clock;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
@@ -178,6 +180,63 @@ public class EvidencePhotoService {
     }
 
     @Transactional
+    public SupplementAttachmentResult supplementProductionImport(
+            UUID importJobId, String filename, String mediaType, byte[] bytes,
+            List<SupplementTarget> targets) {
+        if (importJobId == null || targets == null || targets.isEmpty()) throw invalid();
+        var principal = accessControl.require("BUSINESS_CREATE", null);
+        String normalizedFilename = normalizeFilename(filename);
+        validateImportMetadata(normalizedFilename, mediaType, bytes, "产情批量导入照片");
+        BufferedImage image = readImage(bytes, mediaType);
+        String incomingSha256 = sha256(bytes);
+        List<SupplementTarget> missing = new ArrayList<>();
+        int alreadyAttached = 0;
+
+        for (SupplementTarget target : targets) {
+            if (target == null || target.recordId() == null || target.recordId().isBlank()
+                    || target.regionCode() == null || target.regionCode().isBlank()) throw invalid();
+            accessControl.require("BUSINESS_CREATE", target.regionCode());
+            List<EvidencePhotoView> existing = repository.findAttached("PRODUCTION", target.recordId());
+            EvidencePhotoView matched = existing.stream()
+                    .filter(photo -> normalizeFilename(photo.originalFilename()).equals(normalizedFilename))
+                    .findFirst().orElse(null);
+            if (matched != null) {
+                if (!matched.sha256().equals(incomingSha256)) {
+                    throw new ConflictException("IMPORT_PHOTO_CONTENT_MISMATCH",
+                            "同名照片内容与已挂接照片不一致，请核对文件");
+                }
+                alreadyAttached++;
+            } else {
+                if (existing.size() >= 5) {
+                    throw new ConflictException("EVIDENCE_PHOTO_LIMIT_EXCEEDED",
+                            "原记录已有 5 张照片，不能继续补挂");
+                }
+                missing.add(target);
+            }
+        }
+
+        OffsetDateTime uploadedAt = OffsetDateTime.ofInstant(clock.instant(), ZONE);
+        for (SupplementTarget target : missing) {
+            String watermarkText = "产情批量导入照片 | 导入任务 %s | 原记录 %s | 补挂时间 %s"
+                    .formatted(importJobId, target.recordId(), uploadedAt);
+            BoundedInput.requireText("INVALID_EVIDENCE_PHOTO", watermarkText);
+            byte[] watermarked = watermark(image, mediaType, watermarkText, "原记录补挂");
+            EvidencePhotoView view = persist(normalizedFilename, mediaType, bytes, watermarked,
+                    null, null, null, watermarkText, principal.subjectId(), uploadedAt);
+            if (!repository.attach(view.id(), "PRODUCTION", target.recordId(),
+                    target.regionCode(), principal.subjectId())) {
+                throw new ConflictException("EVIDENCE_PHOTO_NOT_AVAILABLE", "照片未能挂接到原记录");
+            }
+        }
+        if (!missing.isEmpty()) {
+            audit.record(principal, "IMPORT_JOB", importJobId.toString(), "IMPORT_PHOTO_SUPPLEMENTED",
+                    clock.instant(), "{\"newAttachments\":%d,\"alreadyAttached\":%d}"
+                            .formatted(missing.size(), alreadyAttached));
+        }
+        return new SupplementAttachmentResult(missing.size(), alreadyAttached);
+    }
+
+    @Transactional
     public List<EvidencePhotoView> attachToMarket(
             List<UUID> ids, String recordId, String regionCode, String subjectId) {
         validateAvailable(ids, subjectId);
@@ -294,6 +353,15 @@ public class EvidencePhotoService {
         }
     }
 
+    private static String normalizeFilename(String value) {
+        if (value == null) throw invalid();
+        String normalized = Normalizer.normalize(value.trim(), Normalizer.Form.NFC);
+        if (normalized.isBlank() || normalized.length() > 255 || normalized.equals(".") || normalized.equals("..")
+                || normalized.indexOf('/') >= 0 || normalized.indexOf('\\') >= 0
+                || normalized.codePoints().anyMatch(Character::isISOControl)) throw invalid();
+        return normalized;
+    }
+
     private void registerRollbackCleanup(String objectKey) {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
@@ -318,4 +386,8 @@ public class EvidencePhotoService {
         }
         public byte[] bytes() { return bytes.clone(); }
     }
+
+    public record SupplementTarget(String recordId, String regionCode) {}
+
+    public record SupplementAttachmentResult(int newAttachments, int alreadyAttached) {}
 }

@@ -41,19 +41,21 @@ class MarketV18MasterDataTest {
                         "MKT_CARRIAGE_BOARD_AMOUNT:车板组成:DECIMAL:70", "MKT_PACKAGING_FORM:包装形态:SELECT:80",
                         "MKT_PACKAGING_AMOUNT:包装组成:DECIMAL:90", "MKT_FREIGHT_AMOUNT:运费组成:DECIMAL:100",
                         "MKT_SOURCE_NOTE:来源说明:TEXT:105",
-                        "MKT_REPORTER_NAME:填报人:TEXT:120", "MKT_REPORTER_PHONE:填报人联系方式:TEXT:121",
-                        "MKT_SAMPLE_CONTACT:填报对象/客户联系方式:TEXT:122",
-                        "MKT_SAMPLE_LATITUDE:样本点纬度:DECIMAL:123",
-                        "MKT_SAMPLE_LONGITUDE:样本点经度:DECIMAL:124",
-                        "MKT_SAMPLE_NAME:填报对象/客户名称:TEXT:125",
-                        "MKT_CULTIVAR_NAME:具体品种:TEXT:126",
-                        "MKT_SAMPLE_SUBJECT_CODE:样本主体唯一标识:TEXT:127",
-                        "MKT_INVENTORY_HOLDER_CODE:库存填报主体唯一标识:TEXT:140",
-                        "MKT_INVENTORY_OWNERSHIP_TYPE:库存权属:SELECT:141",
-                        "MKT_STORAGE_REGION_CODE:库存存放地区:REGION_HIERARCHY:142",
-                        "MKT_CARGO_OWNER_CODE:货主唯一标识:TEXT:143",
-                        "MKT_INVENTORY_CUTOFF_DATE:库存统计截止日:DATE:144",
-                        "MKT_INVENTORY_POLICY_ATTRIBUTE:库存政策属性:SELECT:145");
+                        "MKT_REPORTER_NAME:填报人:TEXT:120", "MKT_SURVEYOR_NAME:调研人:TEXT:121",
+                        "MKT_SURVEYOR_PHONE:调研人联系方式:TEXT:122",
+                        "MKT_SAMPLE_CONTACT:填报对象/客户联系方式:TEXT:123",
+                        "MKT_SAMPLE_LATITUDE:样本点纬度:DECIMAL:124",
+                        "MKT_SAMPLE_LONGITUDE:样本点经度:DECIMAL:125",
+                        "MKT_SAMPLE_NAME:填报对象/客户名称:TEXT:126",
+                        "MKT_CULTIVAR_NAME:具体品种:TEXT:127",
+                        "MKT_SAMPLE_SUBJECT_CODE:样本主体唯一标识:TEXT:128",
+                        "MKT_INVENTORY_HOLDER_CODE:库存填报主体唯一标识:TEXT:141",
+                        "MKT_INVENTORY_OWNERSHIP_TYPE:库存权属:SELECT:142",
+                        "MKT_STORAGE_REGION_CODE:库存存放地区:REGION_HIERARCHY:143",
+                        "MKT_CARGO_OWNER_CODE:货主唯一标识:TEXT:144",
+                        "MKT_INVENTORY_CUTOFF_DATE:库存统计截止日:DATE:145",
+                        "MKT_INVENTORY_POLICY_ATTRIBUTE:库存政策属性:SELECT:146",
+                        "MKT_REPORTER_PHONE:历史填报人联系方式（停用）:TEXT:1121");
         assertThat(rows("""
                 SELECT field_code || ':' || value || ':' || label
                 FROM platform.market_core_field_option ORDER BY field_code, sort_order
@@ -138,6 +140,17 @@ class MarketV18MasterDataTest {
                 FROM platform.market_core_field_definition
                 WHERE code = 'MKT_SOURCE_NOTE'
                 """)).containsExactly("MKT_SOURCE_NOTE:null");
+        assertThat(rows("""
+                SELECT DISTINCT field_code
+                FROM platform.page_definition_field
+                WHERE business_domain = 'MARKET' AND page_kind = 'MONITORING'
+                  AND field_code IN (
+                    'MKT_SAMPLE_SUBJECT_CODE','MKT_INVENTORY_HOLDER_CODE',
+                    'MKT_INVENTORY_OWNERSHIP_TYPE','MKT_STORAGE_REGION_CODE',
+                    'MKT_CARGO_OWNER_CODE','MKT_INVENTORY_CUTOFF_DATE',
+                    'MKT_INVENTORY_POLICY_ATTRIBUTE')
+                ORDER BY field_code
+                """)).isEmpty();
         assertThat(actual).isEqualTo(expected);
     }
 

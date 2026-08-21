@@ -9,12 +9,14 @@ public record ObservableQuantityInput(
         BigDecimal selfUseTonnes,
         BigDecimal outflowTonnes,
         BigDecimal endingObservableInventoryTonnes,
-        boolean inventoryMutuallyExclusive,
+        boolean openingInventoryComplete,
+        boolean endingInventoryComplete,
+        int inventoryReviewGroupCount,
         int approvedRecordCount) {
 
     public ObservableQuantityInput {
-        if (approvedRecordCount < 0) {
-            throw new IllegalArgumentException("Approved record count cannot be negative");
+        if (inventoryReviewGroupCount < 0 || approvedRecordCount < 0) {
+            throw new IllegalArgumentException("Observable quantity counts cannot be negative");
         }
     }
 }

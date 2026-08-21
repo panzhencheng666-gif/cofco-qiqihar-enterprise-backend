@@ -16,6 +16,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class IdentityGovernanceService {
+    private static final String ACCOUNT_OWNER_ROLE="ACCOUNT_OWNER";
+    private static final String SYSTEM_ADMINISTRATOR_ROLE="SYSTEM_ADMIN";
+    private static final String REPORTER_ROLE="BUSINESS_OPERATOR";
+    private static final String ADMINISTRATOR_ROLE="BUSINESS_REVIEWER";
+    private static final Set<String> ASSIGNABLE_BUSINESS_ROLES=Set.of(REPORTER_ROLE,ADMINISTRATOR_ROLE);
     private static final Set<String> ACCOUNT_STATUSES=Set.of("INVITED","ACTIVE","LOCKED","SUSPENDED","REVOKED");
     private static final Set<String> EMPLOYMENT_STATUSES=Set.of("ACTIVE","LEAVE","TERMINATED");
     private final IdentityGovernanceRepository repository;
@@ -31,13 +36,14 @@ public class IdentityGovernanceService {
     @Transactional(readOnly=true)
     public List<EmployeeProfile> employees() {
         SecurityPrincipal actor=access.require("IDENTITY_READ",null);
-        return repository.findAll(systemAdministrator(actor)?null:actor.workUnitCode());
+        return repository.findAll(systemAdministrator(actor)?null:actor.workUnitCode()).stream()
+                .map(IdentityGovernanceService::businessProfile).toList();
     }
 
     @Transactional(readOnly=true)
     public EmployeeProfile employee(String subjectId) {
         SecurityPrincipal actor=access.require("IDENTITY_READ",null);
-        return required(subjectId,actor);
+        return businessProfile(required(subjectId,actor));
     }
 
     @Transactional(readOnly=true)
@@ -45,7 +51,11 @@ public class IdentityGovernanceService {
         SecurityPrincipal actor=access.require("IDENTITY_READ",null);
         if(blank(workUnitCode))throw invalid();
         requireWorkUnit(actor,workUnitCode);
-        AssignmentOptions options=repository.assignmentOptions(workUnitCode);
+        AssignmentOptions available=repository.assignmentOptions(workUnitCode);
+        AssignmentOptions options=new AssignmentOptions(
+                available.workUnits(),
+                available.roles().stream().filter(role->ASSIGNABLE_BUSINESS_ROLES.contains(role.code())).toList(),
+                available.positions(),available.regionCodes());
         if(systemAdministrator(actor))return options;
         return new AssignmentOptions(
                 options.workUnits().stream().filter(unit->unit.code().equals(actor.workUnitCode())).toList(),
@@ -61,14 +71,14 @@ public class IdentityGovernanceService {
         EmployeeAssignment assignment=new EmployeeAssignment(requested.displayName(),requested.workUnitCode(),
                 "INVITED","ACTIVE",requested.roleCodes(),requested.positionCodes(),requested.regionCodes());
         requireWorkUnit(actor,assignment.workUnitCode());
-        requireRoleAssignment(actor,assignment.roleCodes());
+        requireRoleAssignment(assignment.roleCodes());
         validate(assignment);
         if(repository.exists(subjectId))throw new ConflictException(
                 "IDENTITY_SUBJECT_EXISTS","员工账号已存在");
         EmployeeProfile created=repository.create(subjectId,assignment,actor.subjectId());
         audit.record(actor,assignment.workUnitCode(),"SECURITY_USER",subjectId,"SECURITY_USER_INVITED",clock.instant(),
                 "{\"accountStatus\":\"INVITED\"}");
-        return created;
+        return businessProfile(created);
     }
 
     @Transactional
@@ -77,10 +87,14 @@ public class IdentityGovernanceService {
         if(actor.subjectId().equals(subjectId))throw new AccessDeniedException(
                 "IDENTITY_SELF_ADMINISTRATION_DENIED","不能修改本人的账号或授权");
         EmployeeProfile current=required(subjectId,actor);
+        if(!systemAdministrator(actor)&&current.roles().stream()
+                .anyMatch(role->role.code().equals(ACCOUNT_OWNER_ROLE)))
+            throw new AccessDeniedException(
+                    "ACCOUNT_OWNER_ADMINISTRATION_DENIED","平台唯一所有者只能由系统管理员维护");
         if(!systemAdministrator(actor)&&current.roles().stream().anyMatch(role->role.code().equals("SYSTEM_ADMIN")))
             throw roleDenied();
         requireWorkUnit(actor,assignment.workUnitCode());
-        requireRoleAssignment(actor,assignment.roleCodes());
+        requireRoleAssignment(assignment.roleCodes());
         validate(assignment);
         validateTransition(current,assignment);
         EmployeeProfile updated=repository.update(subjectId,expectedVersion,assignment,actor.subjectId())
@@ -91,7 +105,7 @@ public class IdentityGovernanceService {
         audit.record(actor,assignment.workUnitCode(),"SECURITY_USER",subjectId,action,clock.instant(),
                 "{\"accountStatus\":\""+assignment.accountStatus()
                         +"\",\"employmentStatus\":\""+assignment.employmentStatus()+"\"}");
-        return updated;
+        return businessProfile(updated);
     }
 
     private EmployeeProfile required(String subjectId,SecurityPrincipal actor) {
@@ -135,8 +149,24 @@ public class IdentityGovernanceService {
         if(!systemAdministrator(actor)&&!actor.workUnitCode().equals(workUnitCode))throw new AccessDeniedException(
                 "ACCESS_WORK_UNIT_DENIED","无权访问其他工作单位");
     }
-    private static void requireRoleAssignment(SecurityPrincipal actor,List<String> roleCodes){
-        if(!systemAdministrator(actor)&&roleCodes.contains("SYSTEM_ADMIN"))throw roleDenied();
+    private static void requireRoleAssignment(List<String> roleCodes){
+        if(roleCodes.contains(ACCOUNT_OWNER_ROLE))throw new AccessDeniedException(
+                "ACCOUNT_OWNER_ASSIGNMENT_DENIED","平台唯一所有者角色不能通过员工授权分配");
+        if(roleCodes.contains(SYSTEM_ADMINISTRATOR_ROLE))throw roleDenied();
+        if(roleCodes.size()!=1||!ASSIGNABLE_BUSINESS_ROLES.contains(roleCodes.get(0)))throw roleDenied();
+    }
+
+    private static EmployeeProfile businessProfile(EmployeeProfile profile) {
+        if(profile.roles().isEmpty())return profile;
+        boolean administrator=profile.roles().stream().anyMatch(role->Set.of(
+                ADMINISTRATOR_ROLE,SYSTEM_ADMINISTRATOR_ROLE,ACCOUNT_OWNER_ROLE,
+                "IDENTITY_ADMIN","ACCESS_REVIEWER").contains(role.code()));
+        EmployeeProfile.Grant role=administrator
+                ? new EmployeeProfile.Grant(ADMINISTRATOR_ROLE,"管理员")
+                : new EmployeeProfile.Grant(REPORTER_ROLE,"填报员");
+        return new EmployeeProfile(profile.subjectId(),profile.displayName(),profile.workUnitCode(),
+                profile.workUnitName(),profile.accountStatus(),profile.employmentStatus(),List.of(role),
+                profile.positions(),profile.regionCodes(),profile.version());
     }
     private static AccessDeniedException roleDenied(){return new AccessDeniedException(
             "ACCESS_ROLE_ASSIGNMENT_DENIED","当前账号不能授予系统管理员角色");}

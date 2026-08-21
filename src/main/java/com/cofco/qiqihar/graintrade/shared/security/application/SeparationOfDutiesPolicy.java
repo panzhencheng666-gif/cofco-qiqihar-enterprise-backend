@@ -7,6 +7,8 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class SeparationOfDutiesPolicy {
+    private static final String ACCOUNT_OWNER_ROLE = "ACCOUNT_OWNER";
+    private static final String SELF_APPROVAL_PERMISSION = "BUSINESS_SELF_APPROVE";
     private final BusinessAuditActorReader auditActors;
 
     public SeparationOfDutiesPolicy(BusinessAuditActorReader auditActors) {
@@ -15,29 +17,46 @@ public class SeparationOfDutiesPolicy {
 
     public void requireIndependentApprover(
             String aggregateType, String aggregateId, String submittedAction, SecurityPrincipal approver) {
-        requireIndependentReviewer(aggregateType, aggregateId, submittedAction, approver,
-                "SELF_APPROVAL_FORBIDDEN", "The submitting employee cannot approve the same record");
+        String submitter = requireSubmitter(aggregateType, aggregateId, submittedAction);
+        if (submitter.equals(approver.subjectId()) && !hasAccountOwnerSelfReviewPrivilege(approver)) {
+            throw new AccessDeniedException(
+                    "SELF_APPROVAL_FORBIDDEN", "提交人不能审核自己提交的记录");
+        }
     }
 
     public void requireIndependentReturner(
             String aggregateType, String aggregateId, String submittedAction, SecurityPrincipal reviewer) {
-        requireIndependentReviewer(aggregateType, aggregateId, submittedAction, reviewer,
-                "SELF_RETURN_FORBIDDEN", "The submitting employee cannot return the same record");
+        String submitter = requireSubmitter(aggregateType, aggregateId, submittedAction);
+        if (submitter.equals(reviewer.subjectId()) && !hasAccountOwnerSelfReviewPrivilege(reviewer)) {
+            throw new AccessDeniedException(
+                    "SELF_RETURN_FORBIDDEN", "提交人不能驳回自己提交的记录");
+        }
     }
 
-    public boolean isIndependentReviewer(
+    public boolean canApprove(
             String aggregateType, String aggregateId, String submittedAction, SecurityPrincipal reviewer) {
         return auditActors.latestActor(aggregateType, aggregateId, submittedAction)
-                .filter(actor -> !actor.equals(reviewer.subjectId())).isPresent();
+                .map(actor -> !actor.equals(reviewer.subjectId())
+                        || hasAccountOwnerSelfReviewPrivilege(reviewer))
+                .orElse(false);
     }
 
-    private void requireIndependentReviewer(String aggregateType, String aggregateId, String submittedAction,
-            SecurityPrincipal reviewer, String errorCode, String message) {
-        String submitter = auditActors.latestActor(aggregateType, aggregateId, submittedAction)
+    public boolean canReturn(
+            String aggregateType, String aggregateId, String submittedAction, SecurityPrincipal reviewer) {
+        return auditActors.latestActor(aggregateType, aggregateId, submittedAction)
+                .map(actor -> !actor.equals(reviewer.subjectId())
+                        || hasAccountOwnerSelfReviewPrivilege(reviewer))
+                .orElse(false);
+    }
+
+    private String requireSubmitter(String aggregateType, String aggregateId, String submittedAction) {
+        return auditActors.latestActor(aggregateType, aggregateId, submittedAction)
                 .orElseThrow(() -> new AccessDeniedException(
-                        "SUBMISSION_PROVENANCE_REQUIRED", "Submission provenance is required for approval"));
-        if (submitter.equals(reviewer.subjectId())) {
-            throw new AccessDeniedException(errorCode, message);
-        }
+                        "SUBMISSION_PROVENANCE_REQUIRED", "缺少提交来源，暂不能形成审核结论"));
+    }
+
+    private static boolean hasAccountOwnerSelfReviewPrivilege(SecurityPrincipal principal) {
+        return principal.roleCodes().contains(ACCOUNT_OWNER_ROLE)
+                && principal.permits(SELF_APPROVAL_PERMISSION);
     }
 }

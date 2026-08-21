@@ -66,11 +66,11 @@ class QueuedBusinessImportIntegrationTest {
     @Test
     void queuesLargeBatchesThenCompletesThemDurablyWithoutDuplicateWrites() throws Exception {
         String header = "productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,"
-                + "yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_REPORTER_PHONE,PROD_SAMPLE_CONTACT,"
+                + "yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_SURVEYOR_NAME,PROD_SURVEYOR_PHONE,PROD_SAMPLE_CONTACT,"
                 + "PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId\n";
-        String rows = "CORN,FARMER,230200,,2026-08-09,10,500,伪造甲,13800000001,13900000001,"
+        String rows = "CORN,FARMER,230200,,2026-08-09,10,500,伪造甲,王雷,13800000001,13900000001,"
                 + "47.3543,123.9182," + FIRST_PHOTO + "\n"
-                + "CORN,FARMER,230200,,2026-08-09,20,510,伪造乙,13800000002,13900000002,"
+                + "CORN,FARMER,230200,,2026-08-09,20,510,伪造乙,王雷,13800000002,13900000002,"
                 + "47.3544,123.9183," + SECOND_PHOTO + "\n";
         MockMultipartFile file = new MockMultipartFile(
                 "file", "large-production.csv", "text/csv", (header + rows).getBytes(StandardCharsets.UTF_8));
@@ -124,6 +124,63 @@ class QueuedBusinessImportIntegrationTest {
     }
 
     @Test
+    void routesReturnedCorrectionsBeforeOrdinaryMarketImportsAndRejectsUnknownReservedSources()
+            throws Exception {
+        boundary();
+        String first = returnedMarket("队列修正甲");
+        String second = returnedMarket("队列修正乙");
+        String third = returnedMarket("队列修正丙");
+        byte[] workbook = mvc.perform(get(
+                                "/api/v1/imports/market/returned-corrections/template")
+                        .param("productCode", "CORN").principal(() -> "market-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+
+        String response = mvc.perform(multipart(
+                                "/api/v1/imports/market/returned-corrections")
+                        .file(new MockMultipartFile("file", "市场-玉米-退回记录修正表.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", "queued-returned-market-correction")
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.data.statusCode").value("QUEUED"))
+                .andReturn().getResponse().getContentAsString();
+        UUID jobId = id(response);
+
+        assertThat(awaitReturnedCorrection(jobId)).isEqualTo("COMPLETED");
+        assertThat(jdbc.sql("""
+                SELECT count(*)=3 AND bool_and(status_code='PENDING_REVIEW') AND bool_and(version=4)
+                FROM market.market_record WHERE record_id IN (:first,:second,:third)
+                """).param("first", first).param("second", second).param("third", third)
+                .query(Boolean.class).single()).isTrue();
+        assertThat(jdbc.sql("""
+                SELECT source_content LIKE 'MARKET-RETURNED-CORRECTION-V1:%'
+                  AND started_at IS NOT NULL AND attempt_count=1
+                FROM platform.import_job WHERE import_job_id=:id
+                """).param("id", jobId).query(Boolean.class).single()).isTrue();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.business_import_draft")
+                .query(Long.class).single()).isZero();
+
+        long recordsBeforeUnknown = jdbc.sql("SELECT count(*) FROM market.market_record")
+                .query(Long.class).single();
+        UUID unknownJob = UUID.randomUUID();
+        jdbc.sql("""
+                INSERT INTO platform.import_job(import_job_id,domain_code,idempotency_key,content_sha256,
+                  source_content,requested_by,work_unit_code,status_code,created_at,attempt_count)
+                SELECT :id,'MARKET',:key,repeat('b',64),'MARKET-UNKNOWN-V1:payload',
+                  subject_id,work_unit_code,'QUEUED',now(),0
+                FROM platform.security_user WHERE subject_id='market-tester'
+                """).param("id", unknownJob).param("key", "unknown-market-" + unknownJob).update();
+        assertThat(await("market", unknownJob, "market-tester")).isEqualTo("FAILED");
+        assertThat(jdbc.sql("""
+                SELECT failure_code FROM platform.import_job WHERE import_job_id=:id
+                """).param("id", unknownJob).query(String.class).single())
+                .isEqualTo("INVALID_IMPORT_TEMPLATE");
+        assertThat(jdbc.sql("SELECT count(*) FROM market.market_record").query(Long.class).single())
+                .isEqualTo(recordsBeforeUnknown);
+    }
+
+    @Test
     void usesTheSameDurableQueueForLogisticsImports() throws Exception {
         node("ASYNC_ORIGIN", "异步始发点", "RAIL_NODE");
         node("ASYNC_DEST", "异步到达点", "ROAD_NODE");
@@ -148,9 +205,9 @@ class QueuedBusinessImportIntegrationTest {
     @Test
     void rejectsBatchesBeyondTheConfiguredMaximumWithoutCreatingAJob() throws Exception {
         String header = "productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,"
-                + "yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_REPORTER_PHONE,PROD_SAMPLE_CONTACT,"
+                + "yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_SURVEYOR_NAME,PROD_SURVEYOR_PHONE,PROD_SAMPLE_CONTACT,"
                 + "PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId\n";
-        String row = "CORN,FARMER,230200,,2026-08-09,10,500,伪造姓名,13800000001,13900000001,"
+        String row = "CORN,FARMER,230200,,2026-08-09,10,500,伪造姓名,王雷,13800000001,13900000001,"
                 + "47.3543,123.9182," + FIRST_PHOTO + "\n";
 
         mvc.perform(multipart("/api/v1/imports/production")
@@ -212,6 +269,21 @@ class QueuedBusinessImportIntegrationTest {
         return statusCode;
     }
 
+    private String awaitReturnedCorrection(UUID jobId) throws Exception {
+        Instant deadline = Instant.now().plus(Duration.ofSeconds(10));
+        String statusCode = "QUEUED";
+        while (Instant.now().isBefore(deadline) && !statusCode.startsWith("COMPLETED")
+                && !statusCode.equals("FAILED")) {
+            Thread.sleep(50);
+            String body = mvc.perform(get(
+                                    "/api/v1/imports/market/returned-corrections/{id}", jobId)
+                            .principal(() -> "market-tester"))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+            statusCode = body.replaceFirst("(?s).*?\"statusCode\":\"([^\"]+)\".*", "$1");
+        }
+        return statusCode;
+    }
+
     private static UUID id(String body) {
         return UUID.fromString(body.replaceFirst("(?s).*?\"id\":\"([^\"]+)\".*", "$1"));
     }
@@ -228,7 +300,7 @@ class QueuedBusinessImportIntegrationTest {
             case "surveyMonth" -> "8";
             case "LOG_SAMPLE_NAME" -> "齐齐哈尔物流中心";
             case "LOG_REGION" -> "230200";
-            case "LOG_REPORTER_PHONE" -> "13800000000";
+            case "LOG_SURVEYOR_PHONE" -> "13800000000";
             case "LOG_SAMPLE_CONTACT" -> "13900000000";
             case "LOG_SAMPLE_LATITUDE" -> "47.354300";
             case "LOG_SAMPLE_LONGITUDE" -> "123.918200";
@@ -259,11 +331,60 @@ class QueuedBusinessImportIntegrationTest {
                 .update();
     }
 
+    private String returnedMarket(String sampleName) throws Exception {
+        UUID photo = UUID.randomUUID();
+        insertPhoto(photo, sampleName + ".png", "market-tester");
+        String body = """
+                {"productCode":"CORN","coreValues":{
+                 "MKT_OBJECT_TYPE":"TRADER","MKT_REGION":"230200","MKT_TRADE_DATE":"2026-08-01",
+                 "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":"2300",
+                 "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
+                 "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",
+                 "MKT_SAMPLE_NAME":"%s","MKT_SURVEYOR_NAME":"王雷",
+                 "MKT_SURVEYOR_PHONE":"13800000000","MKT_SAMPLE_CONTACT":"13900000000",
+                 "MKT_SAMPLE_LATITUDE":"47.3543","MKT_SAMPLE_LONGITUDE":"123.9182"},
+                 "facts":{"PURCHASE_VOLUME":"12","MOISTURE":"14.6"},
+                 "evidencePhotoIds":["%s"]}
+                """.formatted(sampleName, photo);
+        String id = mvc.perform(post("/api/v1/market-records")
+                        .principal(() -> "market-tester").contentType("application/json").content(body))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()
+                .replaceFirst("(?s).*?\"id\":\"([^\"]+)\".*", "$1");
+        mvc.perform(post("/api/v1/market-records/{id}/submit", id)
+                        .principal(() -> "market-tester").contentType("application/json")
+                        .content("{\"version\":0}"))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/v1/market-records/{id}/return", id)
+                        .principal(() -> "production-tester").contentType("application/json")
+                        .content("{\"version\":1,\"reason\":\"地区与经纬度不匹配\"}"))
+                .andExpect(status().isOk());
+        return id;
+    }
+
+    private void boundary() {
+        jdbc.sql("""
+                INSERT INTO overview.administrative_boundary(
+                  region_code,geometry,source_name,source_url,source_revision,source_license,
+                  source_feature_id,source_effective_on,geometry_sha256)
+                VALUES('230200',ST_Multi(ST_MakeEnvelope(122,46,125,49,4326)),
+                  '退回市场队列验证','urn:test:returned-market-queue','test-v1',
+                  'Test fixture','230200',DATE '2026-08-19',repeat('7',64))
+                ON CONFLICT(region_code) DO UPDATE SET geometry=EXCLUDED.geometry,
+                  source_name=EXCLUDED.source_name,source_url=EXCLUDED.source_url,
+                  source_revision=EXCLUDED.source_revision,source_license=EXCLUDED.source_license,
+                  source_feature_id=EXCLUDED.source_feature_id,
+                  source_effective_on=EXCLUDED.source_effective_on,
+                  geometry_sha256=EXCLUDED.geometry_sha256
+                """).update();
+    }
+
     private void clean() {
         jdbc.sql("""
                 TRUNCATE platform.import_row_result,platform.import_job,platform.business_audit_event,
                   production.production_record,market.market_record,logistics.route_event,
                   logistics.logistics_node,evidence.evidence_photo RESTART IDENTITY CASCADE
                 """).update();
+        jdbc.sql("DELETE FROM overview.administrative_boundary WHERE source_url=:source")
+                .param("source", "urn:test:returned-market-queue").update();
     }
 }

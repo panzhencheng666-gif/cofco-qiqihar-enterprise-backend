@@ -61,7 +61,7 @@ class LogisticsPublicContractMigrationTest {
 
         assertThat(DATABASE.flywayToVersion("117").migrate().migrationsExecuted).isEqualTo(1);
         assertV117AppliedExactlyOnce();
-        assertPublicContract();
+        assertV117PublicContract();
         assertThat(query("""
                 SELECT business_region_code || '|' || monitoring_period_code || '|' || origin_node_code || '|' ||
                   destination_node_code || '|' || version
@@ -75,6 +75,24 @@ class LogisticsPublicContractMigrationTest {
     }
 
     private void assertPublicContract() throws Exception {
+        assertThat(query("""
+                SELECT string_agg(definition.code || ':' || definition.label || ':' ||
+                  definition.control_type || ':' || definition.required, ',' ORDER BY applicability.sort_order)
+                FROM platform.logistics_core_field_applicability applicability
+                JOIN platform.logistics_core_field_definition definition ON definition.code=applicability.field_code
+                WHERE applicability.product_code='CORN'
+                """)).isEqualTo("surveyYear:数据年份:DECIMAL:true,surveyMonth:数据月份:DECIMAL:false," +
+                "fillingDate:填报日期:READONLY_DATE:false,LOG_SAMPLE_NAME:物流样本点名称:TEXT:true," +
+                "LOG_REGION:地区:SELECT:true,LOG_REPORTER:填报人:READONLY_TEXT:false," +
+                "LOG_SURVEYOR_NAME:调研人:TEXT:false,LOG_SURVEYOR_PHONE:调研人联系方式:TEXT:false," +
+                "LOG_SAMPLE_CONTACT:物流样本点联系方式:TEXT:true," +
+                "LOG_SAMPLE_LATITUDE:纬度:DECIMAL:true,LOG_SAMPLE_LONGITUDE:经度:DECIMAL:true," +
+                "LOG_TRANSPORT_MODE:运输方式:SELECT:true,LOG_DIRECTION:运输方向:SELECT:true," +
+                "LOG_ROUTE_VOLUME:运输数量:DECIMAL:true,LOG_FREIGHT_RATE:物流运价（不含车板价）:DECIMAL:true," +
+                "LOG_BOARD_PRICE:车板价:DECIMAL:true,LOG_STATUS:填报状态:READONLY_STATUS:false");
+    }
+
+    private void assertV117PublicContract() throws Exception {
         assertThat(query("""
                 SELECT string_agg(definition.code || ':' || definition.label || ':' ||
                   definition.control_type || ':' || definition.required, ',' ORDER BY applicability.sort_order)

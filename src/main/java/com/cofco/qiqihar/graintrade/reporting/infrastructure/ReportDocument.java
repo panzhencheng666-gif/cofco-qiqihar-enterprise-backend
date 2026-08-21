@@ -27,27 +27,58 @@ public final class ReportDocument {
 
     private static String document(ReportPreviewView preview) {
         StringBuilder body = new StringBuilder();
-        paragraph(body, preview.title(), true);
-        paragraph(body, "统计期间：" + preview.dataCutoffLabel(), false);
+        paragraph(body, preview.title(), "Title");
+        paragraph(body, "统计期间：" + preview.dataCutoffLabel(), "Subtitle");
+        paragraph(body, "数据口径：仅采用审核通过的数据；三品种、四业务域使用同一服务端快照。", "Subtitle");
         for (ReportPreviewView.Line line : preview.lines()) {
             paragraph(body, line.label() + "：" + value(line.value())
-                    + (line.note() == null || line.note().isBlank() ? "" : "（" + line.note() + "）"), false);
+                    + (line.note() == null || line.note().isBlank() ? "" : "（" + line.note() + "）"), "Body");
+        }
+        if (!preview.products().isEmpty()) {
+            paragraph(body, "审核后数据快照", "Heading1");
+            for (ReportPreviewView.Product product : preview.products()) {
+                paragraph(body, product.label(), "Heading2");
+                for (ReportPreviewView.Domain domain : product.domains()) {
+                    paragraph(body, domain.label() + "  ·  已审核 " + domain.approvedRecordCount() + " 条", "Heading3");
+                    paragraph(body, "数据截止：" + value(domain.dataCutoff()), "Meta");
+                    for (ReportPreviewView.Line metric : domain.metrics()) {
+                        paragraph(body, metric.label() + "：" + value(metric.value())
+                                + (metric.note() == null || metric.note().isBlank()
+                                        ? "" : "（" + metric.note() + "）"), "Body");
+                    }
+                }
+            }
         }
         for (ReportPreviewView.Section section : preview.sections()) {
-            paragraph(body, section.title(), true);
-            paragraph(body, value(section.body()), false);
+            paragraph(body, section.title(), "Heading1");
+            paragraph(body, value(section.body()), "Body");
         }
         return """
                 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
                 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-                  <w:body>%s<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body>
+                  <w:body>%s<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134"/></w:sectPr></w:body>
                 </w:document>
                 """.formatted(body);
     }
 
-    private static void paragraph(StringBuilder body, String value, boolean bold) {
-        body.append("<w:p><w:r>");
-        if (bold) body.append("<w:rPr><w:b/></w:rPr>");
+    private static void paragraph(StringBuilder body, String value, String style) {
+        body.append("<w:p><w:pPr>");
+        switch (style) {
+            case "Title" -> body.append("<w:jc w:val=\"center\"/><w:spacing w:after=\"240\"/>");
+            case "Heading1" -> body.append("<w:spacing w:before=\"260\" w:after=\"120\"/><w:keepNext/>");
+            case "Heading2", "Heading3" -> body.append("<w:spacing w:before=\"180\" w:after=\"80\"/><w:keepNext/>");
+            default -> body.append("<w:spacing w:after=\"80\"/>");
+        }
+        body.append("</w:pPr><w:r><w:rPr><w:rFonts w:eastAsia=\"等线\"/>");
+        switch (style) {
+            case "Title" -> body.append("<w:b/><w:color w:val=\"123F35\"/><w:sz w:val=\"36\"/>");
+            case "Heading1" -> body.append("<w:b/><w:color w:val=\"123F35\"/><w:sz w:val=\"28\"/>");
+            case "Heading2" -> body.append("<w:b/><w:color w:val=\"A2762C\"/><w:sz w:val=\"25\"/>");
+            case "Heading3" -> body.append("<w:b/><w:color w:val=\"315B52\"/><w:sz w:val=\"22\"/>");
+            case "Subtitle", "Meta" -> body.append("<w:color w:val=\"687B75\"/><w:sz w:val=\"19\"/>");
+            default -> body.append("<w:color w:val=\"213A34\"/><w:sz w:val=\"21\"/>");
+        }
+        body.append("</w:rPr>");
         body.append("<w:t xml:space=\"preserve\">").append(xml(value)).append("</w:t></w:r></w:p>");
     }
 

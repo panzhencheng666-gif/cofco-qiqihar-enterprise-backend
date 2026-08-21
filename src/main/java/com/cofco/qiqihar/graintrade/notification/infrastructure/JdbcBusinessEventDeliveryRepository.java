@@ -161,19 +161,29 @@ public class JdbcBusinessEventDeliveryRepository implements BusinessEventDeliver
                   lease_owner,lease_token,lease_until,updated_at)
                 VALUES(:consumerId,:eventId,:eventSequence,'IN_PROGRESS',1,
                   :instanceId,:leaseToken,:leaseUntil,:now)
-                ON CONFLICT(consumer_id,event_id) DO UPDATE SET
-                  status_code='IN_PROGRESS',attempt_count=platform.business_event_delivery_state.attempt_count+1,
-                  lease_owner=:instanceId,lease_token=:leaseToken,lease_until=:leaseUntil,
-                  next_retry_at=NULL,delivered_at=NULL,quarantined_at=NULL,updated_at=:now
-                WHERE (platform.business_event_delivery_state.status_code='RETRY_SCHEDULED'
-                         AND platform.business_event_delivery_state.next_retry_at<=:now)
-                   OR (platform.business_event_delivery_state.status_code='IN_PROGRESS'
-                         AND platform.business_event_delivery_state.lease_until<=:now)
+                ON CONFLICT DO NOTHING
                 RETURNING attempt_count
                 """).param("consumerId", consumerId).param("eventId", event.id())
                 .param("eventSequence", event.sequence()).param("instanceId", instanceId)
                 .param("leaseToken", leaseToken).param("leaseUntil", Timestamp.from(leaseUntil))
                 .param("now", Timestamp.from(now)).query(Integer.class).optional();
+        if (attemptNo.isEmpty()) {
+            attemptNo = jdbc.sql("""
+                UPDATE platform.business_event_delivery_state SET
+                  status_code='IN_PROGRESS',attempt_count=platform.business_event_delivery_state.attempt_count+1,
+                  lease_owner=:instanceId,lease_token=:leaseToken,lease_until=:leaseUntil,
+                  next_retry_at=NULL,delivered_at=NULL,quarantined_at=NULL,updated_at=:now
+                WHERE consumer_id=:consumerId AND event_id=:eventId
+                  AND ((platform.business_event_delivery_state.status_code='RETRY_SCHEDULED'
+                         AND platform.business_event_delivery_state.next_retry_at<=:now)
+                   OR (platform.business_event_delivery_state.status_code='IN_PROGRESS'
+                         AND platform.business_event_delivery_state.lease_until<=:now))
+                RETURNING attempt_count
+                """).param("consumerId", consumerId).param("eventId", event.id())
+                .param("instanceId", instanceId)
+                .param("leaseToken", leaseToken).param("leaseUntil", Timestamp.from(leaseUntil))
+                .param("now", Timestamp.from(now)).query(Integer.class).optional();
+        }
         jdbc.sql("""
                 UPDATE platform.business_event_delivery_checkpoint
                 SET last_observed_sequence=GREATEST(last_observed_sequence,:eventSequence),

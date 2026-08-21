@@ -11,7 +11,8 @@ public record OverviewDashboard(
         List<RegionActivity> regionActivity,
         List<Alert> alerts,
         List<YoYComparison> cultivatedAreaYoY,
-        List<YoYComparison> outputYoY) {
+        List<YoYComparison> outputYoY,
+        List<OverviewBusinessTable> businessTables) {
 
     public record Scope(
             long countyCount,

@@ -29,7 +29,7 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
     private static final Pattern STORAGE_KEY = Pattern.compile("^[A-Za-z_][A-Za-z0-9_]*$");
     private static final List<String> PUBLIC_FIELD_CODES = List.of(
             "surveyYear", "surveyMonth", "fillingDate", "LOG_SAMPLE_NAME", "LOG_REGION",
-            "LOG_REPORTER", "LOG_REPORTER_PHONE", "LOG_SAMPLE_CONTACT", "LOG_SAMPLE_LATITUDE",
+            "LOG_REPORTER", "LOG_SURVEYOR_NAME", "LOG_SURVEYOR_PHONE", "LOG_SAMPLE_CONTACT", "LOG_SAMPLE_LATITUDE",
             "LOG_SAMPLE_LONGITUDE", "LOG_TRANSPORT_MODE", "LOG_DIRECTION", "LOG_ROUTE_VOLUME",
             "LOG_FREIGHT_RATE", "LOG_BOARD_PRICE", "LOG_STATUS");
     private final JdbcClient jdbc;

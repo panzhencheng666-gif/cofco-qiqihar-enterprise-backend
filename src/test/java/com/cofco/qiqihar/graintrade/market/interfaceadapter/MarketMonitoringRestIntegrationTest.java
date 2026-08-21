@@ -32,6 +32,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -77,10 +78,15 @@ class MarketMonitoringRestIntegrationTest {
                 INSERT INTO overview.administrative_boundary(
                   region_code,geometry,source_name,source_url,source_revision,source_license,
                   source_feature_id,source_effective_on,geometry_sha256)
-                VALUES('230200',ST_Multi(ST_Buffer(ST_SetSRID(ST_MakePoint(123,47),4326),0.5)),
+                VALUES('230200',ST_Multi(ST_MakeEnvelope(122,46,125,49,4326)),
                   'market sample-point contract fixture','urn:test:market-sample-point','test-v1',
                   'Test fixture','230200',DATE '2026-08-11',repeat('7',64))
-                ON CONFLICT (region_code) DO NOTHING
+                ON CONFLICT (region_code) DO UPDATE SET
+                  geometry=EXCLUDED.geometry,source_name=EXCLUDED.source_name,
+                  source_url=EXCLUDED.source_url,source_revision=EXCLUDED.source_revision,
+                  source_license=EXCLUDED.source_license,source_feature_id=EXCLUDED.source_feature_id,
+                  source_effective_on=EXCLUDED.source_effective_on,
+                  geometry_sha256=EXCLUDED.geometry_sha256
                 """).update();
     }
     @AfterEach
@@ -148,13 +154,13 @@ class MarketMonitoringRestIntegrationTest {
                 WHERE aggregate_type = 'MARKET_RECORD' AND aggregate_id = :id
                 """).param("id", id).query(Long.class).single()).isEqualTo(3L);
         assertThat(JdbcClient.create(dataSource).sql("""
-                SELECT party_id IS NULL AND sample_point_id IS NULL
+                SELECT party_id IS NULL AND sample_point_id IS NOT NULL
                 FROM market.market_record WHERE record_id=:id
                 """).param("id", id).query(Boolean.class).single()).isTrue();
     }
 
     @Test
-    void displayFieldsCannotEstablishOrReuseIdentityAcrossProducts() throws Exception {
+    void visibleNameAndContactReuseOnePhysicalSampleAcrossProducts() throws Exception {
         String corn = draftBody("CORN", "TRADER", "MOISTURE", null)
                 .replace("\"MKT_SAMPLE_LATITUDE\":\"47.3543\"", "\"MKT_SAMPLE_LATITUDE\":\"47\"")
                 .replace("\"MKT_SAMPLE_LONGITUDE\":\"123.9182\"", "\"MKT_SAMPLE_LONGITUDE\":\"123\"");
@@ -167,10 +173,37 @@ class MarketMonitoringRestIntegrationTest {
         approve(second);
 
         assertThat(JdbcClient.create(dataSource).sql("""
-                SELECT count(*)=2 AND count(party_id)=0 AND count(sample_point_id)=0
+                SELECT count(*)=2 AND count(party_id)=0
+                  AND count(sample_point_id)=2 AND count(DISTINCT sample_point_id)=1
                 FROM market.market_record WHERE record_id IN (:first,:second)
                 """).param("first", first).param("second", second)
                 .query(Boolean.class).single()).isTrue();
+    }
+
+    @Test
+    void sameEnterpriseAtTwoInventoryLocationsKeepsOneSampleIdentityAndApprovesBoth()
+            throws Exception {
+        String first = createSubmitAndApproveInventory(
+                "多库企业", "13800000000", "47.3500000", "123.9100000", "300");
+        String second = createSubmitAndApproveInventory(
+                "多库企业", "13800000000", "47.3600000", "123.9200000", "200");
+
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        assertThat(jdbc.sql("""
+                SELECT count(DISTINCT sample_point_id) FROM market.market_record
+                WHERE record_id IN (:first,:second) AND status_code='APPROVED'
+                """).param("first", first).param("second", second)
+                .query(Long.class).single()).isEqualTo(1L);
+        assertThat(jdbc.sql("""
+                SELECT count(DISTINCT latitude.value || '|' || longitude.value)
+                FROM market.market_record_core_value latitude
+                JOIN market.market_record_core_value longitude
+                  ON longitude.record_id=latitude.record_id
+                WHERE latitude.field_code='MKT_SAMPLE_LATITUDE'
+                  AND longitude.field_code='MKT_SAMPLE_LONGITUDE'
+                  AND latitude.record_id IN (:first,:second)
+                """).param("first", first).param("second", second)
+                .query(Long.class).single()).isEqualTo(2L);
     }
 
     @Test
@@ -202,8 +235,53 @@ class MarketMonitoringRestIntegrationTest {
         assertThat(JdbcClient.create(dataSource).sql("""
                 SELECT count(*) FROM market.market_record
                 WHERE record_id=:id AND status_code='APPROVED'
-                  AND party_id IS NULL AND sample_point_id IS NULL
+                  AND party_id IS NULL AND sample_point_id IS NOT NULL
                 """).param("id", id).query(Long.class).single()).isEqualTo(1L);
+    }
+
+    @Test
+    void wuYutongAccountOwnerCanReturnReviseResubmitAndApproveTheSameMarketRecord() throws Exception {
+        provisionWuYutongAccountOwner();
+        String id = mockMvc.perform(post("/api/v1/market-records")
+                        .principal(() -> "wang-yang").contentType(MediaType.APPLICATION_JSON)
+                        .content(accountOwnerDraftBody("CORN", "FEED_MILL", "MOISTURE", null)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.coreValues.MKT_REPORTER_NAME").value("吴雨桐"))
+                .andReturn().getResponse().getContentAsString()
+                .replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+
+        mockMvc.perform(post("/api/v1/market-records/{id}/submit", id)
+                        .principal(() -> "wang-yang").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"))
+                .andExpect(jsonPath("$.data.allowedActions[?(@ == 'APPROVE')]").exists())
+                .andExpect(jsonPath("$.data.allowedActions[?(@ == 'RETURN')]").exists());
+        mockMvc.perform(post("/api/v1/market-records/{id}/return", id)
+                        .principal(() -> "wang-yang").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1,\"reason\":\"经纬度与地区不匹配\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("RETURNED"))
+                .andExpect(jsonPath("$.data.returnReason").value("经纬度与地区不匹配"))
+                .andExpect(jsonPath("$.data.version").value(2));
+        mockMvc.perform(put("/api/v1/market-records/{id}", id)
+                        .principal(() -> "wang-yang").contentType(MediaType.APPLICATION_JSON)
+                        .content(accountOwnerDraftBody("CORN", "FEED_MILL", "MOISTURE", 2L)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("RETURNED"))
+                .andExpect(jsonPath("$.data.version").value(3));
+        mockMvc.perform(post("/api/v1/market-records/{id}/submit", id)
+                        .principal(() -> "wang-yang").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":3}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"))
+                .andExpect(jsonPath("$.data.version").value(4));
+        mockMvc.perform(post("/api/v1/market-records/{id}/approve", id)
+                        .principal(() -> "wang-yang").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":4}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("APPROVED"))
+                .andExpect(jsonPath("$.data.version").value(5));
     }
 
     @Test
@@ -251,6 +329,11 @@ class MarketMonitoringRestIntegrationTest {
                         "$.data.coreFields[?(@.code == 'MKT_PURCHASE_BASE_PRICE' && @.required == true)]").exists())
                 .andExpect(jsonPath(
                         "$.data.coreFields[?(@.code == 'MKT_SALE_BASE_PRICE' && @.required == true)]").exists())
+                .andExpect(jsonPath(
+                        "$.data.coreFields[?(@.code == 'MKT_PURCHASE_BASE_PRICE')].scale").value(4))
+                .andExpect(jsonPath(
+                        "$.data.groups[?(@.category == 'QUALITY')].fields[?(@.code == 'MOISTURE')].scale")
+                        .value(4))
                 .andExpect(jsonPath("$.data.groups[?(@.category == 'PURCHASE')].label").value("采购业务"))
                 .andExpect(jsonPath("$.data.groups[?(@.label =~ /.*成交.*/)]").isEmpty());
 
@@ -302,10 +385,13 @@ class MarketMonitoringRestIntegrationTest {
                         .value("填报对象/客户名称"))
                 .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_SAMPLE_NAME')].required")
                         .value(true))
-                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_REPORTER_PHONE')].label")
-                        .value("填报人联系方式"))
+                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_SURVEYOR_NAME')].label")
+                        .value("调研人"))
+                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_SURVEYOR_PHONE')].label")
+                        .value("调研人联系方式"))
                 .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_SAMPLE_CONTACT')].label")
-                        .value("填报对象/客户联系方式"));
+                        .value("填报对象/客户联系方式"))
+                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_CULTIVAR_NAME')]").isEmpty());
     }
 
     @Test
@@ -380,7 +466,7 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(jsonPath("$.data.version").value(2))
                 .andExpect(jsonPath("$.data.coreValues.MKT_SOURCE_NOTE")
                         .value(org.hamcrest.Matchers.nullValue()));
-        org.assertj.core.api.Assertions.assertThat(extensionValueCount(id)).isEqualTo(6);
+        org.assertj.core.api.Assertions.assertThat(extensionValueCount(id)).isEqualTo(7);
 
         mockMvc.perform(put("/api/v1/market-records/{id}", id)
                         .principal(() -> "market-tester")
@@ -394,7 +480,7 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(jsonPath("$.data.coreValues.MKT_SOURCE_NOTE")
                         .value(org.hamcrest.Matchers.nullValue()))
                 .andExpect(jsonPath("$.data.facts.MOISTURE").value("14.6000"));
-        org.assertj.core.api.Assertions.assertThat(extensionValueCount(id)).isEqualTo(6);
+        org.assertj.core.api.Assertions.assertThat(extensionValueCount(id)).isEqualTo(7);
 
         mockMvc.perform(get("/api/v1/market-record-definitions")
                         .queryParam("productCode", "CORN").queryParam("objectTypeCode", "FEED_MILL"))
@@ -645,12 +731,12 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].values.MKT_REPORTED_AT").isNotEmpty())
                 .andExpect(jsonPath("$.data.items[0].values.MKT_PURCHASE_BASE_PRICE").value("2300.0000"))
                 .andExpect(jsonPath("$.data.items[0].values.MKT_SALE_BASE_PRICE").value("2300.0000"))
-                .andExpect(jsonPath("$.data.items[0].values.MKT_REPORTER_PHONE").value("13800000000"))
+                .andExpect(jsonPath("$.data.items[0].values.MKT_SURVEYOR_PHONE").value("13800000000"))
                 .andExpect(jsonPath("$.data.items[0].allowedActions[0]").value("VIEW"));
     }
 
     @Test
-    void publicInventoryRecordCanEnterReviewWithoutPrivateOwnershipInputs() throws Exception {
+    void publicInventoryRecordCanBeApprovedWithoutHiddenOwnershipInputs() throws Exception {
         String publicBody = singleFactDraft("CORN", "FEED_MILL", "ENDING_INVENTORY", "20", false)
                 .replace("\"MKT_SAMPLE_SUBJECT_CODE\":\"fixture-market-subject-1\",", "");
         String id = mockMvc.perform(post("/api/v1/market-records")
@@ -667,16 +753,25 @@ class MarketMonitoringRestIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON).content("{\"version\":0}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"))
-                .andExpect(jsonPath("$.data.inventoryGovernanceStatus").value("待库存权属核定"));
+                .andExpect(jsonPath("$.data.inventoryGovernanceStatus").doesNotExist());
 
         mockMvc.perform(post("/api/v1/market-records/{id}/approve", id)
                         .principal(() -> "production-tester")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"version\":1}"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("MARKET_INVENTORY_GOVERNANCE_PENDING"));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("APPROVED"))
+                .andExpect(jsonPath("$.data.version").value(2))
+                .andExpect(jsonPath("$.data.inventoryGovernanceStatus").doesNotExist())
+                .andExpect(jsonPath("$.data.coreValues.MKT_INVENTORY_HOLDER_CODE").doesNotExist())
+                .andExpect(jsonPath("$.data.coreValues.MKT_INVENTORY_OWNERSHIP_TYPE").doesNotExist());
+
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        assertThat(jdbc.sql("SELECT status_code FROM market.market_record WHERE record_id=:id")
+                .param("id", id).query(String.class).single()).isEqualTo("APPROVED");
     }
 
     @Test
+    @Disabled("库存权属运行时契约已退役；可见姓名与联系方式是当前样本身份契约")
     void copiedDisplayFieldsCannotClaimAnApprovedInventorySamplePoint() throws Exception {
         UUID partyId = UUID.randomUUID();
         UUID samplePointId = UUID.randomUUID();
@@ -774,6 +869,7 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    @Disabled("受控库存主体解析运行时契约已退役；历史表仅保留审计追溯")
     void controlledSubjectResolutionEnablesInventoryGovernanceReplay() throws Exception {
         UUID partyId = UUID.randomUUID();
         UUID samplePointId = UUID.randomUUID();
@@ -853,6 +949,7 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    @Disabled("库存权属更正运行时契约已退役；历史表仅保留审计追溯")
     void approvedInventoryResolutionCanBeCorrectedForwardWithoutRewritingHistory() throws Exception {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         InventoryIdentity mistaken = createApprovedInventoryProfile(
@@ -1125,6 +1222,7 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    @Disabled("库存权属更正运行时契约已退役；历史表仅保留审计追溯")
     void approvedInventoryCorrectionRollsBackEveryProjectionAndEventWhenOutboxFails() throws Exception {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         InventoryIdentity mistaken = createApprovedInventoryProfile(
@@ -1202,6 +1300,7 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    @Disabled("稳定库存主体绑定运行时契约已退役；历史表仅保留审计追溯")
     void concurrentCorrectionsCannotBindOneStableSubjectToDifferentSamplePoints() throws Exception {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         ApprovedInventoryRecord first = createApprovedInventoryRecord(
@@ -1238,6 +1337,7 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    @Disabled("稳定库存主体绑定运行时契约已退役；历史表仅保留审计追溯")
     void concurrentCorrectionsCannotBindDifferentStableSubjectsToOneSamplePoint() throws Exception {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         ApprovedInventoryRecord first = createApprovedInventoryRecord(
@@ -1274,6 +1374,7 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    @Disabled("稳定库存主体绑定运行时契约已退役；历史表仅保留审计追溯")
     void concurrentPendingLinksCannotBindOneStableSubjectToDifferentSamplePoints() throws Exception {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         String firstRecord = createAndSubmitInventoryRecord();
@@ -1304,6 +1405,7 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    @Disabled("稳定库存主体绑定运行时契约已退役；历史表仅保留审计追溯")
     void concurrentPendingLinksCannotBindDifferentStableSubjectsToOneSamplePoint() throws Exception {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         String firstRecord = createAndSubmitInventoryRecord();
@@ -1333,6 +1435,7 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    @Disabled("稳定库存主体绑定运行时契约已退役；历史表仅保留审计追溯")
     void pendingLinkAndApprovedCorrectionShareTheSameStableSubjectGate() throws Exception {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         ApprovedInventoryRecord approved = createApprovedInventoryRecord(
@@ -1368,6 +1471,7 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    @Disabled("旧库存主体登记运行时契约已退役；历史表仅保留审计追溯")
     void legacyRegistrationAndPendingLinkShareTheSameStableSubjectGate() throws Exception {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         String sharedStableSubject = "legacy-initial-shared-stable-subject";
@@ -1403,6 +1507,7 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    @Disabled("旧库存主体登记运行时契约已退役；历史表仅保留审计追溯")
     void legacyRegistrationAndApprovedCorrectionShareTheSameTargetPointGate() throws Exception {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         String legacyStableSubject = "legacy-correction-stable-subject";
@@ -1441,6 +1546,7 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    @Disabled("受控库存主体应用运行时契约已退役；历史表仅保留审计追溯")
     void governedSubjectApplyAndPendingLinkShareTheSameStableSubjectGate() throws Exception {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         String sharedStableSubject = "governed-initial-shared-stable-subject";
@@ -1476,6 +1582,7 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    @Disabled("受控库存主体应用运行时契约已退役；历史表仅保留审计追溯")
     void governedSubjectApplyAndApprovedCorrectionShareTheSameTargetPointGate() throws Exception {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         ApprovedInventoryRecord approved = createApprovedInventoryRecord(
@@ -1514,6 +1621,7 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    @Disabled("受控库存主体维护运行时契约已退役；历史表仅保留审计追溯")
     void governedSubjectUpdateChecksCurrentProjectionAndDeleteReleasesIdentityForRegister()
             throws Exception {
         JdbcClient jdbc = JdbcClient.create(dataSource);
@@ -1593,6 +1701,7 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    @Disabled("库存权属批量更正运行时契约已退役；历史表仅保留审计追溯")
     void reversedMultiItemCorrectionBatchesAcquireTheWholeIdentitySetWithoutDeadlock() throws Exception {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         ApprovedInventoryRecord firstA = createApprovedInventoryRecord(
@@ -1659,6 +1768,7 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    @Disabled("受控库存主体解析运行时契约已退役；历史表仅保留审计追溯")
     void staleCrossRegionAndExpiredControlledResolutionsRemainPending() throws Exception {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         UUID crossPartyId = UUID.randomUUID();
@@ -1920,14 +2030,15 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
-    void marksEndingInventoryForGovernanceReviewWithoutPrivateContractInputs() throws Exception {
+    void endingInventoryUsesPublicReviewWorkflowWithoutHiddenContracts() throws Exception {
         mockMvc.perform(post("/api/v1/market-records")
                         .principal(() -> "market-tester")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(singleFactDraft(
                                 "CORN", "FEED_MILL", "ENDING_INVENTORY", "20", false)))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.inventoryGovernanceStatus").value("待库存权属核定"))
+                .andExpect(jsonPath("$.data.status").value("DRAFT"))
+                .andExpect(jsonPath("$.data.inventoryGovernanceStatus").doesNotExist())
                 .andExpect(jsonPath("$.data.coreValues.MKT_INVENTORY_OWNERSHIP_TYPE").doesNotExist())
                 .andExpect(jsonPath("$.data.coreValues.MKT_SAMPLE_SUBJECT_CODE").doesNotExist());
     }
@@ -1996,6 +2107,40 @@ class MarketMonitoringRestIntegrationTest {
         return create(draftBody(product, objectType, qualityCode, null));
     }
 
+    private void provisionWuYutongAccountOwner() {
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        jdbc.sql("""
+                INSERT INTO platform.security_user(subject_id,display_name,work_unit_code)
+                VALUES('wang-yang','吴雨桐','TEST')
+                ON CONFLICT(subject_id) DO UPDATE SET
+                  display_name=EXCLUDED.display_name,work_unit_code=EXCLUDED.work_unit_code,enabled=true
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_role(subject_id,role_code)
+                VALUES('wang-yang','BUSINESS_REVIEWER'),('wang-yang','ACCOUNT_OWNER')
+                ON CONFLICT DO NOTHING
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_region_scope(subject_id,region_code)
+                SELECT 'wang-yang',region_code FROM platform.work_unit_region_scope
+                WHERE work_unit_code='TEST'
+                ON CONFLICT DO NOTHING
+                """).update();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.security_user_role WHERE role_code='ACCOUNT_OWNER'
+                """).query(Long.class).single()).isOne();
+    }
+
+    private String accountOwnerDraftBody(
+            String product, String objectType, String qualityCode, Long version) {
+        String body = draftBody(product, objectType, qualityCode, version);
+        JdbcClient.create(dataSource).sql("""
+                UPDATE evidence.evidence_photo SET uploaded_by='wang-yang'
+                WHERE state_code='STAGED' AND uploaded_by='market-tester'
+                """).update();
+        return body;
+    }
+
     private String create(String body) throws Exception {
         return mockMvc.perform(post("/api/v1/market-records")
                         .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
@@ -2003,6 +2148,33 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString()
                 .replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+    }
+
+    private String createSubmitAndApproveInventory(
+            String name, String contact, String latitude, String longitude, String inventory)
+            throws Exception {
+        String id = create(singleFactDraft(
+                "CORN", "TRADER", "ENDING_INVENTORY", inventory, false)
+                .replace("\"MKT_SAMPLE_NAME\":\"齐齐哈尔第一粮店\"",
+                        "\"MKT_SAMPLE_NAME\":\"" + name + "\"")
+                .replace("\"MKT_SAMPLE_CONTACT\":\"13900000000\"",
+                        "\"MKT_SAMPLE_CONTACT\":\"" + contact + "\"")
+                .replace("\"MKT_SAMPLE_LATITUDE\":\"47.3543\"",
+                        "\"MKT_SAMPLE_LATITUDE\":\"" + latitude + "\"")
+                .replace("\"MKT_SAMPLE_LONGITUDE\":\"123.9182\"",
+                        "\"MKT_SAMPLE_LONGITUDE\":\"" + longitude + "\""));
+        mockMvc.perform(post("/api/v1/market-records/{id}/submit", id)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"));
+        mockMvc.perform(post("/api/v1/market-records/{id}/approve", id)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("APPROVED"))
+                .andExpect(jsonPath("$.data.inventoryGovernanceStatus").doesNotExist());
+        return id;
     }
 
     private void approve(String id) throws Exception {
@@ -2068,7 +2240,8 @@ class MarketMonitoringRestIntegrationTest {
 
     private static String submissionMetadata() {
         return """
-                "MKT_REPORTER_NAME":"测试填报员","MKT_REPORTER_PHONE":"13800000000",
+                "MKT_REPORTER_NAME":"测试填报员","MKT_SURVEYOR_NAME":"王雷",
+                "MKT_SURVEYOR_PHONE":"13800000000",
                 "MKT_SAMPLE_NAME":"齐齐哈尔第一粮店","MKT_SAMPLE_CONTACT":"13900000000",
                 "MKT_SAMPLE_LATITUDE":"47.3543",
                 "MKT_SAMPLE_LONGITUDE":"123.9182"

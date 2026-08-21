@@ -110,7 +110,8 @@ class MarketEvidenceIntegrationTest {
                  "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":"2300",
                  "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
                  "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",
-                 "MKT_REPORTER_NAME":"测试填报员","MKT_REPORTER_PHONE":"13800000000",
+                 "MKT_REPORTER_NAME":"测试填报员","MKT_SURVEYOR_NAME":"王雷",
+                 "MKT_SURVEYOR_PHONE":"13800000000",
                  "MKT_SAMPLE_NAME":"齐齐哈尔第一粮店","MKT_SAMPLE_CONTACT":"13900000000",
                  "MKT_SAMPLE_LATITUDE":"47.3543","MKT_SAMPLE_LONGITUDE":"123.9182"},
                  "facts":{"PURCHASE_VOLUME":"12","MOISTURE":"14.6"},"evidencePhotoIds":%s}

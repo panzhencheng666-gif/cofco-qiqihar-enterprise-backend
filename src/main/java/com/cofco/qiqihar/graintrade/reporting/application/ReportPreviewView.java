@@ -11,9 +11,17 @@ public record ReportPreviewView(
         String dataCutoffLabel,
         List<Line> lines,
         List<Section> sections,
+        List<Product> products,
         Instant expiresAt,
         long version,
         boolean legacyReadOnly) {
     public record Line(String label, String value, String note) {}
     public record Section(String code, String title, String body) {}
+    public record Product(String code, String label, List<Domain> domains) {}
+    public record Domain(
+            String code,
+            String label,
+            long approvedRecordCount,
+            String dataCutoff,
+            List<Line> metrics) {}
 }

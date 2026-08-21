@@ -75,6 +75,37 @@ public class JdbcImportDraftRepository implements ImportDraftRepository {
     }
 
     @Override
+    public List<ImportDraft> findByOwnerAndScope(
+            String createdBy, String domainCode, String productCode, String stateCode) {
+        return jdbc.sql(SELECT + """
+                 WHERE created_by=:createdBy AND domain_code=:domainCode
+                   AND product_code=:productCode AND state_code=:stateCode
+                 ORDER BY created_at DESC,import_job_id,source_row_number
+                """).param("createdBy", createdBy).param("domainCode", domainCode)
+                .param("productCode", productCode).param("stateCode", stateCode)
+                .query(this::draft).list();
+    }
+
+    @Override
+    public List<ImportDraft> findPendingIdentityReviews() {
+        return jdbc.sql(SELECT + """
+                 WHERE state_code='DRAFT'
+                   AND EXISTS(
+                     SELECT 1 FROM platform.business_audit_event submitted
+                     WHERE submitted.aggregate_type='SAMPLE_IDENTITY_REVIEW'
+                       AND submitted.aggregate_id=business_import_draft.import_draft_id::text
+                       AND submitted.action_code='SAMPLE_IDENTITY_REVIEW_SUBMITTED')
+                   AND NOT EXISTS(
+                     SELECT 1 FROM platform.business_audit_event decided
+                     WHERE decided.aggregate_type='SAMPLE_IDENTITY_REVIEW'
+                       AND decided.aggregate_id=business_import_draft.import_draft_id::text
+                       AND decided.action_code IN ('SAMPLE_IDENTITY_LINK_EXISTING',
+                         'SAMPLE_IDENTITY_CONFIRM_DISTINCT','SAMPLE_IDENTITY_RETURN_FOR_CORRECTION'))
+                 ORDER BY created_at,import_job_id,source_row_number
+                """).query(this::draft).list();
+    }
+
+    @Override
     public List<UUID> evidenceIds(UUID draftId) {
         return jdbc.sql("""
                 SELECT photo_id FROM platform.business_import_draft_evidence

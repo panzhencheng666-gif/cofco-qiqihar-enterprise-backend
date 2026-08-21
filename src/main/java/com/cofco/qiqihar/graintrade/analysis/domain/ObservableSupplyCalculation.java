@@ -12,6 +12,8 @@ public record ObservableSupplyCalculation(
         BigDecimal outflowTonnes,
         BigDecimal endingObservableInventoryTonnes,
         BigDecimal inferredOtherAbsorptionTonnes,
+        BigDecimal totalSupplyTonnes,
+        BigDecimal totalUseTonnes,
         List<String> issues) {
 
     public ObservableSupplyCalculation {

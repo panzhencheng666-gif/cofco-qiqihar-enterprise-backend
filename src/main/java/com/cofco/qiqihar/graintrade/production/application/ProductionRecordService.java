@@ -109,7 +109,7 @@ public class ProductionRecordService implements ProductionImportPort {
                 throw new IllegalStateException(
                         "Production fact category is absent from master data: " + definition.category());
             }
-            definitions.add(definition);
+            definitions.add(ProductionSurveyFieldContract.governed(definition));
         });
         List<ProductionFactGroup> groups = categories.stream().map(category -> new ProductionFactGroup(
                 category.code(), category.label(), category.sortOrder(),
@@ -336,9 +336,14 @@ public class ProductionRecordService implements ProductionImportPort {
             default -> null;
         };
         if (permission == null || !principal.permits(permission)) return false;
-        return !Set.of("APPROVE", "RETURN").contains(action) || separationOfDuties == null
-                || separationOfDuties.isIndependentReviewer(
-                        aggregateType, aggregateId, submittedAction, principal);
+        if (separationOfDuties == null) return true;
+        return switch (action) {
+            case "APPROVE" -> separationOfDuties.canApprove(
+                    aggregateType, aggregateId, submittedAction, principal);
+            case "RETURN" -> separationOfDuties.canReturn(
+                    aggregateType, aggregateId, submittedAction, principal);
+            default -> true;
+        };
     }
 
     private void validateEvidence(ProductionDraft draft, SecurityPrincipal principal) {

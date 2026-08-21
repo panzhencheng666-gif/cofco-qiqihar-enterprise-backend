@@ -21,6 +21,7 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ArrayNode;
@@ -50,7 +51,7 @@ public class ReportingService {
         return repository.options();
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.REPEATABLE_READ)
     public ReportPreviewView preview(ReportPreviewCommand command) {
         validate(command);
         SecurityPrincipal principal = authorize("REPORT_PREVIEW", command.regionCode());
@@ -154,7 +155,10 @@ public class ReportingService {
     private String content(ReportPreviewCommand command, ReportingRepository.ReportPreviewMaterial material,
             String datasetId, Instant now) {
         ObjectNode root = json.createObjectNode();
-        root.put("title", material.regionLabel() + material.productLabel() + material.definition().name());
+        root.put("definitionCode", command.definitionCode());
+        root.put("title", isComprehensive(command.definitionCode())
+                ? material.regionLabel() + material.definition().name()
+                : material.regionLabel() + material.productLabel() + material.definition().name());
         root.put("dataCutoffLabel", material.periodLabel());
         root.put("approvedRecordCount", material.approvedRecordCount());
         root.put("scopeLabel", material.regionLabel() + " / " + material.productLabel() + " / "
@@ -167,15 +171,109 @@ public class ReportingService {
         root.put("calculationVersion", material.definition().name() + "第"
                 + material.definition().version() + "版");
         root.set("approvedSummary", json.readTree(material.approvedSummaryJson()));
+        ArrayNode businessMetrics = root.putArray("businessMetrics");
+        for (ReportBusinessMetric metric : material.businessMetrics()) {
+            ObjectNode item = businessMetrics.addObject();
+            item.put("code", metric.code());
+            item.put("label", metric.label());
+            if (metric.value() == null) item.putNull("value");
+            else item.put("value", metric.value());
+            item.put("unit", metric.unit());
+            item.put("aggregation", metric.aggregation());
+            item.put("sourceCount", metric.sourceCount());
+            if (metric.missingReason() == null) item.putNull("missingReason");
+            else item.put("missingReason", metric.missingReason());
+        }
+        ArrayNode products = root.putArray("products");
+        for (ReportProductSnapshot product : material.products()) {
+            ObjectNode productNode = products.addObject();
+            productNode.put("code", product.productCode());
+            productNode.put("label", product.productLabel());
+            ArrayNode domains = productNode.putArray("domains");
+            for (ReportProductSnapshot.DomainSnapshot domain : product.domains()) {
+                ObjectNode domainNode = domains.addObject();
+                domainNode.put("code", domain.domainCode());
+                domainNode.put("label", domain.domainLabel());
+                domainNode.put("approvedRecordCount", domain.approvedRecordCount());
+                if (domain.dataCutoff() == null) domainNode.putNull("dataCutoff");
+                else domainNode.put("dataCutoff", chineseTime(domain.dataCutoff()));
+                ArrayNode domainMetrics = domainNode.putArray("metrics");
+                for (ReportBusinessMetric metric : domain.metrics()) {
+                    ObjectNode metricNode = domainMetrics.addObject();
+                    metricNode.put("label", metric.label());
+                    metricNode.put("value", metric.value() == null
+                            ? "暂无审核数据" : metric.value() + " " + metric.unit());
+                    metricNode.put("note", metric.value() == null
+                            ? metric.missingReason() : "采用 " + metric.sourceCount() + " 条审核数据");
+                }
+            }
+        }
         ArrayNode sections = root.putArray("sections");
         for (ReportDefinitionView.Section section : material.definition().sections()) {
             ObjectNode item = sections.addObject();
             item.put("code", section.code());
             item.put("title", section.title());
-            item.put("body", section.title() + "：已采用 " + material.approvedRecordCount() + " 条核定数据。");
+            item.put("body", sectionBody(section.code(), material));
         }
         root.put("generatedAt", chineseTime(now));
         return root.toString();
+    }
+
+    private static String sectionBody(
+            String sectionCode, ReportingRepository.ReportPreviewMaterial material) {
+        if ("OVERVIEW".equals(sectionCode) || "REGIONAL_SNAPSHOT".equals(sectionCode)) {
+            return "本报告范围为" + material.regionLabel() + "、" + material.productLabel() + "、"
+                    + material.periodLabel() + "，共采用 " + material.approvedRecordCount()
+                    + " 条审核通过且当前有效的正式业务记录。";
+        }
+        if ("MARKET_DETAILS".equals(sectionCode)) return metricBody(material, "_MARKET_");
+        if ("PRODUCTION_CONDITIONS".equals(sectionCode)) return metricBody(material, "_PRODUCTION_");
+        if ("LOGISTICS_FLOW".equals(sectionCode)) return metricBody(material, "_LOGISTICS_");
+        if ("SUPPLY_BALANCE".equals(sectionCode)) return metricBody(material, "_SUPPLY_");
+        if ("DATA_GAPS".equals(sectionCode)) {
+            String missing = material.businessMetrics().stream()
+                    .filter(metric -> metric.value() == null)
+                    .map(ReportBusinessMetric::label)
+                    .collect(java.util.stream.Collectors.joining("、"));
+            return missing.isBlank()
+                    ? "当前综合报告范围内的审核数据指标覆盖完整。"
+                    : "以下范围暂无审核数据，报告如实保留缺项且不按零值处理：" + missing + "。";
+        }
+        if ("TODAY_FOCUS".equals(sectionCode)) {
+            return "本报告只反映截至" + chineseTime(material.dataCutoff())
+                    + "已审核并当前有效的数据；后续审核通过或失效的数据将在重新生成报告时同步更新。";
+        }
+        String metrics = material.businessMetrics().stream()
+                .map(ReportingService::metricSentence)
+                .collect(java.util.stream.Collectors.joining());
+        if ("APPROVED_DATA".equals(sectionCode)) {
+            return metrics.isBlank() ? "当前报告采用的正式业务记录已完成审核。" : metrics;
+        }
+        if ("ANALYSIS".equals(sectionCode)) {
+            String available = material.businessMetrics().stream()
+                    .filter(metric -> metric.value() != null)
+                    .map(ReportingService::metricSentence)
+                    .collect(java.util.stream.Collectors.joining());
+            return available.isBlank()
+                    ? "当前审核数据不足以形成业务分析摘要。"
+                    : "根据当前审核数据，" + available;
+        }
+        return metrics;
+    }
+
+    private static String metricBody(
+            ReportingRepository.ReportPreviewMaterial material, String codeFragment) {
+        String body = material.businessMetrics().stream()
+                .filter(metric -> metric.code().contains(codeFragment))
+                .map(ReportingService::metricSentence)
+                .collect(java.util.stream.Collectors.joining());
+        return body.isBlank() ? "当前范围暂无审核数据。" : body;
+    }
+
+    private static String metricSentence(ReportBusinessMetric metric) {
+        return metric.value() == null
+                ? metric.label() + "：暂无审核数据。"
+                : metric.label() + "：" + metric.value() + metric.unit() + "。";
     }
 
     private static String sourcePath(String domain) {
@@ -184,6 +282,7 @@ public class ReportingService {
             case "MARKET" -> "市场核定记录";
             case "LOGISTICS" -> "物流核定事件及数量明细";
             case "SUPPLY" -> "供需正式计算结果";
+            case "COMPREHENSIVE" -> "产情、市场、物流及供需核定来源";
             default -> throw new IllegalArgumentException("unsupported report domain");
         };
     }
@@ -209,7 +308,7 @@ public class ReportingService {
     }
 
     private static String safeFilename(ReportPreviewView preview) {
-        return preview.title().replaceAll("[\\\\/:*?\"<>|\\s]+", "-") + "-" + preview.id();
+        return preview.title().replaceAll("[\\\\/:*?\"<>|\\s]+", "-");
     }
 
     private static String digest(String value) { return digest(value.getBytes(StandardCharsets.UTF_8)); }
@@ -220,8 +319,13 @@ public class ReportingService {
     private SecurityPrincipal authorize(String permission, String regionCode) { return accessControl.require(permission, regionCode); }
     private static boolean blank(String value) { return value == null || value.isBlank(); }
     private static void validate(ReportPreviewCommand command) {
-        if (command == null || blank(command.definitionCode()) || blank(command.productCode())
-                || blank(command.regionLevel()) || blank(command.regionCode()) || blank(command.periodCode())) throw invalid();
+        if (command == null || blank(command.definitionCode())
+                || blank(command.regionLevel()) || blank(command.regionCode()) || blank(command.periodCode())
+                || (!isComprehensive(command.definitionCode()) && blank(command.productCode()))
+                || (isComprehensive(command.definitionCode()) && !blank(command.cultivarCode()))) throw invalid();
+    }
+    private static boolean isComprehensive(String definitionCode) {
+        return definitionCode != null && definitionCode.startsWith("COMPREHENSIVE_");
     }
     private static ClientRequestException invalid() { return new ClientRequestException("INVALID_REPORT_REQUEST", "Report request is invalid"); }
 }

@@ -35,7 +35,8 @@ public class ObservableAnalysisService {
         ObservableAnalysisScope requested = new ObservableAnalysisScope(
                 productCode, regionCode, surveyYear, surveyMonth, cultivarCode, subjectTypeCode);
         AuthorizedReadScope readScope = readScope();
-        if (!repository.canNavigateRegion(regionCode, readScope.regionCodes())) {
+        if (!requested.isAllAuthorizedRegions()
+                && !repository.canNavigateRegion(regionCode, readScope.regionCodes())) {
             readScope.requireRegion(regionCode);
         }
         return repository.load(requested, readScope.regionCodes());
@@ -52,7 +53,8 @@ public class ObservableAnalysisService {
                 || surveyYear < 1900 || surveyYear > 2200
                 || (surveyMonth != null && (surveyMonth < 1 || surveyMonth > 12))
                 || !repository.knownProduct(productCode)
-                || !repository.knownRegion(regionCode)
+                || (!ObservableAnalysisScope.ALL_AUTHORIZED_REGIONS.equals(regionCode)
+                    && !repository.knownRegion(regionCode))
                 || (!blank(cultivarCode) && !repository.knownCultivar(productCode, cultivarCode))
                 || (!blank(subjectTypeCode)
                     && !repository.knownSubjectType("PRODUCTION", subjectTypeCode)

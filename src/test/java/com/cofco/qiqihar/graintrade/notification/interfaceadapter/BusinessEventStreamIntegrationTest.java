@@ -10,8 +10,7 @@ import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.notification.application.BusinessNotificationRepository;
 import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
+import java.io.IOException;
 import java.net.URI;
 import java.net.InetSocketAddress;
 import java.net.Socket;
@@ -102,40 +101,47 @@ class BusinessEventStreamIntegrationTest {
         long firstSequence = jdbc.sql("""
                 SELECT event_sequence FROM platform.business_event_outbox WHERE event_id=:id
                 """).param("id", FIRST_VISIBLE).query(Long.class).single();
-        HttpRequest request = HttpRequest.newBuilder(URI.create(
-                        "http://127.0.0.1:" + port + "/api/v1/business-events/stream"))
-                .header("Accept", "text/event-stream")
-                .header("Last-Event-ID", Long.toString(firstSequence))
-                .timeout(Duration.ofSeconds(5))
-                .GET()
-                .build();
-        HttpResponse<java.io.InputStream> response = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(3)).build()
-                .send(request, HttpResponse.BodyHandlers.ofInputStream());
-
-        assertThat(response.statusCode()).isEqualTo(200);
-        assertThat(response.headers().firstValue("Content-Type").orElse(""))
-                .startsWith("text/event-stream");
-        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
-                response.body(), StandardCharsets.UTF_8))) {
-            StringBuilder frameBuilder = new StringBuilder();
-            for (int lineCount = 0; lineCount < 10; lineCount++) {
-                String line = reader.readLine();
-                if (line == null || line.isBlank()) break;
-                frameBuilder.append(line).append('\n');
-            }
-            String frame = frameBuilder.toString();
-            assertThat(frame)
-                    .contains("event:business-change")
-                    .contains("\"id\":\"" + SECOND_VISIBLE + "\"")
-                    .contains("\"aggregateId\":\"stream-market-second\"")
-                    .contains("\"productCode\":\"CORN\"")
-                    .contains("\"surveyYear\":2026")
-                    .contains("\"regionCodes\":[\"230200\",\"230208\"]")
-                    .doesNotContain(FIRST_VISIBLE.toString())
-                    .doesNotContain(HIDDEN.toString())
-                    .doesNotContain("stream-market-hidden");
+        Socket socket = openStreamSocket("/api/v1/business-events/stream?after=0",
+                Long.toString(firstSequence));
+        String received;
+        try {
+            received = readUntil(socket, "\"regionCodes\":[\"230200\",\"230208\"]");
+        } finally {
+            abort(socket);
         }
+        triggerDisconnectAndAwaitRetirement();
+        assertThat(received)
+                .contains("HTTP/1.1 200")
+                .containsIgnoringCase("Content-Type: text/event-stream")
+                .contains("event:business-change")
+                .contains("\"id\":\"" + SECOND_VISIBLE + "\"")
+                .contains("\"aggregateId\":\"stream-market-second\"")
+                .contains("\"productCode\":\"CORN\"")
+                .contains("\"surveyYear\":2026")
+                .contains("\"regionCodes\":[\"230200\",\"230208\"]")
+                .doesNotContain(FIRST_VISIBLE.toString())
+                .doesNotContain(HIDDEN.toString())
+                .doesNotContain("stream-market-hidden");
+    }
+
+    @Test
+    void opensTheStreamImmediatelyWhenThereIsNoNewBusinessChange() throws Exception {
+        long latestSequence = jdbc.sql("""
+                SELECT MAX(event_sequence) FROM platform.business_event_outbox
+                """).query(Long.class).single();
+        Socket socket = openStreamSocket(
+                "/api/v1/business-events/stream?after=" + latestSequence, null);
+        String received;
+        try {
+            received = readUntil(socket, ":connected");
+        } finally {
+            abort(socket);
+        }
+        triggerDisconnectAndAwaitRetirement();
+        assertThat(received)
+                .contains("HTTP/1.1 200")
+                .containsIgnoringCase("Content-Type: text/event-stream")
+                .contains(":connected");
     }
 
     @Test
@@ -198,6 +204,7 @@ class BusinessEventStreamIntegrationTest {
             while (System.nanoTime() < deadline && !containsAuthorizationDenied(captured)) {
                 Thread.sleep(50);
             }
+            awaitRetiredReaderStream();
 
             assertThat(captured.list)
                     .noneMatch(BusinessEventStreamIntegrationTest::isAuthorizationDenied);
@@ -215,6 +222,60 @@ class BusinessEventStreamIntegrationTest {
         return event.getThrowableProxy() != null
                 && ThrowableProxyUtil.asString(event.getThrowableProxy())
                         .contains("AuthorizationDeniedException");
+    }
+
+    private Socket openStreamSocket(String path, String lastEventId) throws IOException {
+        Socket socket = new Socket();
+        socket.connect(new InetSocketAddress("127.0.0.1", port), 2_000);
+        socket.setSoTimeout(3_000);
+        StringBuilder request = new StringBuilder()
+                .append("GET ").append(path).append(" HTTP/1.1\r\n")
+                .append("Host: 127.0.0.1:").append(port).append("\r\n")
+                .append("Accept: text/event-stream\r\n")
+                .append("Connection: keep-alive\r\n");
+        if (lastEventId != null) {
+            request.append("Last-Event-ID: ").append(lastEventId).append("\r\n");
+        }
+        request.append("\r\n");
+        socket.getOutputStream().write(request.toString().getBytes(StandardCharsets.US_ASCII));
+        socket.getOutputStream().flush();
+        return socket;
+    }
+
+    private static String readUntil(Socket socket, String marker) throws IOException {
+        StringBuilder received = new StringBuilder();
+        while (!received.toString().contains(marker) && received.length() < 1_000_000) {
+            int next = socket.getInputStream().read();
+            if (next < 0) break;
+            received.append((char) next);
+        }
+        return received.toString();
+    }
+
+    private static void abort(Socket socket) throws IOException {
+        socket.setSoLinger(true, 0);
+        socket.close();
+    }
+
+    private void triggerDisconnectAndAwaitRetirement() throws InterruptedException {
+        insertEvent(DISCONNECT_TRIGGER, "stream-disconnect-trigger", VISIBLE_REGION);
+        awaitRetiredReaderStream();
+    }
+
+    private void awaitRetiredReaderStream() throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(4).toNanos();
+        int retiredCount;
+        do {
+            retiredCount = jdbc.sql("""
+                    SELECT count(*)
+                    FROM platform.business_event_consumer_lifecycle_event
+                    WHERE consumer_id LIKE :prefix
+                    """).param("prefix", "sse:" + READER + ":%")
+                    .query(Integer.class).single();
+            if (retiredCount > 0) break;
+            Thread.sleep(50);
+        } while (System.nanoTime() < deadline);
+        assertThat(retiredCount).isPositive();
     }
 
     private void cleanup() {

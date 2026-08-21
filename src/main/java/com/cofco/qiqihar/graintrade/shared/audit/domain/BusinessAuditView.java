@@ -11,6 +11,7 @@ public record BusinessAuditView(
         String actorSubjectId,
         String actorDisplayName,
         String workUnitCode,
+        String workUnitName,
         Instant occurredAt,
         String detailJson) {
 }

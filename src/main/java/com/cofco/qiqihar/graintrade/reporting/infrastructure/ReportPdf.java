@@ -23,10 +23,13 @@ public final class ReportPdf {
     private static final int PAGE_HEIGHT = 1754;
     private static final int MARGIN = 86;
     private static final int CONTENT_WIDTH = PAGE_WIDTH - MARGIN * 2;
-    private static final Color BRAND = new Color(20, 119, 181);
-    private static final Color INK = new Color(20, 53, 73);
-    private static final Color MUTED = new Color(88, 112, 126);
-    private static final Color PANEL = new Color(241, 247, 250);
+    private static final Color BRAND = new Color(18, 63, 53);
+    private static final Color BRAND_SOFT = new Color(49, 91, 82);
+    private static final Color GOLD = new Color(162, 118, 44);
+    private static final Color INK = new Color(28, 54, 48);
+    private static final Color MUTED = new Color(100, 123, 117);
+    private static final Color PANEL = new Color(244, 248, 245);
+    private static final Color PANEL_WARM = new Color(250, 247, 238);
     private static final String[] CJK_FONT_CANDIDATES = {
         "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", "PingFang SC",
         "Microsoft YaHei", "WenQuanYi Zen Hei", "Arial Unicode MS", "SansSerif"
@@ -50,8 +53,10 @@ public final class ReportPdf {
         List<BufferedImage> pages = new ArrayList<>();
         Page page = newPage(preview, fonts, pages, 1);
 
-        page.sectionHeading("关键指标", fonts);
-        for (ReportPreviewView.Line line : preview.lines()) {
+        page.sectionHeading("经营快照", fonts);
+        List<ReportPreviewView.Line> summaryLines = preview.products().isEmpty()
+                ? preview.lines() : preview.lines().subList(0, Math.min(3, preview.lines().size()));
+        for (ReportPreviewView.Line line : summaryLines) {
             List<String> valueLines = wrap(line.value(), page.graphics, fonts.body(), CONTENT_WIDTH - 340);
             List<String> noteLines = wrap(line.note(), page.graphics, fonts.small(), CONTENT_WIDTH - 340);
             int rowHeight = Math.max(92, 34 + valueLines.size() * 34 + noteLines.size() * 27);
@@ -74,14 +79,63 @@ public final class ReportPdf {
             page.y += rowHeight + 18;
         }
 
-        page.sectionHeading("报告正文", fonts);
+        if (!preview.products().isEmpty()) {
+            if (!page.hasRoom(245)) {
+                page.dispose();
+                page = newPage(preview, fonts, pages, pages.size() + 1);
+            }
+            page.sectionHeading("三品种审核后数据", fonts);
+            int cardGap = 18;
+            int cardWidth = (CONTENT_WIDTH - cardGap * 2) / 3;
+            for (int index = 0; index < preview.products().size(); index++) {
+                ReportPreviewView.Product product = preview.products().get(index);
+                int x = MARGIN + index * (cardWidth + cardGap);
+                page.productCard(product, x, page.y, cardWidth, 148, fonts);
+            }
+            page.y += 174;
+
+            for (ReportPreviewView.Product product : preview.products()) {
+                if (!page.hasRoom(120)) {
+                    page.dispose();
+                    page = newPage(preview, fonts, pages, pages.size() + 1);
+                }
+                page.productHeading(product.label(), fonts);
+                for (ReportPreviewView.Domain domain : product.domains()) {
+                    if (!page.hasRoom(112)) {
+                        page.dispose();
+                        page = newPage(preview, fonts, pages, pages.size() + 1);
+                        page.productHeading(product.label() + "（续）", fonts);
+                    }
+                    page.domainHeading(domain, fonts);
+                    for (ReportPreviewView.Line metric : domain.metrics()) {
+                        List<String> values = wrap(metric.value(), page.graphics, fonts.body(), CONTENT_WIDTH - 390);
+                        List<String> notes = wrap(metric.note(), page.graphics, fonts.small(), CONTENT_WIDTH - 390);
+                        int rowHeight = Math.max(76, 26 + values.size() * 31 + notes.size() * 24);
+                        if (!page.hasRoom(rowHeight + 12)) {
+                            page.dispose();
+                            page = newPage(preview, fonts, pages, pages.size() + 1);
+                            page.productHeading(product.label() + "（续）", fonts);
+                            page.domainHeading(domain, fonts);
+                        }
+                        page.metricRow(metric, values, notes, rowHeight, fonts);
+                    }
+                    page.y += 12;
+                }
+            }
+        }
+
+        if (!page.hasRoom(130)) {
+            page.dispose();
+            page = newPage(preview, fonts, pages, pages.size() + 1);
+        }
+        page.sectionHeading("综合研判", fonts);
         for (ReportPreviewView.Section section : preview.sections()) {
             List<String> body = wrap(section.body(), page.graphics, fonts.body(), CONTENT_WIDTH - 56);
             int blockHeight = 78 + body.size() * 34;
             if (!page.hasRoom(blockHeight + 20)) {
                 page.dispose();
                 page = newPage(preview, fonts, pages, pages.size() + 1);
-                page.sectionHeading("报告正文（续）", fonts);
+                page.sectionHeading("综合研判（续）", fonts);
             }
             page.panel(page.y, blockHeight);
             page.text(section.title(), MARGIN + 28, page.y + 46, fonts.label(), INK);
@@ -115,21 +169,23 @@ public final class ReportPdf {
         graphics.setColor(Color.WHITE);
         graphics.fillRect(0, 0, PAGE_WIDTH, PAGE_HEIGHT);
         graphics.setColor(BRAND);
-        graphics.fillRect(0, 0, PAGE_WIDTH, 24);
+        graphics.fillRect(0, 0, PAGE_WIDTH, 34);
+        graphics.setColor(GOLD);
+        graphics.fillRect(0, 34, PAGE_WIDTH, 6);
         graphics.setFont(fonts.title());
         graphics.setColor(INK);
-        graphics.drawString(preview.title(), MARGIN, 126);
+        graphics.drawString(preview.title(), MARGIN, 132);
         graphics.setFont(fonts.body());
         graphics.setColor(MUTED);
-        graphics.drawString("统计期间：" + preview.dataCutoffLabel(), MARGIN, 177);
+        graphics.drawString("统计期间：" + preview.dataCutoffLabel() + "  ·  审核后数据同一快照", MARGIN, 181);
         if (pageNumber > 1) {
             String continued = "续页 " + pageNumber;
             graphics.drawString(continued, PAGE_WIDTH - MARGIN - graphics.getFontMetrics().stringWidth(continued), 177);
         }
-        graphics.setColor(new Color(203, 221, 231));
-        graphics.drawLine(MARGIN, 205, PAGE_WIDTH - MARGIN, 205);
+        graphics.setColor(new Color(210, 220, 214));
+        graphics.drawLine(MARGIN, 210, PAGE_WIDTH - MARGIN, 210);
         pages.add(image);
-        return new Page(graphics, 245);
+        return new Page(graphics, 248);
     }
 
     private static void configure(Graphics2D graphics) {
@@ -159,9 +215,16 @@ public final class ReportPdf {
 
     private static String reportText(ReportPreviewView preview) {
         StringBuilder text = new StringBuilder(preview.title()).append(preview.dataCutoffLabel())
-                .append("统计期间关键指标报告正文本报告依据服务端核定快照生成续页");
+                .append("统计期间经营快照三品种审核后数据综合研判本报告依据服务端核定快照生成续页");
         preview.lines().forEach(line -> text.append(line.label()).append(line.value()).append(line.note()));
         preview.sections().forEach(section -> text.append(section.title()).append(section.body()));
+        preview.products().forEach(product -> {
+            text.append(product.label());
+            product.domains().forEach(domain -> {
+                text.append(domain.label()).append(domain.dataCutoff()).append(domain.approvedRecordCount());
+                domain.metrics().forEach(metric -> text.append(metric.label()).append(metric.value()).append(metric.note()));
+            });
+        });
         return text.toString();
     }
 
@@ -286,12 +349,63 @@ public final class ReportPdf {
 
         private void sectionHeading(String value, FontFamily fonts) {
             text(value, MARGIN, y + 34, fonts.section(), BRAND);
+            graphics.setColor(GOLD);
+            graphics.fillRoundRect(MARGIN, y + 46, 72, 5, 5, 5);
             y += 65;
         }
 
         private void panel(int top, int height) {
             graphics.setColor(PANEL);
             graphics.fillRoundRect(MARGIN, top, CONTENT_WIDTH, height, 20, 20);
+        }
+
+        private void productCard(
+                ReportPreviewView.Product product, int x, int top, int width, int height, FontFamily fonts) {
+            graphics.setColor(PANEL_WARM);
+            graphics.fillRoundRect(x, top, width, height, 18, 18);
+            graphics.setColor(GOLD);
+            graphics.fillRoundRect(x, top, 8, height, 8, 8);
+            text(product.label(), x + 26, top + 47, fonts.label(), BRAND);
+            long records = product.domains().stream().mapToLong(ReportPreviewView.Domain::approvedRecordCount).sum();
+            text("审核后 " + records + " 条", x + 26, top + 88, fonts.body(), INK);
+            long covered = product.domains().stream().filter(domain -> domain.approvedRecordCount() > 0).count();
+            text("已覆盖 " + covered + " / " + product.domains().size() + " 个业务域",
+                    x + 26, top + 123, fonts.small(), MUTED);
+        }
+
+        private void productHeading(String label, FontFamily fonts) {
+            graphics.setColor(BRAND);
+            graphics.fillRoundRect(MARGIN, y, CONTENT_WIDTH, 60, 16, 16);
+            text(label, MARGIN + 25, y + 40, fonts.label(), Color.WHITE);
+            y += 78;
+        }
+
+        private void domainHeading(ReportPreviewView.Domain domain, FontFamily fonts) {
+            text(domain.label(), MARGIN + 10, y + 31, fonts.label(), BRAND_SOFT);
+            String meta = "已审核 " + domain.approvedRecordCount() + " 条  ·  数据截止："
+                    + (domain.dataCutoff() == null || domain.dataCutoff().isBlank()
+                            ? "暂无审核数据" : domain.dataCutoff());
+            text(meta, MARGIN + 260, y + 30, fonts.small(), MUTED);
+            graphics.setColor(new Color(218, 226, 221));
+            graphics.drawLine(MARGIN, y + 45, MARGIN + CONTENT_WIDTH, y + 45);
+            y += 58;
+        }
+
+        private void metricRow(
+                ReportPreviewView.Line metric, List<String> values, List<String> notes,
+                int rowHeight, FontFamily fonts) {
+            panel(y, rowHeight);
+            text(metric.label(), MARGIN + 22, y + 43, fonts.body(), INK);
+            int valueY = y + 38;
+            for (String value : values) {
+                text(value, MARGIN + 355, valueY, fonts.body(), INK);
+                valueY += 31;
+            }
+            for (String note : notes) {
+                text(note, MARGIN + 355, valueY, fonts.small(), MUTED);
+                valueY += 24;
+            }
+            y += rowHeight + 10;
         }
 
         private void text(String value, int x, int baseline, Font font, Color color) {

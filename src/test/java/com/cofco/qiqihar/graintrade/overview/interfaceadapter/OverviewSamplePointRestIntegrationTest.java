@@ -38,6 +38,7 @@ class OverviewSamplePointRestIntegrationTest {
     private static final String LOGISTICS_POINT = "94000000-0000-0000-0000-000000000002";
     private static final String MISSING_POINT = "94000000-0000-0000-0000-000000000003";
     private static final String DRAFT_POINT = "94000000-0000-0000-0000-000000000004";
+    private static final String DUPLICATE_POINT = "94000000-0000-0000-0000-000000000005";
 
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
@@ -61,14 +62,15 @@ class OverviewSamplePointRestIntegrationTest {
     }
 
     @Test
-    void filtersApprovedAssociationsByYearWithoutMakingThePointRegistryProductDependent() throws Exception {
+    void filtersApprovedAssociationsByYearAndProductWithoutSplittingThePointIdentity() throws Exception {
         mvc.perform(get("/api/v1/overview/sample-point-aggregates")
                         .principal(() -> "production-tester")
                         .queryParam("parentCode", PREFECTURE)
+                        .queryParam("productCode", "CORN")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].samplePointCount")
-                        .value(org.hamcrest.Matchers.hasItem(3)))
+                        .value(org.hamcrest.Matchers.hasItem(2)))
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].productionCount")
                         .value(org.hamcrest.Matchers.hasItem(2)))
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].marketCount")
@@ -79,25 +81,28 @@ class OverviewSamplePointRestIntegrationTest {
         mvc.perform(get("/api/v1/overview/sample-points")
                         .principal(() -> "production-tester")
                         .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalCount").value(2))
                 .andExpect(jsonPath("$.data.items[?(@.samplePointId == '" + SURVEY_POINT
-                        + "')].products.length()").value(org.hamcrest.Matchers.hasItem(3)))
+                        + "')].products.length()").value(org.hamcrest.Matchers.hasItem(1)))
                 .andExpect(jsonPath("$.data.categories[?(@.code == 'MARKET')].count")
                         .value(org.hamcrest.Matchers.hasItem(1)));
 
         mvc.perform(get("/api/v1/overview/sample-points/{samplePointId}", SURVEY_POINT)
                         .principal(() -> "production-tester")
                         .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.associations.length()").value(4))
-                .andExpect(jsonPath("$.data.associations[?(@.productCode == 'SOYBEAN')]").isNotEmpty());
+                .andExpect(jsonPath("$.data.associations.length()").value(2))
+                .andExpect(jsonPath("$.data.associations[?(@.productCode == 'SOYBEAN')]").isEmpty());
 
         mvc.perform(get("/api/v1/overview/sample-point-icons")
                         .principal(() -> "production-tester")
                         .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
                         .queryParam("categoryCode", "PRODUCTION")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
@@ -106,6 +111,7 @@ class OverviewSamplePointRestIntegrationTest {
         mvc.perform(get("/api/v1/overview/sample-points")
                         .principal(() -> "production-tester")
                         .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
                         .queryParam("year", "2026")
                         .queryParam("categoryCode", "MARKET")
                         .queryParam("typeCode", "RICE_MILL"))
@@ -115,22 +121,156 @@ class OverviewSamplePointRestIntegrationTest {
         mvc.perform(get("/api/v1/overview/sample-points")
                         .principal(() -> "production-tester")
                         .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
                         .queryParam("year", "2025"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalCount").value(0));
 
         mvc.perform(get("/api/v1/overview/sample-points")
                         .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
                         .queryParam("regionCode", VILLAGE))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("INVALID_OVERVIEW_SAMPLE_POINT_QUERY"));
     }
 
     @Test
-    void aggregateTotalIsTheSumOfRealProductionAndMarketPointCounts() throws Exception {
+    void requiresProductScopeAndCountsOneGovernedPointAcrossCategories() throws Exception {
         mvc.perform(get("/api/v1/overview/sample-point-aggregates")
                         .principal(() -> "production-tester")
                         .queryParam("parentCode", PREFECTURE)
+                        .queryParam("year", "2026"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_OVERVIEW_SAMPLE_POINT_QUERY"));
+
+        mvc.perform(get("/api/v1/overview/sample-point-aggregates")
+                        .principal(() -> "production-tester")
+                        .queryParam("parentCode", PREFECTURE)
+                        .queryParam("year", "2026")
+                        .queryParam("productCode", "UNKNOWN"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_OVERVIEW_SAMPLE_POINT_QUERY"));
+
+        mvc.perform(get("/api/v1/overview/sample-point-aggregates")
+                        .principal(() -> "production-tester")
+                        .queryParam("parentCode", PREFECTURE)
+                        .queryParam("year", "2026")
+                        .queryParam("productCode", "CORN"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].productionCount")
+                        .value(org.hamcrest.Matchers.hasItem(2)))
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].marketCount")
+                        .value(org.hamcrest.Matchers.hasItem(1)))
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].samplePointCount")
+                        .value(org.hamcrest.Matchers.hasItem(2)));
+
+        mvc.perform(get("/api/v1/overview/sample-points")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("year", "2026")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("categoryCode", "PRODUCTION"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[?(@.samplePointId == '" + SURVEY_POINT
+                        + "')].products.length()").value(org.hamcrest.Matchers.hasItem(1)))
+                .andExpect(jsonPath("$.data.items[?(@.samplePointId == '" + SURVEY_POINT
+                        + "')].products[0].code").value(org.hamcrest.Matchers.hasItem("CORN")))
+                .andExpect(jsonPath("$.data.items[?(@.samplePointId == '" + SURVEY_POINT
+                        + "')].latestBusinessDate").value(org.hamcrest.Matchers.hasItem("2026-08-05")))
+                .andExpect(jsonPath("$.data.items[?(@.samplePointId == '" + SURVEY_POINT
+                        + "')].summaryValues.SAMPLE_CONTACT.value")
+                        .value(org.hamcrest.Matchers.hasItem("13900000000")))
+                .andExpect(jsonPath("$.data.items[?(@.samplePointId == '" + SURVEY_POINT
+                        + "')].summaryValues.SURVEYOR_NAME.value")
+                        .value(org.hamcrest.Matchers.hasItem("王雷")))
+                .andExpect(jsonPath("$.data.items[?(@.samplePointId == '" + SURVEY_POINT
+                        + "')].summaryValues.SURVEYOR_PHONE.value")
+                        .value(org.hamcrest.Matchers.hasItem("13800000000")))
+                .andExpect(jsonPath("$.data.items[?(@.samplePointId == '" + SURVEY_POINT
+                        + "')].summaryValues.CULTIVATED_AREA_MU.value")
+                        .value(org.hamcrest.Matchers.hasItem("10")))
+                .andExpect(jsonPath("$.data.items[?(@.samplePointId == '" + SURVEY_POINT
+                        + "')].summaryValues.ESTIMATED_OUTPUT_KG.value")
+                        .value(org.hamcrest.Matchers.hasItem("200")));
+
+        mvc.perform(get("/api/v1/overview/sample-points/{samplePointId}", SURVEY_POINT)
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("year", "2026")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("categoryCode", "PRODUCTION"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.associations.length()").value(1))
+                .andExpect(jsonPath("$.data.associations[0].productCode").value("CORN"))
+                .andExpect(jsonPath("$.data.associations[0].businessValues.SAMPLE_CONTACT.label")
+                        .value("样本点联系方式"))
+                .andExpect(jsonPath("$.data.associations[0].businessValues.SURVEYOR_NAME.label")
+                        .value("调研人"))
+                .andExpect(jsonPath("$.data.associations[0].businessValues.SURVEYOR_PHONE.label")
+                        .value("调研人联系方式"))
+                .andExpect(jsonPath("$.data.associations[0].businessValues.MOISTURE.label")
+                        .value("水分"))
+                .andExpect(jsonPath("$.data.associations[0].businessValues.MOISTURE.value")
+                        .value("14.2"))
+                .andExpect(jsonPath("$.data.associations[0].businessValues.MOISTURE.unitCode")
+                        .value("%"))
+                .andExpect(jsonPath("$.data.associations[?(@.productCode == 'SOYBEAN')]").isEmpty())
+                .andExpect(jsonPath("$.data.associations[0].businessValues.PROD_CULTIVAR_NAME").doesNotExist())
+                .andExpect(jsonPath("$.data.associations[0].businessValues.PROD_REPORTER_PHONE").doesNotExist());
+    }
+
+    @Test
+    void usesOnlyTheLatestEffectiveApprovedProductionRecordForMapEntities() throws Exception {
+        insertValidPoint(DUPLICATE_POINT, "SURVEY_SITE", "重复导入样本点", "APPROVED");
+        insertProduction(
+                "94000000-0000-0000-0000-000000000100",
+                "CORN",
+                "APPROVED",
+                DUPLICATE_POINT);
+        jdbc.sql("""
+                INSERT INTO production.production_record_submission_metadata(
+                  record_id,field_code,value)
+                VALUES('94000000-0000-0000-0000-000000000100',
+                       'PROD_SAMPLE_CONTACT','13900000000')
+                """).update();
+
+        mvc.perform(get("/api/v1/overview/sample-points")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
+                        .queryParam("year", "2026")
+                        .queryParam("categoryCode", "PRODUCTION"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalCount").value(2))
+                .andExpect(jsonPath("$.data.items[?(@.name == '重复导入样本点')]").isEmpty());
+
+        mvc.perform(get("/api/v1/overview/sample-point-icons")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
+                        .queryParam("year", "2026")
+                        .queryParam("categoryCode", "PRODUCTION"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1));
+
+        mvc.perform(get("/api/v1/overview/sample-point-aggregates")
+                        .principal(() -> "production-tester")
+                        .queryParam("parentCode", PREFECTURE)
+                        .queryParam("productCode", "CORN")
+                        .queryParam("year", "2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].productionCount")
+                        .value(org.hamcrest.Matchers.hasItem(2)))
+                .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].samplePointCount")
+                        .value(org.hamcrest.Matchers.hasItem(2)));
+    }
+
+    @Test
+    void aggregateTotalCountsDistinctPointsAcrossProductionAndMarket() throws Exception {
+        mvc.perform(get("/api/v1/overview/sample-point-aggregates")
+                        .principal(() -> "production-tester")
+                        .queryParam("parentCode", PREFECTURE)
+                        .queryParam("productCode", "CORN")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].productionCount")
@@ -138,12 +278,13 @@ class OverviewSamplePointRestIntegrationTest {
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].marketCount")
                         .value(org.hamcrest.Matchers.hasItem(1)))
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].samplePointCount")
-                        .value(org.hamcrest.Matchers.hasItem(3)));
+                        .value(org.hamcrest.Matchers.hasItem(2)));
 
         jdbc.sql("DELETE FROM market.market_record").update();
         mvc.perform(get("/api/v1/overview/sample-point-aggregates")
                         .principal(() -> "production-tester")
                         .queryParam("parentCode", PREFECTURE)
+                        .queryParam("productCode", "CORN")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].productionCount")
@@ -157,6 +298,7 @@ class OverviewSamplePointRestIntegrationTest {
         mvc.perform(get("/api/v1/overview/sample-point-aggregates")
                         .principal(() -> "production-tester")
                         .queryParam("parentCode", PREFECTURE)
+                        .queryParam("productCode", "CORN")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].productionCount")
@@ -172,6 +314,7 @@ class OverviewSamplePointRestIntegrationTest {
         String response = mvc.perform(get("/api/v1/overview/sample-points")
                         .principal(() -> "production-tester")
                         .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andReturn().getResponse().getContentAsString();
@@ -204,6 +347,7 @@ class OverviewSamplePointRestIntegrationTest {
         mvc.perform(get("/api/v1/overview/sample-points")
                         .principal(() -> "production-tester")
                         .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
                         .queryParam("year", "2026")
                         .queryParam("categoryCode", "PRODUCTION"))
                 .andExpect(status().isOk())
@@ -219,6 +363,7 @@ class OverviewSamplePointRestIntegrationTest {
         mvc.perform(get("/api/v1/overview/sample-point-icons")
                         .principal(() -> "production-tester")
                         .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
                         .queryParam("year", "2026")
                         .queryParam("categoryCode", "PRODUCTION"))
                 .andExpect(status().isOk())
@@ -230,6 +375,7 @@ class OverviewSamplePointRestIntegrationTest {
         mvc.perform(get("/api/v1/overview/sample-points")
                         .principal(() -> "production-tester")
                         .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.correctionSourceCount").value(2))
@@ -238,6 +384,7 @@ class OverviewSamplePointRestIntegrationTest {
         mvc.perform(get("/api/v1/overview/sample-points")
                         .principal(() -> "production-tester")
                         .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
                         .queryParam("year", "2026")
                         .queryParam("categoryCode", "MARKET"))
                 .andExpect(status().isOk())
@@ -247,6 +394,7 @@ class OverviewSamplePointRestIntegrationTest {
         mvc.perform(get("/api/v1/overview/sample-points")
                         .principal(() -> "production-tester")
                         .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
                         .queryParam("year", "2026")
                         .queryParam("categoryCode", "PRODUCTION")
                         .queryParam("typeCode", "FARMER")
@@ -257,7 +405,7 @@ class OverviewSamplePointRestIntegrationTest {
     }
 
     @Test
-    void rejectsUnverifiedCopiedCoordinatesButKeepsVerifiedColocatedEntitiesDistinct() throws Exception {
+    void exposesUnverifiedColocatedEntitiesWithQualityWarningsAndKeepsThemDistinct() throws Exception {
         String first = "94000000-0000-0000-0000-000000000011";
         String second = "94000000-0000-0000-0000-000000000012";
         insertValidPoint(first, "SURVEY_SITE", "并址主体甲", "APPROVED");
@@ -268,11 +416,12 @@ class OverviewSamplePointRestIntegrationTest {
                 WHERE sample_point_id IN (CAST(:first AS uuid),CAST(:second AS uuid))
                 """).param("first", first).param("second", second).update();
         insertProduction("94000000-0000-0000-0000-000000000113", "CORN", "APPROVED", first);
-        insertProduction("94000000-0000-0000-0000-000000000114", "SOYBEAN", "APPROVED", second);
+        insertProduction("94000000-0000-0000-0000-000000000114", "CORN", "APPROVED", second);
 
         mvc.perform(get("/api/v1/overview/sample-points")
                         .principal(() -> "production-tester")
                         .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
                         .queryParam("year", "2026")
                         .queryParam("categoryCode", "PRODUCTION")
                         .queryParam("query", "并址主体"))
@@ -285,11 +434,17 @@ class OverviewSamplePointRestIntegrationTest {
         mvc.perform(get("/api/v1/overview/sample-point-icons")
                         .principal(() -> "production-tester")
                         .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
                         .queryParam("year", "2026")
                         .queryParam("categoryCode", "PRODUCTION")
                         .queryParam("query", "并址主体"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(0));
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[*].samplePointId")
+                        .value(org.hamcrest.Matchers.containsInAnyOrder(first, second)))
+                .andExpect(jsonPath("$.data[*].dataQualityReason")
+                        .value(org.hamcrest.Matchers.everyItem(
+                                org.hamcrest.Matchers.is("DUPLICATE_COORDINATE_UNVERIFIED"))));
 
         jdbc.sql("""
                 UPDATE registry.sample_point SET coordinate_shared_verified=true
@@ -299,13 +454,88 @@ class OverviewSamplePointRestIntegrationTest {
         mvc.perform(get("/api/v1/overview/sample-point-icons")
                         .principal(() -> "production-tester")
                         .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
                         .queryParam("year", "2026")
                         .queryParam("categoryCode", "PRODUCTION")
                         .queryParam("query", "并址主体"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(2))
                 .andExpect(jsonPath("$.data[*].samplePointId")
-                        .value(org.hamcrest.Matchers.containsInAnyOrder(first, second)));
+                        .value(org.hamcrest.Matchers.containsInAnyOrder(first, second)))
+                .andExpect(jsonPath("$.data[*].dataQualityReason")
+                        .value(org.hamcrest.Matchers.everyItem(org.hamcrest.Matchers.nullValue())));
+    }
+
+    @Test
+    void keepsRepeatedMonthsAndFutureYearsForOneStablePointOutOfDuplicateCoordinateWarnings() throws Exception {
+        jdbc.sql("""
+                INSERT INTO production.production_record(
+                  record_id,product_code,object_type_code,region_code,survey_date,reported_at,
+                  cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,sample_point_id)
+                VALUES
+                  ('94000000-0000-0000-0000-000000000115','CORN','FARMER',:region,
+                   DATE '2026-09-05',TIMESTAMPTZ '2026-09-06 08:00:00+08',10,20,'APPROVED',
+                   'production-tester',CAST(:point AS uuid)),
+                  ('94000000-0000-0000-0000-000000000116','CORN','FARMER',:region,
+                   DATE '2027-05-05',TIMESTAMPTZ '2027-05-06 08:00:00+08',10,20,'APPROVED',
+                   'production-tester',CAST(:point AS uuid))
+                """).param("region", VILLAGE).param("point", SURVEY_POINT).update();
+
+        for (String year : java.util.List.of("2026", "2027")) {
+            mvc.perform(get("/api/v1/overview/sample-point-icons")
+                            .principal(() -> "production-tester")
+                            .queryParam("regionCode", VILLAGE)
+                            .queryParam("productCode", "CORN")
+                            .queryParam("year", year)
+                            .queryParam("categoryCode", "PRODUCTION")
+                            .queryParam("query", "同一跨产品"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.length()").value(1))
+                    .andExpect(jsonPath("$.data[0].samplePointId").value(SURVEY_POINT))
+                    .andExpect(jsonPath("$.data[0].dataQualityReason").value(
+                            org.hamcrest.Matchers.nullValue()));
+        }
+    }
+
+    @Test
+    void returnsApprovedMonthlyHistoryForOneStablePointWithoutDuplicatingItsMapIcon() throws Exception {
+        jdbc.sql("""
+                INSERT INTO production.production_record(
+                  record_id,product_code,object_type_code,region_code,survey_date,reported_at,
+                  cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,sample_point_id)
+                VALUES('94000000-0000-0000-0000-000000000117','CORN','FARMER',:region,
+                  DATE '2026-09-05',TIMESTAMPTZ '2026-09-06 08:00:00+08',15,22,'APPROVED',
+                  'production-tester',CAST(:point AS uuid))
+                """).param("region", VILLAGE).param("point", SURVEY_POINT).update();
+        jdbc.sql("""
+                INSERT INTO production.production_record_submission_metadata(record_id,field_code,value)
+                VALUES('94000000-0000-0000-0000-000000000117',
+                       'PROD_SAMPLE_CONTACT','13900000000')
+                """).update();
+
+        mvc.perform(get("/api/v1/overview/sample-point-icons")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
+                        .queryParam("year", "2026")
+                        .queryParam("categoryCode", "PRODUCTION")
+                        .queryParam("query", "同一跨产品"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].samplePointId").value(SURVEY_POINT));
+
+        mvc.perform(get("/api/v1/overview/sample-points/{samplePointId}", SURVEY_POINT)
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
+                        .queryParam("year", "2026")
+                        .queryParam("categoryCode", "PRODUCTION"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.associations.length()").value(2))
+                .andExpect(jsonPath("$.data.associations[*].occurrenceDate")
+                        .value(org.hamcrest.Matchers.containsInAnyOrder("2026-08-05", "2026-09-05")))
+                .andExpect(jsonPath("$.data.associations[?(@.occurrenceDate == '2026-09-05')].businessValues.CULTIVATED_AREA_MU.value")
+                        .value(org.hamcrest.Matchers.hasItem("15")));
     }
 
     @Test
@@ -316,7 +546,7 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("productCode", "CORN"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230200')].samplePointCount")
-                        .value(org.hamcrest.Matchers.hasItem(3)));
+                        .value(org.hamcrest.Matchers.hasItem(2)));
 
         mvc.perform(get("/api/v1/overview/sample-point-aggregates")
                         .principal(() -> "production-tester")
@@ -329,7 +559,7 @@ class OverviewSamplePointRestIntegrationTest {
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].regionLevel")
                         .value(org.hamcrest.Matchers.hasItem("COUNTY")))
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].samplePointCount")
-                        .value(org.hamcrest.Matchers.hasItem(3)))
+                        .value(org.hamcrest.Matchers.hasItem(2)))
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].unresolvedSourceCount")
                         .value(org.hamcrest.Matchers.hasItem(3)))
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].categoryCode").doesNotExist())
@@ -344,7 +574,7 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("typeCode", "TRADER"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].samplePointCount")
-                        .value(org.hamcrest.Matchers.hasItem(3)))
+                        .value(org.hamcrest.Matchers.hasItem(2)))
                 .andExpect(jsonPath("$.data[?(@.regionCode == '230202')].unresolvedSourceCount")
                         .value(org.hamcrest.Matchers.hasItem(3)));
 
@@ -377,7 +607,7 @@ class OverviewSamplePointRestIntegrationTest {
                         .value(org.hamcrest.Matchers.hasItem("农户")))
                 .andExpect(jsonPath("$.data.items.length()").value(1))
                 .andExpect(jsonPath("$.data.items[0].samplePointId").value(SURVEY_POINT))
-                .andExpect(jsonPath("$.data.items[0].products.length()").value(3))
+                .andExpect(jsonPath("$.data.items[0].products.length()").value(1))
                 .andExpect(jsonPath("$.data.items[0].longitude").doesNotExist())
                 .andExpect(jsonPath("$.data.items[0].pointGeometry").doesNotExist());
 
@@ -431,8 +661,9 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("productCode", "CORN")
                         .queryParam("regionCode", PREFECTURE)
                         .queryParam("categoryCode", "PRODUCTION"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("INVALID_OVERVIEW_SAMPLE_POINT_QUERY"));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].samplePointId").value(SURVEY_POINT));
 
         mvc.perform(get("/api/v1/overview/sample-point-icons")
                         .principal(() -> "production-tester")
@@ -453,17 +684,19 @@ class OverviewSamplePointRestIntegrationTest {
                 .andExpect(jsonPath("$.data.samplePointId").value(SURVEY_POINT))
                 .andExpect(jsonPath("$.data.name").value("同一跨产品样本点"))
                 .andExpect(jsonPath("$.data.locationState").value("VALID"))
-                .andExpect(jsonPath("$.data.associations.length()").value(4))
+                .andExpect(jsonPath("$.data.associations.length()").value(2))
                 .andExpect(jsonPath("$.data.associations[?(@.categoryCode == 'PRODUCTION')].productCode")
-                        .value(org.hamcrest.Matchers.hasSize(3)))
+                        .value(org.hamcrest.Matchers.hasSize(1)))
                 .andExpect(jsonPath("$.data.associations[?(@.categoryCode == 'MARKET')].typeName")
                         .value(org.hamcrest.Matchers.hasItem("贸易商")))
-                .andExpect(jsonPath("$.data.associations[?(@.categoryCode == 'PRODUCTION' && @.productCode == 'CORN')].businessValues.CONTACT.value")
+                .andExpect(jsonPath("$.data.associations[?(@.categoryCode == 'PRODUCTION' && @.productCode == 'CORN')].businessValues.SAMPLE_CONTACT.value")
                         .value(org.hamcrest.Matchers.hasItem("13900000000")))
                 .andExpect(jsonPath("$.data.associations[?(@.categoryCode == 'PRODUCTION' && @.productCode == 'CORN')].businessValues.ESTIMATED_OUTPUT_KG.value")
                         .value(org.hamcrest.Matchers.hasItem("200")))
-                .andExpect(jsonPath("$.data.associations[?(@.categoryCode == 'MARKET')].businessValues.OPENING_INVENTORY_TONNES.value")
+                .andExpect(jsonPath("$.data.associations[?(@.categoryCode == 'MARKET')].businessValues.OPENING_INVENTORY.value")
                         .value(org.hamcrest.Matchers.hasItem("80")))
+                .andExpect(jsonPath("$.data.associations[?(@.categoryCode == 'MARKET')].businessValues.MOISTURE.value")
+                        .value(org.hamcrest.Matchers.hasItem("13.6")))
                 .andExpect(jsonPath("$.data.longitude").doesNotExist())
                 .andExpect(jsonPath("$.data.pointGeometry").doesNotExist());
 
@@ -475,7 +708,7 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("categoryCode", "PRODUCTION")
                         .queryParam("typeCode", "FARMER"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.associations.length()").value(3))
+                .andExpect(jsonPath("$.data.associations.length()").value(1))
                 .andExpect(jsonPath("$.data.associations[0].categoryCode").value("PRODUCTION"))
                 .andExpect(jsonPath("$.data.associations[0].typeCode").value("FARMER"));
 
@@ -541,7 +774,7 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("productCode", "CORN")
                         .queryParam("regionCode", VILLAGE))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.associations.length()").value(4));
+                .andExpect(jsonPath("$.data.associations.length()").value(2));
     }
 
     @Test
@@ -603,7 +836,7 @@ class OverviewSamplePointRestIntegrationTest {
                                 .queryParam("productCode", "CORN")
                                 .queryParam("regionCode", VILLAGE))
                         .andExpect(status().isOk())
-                        .andExpect(jsonPath("$.data.associations.length()").value(4));
+                        .andExpect(jsonPath("$.data.associations.length()").value(2));
             } finally {
                 connection.rollback();
             }
@@ -672,27 +905,39 @@ class OverviewSamplePointRestIntegrationTest {
         jdbc.sql("""
                 INSERT INTO market.market_record(
                   record_id,product_code,object_type_code,region_code,trade_date,reported_at,
-                  purchase_base_price,trade_direction,carriage_board_amount,packaging_amount,
+                  purchase_base_price,sale_base_price,trade_direction,carriage_board_amount,packaging_amount,
                   freight_amount,packaging_form,status_code,last_modified_by,party_id,sample_point_id)
                 VALUES('94000000-0000-0000-0000-000000000201','CORN','TRADER',:region,
-                  DATE '2026-08-05',TIMESTAMPTZ '2026-08-06 08:00:00+08',2500,'PURCHASE',0,0,0,
+                  DATE '2026-08-05',TIMESTAMPTZ '2026-08-06 08:00:00+08',2500,2580,'BOTH',0,0,0,
                   'BULK','APPROVED','market-tester',NULL,CAST(:point AS uuid))
                 """).param("region", VILLAGE).param("point", SURVEY_POINT).update();
         jdbc.sql("""
                 INSERT INTO production.production_record_submission_metadata(record_id,field_code,value)
-                VALUES('94000000-0000-0000-0000-000000000101','PROD_SAMPLE_CONTACT','13900000000')
+                VALUES('94000000-0000-0000-0000-000000000101','PROD_SAMPLE_CONTACT','13900000000'),
+                      ('94000000-0000-0000-0000-000000000101','PROD_SURVEYOR_NAME','王雷'),
+                      ('94000000-0000-0000-0000-000000000101','PROD_SURVEYOR_PHONE','13800000000')
+                """).update();
+        jdbc.sql("""
+                INSERT INTO production.production_record_quality(record_id,quality_code,value)
+                VALUES('94000000-0000-0000-0000-000000000101','MOISTURE',14.2)
                 """).update();
         jdbc.sql("""
                 INSERT INTO market.market_record_core_value(
                   record_id,field_code,value,product_code,domain_binding)
                 VALUES('94000000-0000-0000-0000-000000000201','MKT_SAMPLE_CONTACT',
-                  '13800000000','CORN','EXTENSION')
+                         '13700000000','CORN','EXTENSION'),
+                      ('94000000-0000-0000-0000-000000000201','MKT_SURVEYOR_NAME',
+                         '李敏','CORN','EXTENSION'),
+                      ('94000000-0000-0000-0000-000000000201','MKT_SURVEYOR_PHONE',
+                         '13600000000','CORN','EXTENSION')
                 """).update();
         jdbc.sql("""
                 INSERT INTO market.market_record_fact(
                   record_id,fact_code,value,product_code,object_type_code)
                 VALUES('94000000-0000-0000-0000-000000000201','OPENING_INVENTORY',80,'CORN','TRADER'),
-                      ('94000000-0000-0000-0000-000000000201','PURCHASE_VOLUME',12,'CORN','TRADER')
+                      ('94000000-0000-0000-0000-000000000201','PURCHASE_VOLUME',12,'CORN','TRADER'),
+                      ('94000000-0000-0000-0000-000000000201','SALES_VOLUME',9,'CORN','TRADER'),
+                      ('94000000-0000-0000-0000-000000000201','MOISTURE',13.6,'CORN','TRADER')
                 """).update();
         jdbc.sql("""
                 INSERT INTO logistics.logistics_node(node_code,node_name,node_type_code,region_code,sample_point_id)

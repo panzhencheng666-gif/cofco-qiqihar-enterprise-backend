@@ -30,7 +30,8 @@ public class SessionController {
             return new SessionResponse(
                     principal.subjectId(),principal.displayName(),principal.workUnitCode(),principal.workUnitName(),
                     principal.accountStatus(),principal.employmentStatus(),
-                    principal.roleCodes().stream().sorted().toList(),principal.positions(),
+                    principal.roleCodes().isEmpty()?List.of():List.of(principal.permits("BUSINESS_APPROVE")
+                            ? "BUSINESS_REVIEWER" : "BUSINESS_OPERATOR"),principal.positions(),
                     principal.permissionCodes().stream().sorted().toList(),
                     principal.regionCodes().stream().sorted().toList(),principal.assignedRegionScopes());
         }

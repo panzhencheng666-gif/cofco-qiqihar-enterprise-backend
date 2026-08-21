@@ -10,8 +10,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
+import java.util.function.UnaryOperator;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
+import java.util.zip.ZipOutputStream;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -105,11 +111,11 @@ class ProductionImportRestIntegrationTest {
                         .doesNotContain("_")
                         .doesNotMatch(".*[A-Za-z].*"));
         assertThat(template.labels()).startsWith(
-                "样本点类型", "数据年份", "数据月份", "样本点名称", "地区", "具体品种");
+                "样本点类型", "数据年份", "数据月份", "样本点名称", "地区");
         assertThat(template.labels())
                 .contains("预计收获面积（亩）", "水分（%）", "地租（元/亩）",
                         "期初库存（吨）", "期末余粮（吨）")
-                .doesNotContain("所在地区代码", "未销售余粮（吨）");
+                .doesNotContain("具体品种", "所在地区代码", "未销售余粮（吨）");
     }
 
     @Test
@@ -125,12 +131,12 @@ class ProductionImportRestIntegrationTest {
                 java.util.Collections.nCopies(template.headers().size(), ""));
         put(row, template.headers(), "地区",
                 "齐齐哈尔市 / 梅里斯达斡尔族区");
-        put(row, template.headers(), "具体品种", "龙单86");
         put(row, template.headers(), "数据年份", "2026");
         put(row, template.headers(), "数据月份", "8");
         put(row, template.headers(), "播种面积（亩）", "100");
         put(row, template.headers(), "预计单产（公斤/亩）", "500");
-        put(row, template.headers(), "填报人联系方式", "13800000000");
+        put(row, template.headers(), "调研人", "王雷");
+        put(row, template.headers(), "调研人联系方式", "13800000000");
         put(row, template.headers(), "样本点联系方式", "13900000000");
         put(row, template.headers(), "纬度（度）", "47.3543");
         put(row, template.headers(), "经度（度）", "123.9182");
@@ -157,7 +163,7 @@ class ProductionImportRestIntegrationTest {
                         .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
                         .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[0].values.PROD_CULTIVAR").value("龙单86"))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_CULTIVAR").doesNotExist())
                 .andExpect(jsonPath("$.data.items[0].values.PROD_SAMPLE_NAME").value("龙江县第一调查户"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_HARVEST_AREA_MU").value("96.5"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_GROWTH_STAGE").value("灌浆期"))
@@ -182,12 +188,12 @@ class ProductionImportRestIntegrationTest {
                 java.util.Collections.nCopies(template.headers().size(), ""));
         put(row, template.headers(), "地区", "230208");
         put(row, template.headers(), "样本点名称", "库存合同测试样本点");
-        put(row, template.headers(), "具体品种", "条件字段失败样例");
         put(row, template.headers(), "数据年份", "2026");
         put(row, template.headers(), "数据月份", "8");
         put(row, template.headers(), "播种面积（亩）", "100");
         put(row, template.headers(), "预计单产（公斤/亩）", "500");
-        put(row, template.headers(), "填报人联系方式", "13800000000");
+        put(row, template.headers(), "调研人", "王雷");
+        put(row, template.headers(), "调研人联系方式", "13800000000");
         put(row, template.headers(), "样本点联系方式", "13900000000");
         put(row, template.headers(), "纬度（度）", "47.3543");
         put(row, template.headers(), "经度（度）", "123.9182");
@@ -292,6 +298,37 @@ class ProductionImportRestIntegrationTest {
                 .query(Long.class).single()).isZero();
     }
 
+    @Test
+    void explainsTheUnexpectedColumnBeforeCreatingAnImportTask() throws Exception {
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
+                        .param("format", "xlsx")
+                        .param("productCode", "SOYBEAN")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        var template = downloadedProductTemplate(downloaded, "产情", "SOYBEAN");
+        var row = new java.util.ArrayList<>(
+                java.util.Collections.nCopies(template.headers().size(), ""));
+        row.set(0, "农户");
+        byte[] workbook = BusinessImportWorkbook.create(template, java.util.List.of(row));
+        byte[] extraColumn = replaceZipEntry(workbook, "xl/worksheets/sheet1.xml",
+                content -> content.replace("</row></sheetData>",
+                        "<c r=\"AM2\" t=\"inlineStr\"><is><t>多余照片.jpg</t></is></c></row></sheetData>"));
+
+        mvc.perform(multipart("/api/v1/imports/production")
+                        .file(new MockMultipartFile("file", "soybean-extra-column.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", extraColumn))
+                        .param("productCode", "SOYBEAN")
+                        .header("Idempotency-Key", "soybean-extra-column")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_IMPORT_FORMAT"))
+                .andExpect(jsonPath("$.error.message")
+                        .value("文件多出第 39 列，请删除模板之外的列后重试。"));
+
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.import_job")
+                .query(Long.class).single()).isZero();
+    }
+
     private static void put(java.util.List<String> row, java.util.List<String> headers,
             String header, String value) {
         row.set(headers.indexOf(header), value);
@@ -317,12 +354,34 @@ class ProductionImportRestIntegrationTest {
         return java.util.List.copyOf(values.subList(0, size));
     }
 
+    private static byte[] replaceZipEntry(byte[] workbook, String expectedName, UnaryOperator<String> replace) {
+        try (ByteArrayInputStream input = new ByteArrayInputStream(workbook);
+                ZipInputStream zipInput = new ZipInputStream(input, StandardCharsets.UTF_8);
+                ByteArrayOutputStream output = new ByteArrayOutputStream();
+                ZipOutputStream zipOutput = new ZipOutputStream(output, StandardCharsets.UTF_8)) {
+            for (var entry = zipInput.getNextEntry(); entry != null; entry = zipInput.getNextEntry()) {
+                zipOutput.putNextEntry(new ZipEntry(entry.getName()));
+                byte[] content = zipInput.readAllBytes();
+                if (expectedName.equals(entry.getName())) {
+                    content = replace.apply(new String(content, StandardCharsets.UTF_8))
+                            .getBytes(StandardCharsets.UTF_8);
+                }
+                zipOutput.write(content);
+                zipOutput.closeEntry();
+            }
+            zipOutput.finish();
+            return output.toByteArray();
+        } catch (java.io.IOException exception) {
+            throw new AssertionError(exception);
+        }
+    }
+
     @Test
     void rejectsPathologicalAndOverPrecisionImportDecimalsWithoutProductionWrites() throws Exception {
         String csv = """
-                productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_REPORTER_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId
-                CORN,FARMER,230200,,2026-07-31,1E999999999,20,导入填报员,13800000000,13900000000,47.3543,123.9182,00000000-0000-0000-0000-000000000021
-                CORN,FARMER,230200,,2026-07-31,100000000000000.0000,20,导入填报员,13800000000,13900000000,47.3543,123.9182,00000000-0000-0000-0000-000000000022
+                productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_SURVEYOR_NAME,PROD_SURVEYOR_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId
+                CORN,FARMER,230200,,2026-07-31,1E999999999,20,导入填报员,王雷,13800000000,13900000000,47.3543,123.9182,00000000-0000-0000-0000-000000000021
+                CORN,FARMER,230200,,2026-07-31,100000000000000.0000,20,导入填报员,王雷,13800000000,13900000000,47.3543,123.9182,00000000-0000-0000-0000-000000000022
                 """;
 
         mvc.perform(multipart("/api/v1/imports/production")
@@ -344,16 +403,16 @@ class ProductionImportRestIntegrationTest {
     void validatesRowsDownloadsErrorsAndRetriesWithoutDuplicatingTheOriginalImport() throws Exception {
         mvc.perform(get("/api/v1/imports/production/template").principal(() -> "production-tester"))
                 .andExpect(status().isOk()).andExpect(content().string(
-                        "productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_REPORTER_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId\n"));
+                        "productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_SURVEYOR_NAME,PROD_SURVEYOR_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId\n"));
 
         String csv = """
-                productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_REPORTER_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId
-                CORN,FARMER,230200,,2026-07-31,10.5,20,导入填报员,13800000000,13900000000,47.3543,123.9182,%s
-                CORN,FARMER,230200,,bad-date,5,30,导入填报员,13800000000,13900000000,47.3543,123.9182,00000000-0000-0000-0000-000000000023
+                productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_SURVEYOR_NAME,PROD_SURVEYOR_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId
+                CORN,FARMER,230200,,2026-07-31,10.5,20,导入填报员,王雷,13800000000,13900000000,47.3543,123.9182,%s
+                CORN,FARMER,230200,,bad-date,5,30,导入填报员,王雷,13800000000,13900000000,47.3543,123.9182,00000000-0000-0000-0000-000000000023
                 """.formatted(PHOTO_ID);
         mvc.perform(multipart("/api/v1/imports/production").file(new MockMultipartFile("file", "outside.csv", "text/csv", """
-                        productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_REPORTER_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId
-                        CORN,FARMER,231100,,2026-07-31,10,20,导入填报员,13800000000,13900000000,47.3543,123.9182,00000000-0000-0000-0000-000000000024
+                        productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_SURVEYOR_NAME,PROD_SURVEYOR_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId
+                        CORN,FARMER,231100,,2026-07-31,10,20,导入填报员,王雷,13800000000,13900000000,47.3543,123.9182,00000000-0000-0000-0000-000000000024
                         """.getBytes(StandardCharsets.UTF_8)))
                         .param("productCode", "CORN").param("objectTypeCode", "FARMER")
                         .header("Idempotency-Key", "outside-scope-import").principal(() -> "limited-importer"))

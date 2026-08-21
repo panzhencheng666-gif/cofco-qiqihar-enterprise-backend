@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.importing.interfaceadapter;
 
 import com.cofco.qiqihar.graintrade.importing.application.ImportErrorFile;
+import com.cofco.qiqihar.graintrade.importing.application.ImportPhotoSupplementService;
 import com.cofco.qiqihar.graintrade.importing.application.ImportJobView;
 import com.cofco.qiqihar.graintrade.importing.application.ProductionImportService;
 import com.cofco.qiqihar.graintrade.importing.application.BusinessImportPhotoPackage;
@@ -26,7 +27,13 @@ import org.springframework.web.multipart.MultipartFile;
 @RequestMapping("/api/v1/imports/production")
 public class ProductionImportController {
     private final ProductionImportService service;
-    public ProductionImportController(ProductionImportService service) { this.service = service; }
+    private final ImportPhotoSupplementService photoSupplements;
+
+    public ProductionImportController(
+            ProductionImportService service, ImportPhotoSupplementService photoSupplements) {
+        this.service = service;
+        this.photoSupplements = photoSupplements;
+    }
 
     @GetMapping("/template")
     ResponseEntity<byte[]> template(@RequestParam(defaultValue = "csv") String format,
@@ -52,7 +59,7 @@ public class ProductionImportController {
         ImportJobView job = productWorkbook
                 ? service.importProductWorkbook(idempotencyKey, productCode,
                         file == null ? null : file.getOriginalFilename(),
-                        file == null ? null : file.getContentType(), bytes, photoParts(photos))
+                        file == null ? null : file.getContentType(), bytes, photoParts(photos), objectTypeCode)
                 : service.importFile(idempotencyKey, productCode, objectTypeCode,
                         file == null ? null : file.getOriginalFilename(),
                         file == null ? null : file.getContentType(), bytes);
@@ -71,6 +78,22 @@ public class ProductionImportController {
     @GetMapping("/{importJobId}")
     ApiResponse<ImportJobView> status(@PathVariable UUID importJobId) {
         return new ApiResponse<>(service.status(importJobId));
+    }
+
+    @GetMapping("/{importJobId}/photo-manifest")
+    ApiResponse<ImportPhotoSupplementService.Manifest> photoManifest(@PathVariable UUID importJobId) {
+        return new ApiResponse<>(photoSupplements.manifest(importJobId));
+    }
+
+    @PostMapping(value = "/{importJobId}/photos", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    ResponseEntity<ApiResponse<ImportPhotoSupplementService.SupplementResult>> supplementPhoto(
+            @PathVariable UUID importJobId, @RequestParam("file") MultipartFile file) throws java.io.IOException {
+        var result = photoSupplements.supplement(importJobId,
+                file == null ? null : file.getOriginalFilename(),
+                file == null ? null : file.getContentType(),
+                file == null ? null : file.getBytes());
+        int status = result.newAttachments() > 0 ? 201 : 200;
+        return ResponseEntity.status(status).body(new ApiResponse<>(result));
     }
 
     @PostMapping("/{importJobId}/retries")

@@ -53,10 +53,20 @@ public class ImportDraftPromotionService {
 
     @Transactional
     public ImportDraft submit(UUID id) {
+        return submit(id, false);
+    }
+
+    @Transactional
+    public ImportDraft submitAfterIdentityReview(UUID id) {
+        return submit(id, true);
+    }
+
+    private ImportDraft submit(UUID id, boolean reviewedIdentity) {
         ImportDraft draft = drafts.findByIdForUpdate(id).orElseThrow(() -> new ResourceNotFoundException(
                 "IMPORT_DRAFT_NOT_FOUND", "导入草稿不存在"));
-        SecurityPrincipal principal = access.require("BUSINESS_SUBMIT", draft.regionCode());
-        if (!draft.createdBy().equals(principal.subjectId())) {
+        SecurityPrincipal principal = access.require(
+                reviewedIdentity ? "BUSINESS_APPROVE" : "BUSINESS_SUBMIT", draft.regionCode());
+        if (!reviewedIdentity && !draft.createdBy().equals(principal.subjectId())) {
             throw new ConflictException("IMPORT_DRAFT_SUBMIT_NOT_ALLOWED", "只能提交本人导入的草稿");
         }
         if ("PROMOTED".equals(draft.stateCode())) return draft;
@@ -72,7 +82,9 @@ public class ImportDraftPromotionService {
                 case "LOGISTICS" -> submitLogistics(draft, evidenceIds, principal);
                 default -> throw new IllegalStateException("Unsupported import draft domain");
             };
-        } catch (ClientRequestException | IllegalArgumentException exception) {
+        } catch (ClientRequestException exception) {
+            throw exception;
+        } catch (IllegalArgumentException exception) {
             throw new ClientRequestException("IMPORT_DRAFT_INCOMPLETE",
                     "草稿缺少正式提交所需字段，或字段内容不符合业务规则；请补充后再提交审核");
         }
@@ -89,13 +101,38 @@ public class ImportDraftPromotionService {
         return drafts.findByJob(importJobId, principal.subjectId());
     }
 
+    @Transactional(readOnly = true)
+    public List<ImportDraft> listOwned(String domainCode, String productCode, String stateCode) {
+        SecurityPrincipal principal = access.require("BUSINESS_IMPORT", null);
+        return drafts.findByOwnerAndScope(
+                principal.subjectId(), domainCode, productCode, stateCode);
+    }
+
+    @Transactional
+    public BatchSubmission submitJob(UUID importJobId) {
+        List<ImportDraft> owned = listByJob(importJobId);
+        List<ImportDraft> pending = owned.stream()
+                .filter(draft -> "DRAFT".equals(draft.stateCode()))
+                .toList();
+        int submitted = 0;
+        for (ImportDraft draft : pending) {
+            submit(draft.id());
+            submitted++;
+        }
+        int remaining = (int) drafts.findByJob(importJobId,
+                        access.require("BUSINESS_IMPORT", null).subjectId()).stream()
+                .filter(draft -> "DRAFT".equals(draft.stateCode()))
+                .count();
+        return new BatchSubmission(importJobId, submitted, remaining);
+    }
+
+    public record BatchSubmission(UUID importJobId, int submittedRows, int remainingDraftRows) {}
+
     private ProductionDraft productionRow(ImportDraft draft, List<UUID> evidenceIds) {
         String objectType = required(draft.objectTypeCode());
         ProductionImportDefinition definition = production.importDefinition(draft.productCode(), objectType);
         Map<String, String> values = draft.values();
-        int year = integer(values.get("surveyYear"));
-        Integer month = optionalInteger(values.get("surveyMonth"));
-        LocalDate surveyDate = LocalDate.of(year, month == null ? 1 : month, 1);
+        SurveyPeriod period = surveyPeriod(values);
         Map<String, String> metadata = new LinkedHashMap<>();
         metadata.put("PROD_SAMPLE_NAME", draft.sampleName());
         ProductionImportTemplate.SUBMISSION_METADATA_HEADERS.stream()
@@ -117,9 +154,9 @@ public class ImportDraftPromotionService {
             };
             group.fields().forEach(field -> putDecimalIfPresent(target, field.code(), values));
         }
-        return new ProductionDraft(draft.productCode(), objectType, draft.regionCode(), null, surveyDate,
+        return new ProductionDraft(draft.productCode(), objectType, draft.regionCode(), null, period.date(),
                 decimal(values.get("cultivatedAreaMu")), decimal(values.get("yieldPerMuKilograms")),
-                quality, costs, insurance, subsidies, metadata, evidenceIds, year, month);
+                quality, costs, insurance, subsidies, metadata, evidenceIds, period.year(), period.month());
     }
 
     private MarketImportRow marketRow(ImportDraft draft, List<UUID> evidenceIds) {
@@ -133,9 +170,8 @@ public class ImportDraftPromotionService {
                 .filter(field -> !List.of("MKT_OBJECT_TYPE", "MKT_REGION", "MKT_SAMPLE_NAME",
                         "MKT_REPORTER_NAME", "MKT_TRADE_DATE").contains(field.code()))
                 .forEach(field -> putIfPresent(core, field.code(), draft.values()));
-        int year = integer(draft.values().get("surveyYear"));
-        Integer month = optionalInteger(draft.values().get("surveyMonth"));
-        core.put("MKT_TRADE_DATE", LocalDate.of(year, month == null ? 1 : month, 1).toString());
+        SurveyPeriod period = surveyPeriod(draft.values());
+        core.put("MKT_TRADE_DATE", period.date().toString());
         Map<String, BigDecimal> facts = new LinkedHashMap<>();
         definition.factFields().forEach(field -> putDecimalIfPresent(facts, field.code(), draft.values()));
         return new MarketImportRow(draft.productCode(), core, facts, evidenceIds);
@@ -169,16 +205,39 @@ public class ImportDraftPromotionService {
         return value == null || value.isBlank() ? null : new BigDecimal(value.trim());
     }
 
-    private static int integer(String value) {
-        return Integer.parseInt(required(value));
-    }
-
-    private static Integer optionalInteger(String value) {
-        return value == null || value.isBlank() ? null : Integer.valueOf(value.trim());
+    private static SurveyPeriod surveyPeriod(Map<String, String> values) {
+        String yearValue = values.get("surveyYear");
+        if (yearValue == null || yearValue.isBlank()) {
+            throw new ClientRequestException("INVALID_IMPORT_YEAR", "数据年份必须填写");
+        }
+        int year;
+        try {
+            year = Integer.parseInt(yearValue.trim());
+        } catch (NumberFormatException exception) {
+            throw new ClientRequestException("INVALID_IMPORT_YEAR", "数据年份必须填写 1900—2200 的整数");
+        }
+        if (year < 1900 || year > 2200) {
+            throw new ClientRequestException("INVALID_IMPORT_YEAR", "数据年份必须填写 1900—2200 的整数");
+        }
+        String monthValue = values.get("surveyMonth");
+        Integer month = null;
+        if (monthValue != null && !monthValue.isBlank()) {
+            try {
+                month = Integer.valueOf(monthValue.trim());
+            } catch (NumberFormatException exception) {
+                throw new ClientRequestException("INVALID_IMPORT_MONTH", "数据月份只能填写 1—12 的整数");
+            }
+            if (month < 1 || month > 12) {
+                throw new ClientRequestException("INVALID_IMPORT_MONTH", "数据月份只能填写 1—12 的整数");
+            }
+        }
+        return new SurveyPeriod(year, month, LocalDate.of(year, month == null ? 1 : month, 1));
     }
 
     private static String required(String value) {
         if (value == null || value.isBlank()) throw new IllegalArgumentException("Required value is missing");
         return value.trim();
     }
+
+    private record SurveyPeriod(int year, Integer month, LocalDate date) {}
 }

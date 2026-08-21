@@ -64,13 +64,18 @@ public final class ObservableSupplyCalculator {
     public static ObservableSupplyCalculation calculate(ObservableQuantityInput input) {
         if (input == null) throw new IllegalArgumentException("Observable quantity input is required");
         if (input.approvedRecordCount() == 0) {
-            return result(input, AnalysisQualityState.NO_APPROVED_DATA, null,
+            return result(input, AnalysisQualityState.NO_APPROVED_DATA, null, null, null,
                     List.of("NO_APPROVED_DATA"));
         }
-        if (!input.inventoryMutuallyExclusive()) {
-            return result(input, AnalysisQualityState.COVERAGE_REVIEW_REQUIRED, null,
-                    List.of("INVENTORY_MUTUAL_EXCLUSIVITY_UNPROVEN"));
-        }
+
+        requireNonNegativeIfPresent(
+                input.openingObservableInventoryTonnes(), "Opening observable inventory");
+        requireNonNegativeIfPresent(input.expectedOutputTonnes(), "Expected output");
+        requireNonNegativeIfPresent(input.inflowTonnes(), "Inflow");
+        requireNonNegativeIfPresent(input.selfUseTonnes(), "Self use");
+        requireNonNegativeIfPresent(input.outflowTonnes(), "Outflow");
+        requireNonNegativeIfPresent(
+                input.endingObservableInventoryTonnes(), "Ending observable inventory");
 
         List<String> missing = new ArrayList<>();
         addMissing(missing, input.openingObservableInventoryTonnes(), "OPENING_OBSERVABLE_INVENTORY_MISSING");
@@ -79,35 +84,47 @@ public final class ObservableSupplyCalculator {
         addMissing(missing, input.selfUseTonnes(), "SELF_USE_MISSING");
         addMissing(missing, input.outflowTonnes(), "OUTFLOW_MISSING");
         addMissing(missing, input.endingObservableInventoryTonnes(), "ENDING_OBSERVABLE_INVENTORY_MISSING");
+        if (input.openingObservableInventoryTonnes() != null && !input.openingInventoryComplete()) {
+            missing.add("OPENING_OBSERVABLE_INVENTORY_INCOMPLETE");
+        }
+        if (input.endingObservableInventoryTonnes() != null && !input.endingInventoryComplete()) {
+            missing.add("ENDING_OBSERVABLE_INVENTORY_INCOMPLETE");
+        }
+        if (input.inventoryReviewGroupCount() > 0) {
+            missing.add("INVENTORY_POSITION_REVIEW_REQUIRED");
+            return result(input, AnalysisQualityState.COVERAGE_REVIEW_REQUIRED, null, null, null, missing);
+        }
         if (!missing.isEmpty()) {
-            return result(input, AnalysisQualityState.PARTIAL, null, missing);
+            return result(input, AnalysisQualityState.PARTIAL, null, null, null, missing);
         }
 
-        requireNonNegative(input.openingObservableInventoryTonnes(), "Opening observable inventory");
-        requireNonNegative(input.expectedOutputTonnes(), "Expected output");
-        requireNonNegative(input.inflowTonnes(), "Inflow");
-        requireNonNegative(input.selfUseTonnes(), "Self use");
-        requireNonNegative(input.outflowTonnes(), "Outflow");
-        requireNonNegative(input.endingObservableInventoryTonnes(), "Ending observable inventory");
-
-        BigDecimal inferredOtherAbsorption = normalize(
+        BigDecimal totalSupply = normalize(
                 input.openingObservableInventoryTonnes()
                         .add(input.expectedOutputTonnes())
-                        .add(input.inflowTonnes())
+                        .add(input.inflowTonnes()));
+        BigDecimal inferredOtherAbsorption = normalize(
+                totalSupply
                         .subtract(input.selfUseTonnes())
                         .subtract(input.outflowTonnes())
                         .subtract(input.endingObservableInventoryTonnes()));
         if (inferredOtherAbsorption.signum() < 0) {
             return result(input, AnalysisQualityState.BLOCKED, inferredOtherAbsorption,
+                    totalSupply, null,
                     List.of("NEGATIVE_INFERRED_OTHER_ABSORPTION"));
         }
-        return result(input, AnalysisQualityState.AVAILABLE, inferredOtherAbsorption, List.of());
+        BigDecimal totalUse = normalize(input.selfUseTonnes()
+                .add(input.outflowTonnes())
+                .add(inferredOtherAbsorption));
+        return result(input, AnalysisQualityState.AVAILABLE, inferredOtherAbsorption,
+                totalSupply, totalUse, List.of());
     }
 
     private static ObservableSupplyCalculation result(
             ObservableQuantityInput input,
             AnalysisQualityState state,
             BigDecimal inferredOtherAbsorption,
+            BigDecimal totalSupply,
+            BigDecimal totalUse,
             List<String> issues) {
         return new ObservableSupplyCalculation(
                 state,
@@ -118,6 +135,8 @@ public final class ObservableSupplyCalculator {
                 normalizeNullable(input.outflowTonnes()),
                 normalizeNullable(input.endingObservableInventoryTonnes()),
                 normalizeNullable(inferredOtherAbsorption),
+                normalizeNullable(totalSupply),
+                normalizeNullable(totalUse),
                 issues);
     }
 
@@ -136,6 +155,12 @@ public final class ObservableSupplyCalculator {
 
     private static void requireNonNegative(BigDecimal value, String label) {
         if (value == null || value.signum() < 0) {
+            throw new IllegalArgumentException(label + " must be non-negative");
+        }
+    }
+
+    private static void requireNonNegativeIfPresent(BigDecimal value, String label) {
+        if (value != null && value.signum() < 0) {
             throw new IllegalArgumentException(label + " must be non-negative");
         }
     }

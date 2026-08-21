@@ -25,20 +25,18 @@ public class BusinessEventStreamController {
     }
 
     private static long resolveCursor(Long after, String lastEventId) {
-        if (after != null) {
-            if (after < 0) throw invalidCursor();
-            return after;
+        if (lastEventId != null && !lastEventId.isBlank()) {
+            try {
+                long cursor = Long.parseLong(lastEventId.trim());
+                if (cursor < 0) throw invalidCursor();
+                return cursor;
+            } catch (NumberFormatException invalidCursor) {
+                throw invalidCursor();
+            }
         }
-        if (lastEventId == null || lastEventId.isBlank()) {
-            return 0;
-        }
-        try {
-            long cursor = Long.parseLong(lastEventId.trim());
-            if (cursor < 0) throw invalidCursor();
-            return cursor;
-        } catch (NumberFormatException invalidCursor) {
-            throw invalidCursor();
-        }
+        if (after == null) return 0;
+        if (after < 0) throw invalidCursor();
+        return after;
     }
 
     private static ClientRequestException invalidCursor() {

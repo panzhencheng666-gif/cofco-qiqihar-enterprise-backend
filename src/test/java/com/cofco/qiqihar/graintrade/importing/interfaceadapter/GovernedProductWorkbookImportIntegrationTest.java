@@ -11,9 +11,14 @@ import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
+import java.awt.Color;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
@@ -45,10 +50,20 @@ class GovernedProductWorkbookImportIntegrationTest {
                   platform.business_audit_event,production.production_record,market.market_record,
                   logistics.route_event,evidence.evidence_photo RESTART IDENTITY CASCADE
                 """).update();
+        jdbc.sql("""
+                INSERT INTO overview.administrative_boundary(
+                  region_code,geometry,source_name,source_url,source_revision,source_license,
+                  source_feature_id,source_effective_on,geometry_sha256)
+                VALUES('230208',ST_Multi(ST_MakeEnvelope(123.5,47.4,124.2,47.9,4326)),
+                  '受控验收边界','urn:qiqihar:acceptance-boundary','acceptance-1','内部验收数据',
+                  '230208',DATE '2026-08-18',
+                  encode(sha256(ST_AsEWKB(ST_Multi(ST_MakeEnvelope(123.5,47.4,124.2,47.9,4326)))),'hex'))
+                ON CONFLICT(region_code) DO NOTHING
+                """).update();
     }
 
     @Test
-    void importsSparseRowsFromAllNineTemplateFamiliesAsIndependentDatabaseDrafts() throws Exception {
+    void rejectsSparseRowsFromAllThreeDomainTemplatesWithoutLeavingDatabaseDrafts() throws Exception {
         importTwoRows("production", "PRODUCTION", "产情", "production-tester",
                 "样本点名称", "地区", "prod-draft-1");
         importTwoRows("market", "MARKET", "市场", "market-tester",
@@ -57,18 +72,9 @@ class GovernedProductWorkbookImportIntegrationTest {
                 "物流样本点名称", "地区", "logistics-draft-1");
 
         assertThat(jdbc.sql("SELECT count(*) FROM platform.business_import_draft")
+                .query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.import_row_result WHERE outcome_code='ERROR'")
                 .query(Long.class).single()).isEqualTo(6);
-        assertThat(jdbc.sql("SELECT count(*) FROM platform.business_import_draft WHERE state_code='DRAFT'")
-                .query(Long.class).single()).isEqualTo(6);
-        assertThat(jdbc.sql("SELECT count(*) FROM platform.import_row_result WHERE outcome_code='IMPORTED'")
-                .query(Long.class).single()).isEqualTo(6);
-        assertThat(jdbc.sql("SELECT count(*) FROM platform.import_row_result WHERE warning_code IS NOT NULL")
-                .query(Long.class).single()).isEqualTo(3);
-        assertThat(jdbc.sql("""
-                SELECT count(*) FROM platform.business_import_draft
-                WHERE sample_name<>'' AND region_code='230208'
-                  AND jsonb_exists(values_json,'surveyYear') = false
-                """).query(Long.class).single()).isEqualTo(6);
         assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
                 .query(Long.class).single()).isZero();
         assertThat(jdbc.sql("SELECT count(*) FROM market.market_record")
@@ -91,6 +97,13 @@ class GovernedProductWorkbookImportIntegrationTest {
         List<String> rail = sparse(labels, "物流样本点名称", "地区", "铁路运输样本", "");
         List<String> road = sparse(labels, "物流样本点名称", "地区", "公路运输样本", "");
         List<String> invalid = sparse(labels, "物流样本点名称", "地区", "无效运输样本", "");
+        for (Map.Entry<String, String> value : completeLogisticsValues().entrySet()) {
+            if (!"运输方式".equals(value.getKey())) {
+                rail = withValue(rail, labels, value.getKey(), value.getValue());
+                road = withValue(road, labels, value.getKey(), value.getValue());
+                invalid = withValue(invalid, labels, value.getKey(), value.getValue());
+            }
+        }
         rail = withValue(rail, labels, "运输方式", "铁路");
         road = withValue(road, labels, "运输方式", "公路");
         invalid = withValue(invalid, labels, "运输方式", "航空");
@@ -129,44 +142,807 @@ class GovernedProductWorkbookImportIntegrationTest {
                 "market", "MARKET", "市场", "market-tester",
                 "样本点名称", "旧客户端市场样本", "TRADER");
 
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.business_import_draft WHERE state_code='PROMOTED'")
+                .query(Long.class).single()).isEqualTo(2);
+        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record WHERE status_code='PENDING_REVIEW'")
+                .query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("SELECT count(*) FROM market.market_record WHERE status_code='PENDING_REVIEW'")
+                .query(Long.class).single()).isOne();
+    }
+
+    @Test
+    void previouslyDownloadedProductTemplatesRemainUsableAfterInputRulesBroaden() throws Exception {
+        byte[] productionDownloaded = mvc.perform(get("/api/v1/imports/production/template")
+                        .param("format", "xlsx").param("productCode", "CORN")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        List<String> productionLabels = withoutTrailingBlanks(
+                XlsxTable.parseWorksheet(productionDownloaded, 1, 256).getFirst());
+        BusinessImportWorkbook.Template priorProduction = new BusinessImportWorkbook.Template(
+                "PRODUCTION", "产情", "CORN", null, "2026.08.17-2",
+                "sha256:6694ba15e979c57c01abf1151711f998e0e2e3826ec781af3b9cd61f18ff2544",
+                productionLabels, productionLabels, List.of());
+        List<String> productionRow = sparse(
+                productionLabels, "样本点名称", "地区", "旧模板产情样本", "");
+        for (Map.Entry<String, String> value : completeProductionValues().entrySet()) {
+            productionRow = withValue(productionRow, productionLabels, value.getKey(), value.getValue());
+        }
+        productionRow = withValue(productionRow, productionLabels, "毒素（%）", "0.001");
+        productionRow = withValue(productionRow, productionLabels, "地租（元/亩）", "733.33");
+
+        mvc.perform(multipart("/api/v1/imports/production")
+                        .file(new MockMultipartFile("file", "旧版产情模板.xlsx", XLSX,
+                                BusinessImportWorkbook.create(priorProduction, List.of(productionRow))))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", "prior-production-template")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(1))
+                .andExpect(jsonPath("$.data.failedRows").value(0));
+
+        byte[] marketDownloaded = mvc.perform(get("/api/v1/imports/market/template")
+                        .param("format", "xlsx").param("productCode", "CORN")
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        List<String> marketLabels = withoutTrailingBlanks(
+                XlsxTable.parseWorksheet(marketDownloaded, 1, 256).getFirst());
+        BusinessImportWorkbook.Template priorMarket = new BusinessImportWorkbook.Template(
+                "MARKET", "市场", "CORN", null, "2026.08.17-2",
+                "sha256:5fc9a7e9a33f66ca596e021c232d6f74da2dbd812e3e60bbb5f0a296f853ef70",
+                marketLabels, marketLabels, List.of());
+        List<String> marketRow = sparse(marketLabels, "样本点名称", "地区", "旧模板市场样本", "");
+        for (Map.Entry<String, String> value : completeMarketValues().entrySet()) {
+            marketRow = withValue(marketRow, marketLabels, value.getKey(), value.getValue());
+        }
+
+        mvc.perform(multipart("/api/v1/imports/market")
+                        .file(new MockMultipartFile("file", "旧版市场模板.xlsx", XLSX,
+                                BusinessImportWorkbook.create(priorMarket, List.of(marketRow))))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", "prior-market-template")
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(1))
+                .andExpect(jsonPath("$.data.failedRows").value(0));
+    }
+
+    @Test
+    void normalizesCommonMarketPackagingLabelsBeforeSubmittingRowsForReview() throws Exception {
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/market/template")
+                        .param("format", "xlsx").param("productCode", "CORN")
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        List<String> labels = withoutTrailingBlanks(XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
+        BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, "MARKET");
+        BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
+                "MARKET", "市场", "CORN", null, context.contractVersion(), context.contractDigest(),
+                labels, labels, List.of());
+        List<List<String>> rows = new ArrayList<>();
+        for (String packaging : List.of("散装", "吨包", "编织袋")) {
+            List<String> row = sparse(labels, "样本点名称", "地区", packaging + "市场样本", "");
+            for (Map.Entry<String, String> value : completeMarketValues().entrySet()) {
+                if (!"包装形态".equals(value.getKey())) {
+                    row = withValue(row, labels, value.getKey(), value.getValue());
+                }
+            }
+            rows.add(withValue(row, labels, "包装形态", packaging));
+        }
+
+        mvc.perform(multipart("/api/v1/imports/market")
+                        .file(new MockMultipartFile("file", "市场-玉米-批量导入模板.xlsx", XLSX,
+                                BusinessImportWorkbook.create(template, rows)))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", "market-packaging-aliases")
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(3))
+                .andExpect(jsonPath("$.data.failedRows").value(0));
+
+        assertThat(jdbc.sql("SELECT packaging_form FROM market.market_record ORDER BY packaging_form")
+                .query(String.class).list()).containsExactly("BAGGED", "BAGGED", "BULK");
+        assertThat(jdbc.sql("SELECT count(*) FROM market.market_record WHERE status_code='PENDING_REVIEW'")
+                .query(Long.class).single()).isEqualTo(3);
+    }
+
+    @Test
+    void explainsTheExactAllowedPrecisionWhenAProductionDecimalIsInvalid() throws Exception {
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
+                        .param("format", "xlsx").param("productCode", "CORN")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        List<String> labels = withoutTrailingBlanks(XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
+        BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, "PRODUCTION");
+        BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
+                "PRODUCTION", "产情", "CORN", null, context.contractVersion(), context.contractDigest(),
+                labels, labels, List.of());
+        List<String> row = sparse(labels, "样本点名称", "地区", "小数位错误提示样本", "");
+        for (Map.Entry<String, String> value : completeProductionValues().entrySet()) {
+            row = withValue(row, labels, value.getKey(), value.getValue());
+        }
+        row = withValue(row, labels, "杂质（%）", "1.23456");
+
+        mvc.perform(multipart("/api/v1/imports/production")
+                        .file(new MockMultipartFile("file", "产情-玉米-错误提示.xlsx", XLSX,
+                                BusinessImportWorkbook.create(template, List.of(row))))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", "production-precision-error-message")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(0))
+                .andExpect(jsonPath("$.data.failedRows").value(1));
+
+        assertThat(jdbc.sql("""
+                SELECT result.error_message FROM platform.import_row_result result
+                JOIN platform.import_job job ON job.import_job_id=result.import_job_id
+                WHERE job.idempotency_key='production-precision-error-message'
+                """).query(String.class).single())
+                .contains("杂质（%）", "小数位不超过 4");
+    }
+
+    @Test
+    void acceptsHumanEnteredBusinessDecimalsUpToTheFourDecimalStoragePrecision() throws Exception {
+        byte[] productionWorkbook = mvc.perform(get("/api/v1/imports/production/template")
+                        .param("format", "xlsx").param("productCode", "CORN")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        List<String> productionLabels = withoutTrailingBlanks(
+                XlsxTable.parseWorksheet(productionWorkbook, 1, 256).getFirst());
+        BusinessImportWorkbook.Context productionContext =
+                BusinessImportWorkbook.context(productionWorkbook, "PRODUCTION");
+        BusinessImportWorkbook.Template productionTemplate = new BusinessImportWorkbook.Template(
+                "PRODUCTION", "产情", "CORN", null,
+                productionContext.contractVersion(), productionContext.contractDigest(),
+                productionLabels, productionLabels, List.of());
+        List<String> productionRow = sparse(
+                productionLabels, "样本点名称", "地区", "四位小数产情样本", "");
+        for (Map.Entry<String, String> value : completeProductionValues().entrySet()) {
+            productionRow = withValue(productionRow, productionLabels, value.getKey(), value.getValue());
+        }
+        productionRow = withValue(productionRow, productionLabels, "毒素（%）", "0.001");
+        productionRow = withValue(productionRow, productionLabels, "杂质（%）", "1.2345");
+        productionRow = withValue(productionRow, productionLabels, "地租（元/亩）", "１，２３４．５６７");
+
+        mvc.perform(multipart("/api/v1/imports/production")
+                        .file(new MockMultipartFile("file", "产情-玉米-业务小数.xlsx", XLSX,
+                                BusinessImportWorkbook.create(productionTemplate, List.of(productionRow))))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", "production-human-decimals")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(1))
+                .andExpect(jsonPath("$.data.failedRows").value(0));
+
+        byte[] marketWorkbook = mvc.perform(get("/api/v1/imports/market/template")
+                        .param("format", "xlsx").param("productCode", "CORN")
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        List<String> marketLabels = withoutTrailingBlanks(
+                XlsxTable.parseWorksheet(marketWorkbook, 1, 256).getFirst());
+        BusinessImportWorkbook.Context marketContext = BusinessImportWorkbook.context(marketWorkbook, "MARKET");
+        BusinessImportWorkbook.Template marketTemplate = new BusinessImportWorkbook.Template(
+                "MARKET", "市场", "CORN", null, marketContext.contractVersion(), marketContext.contractDigest(),
+                marketLabels, marketLabels, List.of());
+        List<String> marketRow = sparse(marketLabels, "样本点名称", "地区", "四位小数市场样本", "");
+        for (Map.Entry<String, String> value : completeMarketValues().entrySet()) {
+            marketRow = withValue(marketRow, marketLabels, value.getKey(), value.getValue());
+        }
+        marketRow = withValue(marketRow, marketLabels, "采集对象收购价格（元/吨）", "2，300．5");
+        marketRow = withValue(marketRow, marketLabels, "水分（%）", "14.6789");
+
+        mvc.perform(multipart("/api/v1/imports/market")
+                        .file(new MockMultipartFile("file", "市场-玉米-业务小数.xlsx", XLSX,
+                                BusinessImportWorkbook.create(marketTemplate, List.of(marketRow))))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", "market-human-decimals")
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(1))
+                .andExpect(jsonPath("$.data.failedRows").value(0));
+
+        assertThat(jdbc.sql("""
+                SELECT value::text FROM production.production_record_quality
+                WHERE quality_code='IMPURITY'
+                """).query(String.class).single()).isEqualTo("1.2345");
+        assertThat(jdbc.sql("""
+                SELECT value::text FROM production.production_record_cost
+                WHERE cost_code='LAND_RENT'
+                """).query(String.class).single()).isEqualTo("1234.5670");
+        assertThat(jdbc.sql("""
+                SELECT purchase_base_price::text FROM market.market_record
+                """).query(String.class).single()).isEqualTo("2300.5000");
+        assertThat(jdbc.sql("""
+                SELECT value::text FROM market.market_record_fact WHERE fact_code='MOISTURE'
+                """).query(String.class).single()).isEqualTo("14.6789");
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM production.production_record WHERE status_code='PENDING_REVIEW'
+                """).query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM market.market_record WHERE status_code='PENDING_REVIEW'
+                """).query(Long.class).single()).isOne();
+    }
+
+    @Test
+    void explainsAnOutOfScopeRegionWithoutHidingItAsARowWriteFailure() throws Exception {
+        jdbc.sql("""
+                INSERT INTO platform.work_unit(code,name,sort_order)
+                VALUES('GOVERNED_IMPORT_LIMITED','批量填报受限测试单位',9902)
+                ON CONFLICT(code) DO NOTHING
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.work_unit_region_scope(work_unit_code,region_code)
+                VALUES('GOVERNED_IMPORT_LIMITED','230200') ON CONFLICT DO NOTHING
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user(subject_id,display_name,work_unit_code)
+                VALUES('governed-limited-importer','批量填报受限测试员','GOVERNED_IMPORT_LIMITED')
+                ON CONFLICT(subject_id) DO NOTHING
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_role(subject_id,role_code)
+                VALUES('governed-limited-importer','BUSINESS_OPERATOR') ON CONFLICT DO NOTHING
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_region_scope(subject_id,region_code)
+                VALUES('governed-limited-importer','230200') ON CONFLICT DO NOTHING
+                """).update();
+
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
+                        .param("format", "xlsx").param("productCode", "CORN")
+                        .principal(() -> "governed-limited-importer"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        List<String> labels = withoutTrailingBlanks(XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
+        BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, "PRODUCTION");
+        BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
+                "PRODUCTION", "产情", "CORN", null, context.contractVersion(), context.contractDigest(),
+                labels, labels, List.of());
+        List<String> row = sparse(labels, "样本点名称", "地区", "越界地区提示样本", "");
+        for (Map.Entry<String, String> value : completeProductionValues().entrySet()) {
+            row = withValue(row, labels, value.getKey(), value.getValue());
+        }
+        row = withValue(row, labels, "地区", "231100");
+
+        mvc.perform(multipart("/api/v1/imports/production")
+                        .file(new MockMultipartFile("file", "产情-玉米-越界提示.xlsx", XLSX,
+                                BusinessImportWorkbook.create(template, List.of(row))))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", "production-out-of-scope-message")
+                        .principal(() -> "governed-limited-importer"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(0))
+                .andExpect(jsonPath("$.data.failedRows").value(1));
+
+        Map<String, Object> error = jdbc.sql("""
+                SELECT result.error_code,result.error_message FROM platform.import_row_result result
+                JOIN platform.import_job job ON job.import_job_id=result.import_job_id
+                WHERE job.idempotency_key='production-out-of-scope-message'
+                """).query().singleRow();
+        assertThat(error.get("error_code")).isEqualTo("ACCESS_REGION_DENIED");
+        assertThat(error.get("error_message").toString()).contains("地区", "权限范围");
+    }
+
+    @Test
+    void incompleteImportedRowsCreateOnlyActionableErrorsAndNoBusinessRecords() throws Exception {
+        importTwoRows("production", "PRODUCTION", "产情", "production-tester",
+                "样本点名称", "地区", "incomplete-production");
         assertThat(jdbc.sql("SELECT count(*) FROM platform.business_import_draft")
+                .query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.import_row_result WHERE outcome_code='ERROR'")
                 .query(Long.class).single()).isEqualTo(2);
         assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
-                .query(Long.class).single()).isZero();
-        assertThat(jdbc.sql("SELECT count(*) FROM market.market_record")
                 .query(Long.class).single()).isZero();
     }
 
     @Test
-    void incompleteImportedRowRemainsADatabaseDraftAndCreatesNoFormalRecord() throws Exception {
-        importTwoRows("production", "PRODUCTION", "产情", "production-tester",
-                "样本点名称", "地区", "incomplete-production");
-        String draftId = jdbc.sql("""
-                SELECT import_draft_id::text FROM platform.business_import_draft
-                WHERE domain_code='PRODUCTION' ORDER BY source_row_number LIMIT 1
-                """).query(String.class).single();
+    void automaticallySubmitsCompleteWorkbookRowsForReview() throws Exception {
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
+                        .param("format", "xlsx").param("productCode", "CORN")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        List<String> labels = withoutTrailingBlanks(XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
+        BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, "PRODUCTION");
+        BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
+                "PRODUCTION", "产情", "CORN", null, context.contractVersion(), context.contractDigest(),
+                labels, labels, List.of());
+        List<String> first = sparse(labels, "样本点名称", "地区", "批量产情样本一", "");
+        List<String> second = sparse(labels, "样本点名称", "地区", "批量产情样本二", "");
+        for (Map.Entry<String, String> value : completeProductionValues().entrySet()) {
+            first = withValue(first, labels, value.getKey(), value.getValue());
+            second = withValue(second, labels, value.getKey(), value.getValue());
+        }
+        mvc.perform(multipart("/api/v1/imports/production")
+                        .file(new MockMultipartFile("file", "产情-玉米-批量导入模板.xlsx", XLSX,
+                                BusinessImportWorkbook.create(template, List.of(first, second))))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", "persistent-corn-drafts")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(2));
         String importJobId = jdbc.sql("""
-                SELECT import_job_id::text FROM platform.business_import_draft WHERE import_draft_id=:id
-                """).param("id", java.util.UUID.fromString(draftId)).query(String.class).single();
-
-        mvc.perform(get("/api/v1/import-drafts").param("importJobId", importJobId)
-                        .principal(() -> "production-tester"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(2))
-                .andExpect(jsonPath("$.data[0].stateCode").value("DRAFT"))
-                .andExpect(jsonPath("$.data[0].sampleName").value("产情样本一"));
-
-        mvc.perform(post("/api/v1/import-drafts/{id}/submit", draftId)
-                        .principal(() -> "production-tester"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("IMPORT_DRAFT_INCOMPLETE"));
+                SELECT import_job_id::text FROM platform.business_import_draft
+                WHERE created_by='production-tester' AND product_code='CORN' LIMIT 1
+                """).query(String.class).single();
 
         assertThat(jdbc.sql("""
-                SELECT state_code FROM platform.business_import_draft WHERE import_draft_id=:id
-                """).param("id", java.util.UUID.fromString(draftId)).query(String.class).single())
-                .isEqualTo("DRAFT");
+                SELECT count(*) FROM platform.business_import_draft
+                WHERE import_job_id=:job AND state_code='PROMOTED'
+                """).param("job", java.util.UUID.fromString(importJobId)).query(Long.class).single())
+                .isEqualTo(2);
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM production.production_record
+                WHERE product_code='CORN' AND status_code='PENDING_REVIEW'
+                """).query(Long.class).single()).isEqualTo(2);
+
+        mvc.perform(get("/api/v1/import-drafts")
+                        .param("domainCode", "PRODUCTION")
+                        .param("productCode", "CORN")
+                        .param("stateCode", "DRAFT")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(0));
+    }
+
+    @Test
+    void keepsAConflictingVisibleIdentityAsAReviewableDraftWithoutSubmittingIt() throws Exception {
+        String point = "95200000-0000-0000-0000-000000000001";
+        String record = "95200000-0000-0000-0000-000000000101";
+        jdbc.sql("""
+                INSERT INTO registry.sample_point(
+                  sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
+                  governed_point,effective_from,version,created_by,updated_by)
+                VALUES(CAST(:point AS uuid),'SURVEY_SITE','待核验重名样本','230208','APPROVED','VALID',
+                  ST_SetSRID(ST_MakePoint(123.600000,47.500000),4326),DATE '2024-01-01',0,
+                  'production-tester','production-tester')
+                """).param("point", point).update();
+        jdbc.sql("""
+                INSERT INTO production.production_record(
+                  record_id,product_code,object_type_code,region_code,survey_date,reported_at,
+                  cultivated_area_mu,yield_per_mu_kg,status_code,sample_point_id,last_modified_by)
+                VALUES(:record,'CORN','FARMER','230208',DATE '2024-08-01',now(),
+                  10,20,'APPROVED',CAST(:point AS uuid),'production-tester')
+                """).param("record", record).param("point", point).update();
+        jdbc.sql("""
+                INSERT INTO production.production_record_submission_metadata(record_id,field_code,value)
+                VALUES(:record,'PROD_SAMPLE_NAME','待核验重名样本'),
+                      (:record,'PROD_SAMPLE_CONTACT','13900000000')
+                """).param("record", record).update();
+
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
+                        .param("format", "xlsx").param("productCode", "CORN")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        List<String> labels = withoutTrailingBlanks(XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
+        BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, "PRODUCTION");
+        BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
+                "PRODUCTION", "产情", "CORN", null, context.contractVersion(), context.contractDigest(),
+                labels, labels, List.of());
+        List<String> row = sparse(labels, "样本点名称", "地区", "待核验重名样本", "");
+        for (Map.Entry<String, String> value : completeProductionValues().entrySet()) {
+            row = withValue(row, labels, value.getKey(), value.getValue());
+        }
+        row = withValue(row, labels, "经度（度）", "123.700000");
+        row = withValue(row, labels, "纬度（度）", "47.600000");
+
+        mvc.perform(multipart("/api/v1/imports/production")
+                        .file(new MockMultipartFile("file", "产情-身份待核验.xlsx", XLSX,
+                                BusinessImportWorkbook.create(template, List.of(row))))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", "production-identity-review-required")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(1))
+                .andExpect(jsonPath("$.data.failedRows").value(0))
+                .andExpect(jsonPath("$.data.warningRows").value(1));
+
+        assertThat(jdbc.sql("""
+                SELECT state_code FROM platform.business_import_draft
+                WHERE sample_name='待核验重名样本' ORDER BY created_at DESC LIMIT 1
+                """).query(String.class).single()).isEqualTo("DRAFT");
+        assertThat(jdbc.sql("""
+                SELECT warning_code FROM platform.import_row_result
+                WHERE warning_code='SAMPLE_IDENTITY_REVIEW_REQUIRED'
+                """).query(String.class).single()).isEqualTo("SAMPLE_IDENTITY_REVIEW_REQUIRED");
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM production.production_record
+                WHERE status_code='PENDING_REVIEW' AND record_id<>:record
+                """).param("record", record).query(Long.class).single()).isZero();
+    }
+
+    @Test
+    void rejectsAnIdenticalSameIdentityAndPeriodRowWithinOneWorkbook() throws Exception {
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
+                        .param("format", "xlsx").param("productCode", "CORN")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        List<String> labels = withoutTrailingBlanks(XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
+        BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, "PRODUCTION");
+        BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
+                "PRODUCTION", "产情", "CORN", null, context.contractVersion(), context.contractDigest(),
+                labels, labels, List.of());
+        List<String> row = sparse(labels, "样本点名称", "地区", "批内重复身份样本", "");
+        for (Map.Entry<String, String> value : completeProductionValues().entrySet()) {
+            row = withValue(row, labels, value.getKey(), value.getValue());
+        }
+
+        mvc.perform(multipart("/api/v1/imports/production")
+                        .file(new MockMultipartFile("file", "产情-批内重复.xlsx", XLSX,
+                                BusinessImportWorkbook.create(template, List.of(row, row))))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", "production-batch-local-duplicate")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(1))
+                .andExpect(jsonPath("$.data.failedRows").value(1));
+
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.business_import_draft")
+                .query(Long.class).single()).isOne();
         assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
+                .query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("""
+                SELECT error_code FROM platform.import_row_result
+                WHERE error_code='IMPORT_DUPLICATE_ROW'
+                """).query(String.class).single()).isEqualTo("IMPORT_DUPLICATE_ROW");
+    }
+
+    @Test
+    void supplementsMissingPhotosAgainstOriginalImportedRecordsWithoutCreatingBusinessDuplicates() throws Exception {
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
+                        .param("format", "xlsx").param("productCode", "CORN")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        List<String> labels = withoutTrailingBlanks(XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
+        BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, "PRODUCTION");
+        BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
+                "PRODUCTION", "产情", "CORN", null, context.contractVersion(), context.contractDigest(),
+                labels, labels, List.of());
+        List<String> imported = sparse(labels, "样本点名称", "地区", "照片补充成功样本", "成功现场.png");
+        List<String> rejected = sparse(labels, "样本点名称", "地区", "照片补充失败样本", "失败现场.png");
+        for (Map.Entry<String, String> value : completeProductionValues().entrySet()) {
+            imported = withValue(imported, labels, value.getKey(), value.getValue());
+            rejected = withValue(rejected, labels, value.getKey(), value.getValue());
+        }
+        rejected = withValue(rejected, labels, "纬度（度）", "95");
+
+        String importResponse = mvc.perform(multipart("/api/v1/imports/production")
+                        .file(new MockMultipartFile("file", "产情-玉米-照片补充.xlsx", XLSX,
+                                BusinessImportWorkbook.create(template, List.of(imported, rejected))))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", "production-photo-supplement")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(1))
+                .andExpect(jsonPath("$.data.failedRows").value(1))
+                .andReturn().getResponse().getContentAsString();
+        String jobId = importResponse.replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+        Map<String, Object> before = jdbc.sql("""
+                SELECT record_id,version,status_code FROM production.production_record
+                """).query().singleRow();
+
+        mvc.perform(get("/api/v1/imports/production/{jobId}/photo-manifest", jobId)
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalFileCount").value(2))
+                .andExpect(jsonPath("$.data.eligibleFileCount").value(1))
+                .andExpect(jsonPath("$.data.deferredFileCount").value(1))
+                .andExpect(jsonPath("$.data.totalTargetAttachments").value(1))
+                .andExpect(jsonPath("$.data.attachedTargetAttachments").value(0));
+
+        mvc.perform(multipart("/api/v1/imports/production/{jobId}/photos", jobId)
+                        .file(new MockMultipartFile("file", "成功现场.png", "image/png", pngBytes()))
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.statusCode").value("ATTACHED"))
+                .andExpect(jsonPath("$.data.targetRecords").value(1))
+                .andExpect(jsonPath("$.data.newAttachments").value(1))
+                .andExpect(jsonPath("$.data.alreadyAttached").value(0));
+
+        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
+                .query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("SELECT count(*) FROM evidence.evidence_photo WHERE state_code='ATTACHED'")
+                .query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.import_job_photo")
                 .query(Long.class).single()).isZero();
+        Map<String, Object> after = jdbc.sql("""
+                SELECT record_id,version,status_code FROM production.production_record
+                """).query().singleRow();
+        assertThat(after).isEqualTo(before);
+
+        mvc.perform(get("/api/v1/production-records/{id}", before.get("record_id"))
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.evidencePhotos.length()").value(1))
+                .andExpect(jsonPath("$.data.evidencePhotos[0].originalFilename").value("成功现场.png"));
+
+        mvc.perform(multipart("/api/v1/imports/production/{jobId}/photos", jobId)
+                        .file(new MockMultipartFile("file", "成功现场.png", "image/png", pngBytes()))
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.statusCode").value("ALREADY_ATTACHED"))
+                .andExpect(jsonPath("$.data.newAttachments").value(0))
+                .andExpect(jsonPath("$.data.alreadyAttached").value(1));
+
+        mvc.perform(multipart("/api/v1/imports/production/{jobId}/photos", jobId)
+                        .file(new MockMultipartFile("file", "失败现场.png", "image/png", pngBytes()))
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.statusCode").value("DEFERRED_NO_RECORD"))
+                .andExpect(jsonPath("$.data.failedRows").value(1));
+        assertThat(jdbc.sql("SELECT count(*) FROM evidence.evidence_photo")
+                .query(Long.class).single()).isOne();
+
+        mvc.perform(get("/api/v1/imports/production/{jobId}/photo-manifest", jobId)
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("IMPORT_PHOTO_SUPPLEMENT_NOT_ALLOWED"));
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type='IMPORT_JOB' AND aggregate_id=:job
+                  AND action_code='IMPORT_PHOTO_SUPPLEMENTED'
+                """).param("job", jobId).query(Long.class).single()).isOne();
+    }
+
+    @Test
+    void rejectsInvalidMarketMonthWithoutLeavingAVisibleDraftOrFormalRecord() throws Exception {
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/market/template")
+                        .param("format", "xlsx").param("productCode", "RICE")
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        List<String> labels = withoutTrailingBlanks(XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
+        BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, "MARKET");
+        BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
+                "MARKET", "市场", "RICE", null, context.contractVersion(), context.contractDigest(),
+                labels, labels, List.of());
+        List<String> row = sparse(labels, "样本点名称", "地区", "月份越界市场样本", "");
+        for (Map.Entry<String, String> value : completeMarketValues().entrySet()) {
+            row = withValue(row, labels, value.getKey(), value.getValue());
+        }
+        row = withValue(row, labels, "数据月份", "13");
+
+        mvc.perform(multipart("/api/v1/imports/market")
+                        .file(new MockMultipartFile("file", "市场-稻谷-批量导入模板.xlsx", XLSX,
+                                BusinessImportWorkbook.create(template, List.of(row))))
+                        .param("productCode", "RICE")
+                        .header("Idempotency-Key", "invalid-market-month")
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(0))
+                .andExpect(jsonPath("$.data.failedRows").value(1));
+
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.business_import_draft")
+                .query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM market.market_record")
+                .query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.import_row_result
+                WHERE outcome_code='ERROR' AND error_message LIKE '%月份%1%12%'
+                """).query(Long.class).single()).isOne();
+    }
+
+    @Test
+    void retriesOnlyTheFailedRowsFromAGovernedProductionWorkbook() throws Exception {
+        assertGovernedRetryOnlyReplaysFailedRow(
+                "production", "PRODUCTION", "产情", "production-tester",
+                "样本点名称", completeProductionValues(), "数据年份", "2201",
+                "governed-production-retry", "production.production_record", "INVALID_IMPORT_YEAR");
+    }
+
+    @Test
+    void retriesOnlyTheFailedRowsFromAGovernedMarketWorkbook() throws Exception {
+        assertGovernedRetryOnlyReplaysFailedRow(
+                "market", "MARKET", "市场", "market-tester",
+                "样本点名称", completeMarketValues(), "数据月份", "13",
+                "governed-market-retry", "market.market_record", "INVALID_IMPORT_MONTH");
+    }
+
+    @Test
+    void retriesOnlyTheFailedRowsFromAGovernedLogisticsWorkbook() throws Exception {
+        assertGovernedRetryOnlyReplaysFailedRow(
+                "logistics", "LOGISTICS", "物流", "logistics-tester",
+                "物流样本点名称", completeLogisticsValues(), "运输方式", "航空",
+                "governed-logistics-retry", "logistics.route_event", "IMPORT_VALUE_FORMAT_INVALID");
+    }
+
+    @Test
+    void retriesLegacyGovernedSourceThatDoesNotContainAPhotoJobId() throws Exception {
+        assertGovernedRetryOnlyReplaysFailedRow(
+                "production", "PRODUCTION", "产情", "production-tester",
+                "样本点名称", completeProductionValues(), "数据年份", "2201",
+                "legacy-governed-production-retry", "production.production_record",
+                "INVALID_IMPORT_YEAR", true);
+    }
+
+    @Test
+    void batchApprovalPublishesEveryImportedRowInTheSelectedScope() throws Exception {
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
+                        .param("format", "xlsx").param("productCode", "CORN")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        List<String> labels = withoutTrailingBlanks(XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
+        BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, "PRODUCTION");
+        BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
+                "PRODUCTION", "产情", "CORN", null, context.contractVersion(), context.contractDigest(),
+                labels, labels, List.of());
+        List<String> first = sparse(labels, "样本点名称", "地区", "一键审核产情样本一", "");
+        List<String> second = sparse(labels, "样本点名称", "地区", "一键审核产情样本二", "");
+        for (Map.Entry<String, String> value : completeProductionValues().entrySet()) {
+            first = withValue(first, labels, value.getKey(), value.getValue());
+            second = withValue(second, labels, value.getKey(), value.getValue());
+        }
+        first = withValue(first, labels, "纬度（度）", "47.501001");
+        first = withValue(first, labels, "经度（度）", "123.601001");
+        second = withValue(second, labels, "纬度（度）", "47.501002");
+        second = withValue(second, labels, "经度（度）", "123.601002");
+
+        mvc.perform(multipart("/api/v1/imports/production")
+                        .file(new MockMultipartFile("file", "产情-玉米-批量导入模板.xlsx", XLSX,
+                                BusinessImportWorkbook.create(template, List.of(first, second))))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", "batch-review-corn")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(2));
+
+        mvc.perform(post("/api/v1/work-items/batch-approve")
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"domain\":\"PRODUCTION\",\"productCode\":\"CORN\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.requestedCount").value(2))
+                .andExpect(jsonPath("$.data.approvedCount").value(2))
+                .andExpect(jsonPath("$.data.failedCount").value(0));
+
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM production.production_record
+                WHERE product_code='CORN' AND status_code='APPROVED'
+                """).query(Long.class).single()).isEqualTo(2);
+        mvc.perform(get("/api/v1/overview/dashboard")
+                        .param("productCode", "CORN").param("regionCode", "230208")
+                        .param("year", "2026").principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].value")
+                        .value(org.hamcrest.Matchers.hasItem("200")));
+    }
+
+    @Test
+    void batchApprovalPublishesImportedMarketInventoryWithoutHiddenGovernance() throws Exception {
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/market/template")
+                        .param("format", "xlsx").param("productCode", "CORN")
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        List<String> labels = withoutTrailingBlanks(XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
+        BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, "MARKET");
+        BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
+                "MARKET", "市场", "CORN", null, context.contractVersion(), context.contractDigest(),
+                labels, labels, List.of());
+        List<String> first = sparse(labels, "样本点名称", "地区", "一键审核市场样本一", "");
+        List<String> second = sparse(labels, "样本点名称", "地区", "一键审核市场样本二", "");
+        for (Map.Entry<String, String> value : completeMarketValues().entrySet()) {
+            first = withValue(first, labels, value.getKey(), value.getValue());
+            second = withValue(second, labels, value.getKey(), value.getValue());
+        }
+        first = withValue(first, labels, "纬度（度）", "47.7256536");
+        first = withValue(first, labels, "经度（度）", "124.0361733");
+        second = withValue(second, labels, "纬度（度）", "47.5329964");
+        second = withValue(second, labels, "经度（度）", "123.6450040");
+        first = withValue(first, labels, "现有库存（吨）", "20");
+        second = withValue(second, labels, "样本点联系方式", "13900000001");
+        second = withValue(second, labels, "现有库存（吨）", "30");
+
+        mvc.perform(multipart("/api/v1/imports/market")
+                        .file(new MockMultipartFile("file", "市场-玉米-批量导入模板.xlsx", XLSX,
+                                BusinessImportWorkbook.create(template, List.of(first, second))))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", "batch-review-market-inventory")
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(2))
+                .andExpect(jsonPath("$.data.failedRows").value(0));
+
+        mvc.perform(post("/api/v1/work-items/batch-approve")
+                        .principal(() -> "production-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"domain\":\"MARKET\",\"productCode\":\"CORN\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.requestedCount").value(2))
+                .andExpect(jsonPath("$.data.approvedCount").value(2))
+                .andExpect(jsonPath("$.data.failedCount").value(0));
+
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM market.market_record
+                WHERE product_code='CORN' AND status_code='APPROVED'
+                """).query(Long.class).single()).isEqualTo(2);
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM market.market_record
+                WHERE product_code='CORN' AND status_code='APPROVED' AND sample_point_id IS NOT NULL
+                """).query(Long.class).single()).isEqualTo(2);
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM overview.approved_sample_point_source
+                WHERE source_domain='MARKET' AND product_code='CORN'
+                """).query(Long.class).single()).isEqualTo(2);
+        assertThat(jdbc.sql("SELECT count(*) FROM market.market_inventory_governance")
+                .query(Long.class).single()).isZero();
+    }
+
+    @Test
+    void oneProductionSampleAcrossProductsUsesOneMapPointAndKeepsBothProductRecordsEffective()
+            throws Exception {
+        String corn = importSubmitAndApprove("CORN", "production", "PRODUCTION", "产情",
+                "production-tester", "market-tester", "production-records", "跨品种产情样本",
+                "样本点名称", completeProductionValues());
+        String soybean = importSubmitAndApprove("SOYBEAN", "production", "PRODUCTION", "产情",
+                "production-tester", "market-tester", "production-records", "跨品种产情样本",
+                "样本点名称", completeProductionValues());
+
+        assertThat(jdbc.sql("""
+                SELECT count(DISTINCT sample_point_id) FROM production.production_record
+                WHERE record_id IN (:corn,:soybean) AND sample_point_id IS NOT NULL
+                """).param("corn", corn).param("soybean", soybean)
+                .query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("""
+                SELECT count(DISTINCT business_identity)
+                FROM production.production_record_business_identity
+                WHERE record_id IN (:corn,:soybean)
+                """).param("corn", corn).param("soybean", soybean)
+                .query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM production.effective_approved_production_record
+                WHERE record_id IN (:corn,:soybean)
+                """).param("corn", corn).param("soybean", soybean)
+                .query(Long.class).single()).isEqualTo(2);
+    }
+
+    @Test
+    void oneMarketSampleAcrossProductsUsesOneMapPointAndKeepsBothProductRecordsEffective()
+            throws Exception {
+        String corn = importSubmitAndApprove("CORN", "market", "MARKET", "市场",
+                "market-tester", "production-tester", "market-records", "跨品种市场样本",
+                "样本点名称", completeMarketValues());
+        String soybean = importSubmitAndApprove("SOYBEAN", "market", "MARKET", "市场",
+                "market-tester", "production-tester", "market-records", "跨品种市场样本",
+                "样本点名称", completeMarketValues());
+
+        assertThat(jdbc.sql("""
+                SELECT count(DISTINCT sample_point_id) FROM market.market_record
+                WHERE record_id IN (:corn,:soybean) AND sample_point_id IS NOT NULL
+                """).param("corn", corn).param("soybean", soybean)
+                .query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("""
+                SELECT count(DISTINCT business_identity)
+                FROM market.market_record_business_identity
+                WHERE record_id IN (:corn,:soybean)
+                """).param("corn", corn).param("soybean", soybean)
+                .query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM market.effective_approved_market_record
+                WHERE record_id IN (:corn,:soybean)
+                """).param("corn", corn).param("soybean", soybean)
+                .query(Long.class).single()).isEqualTo(2);
+    }
+
+    @Test
+    void visibleEndingInventoryFeedsRegionSurplusWithoutHiddenGovernance() throws Exception {
+        Map<String, String> production = new LinkedHashMap<>(completeProductionValues());
+        production.put("期末余粮（吨）", "5");
+        importSubmitAndApprove("CORN", "production", "PRODUCTION", "产情",
+                "production-tester", "market-tester", "production-records", "余粮产情样本",
+                "样本点名称", production);
+
+        Map<String, String> market = new LinkedHashMap<>(completeMarketValues());
+        market.put("样本点联系方式", "13900000001");
+        market.put("纬度（度）", "47.600000");
+        market.put("经度（度）", "123.900000");
+        market.put("现有库存（吨）", "20");
+        importSubmitAndApprove("CORN", "market", "MARKET", "市场",
+                "market-tester", "production-tester", "market-records", "余粮市场样本",
+                "样本点名称", market);
+
+        mvc.perform(get("/api/v1/overview/dashboard")
+                        .param("productCode", "CORN").param("regionCode", "230208")
+                        .param("year", "2026").principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].value")
+                        .value(org.hamcrest.Matchers.hasItem("25")))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].coverageStatus")
+                        .value(org.hamcrest.Matchers.hasItem("AVAILABLE")));
     }
 
     @Test
@@ -175,19 +951,19 @@ class GovernedProductWorkbookImportIntegrationTest {
                 "production-tester", "market-tester", "production-records", "正式产情样本",
                 "样本点名称", Map.ofEntries(
                         Map.entry("样本点类型", "农户"), Map.entry("数据年份", "2026"),
-                        Map.entry("填报人联系方式", "13800000000"),
+                        Map.entry("调研人", "王雷"), Map.entry("调研人联系方式", "13800000000"),
                         Map.entry("样本点联系方式", "13900000000"),
-                        Map.entry("纬度（度）", "47.354300"), Map.entry("经度（度）", "123.918200"),
+                        Map.entry("纬度（度）", "47.550000"), Map.entry("经度（度）", "123.800000"),
                         Map.entry("播种面积（亩）", "100"),
                         Map.entry("预计单产（公斤/亩）", "500")));
         String marketRecord = importSubmitAndApprove("market", "MARKET", "市场",
                 "market-tester", "production-tester", "market-records", "正式市场样本",
                 "样本点名称", Map.ofEntries(
-                        Map.entry("对象类型", "贸易商"), Map.entry("数据年份", "2026"),
+                        Map.entry("样本点类型", "贸易商"), Map.entry("数据年份", "2026"),
                         Map.entry("数据月份", "8"),
-                        Map.entry("填报人联系方式", "13800000000"),
+                        Map.entry("调研人", "王雷"), Map.entry("调研人联系方式", "13800000000"),
                         Map.entry("样本点联系方式", "13900000000"),
-                        Map.entry("纬度（度）", "47.354300"), Map.entry("经度（度）", "123.918200"),
+                        Map.entry("纬度（度）", "47.550000"), Map.entry("经度（度）", "123.800000"),
                         Map.entry("采集对象收购价格（元/吨）", "2300"),
                         Map.entry("采集对象销售价格（元/吨）", "2380"),
                         Map.entry("车板组成（元/吨）", "36"),
@@ -196,9 +972,9 @@ class GovernedProductWorkbookImportIntegrationTest {
                 "logistics-tester", "production-tester", "logistics-records", "正式物流样本",
                 "物流样本点名称", Map.ofEntries(
                         Map.entry("数据年份", "2026"), Map.entry("数据月份", "8"),
-                        Map.entry("填报人联系方式", "13800000000"),
+                        Map.entry("调研人", "王雷"), Map.entry("调研人联系方式", "13800000000"),
                         Map.entry("物流样本点联系方式", "13900000000"),
-                        Map.entry("纬度（度）", "47.354300"), Map.entry("经度（度）", "123.918200"),
+                        Map.entry("纬度（度）", "47.550000"), Map.entry("经度（度）", "123.800000"),
                         Map.entry("运输方式", "铁路"), Map.entry("运输方向", "流入"),
                         Map.entry("运输数量（吨）", "12.5000"),
                         Map.entry("物流运价（不含车板价）（元/吨）", "80.2500"),
@@ -292,6 +1068,101 @@ class GovernedProductWorkbookImportIntegrationTest {
                 .query(Long.class).single()).isEqualTo(3);
     }
 
+    private void assertGovernedRetryOnlyReplaysFailedRow(
+            String route, String domainCode, String domainLabel, String principal,
+            String sampleLabel, Map<String, String> completeValues,
+            String invalidLabel, String invalidValue, String key,
+            String formalTable, String expectedErrorCode) throws Exception {
+        assertGovernedRetryOnlyReplaysFailedRow(route, domainCode, domainLabel, principal,
+                sampleLabel, completeValues, invalidLabel, invalidValue, key,
+                formalTable, expectedErrorCode, false);
+    }
+
+    private void assertGovernedRetryOnlyReplaysFailedRow(
+            String route, String domainCode, String domainLabel, String principal,
+            String sampleLabel, Map<String, String> completeValues,
+            String invalidLabel, String invalidValue, String key,
+            String formalTable, String expectedErrorCode, boolean simulateLegacySource) throws Exception {
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/" + route + "/template")
+                        .param("format", "xlsx").param("productCode", "CORN")
+                        .principal(() -> principal))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        List<String> labels = withoutTrailingBlanks(XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
+        BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, domainCode);
+        BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
+                domainCode, domainLabel, "CORN", null, context.contractVersion(), context.contractDigest(),
+                labels, labels, List.of());
+        List<String> valid = sparse(labels, sampleLabel, "地区", domainLabel + "有效重试样本", "");
+        List<String> invalid = sparse(labels, sampleLabel, "地区", domainLabel + "无效重试样本", "");
+        for (Map.Entry<String, String> value : completeValues.entrySet()) {
+            valid = withValue(valid, labels, value.getKey(), value.getValue());
+            invalid = withValue(invalid, labels, value.getKey(), value.getValue());
+        }
+        invalid = withValue(invalid, labels, invalidLabel, invalidValue);
+
+        mvc.perform(multipart("/api/v1/imports/" + route)
+                        .file(new MockMultipartFile("file", domainLabel + "-玉米-批量导入模板.xlsx", XLSX,
+                                BusinessImportWorkbook.create(template, List.of(valid, invalid))))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", key).principal(() -> principal))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(1))
+                .andExpect(jsonPath("$.data.failedRows").value(1));
+
+        String originalJobId = jdbc.sql("""
+                SELECT import_job_id::text FROM platform.import_job WHERE idempotency_key=:key
+                """).param("key", key).query(String.class).single();
+        String errorReceipt = mvc.perform(get("/api/v1/imports/" + route + "/{id}/errors", originalJobId)
+                        .principal(() -> principal))
+                .andExpect(status().isOk()).andReturn().getResponse()
+                .getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(errorReceipt).contains("errorCode,errorMessage", expectedErrorCode)
+                .doesNotContain("Exception");
+
+        if (simulateLegacySource) {
+            String prefix = "GOVERNED-DRAFT-V1:";
+            String source = jdbc.sql("""
+                    SELECT source_content FROM platform.import_job WHERE import_job_id=:id
+                    """).param("id", java.util.UUID.fromString(originalJobId)).query(String.class).single();
+            String sourceJson = new String(java.util.Base64.getDecoder().decode(source.substring(prefix.length())),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            String legacyJson = sourceJson.replaceFirst(
+                    ",\\\"photoJobId\\\":\\\"[^\\\"]+\\\"", "");
+            assertThat(legacyJson).isNotEqualTo(sourceJson).doesNotContain("\"photoJobId\"");
+            String legacySource = prefix + java.util.Base64.getEncoder().encodeToString(
+                    legacyJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            jdbc.sql("""
+                    UPDATE platform.import_job SET source_content=:source WHERE import_job_id=:id
+                    """).param("source", legacySource).param("id", java.util.UUID.fromString(originalJobId))
+                    .update();
+        }
+
+        mvc.perform(post("/api/v1/imports/" + route + "/{id}/retries", originalJobId)
+                        .principal(() -> principal))
+                .andExpect(status().is2xxSuccessful())
+                .andExpect(jsonPath("$.data.retryOf").value(originalJobId))
+                .andExpect(jsonPath("$.data.importedRows").value(0))
+                .andExpect(jsonPath("$.data.failedRows").value(1));
+
+        if (simulateLegacySource) {
+            String migratedSource = jdbc.sql("""
+                    SELECT source_content FROM platform.import_job
+                    WHERE retry_of_import_job_id=:id
+                    """).param("id", java.util.UUID.fromString(originalJobId)).query(String.class).single();
+            String migratedJson = new String(java.util.Base64.getDecoder().decode(
+                    migratedSource.substring("GOVERNED-DRAFT-V1:".length())),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            assertThat(migratedJson).contains("\"photoJobId\":\"" + originalJobId + "\"");
+        }
+
+        assertThat(jdbc.sql("SELECT count(*) FROM " + formalTable).query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_import_draft WHERE state_code='PROMOTED'
+                """).query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.import_job").query(Long.class).single())
+                .isEqualTo(2);
+    }
+
     private String importSubmitAndApprove(String route, String domainCode, String domainLabel,
             String operator, String reviewer, String canonicalRoute, String sampleName,
             String sampleLabel, Map<String, String> supplied) throws Exception {
@@ -314,6 +1185,11 @@ class GovernedProductWorkbookImportIntegrationTest {
         for (Map.Entry<String, String> value : supplied.entrySet()) {
             row = withValue(row, labels, value.getKey(), value.getValue());
         }
+        if ("47.550000".equals(supplied.get("纬度（度）"))
+                && "123.800000".equals(supplied.get("经度（度）"))) {
+            row = withValue(row, labels, "纬度（度）", fixtureLatitude(sampleName));
+            row = withValue(row, labels, "经度（度）", fixtureLongitude(sampleName));
+        }
         mvc.perform(multipart("/api/v1/imports/" + route)
                         .file(new MockMultipartFile("file", domainLabel + "-"
                                 + BusinessImportWorkbook.businessLabel(productCode) + "-批量导入模板.xlsx", XLSX,
@@ -324,14 +1200,12 @@ class GovernedProductWorkbookImportIntegrationTest {
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.data.importedRows").value(1));
         String draftId = jdbc.sql("""
                 SELECT import_draft_id::text FROM platform.business_import_draft
-                WHERE domain_code=:domain AND sample_name=:sample
-                """).param("domain", domainCode).param("sample", sampleName).query(String.class).single();
-        mvc.perform(post("/api/v1/import-drafts/{id}/submit", draftId).principal(() -> operator))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.stateCode").value("PROMOTED"))
-                .andExpect(jsonPath("$.data.canonicalRecordId").isNotEmpty());
+                WHERE domain_code=:domain AND product_code=:product AND sample_name=:sample
+                """).param("domain", domainCode).param("product", productCode)
+                .param("sample", sampleName).query(String.class).single();
         String recordId = jdbc.sql("""
-                SELECT canonical_record_id FROM platform.business_import_draft WHERE import_draft_id=:id
+                SELECT canonical_record_id FROM platform.business_import_draft
+                WHERE import_draft_id=:id AND state_code='PROMOTED'
                 """).param("id", java.util.UUID.fromString(draftId)).query(String.class).single();
         mvc.perform(post("/api/v1/" + canonicalRoute + "/{id}/approve", recordId)
                         .principal(() -> reviewer).contentType(MediaType.APPLICATION_JSON)
@@ -343,18 +1217,19 @@ class GovernedProductWorkbookImportIntegrationTest {
     private static Map<String, String> completeProductionValues() {
         return Map.ofEntries(
                 Map.entry("样本点类型", "农户"), Map.entry("数据年份", "2026"),
-                Map.entry("填报人联系方式", "13800000000"),
+                Map.entry("调研人", "王雷"), Map.entry("调研人联系方式", "13800000000"),
                 Map.entry("样本点联系方式", "13900000000"),
-                Map.entry("纬度（度）", "47.354300"), Map.entry("经度（度）", "123.918200"),
+                Map.entry("纬度（度）", "47.550000"), Map.entry("经度（度）", "123.800000"),
                 Map.entry("播种面积（亩）", "100"), Map.entry("预计单产（公斤/亩）", "500"));
     }
 
     private static Map<String, String> completeMarketValues() {
         return Map.ofEntries(
-                Map.entry("对象类型", "贸易商"), Map.entry("数据年份", "2026"),
-                Map.entry("数据月份", "8"), Map.entry("填报人联系方式", "13800000000"),
+                Map.entry("样本点类型", "贸易商"), Map.entry("数据年份", "2026"),
+                Map.entry("数据月份", "8"), Map.entry("调研人", "王雷"),
+                Map.entry("调研人联系方式", "13800000000"),
                 Map.entry("样本点联系方式", "13900000000"),
-                Map.entry("纬度（度）", "47.354300"), Map.entry("经度（度）", "123.918200"),
+                Map.entry("纬度（度）", "47.550000"), Map.entry("经度（度）", "123.800000"),
                 Map.entry("采集对象收购价格（元/吨）", "2300"),
                 Map.entry("采集对象销售价格（元/吨）", "2380"),
                 Map.entry("车板组成（元/吨）", "36"), Map.entry("包装形态", "散粮"),
@@ -364,13 +1239,34 @@ class GovernedProductWorkbookImportIntegrationTest {
     private static Map<String, String> completeLogisticsValues() {
         return Map.ofEntries(
                 Map.entry("数据年份", "2026"), Map.entry("数据月份", "8"),
-                Map.entry("填报人联系方式", "13800000000"),
+                Map.entry("调研人", "王雷"), Map.entry("调研人联系方式", "13800000000"),
                 Map.entry("物流样本点联系方式", "13900000000"),
-                Map.entry("纬度（度）", "47.354300"), Map.entry("经度（度）", "123.918200"),
+                Map.entry("纬度（度）", "47.550000"), Map.entry("经度（度）", "123.800000"),
                 Map.entry("运输方式", "铁路"), Map.entry("运输方向", "流入"),
                 Map.entry("运输数量（吨）", "12.5000"),
                 Map.entry("物流运价（不含车板价）（元/吨）", "80.2500"),
                 Map.entry("车板价（元/吨）", "2650.0000"));
+    }
+
+    private static String fixtureLatitude(String sampleName) {
+        long hash = Integer.toUnsignedLong(sampleName.hashCode());
+        return String.format(Locale.ROOT, "%.6f", 47.42 + ((hash / 60_000) % 60_000) / 1_000_000d);
+    }
+
+    private static String fixtureLongitude(String sampleName) {
+        long hash = Integer.toUnsignedLong(sampleName.hashCode());
+        return String.format(Locale.ROOT, "%.6f", 123.52 + (hash % 60_000) / 1_000_000d);
+    }
+
+    private static byte[] pngBytes() throws Exception {
+        BufferedImage image = new BufferedImage(320, 180, BufferedImage.TYPE_INT_RGB);
+        var graphics = image.createGraphics();
+        graphics.setColor(new Color(40, 120, 80));
+        graphics.fillRect(0, 0, image.getWidth(), image.getHeight());
+        graphics.dispose();
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        javax.imageio.ImageIO.write(image, "png", output);
+        return output.toByteArray();
     }
 
     private void importTwoRows(String route, String domainCode, String domainLabel, String principal,
@@ -396,18 +1292,18 @@ class GovernedProductWorkbookImportIntegrationTest {
                         .file(file).file(invalidPhoto).param("productCode", "RICE")
                         .header("Idempotency-Key", key).principal(() -> principal))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.importedRows").value(2))
-                .andExpect(jsonPath("$.data.failedRows").value(0))
-                .andExpect(jsonPath("$.data.warningRows").value(1));
+                .andExpect(jsonPath("$.data.importedRows").value(0))
+                .andExpect(jsonPath("$.data.failedRows").value(2));
 
         mvc.perform(multipart("/api/v1/imports/" + route)
-                        .file(file).file(invalidPhoto).param("productCode", "RICE")
-                        .header("Idempotency-Key", key).principal(() -> principal))
+                .file(file).file(invalidPhoto).param("productCode", "RICE")
+                .header("Idempotency-Key", key).principal(() -> principal))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.importedRows").value(2));
+                .andExpect(jsonPath("$.data.importedRows").value(0))
+                .andExpect(jsonPath("$.data.failedRows").value(2));
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM platform.business_import_draft WHERE domain_code=:domain
-                """).param("domain", domainCode).query(Long.class).single()).isEqualTo(2);
+                """).param("domain", domainCode).query(Long.class).single()).isZero();
     }
 
     private void importOnePublicWorkbookWithLegacyObjectTypeParameter(
@@ -423,6 +1319,13 @@ class GovernedProductWorkbookImportIntegrationTest {
                 domainCode, domainLabel, "CORN", null, context.contractVersion(), context.contractDigest(),
                 labels, labels, List.of());
         List<String> row = sparse(labels, sampleLabel, "地区", sampleName, "");
+        Map<String, String> supplied = "PRODUCTION".equals(domainCode)
+                ? completeProductionValues() : completeMarketValues();
+        for (Map.Entry<String, String> value : supplied.entrySet()) {
+            if (!"样本点类型".equals(value.getKey())) {
+                row = withValue(row, labels, value.getKey(), value.getValue());
+            }
+        }
 
         mvc.perform(multipart("/api/v1/imports/" + route)
                         .file(new MockMultipartFile("file", domainLabel + "-玉米-批量导入模板.xlsx", XLSX,

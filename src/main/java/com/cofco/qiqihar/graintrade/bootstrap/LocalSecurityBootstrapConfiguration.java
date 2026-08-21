@@ -25,26 +25,14 @@ public class LocalSecurityBootstrapConfiguration {
                     WHERE work_unit_code = 'LOCAL_DEV'
                     """).update();
             jdbc.sql("""
-                    WITH preferred AS (
-                        SELECT scope.region_code
-                        FROM platform.monitoring_scope_region scope
-                        JOIN platform.region region ON region.code=scope.region_code
-                        WHERE scope.scope_code='FORMAL_BUSINESS' AND scope.included
-                          AND region.administrative_level='TOWNSHIP'
-                    ), eligible AS (
-                        SELECT region_code FROM preferred
-                        UNION ALL
-                        SELECT scope.region_code
-                        FROM platform.monitoring_scope_region scope
-                        WHERE scope.scope_code='FORMAL_BUSINESS' AND scope.included
-                          AND NOT EXISTS (SELECT 1 FROM preferred)
-                    )
                     INSERT INTO platform.work_unit_region_scope(work_unit_code, region_code)
-                    SELECT 'LOCAL_DEV', region_code FROM eligible
+                    SELECT 'LOCAL_DEV', code
+                    FROM platform.region
+                    WHERE administrative_level='PREFECTURE'
                     """).update();
             jdbc.sql("""
                     INSERT INTO platform.security_user(subject_id, display_name, work_unit_code)
-                    VALUES ('wang-yang', '王洋', 'LOCAL_DEV')
+                    VALUES ('wang-yang', '吴雨桐', 'LOCAL_DEV')
                     ON CONFLICT (subject_id) DO UPDATE
                     SET display_name = EXCLUDED.display_name,
                         work_unit_code = EXCLUDED.work_unit_code,
@@ -53,6 +41,11 @@ public class LocalSecurityBootstrapConfiguration {
             jdbc.sql("""
                     INSERT INTO platform.security_user_role(subject_id, role_code)
                     VALUES ('wang-yang', 'SYSTEM_ADMIN')
+                    ON CONFLICT DO NOTHING
+                    """).update();
+            jdbc.sql("""
+                    INSERT INTO platform.security_user_role(subject_id, role_code)
+                    VALUES ('wang-yang', 'ACCOUNT_OWNER')
                     ON CONFLICT DO NOTHING
                     """).update();
             jdbc.sql("""

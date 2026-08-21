@@ -100,12 +100,12 @@ class BusinessEventDeliveryIntegrationTest {
         CountDownLatch bothServicesReachedSink = new CountDownLatch(2);
         ConcurrentHashMap<UUID, Integer> sideEffects = new ConcurrentHashMap<>();
         BusinessEventDeliveryService.DeliverySink sink = event -> {
-            if (event.id().equals(POISON) && failPoisonOnce.compareAndSet(true, false)) {
-                throw new IllegalStateException("injected single-event delivery failure");
-            }
             if (bothServicesReachedSink.getCount() > 0) {
                 bothServicesReachedSink.countDown();
                 assertThat(bothServicesReachedSink.await(2, TimeUnit.SECONDS)).isTrue();
+            }
+            if (event.id().equals(POISON) && failPoisonOnce.compareAndSet(true, false)) {
+                throw new IllegalStateException("injected single-event delivery failure");
             }
             sideEffects.merge(event.id(), 1, Integer::sum);
         };

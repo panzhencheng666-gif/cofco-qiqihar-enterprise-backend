@@ -36,10 +36,12 @@ public class MarketImportService implements QueuedImportProcessor {
     private final BusinessImportLimits limits;
     private final BusinessImportTemplateCatalog templateCatalog;
     private final GovernedDraftImportService draftImports;
+    private final MarketReturnedCorrectionService returnedCorrections;
 
     public MarketImportService(ImportJobRepository jobs, MarketImportPort market,
             AccessControl access, BusinessAuditRecorder audit, Clock clock, BusinessImportLimits limits,
-            BusinessImportTemplateCatalog templateCatalog, GovernedDraftImportService draftImports) {
+            BusinessImportTemplateCatalog templateCatalog, GovernedDraftImportService draftImports,
+            MarketReturnedCorrectionService returnedCorrections) {
         this.jobs = jobs;
         this.market = market;
         this.access = access;
@@ -48,6 +50,7 @@ public class MarketImportService implements QueuedImportProcessor {
         this.limits = limits;
         this.templateCatalog = templateCatalog;
         this.draftImports = draftImports;
+        this.returnedCorrections = returnedCorrections;
     }
 
     public String template() { return MarketImportTemplate.csv(); }
@@ -70,13 +73,21 @@ public class MarketImportService implements QueuedImportProcessor {
     public ImportJobView importProductWorkbook(String idempotencyKey, String productCode,
             String filename, String mediaType, byte[] bytes,
             List<BusinessImportPhotoPackage.PhotoPart> photoParts) {
+        return importProductWorkbook(idempotencyKey, productCode, filename, mediaType, bytes, photoParts, null);
+    }
+
+    public ImportJobView importProductWorkbook(String idempotencyKey, String productCode,
+            String filename, String mediaType, byte[] bytes,
+            List<BusinessImportPhotoPackage.PhotoPart> photoParts, String fallbackObjectTypeCode) {
         try {
             var objectTypes = templateCatalog.objectTypes(MarketImportTemplate.DOMAIN, productCode);
             var definitions = objectTypes.stream()
                     .map(option -> market.definition(productCode, option.code())).toList();
             var template = MarketImportTemplate.productWorkbook(productCode, definitions, objectTypes);
             var sheet = com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook
-                    .readDraft(bytes, template, limits.maximumRows());
+                    .readDraft(bytes, template,
+                            MarketImportTemplate.compatiblePriorProductWorkbooks(template),
+                            limits.maximumRows());
             if (sheet.rows().isEmpty()) throw invalid();
             Map<String, String> objectTypeByLabel = objectTypes.stream().collect(
                     java.util.stream.Collectors.toMap(
@@ -91,9 +102,15 @@ public class MarketImportService implements QueuedImportProcessor {
                                     MarketImportDefinition.Option::label,
                                     MarketImportDefinition.Option::value)),
                             (left, right) -> left));
+            Map<String, String> packagingCodes = new LinkedHashMap<>(
+                    valueCodesByLabel.getOrDefault("MKT_PACKAGING_FORM", Map.of()));
+            packagingCodes.put("散装", "BULK");
+            packagingCodes.put("吨包", "BAGGED");
+            packagingCodes.put("编织袋", "BAGGED");
+            valueCodesByLabel.put("MKT_PACKAGING_FORM", Map.copyOf(packagingCodes));
             var rows = DraftWorkbookRows.map(sheet, template,
                     MarketImportTemplate.productCodes(productCode, definitions),
-                    "objectTypeCode", objectTypeByLabel, null,
+                    "objectTypeCode", objectTypeByLabel, fallbackObjectTypeCode,
                     valueCodesByLabel,
                     "MKT_SAMPLE_NAME", "MKT_REGION", java.util.Set.of("MKT_REPORTER_NAME"));
             return draftImports.submit(idempotencyKey, MarketImportTemplate.DOMAIN, "市场", productCode,
@@ -110,6 +127,7 @@ public class MarketImportService implements QueuedImportProcessor {
         SecurityPrincipal principal = access.require("BUSINESS_IMPORT", null);
         ImportJob job = jobs.findById(importJobId)
                 .filter(stored -> stored.job().domainCode().equals(MarketImportTemplate.DOMAIN))
+                .filter(stored -> !returnedCorrections.supports(stored.sourceContent()))
                 .orElseThrow(() -> new ClientRequestException("IMPORT_JOB_NOT_FOUND", "Import job does not exist"))
                 .job();
         if (!job.requestedBy().equals(principal.subjectId())) {
@@ -158,6 +176,7 @@ public class MarketImportService implements QueuedImportProcessor {
         SecurityPrincipal principal = access.require("BUSINESS_IMPORT", null);
         var prior = jobs.findById(importJobId)
                 .filter(stored -> stored.job().domainCode().equals(MarketImportTemplate.DOMAIN))
+                .filter(stored -> !returnedCorrections.supports(stored.sourceContent()))
                 .orElseThrow(() -> new ClientRequestException("IMPORT_JOB_NOT_FOUND", "Import job does not exist"));
         if (!prior.job().requestedBy().equals(principal.subjectId())) {
             throw new ConflictException("IMPORT_RETRY_NOT_ALLOWED", "Import job belongs to a different subject");
@@ -167,6 +186,9 @@ public class MarketImportService implements QueuedImportProcessor {
             return ImportJobView.from(jobs.queue(principal.subjectId(), MarketImportTemplate.DOMAIN, retryKey,
                     prior.job().contentSha256(), principal.workUnitCode(), prior.job().id(),
                     prior.sourceContent(), clock.instant()).stored().job());
+        }
+        if (draftImports.supports(prior.sourceContent())) {
+            return draftImports.retryFailedRows(prior, principal);
         }
         if (prior.job().failedRows() == 0) {
             throw new ConflictException("IMPORT_RETRY_NOT_AVAILABLE", "Import job has no failed rows to retry");
@@ -181,7 +203,7 @@ public class MarketImportService implements QueuedImportProcessor {
     @Transactional(readOnly = true)
     public ImportJobView status(UUID importJobId) {
         SecurityPrincipal principal = access.require("BUSINESS_IMPORT", null);
-        return ImportJobView.from(owned(importJobId, principal).job());
+        return ImportJobView.from(ownedOrdinary(importJobId, principal).job());
     }
 
     @Override public String domainCode() { return MarketImportTemplate.DOMAIN; }
@@ -193,9 +215,16 @@ public class MarketImportService implements QueuedImportProcessor {
         if (!"PROCESSING".equals(stored.job().statusCode())) {
             throw new ConflictException("IMPORT_JOB_NOT_PROCESSING", "Import job is not processing");
         }
+        if (returnedCorrections.supports(stored.sourceContent())) {
+            returnedCorrections.processQueued(stored, principal);
+            return;
+        }
         if (draftImports.supports(stored.sourceContent())) {
             draftImports.processQueued(stored, principal);
             return;
+        }
+        if (stored.sourceContent() != null && stored.sourceContent().startsWith("MARKET-")) {
+            throw new ClientRequestException("INVALID_IMPORT_TEMPLATE", "市场导入任务来源无效");
         }
         process(stored.job(), stored.job().idempotencyKey(), stored.sourceContent(),
                 stored.job().contentSha256(), stored.job().retryOf(), principal);
@@ -207,6 +236,15 @@ public class MarketImportService implements QueuedImportProcessor {
                 .orElseThrow(() -> new ClientRequestException("IMPORT_JOB_NOT_FOUND", "Import job does not exist"));
         if (!stored.job().requestedBy().equals(principal.subjectId())) {
             throw new ConflictException("IMPORT_JOB_NOT_ALLOWED", "Import job belongs to a different subject");
+        }
+        return stored;
+    }
+
+    private ImportJobRepository.StoredImportJob ownedOrdinary(
+            UUID jobId, SecurityPrincipal principal) {
+        ImportJobRepository.StoredImportJob stored = owned(jobId, principal);
+        if (returnedCorrections.supports(stored.sourceContent())) {
+            throw new ClientRequestException("IMPORT_JOB_NOT_FOUND", "Import job does not exist");
         }
         return stored;
     }
@@ -397,7 +435,8 @@ public class MarketImportService implements QueuedImportProcessor {
             core.put("MKT_PURCHASE_BASE_PRICE", value.get("purchaseBasePrice")); core.put("MKT_SALE_BASE_PRICE", value.get("saleBasePrice"));
             core.put("MKT_CARRIAGE_BOARD_AMOUNT", value.get("carriageBoardAmount")); core.put("MKT_PACKAGING_AMOUNT", value.get("packagingAmount"));
             core.put("MKT_FREIGHT_AMOUNT", value.get("freightAmount")); core.put("MKT_PACKAGING_FORM", value.get("packagingForm"));
-            core.put("MKT_REPORTER_NAME", value.get("reporterName")); core.put("MKT_REPORTER_PHONE", value.get("reporterPhone"));
+            core.put("MKT_REPORTER_NAME", value.get("reporterName"));
+            core.put("MKT_SURVEYOR_PHONE", value.get("reporterPhone"));
             core.put("MKT_SAMPLE_NAME", value.get("sampleName")); core.put("MKT_SAMPLE_CONTACT", value.get("sampleContact"));
             core.put("MKT_SAMPLE_LATITUDE", value.get("latitude")); core.put("MKT_SAMPLE_LONGITUDE", value.get("longitude"));
             Map<String, BigDecimal> facts = Map.of(

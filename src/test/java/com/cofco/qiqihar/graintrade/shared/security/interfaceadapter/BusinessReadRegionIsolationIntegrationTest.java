@@ -253,7 +253,10 @@ class BusinessReadRegionIsolationIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_INFLOW_VOLUME')].value")
                         .value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.nullValue())))
-                .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_INFLOW_VOLUME')].sourceCount").value(0));
+                .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_INFLOW_VOLUME')].sourceCount").value(0))
+                .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_OUTFLOW_VOLUME')].value")
+                        .value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.nullValue())))
+                .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_OUTFLOW_VOLUME')].sourceCount").value(0));
 
         mockMvc.perform(get("/api/v1/production-records")
                         .principal(() -> EMPTY_READER)

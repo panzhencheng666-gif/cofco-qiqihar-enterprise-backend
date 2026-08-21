@@ -48,13 +48,28 @@ class MarketImportRestIntegrationTest {
         jdbc = JdbcClient.create(dataSource);
         jdbc.sql("""
                 TRUNCATE platform.import_row_result,platform.import_job,platform.business_audit_event,
-                  market.market_record,evidence.evidence_photo RESTART IDENTITY CASCADE
+                  market.market_record,evidence.evidence_photo,registry.sample_point
+                  RESTART IDENTITY CASCADE
+                """).update();
+        jdbc.sql("""
+                INSERT INTO overview.administrative_boundary(
+                  region_code,geometry,source_name,source_url,source_revision,source_license,
+                  source_feature_id,source_effective_on,geometry_sha256)
+                VALUES('230200',ST_Multi(ST_MakeEnvelope(122,46,125,49,4326)),
+                  'market import sample-point fixture','urn:test:market-import-sample-point','test-v1',
+                  'Test fixture','230200',DATE '2026-08-18',repeat('8',64))
+                ON CONFLICT (region_code) DO UPDATE SET
+                  geometry=EXCLUDED.geometry,source_name=EXCLUDED.source_name,
+                  source_url=EXCLUDED.source_url,source_revision=EXCLUDED.source_revision,
+                  source_license=EXCLUDED.source_license,source_feature_id=EXCLUDED.source_feature_id,
+                  source_effective_on=EXCLUDED.source_effective_on,
+                  geometry_sha256=EXCLUDED.geometry_sha256
                 """).update();
     }
 
     @AfterEach
     void clean() {
-        jdbc.sql("TRUNCATE platform.import_row_result,platform.import_job,platform.business_audit_event,market.market_record,evidence.evidence_photo RESTART IDENTITY CASCADE").update();
+        jdbc.sql("TRUNCATE platform.import_row_result,platform.import_job,platform.business_audit_event,market.market_record,evidence.evidence_photo,registry.sample_point RESTART IDENTITY CASCADE").update();
     }
 
     @Test
@@ -76,6 +91,16 @@ class MarketImportRestIntegrationTest {
                         WHERE field_code='MKT_REPORTER_NAME'
                         """).query(String.class).single())
                 .isEqualTo("市场测试员");
+        assertThat(jdbc.sql("""
+                        SELECT value FROM market.market_record_core_value
+                        WHERE field_code='MKT_SURVEYOR_PHONE'
+                        """).query(String.class).single())
+                .isEqualTo("13800000000");
+        assertThat(jdbc.sql("""
+                        SELECT count(*) FROM market.market_record_core_value
+                        WHERE field_code='MKT_REPORTER_PHONE'
+                        """).query(Long.class).single())
+                .isZero();
         assertThat(jdbc.sql("SELECT attached_domain FROM evidence.evidence_photo WHERE photo_id=CAST(:id AS uuid)")
                         .param("id", photoId).query(String.class).single())
                 .isEqualTo("MARKET");
@@ -127,7 +152,8 @@ class MarketImportRestIntegrationTest {
         fields.put("MKT_PACKAGING_AMOUNT", "12");
         fields.put("MKT_FREIGHT_AMOUNT", "72");
         fields.put("MKT_PACKAGING_FORM", "BULK");
-        fields.put("MKT_REPORTER_PHONE", "13800000000");
+        fields.put("MKT_SURVEYOR_NAME", "王雷");
+        fields.put("MKT_SURVEYOR_PHONE", "13800000000");
         fields.put("MKT_SAMPLE_NAME", "齐齐哈尔第一粮店");
         fields.put("MKT_SAMPLE_CONTACT", "13900000000");
         fields.put("MKT_SAMPLE_LATITUDE", "47.3543");
@@ -141,14 +167,35 @@ class MarketImportRestIntegrationTest {
         byte[] workbook = BusinessImportWorkbook.create(
                 template, List.of(values));
 
-        mvc.perform(multipart("/api/v1/imports/market")
+        String importResponse = mvc.perform(multipart("/api/v1/imports/market")
                         .file(new MockMultipartFile("file", "market.xlsx",
                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                 workbook))
                         .param("productCode", "CORN").param("objectTypeCode", "FEED_MILL")
                         .header("Idempotency-Key", "market-xlsx-1").principal(() -> "market-tester"))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.importedRows").value(1));
+                .andExpect(jsonPath("$.data.importedRows").value(1))
+                .andReturn().getResponse().getContentAsString();
+        String importJobId = importResponse.replaceFirst(
+                "(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+
+        mvc.perform(get("/api/v1/imports/market")
+                        .param("pageNumber", "0").param("pageSize", "5")
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].id").value(importJobId))
+                .andExpect(jsonPath("$.data.items[0].domainCode").value("MARKET"))
+                .andExpect(jsonPath("$.data.items[0].importedRows").value(1))
+                .andExpect(jsonPath("$.data.items[0].failedRows").value(0));
+
+        mvc.perform(get("/api/v1/imports/market")
+                        .param("pageNumber", "0").param("pageSize", "5")
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items[0].id").value(importJobId));
 
         mvc.perform(get("/api/v1/market-records")
                         .queryParam("productCode", "CORN")
@@ -161,7 +208,7 @@ class MarketImportRestIntegrationTest {
     }
 
     @Test
-    void automaticallyMapsBusinessRegionToInternalStorageRegionForInventoryImports() throws Exception {
+    void importsPublicInventoryFieldsDirectlyIntoPendingReviewWithoutHiddenContracts() throws Exception {
         byte[] downloaded = mvc.perform(get("/api/v1/imports/market/template")
                         .param("format", "xlsx")
                         .param("productCode", "CORN")
@@ -180,7 +227,8 @@ class MarketImportRestIntegrationTest {
         fields.put("MKT_PACKAGING_AMOUNT", "12");
         fields.put("MKT_FREIGHT_AMOUNT", "72");
         fields.put("MKT_PACKAGING_FORM", "BULK");
-        fields.put("MKT_REPORTER_PHONE", "13800000000");
+        fields.put("MKT_SURVEYOR_NAME", "王雷");
+        fields.put("MKT_SURVEYOR_PHONE", "13800000000");
         fields.put("MKT_SAMPLE_NAME", "条件字段失败粮店");
         fields.put("MKT_SAMPLE_CONTACT", "13900000000");
         fields.put("MKT_SAMPLE_LATITUDE", "47.3543");
@@ -206,11 +254,20 @@ class MarketImportRestIntegrationTest {
         String recordId = jdbc.sql("SELECT record_id FROM market.market_record").query(String.class).single();
         mvc.perform(post("/api/v1/market-records/{id}/submit", recordId)
                         .principal(() -> "market-tester")
-                        .contentType(MediaType.APPLICATION_JSON).content("{\"version\":0}"))
+                .contentType(MediaType.APPLICATION_JSON).content("{\"version\":0}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.inventoryGovernanceStatus").value("待库存权属核定"))
+                .andExpect(jsonPath("$.data.inventoryGovernanceStatus").doesNotExist())
                 .andExpect(jsonPath("$.data.coreValues.MKT_STORAGE_REGION_CODE").doesNotExist())
                 .andExpect(jsonPath("$.data.coreValues.MKT_INVENTORY_HOLDER_CODE").doesNotExist());
+        mvc.perform(post("/api/v1/market-records/{id}/approve", recordId)
+                        .principal(() -> "production-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"version\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("APPROVED"));
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM market.market_record_core_value
+                WHERE record_id=:id AND field_code LIKE 'MKT_INVENTORY_%'
+                """).param("id", recordId).query(Long.class).single()).isZero();
     }
 
     @Test
@@ -258,7 +315,7 @@ class MarketImportRestIntegrationTest {
                 com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
                         .parseWorksheet(workbook, 1, 256).getFirst());
         assertThat(labels)
-                .startsWith("对象类型", "数据年份", "数据月份", "样本点名称", "地区")
+                .startsWith("样本点类型", "数据年份", "数据月份", "样本点名称", "地区")
                 .contains("采购量（吨）", "销售量（吨）", "现有库存（吨）")
                 .endsWith(BusinessImportWorkbook.PHOTO_FILENAMES_LABEL)
                 .doesNotContain("库存持有人代码", "货权人代码", "内部治理截止日期");

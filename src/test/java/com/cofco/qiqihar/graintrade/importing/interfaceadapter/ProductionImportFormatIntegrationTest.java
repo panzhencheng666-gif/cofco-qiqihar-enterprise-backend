@@ -32,7 +32,7 @@ import org.springframework.test.web.servlet.MockMvc;
 class ProductionImportFormatIntegrationTest {
     private static final List<String> HEADERS = List.of(
             "productCode", "objectTypeCode", "regionCode", "cultivarCode", "surveyDate",
-            "cultivatedAreaMu", "yieldPerMuKilograms", "PROD_REPORTER_NAME", "PROD_REPORTER_PHONE",
+            "cultivatedAreaMu", "yieldPerMuKilograms", "PROD_REPORTER_NAME", "PROD_SURVEYOR_NAME", "PROD_SURVEYOR_PHONE",
             "PROD_SAMPLE_CONTACT", "PROD_SAMPLE_LATITUDE", "PROD_SAMPLE_LONGITUDE", "evidencePhotoId");
 
     @Autowired MockMvc mvc;
@@ -118,7 +118,7 @@ class ProductionImportFormatIntegrationTest {
 
     private static List<String> row(String product, String date, String area, String photoId) {
         return List.of(product, "FARMER", "230202", "", date, area, "20", "导入填报员",
-                "13800000000", "13900000000", "47.3543", "123.9182", photoId);
+                "王雷", "13800000000", "13900000000", "47.3543", "123.9182", photoId);
     }
 
     private static byte[] xlsx(List<List<String>> rows) throws Exception {

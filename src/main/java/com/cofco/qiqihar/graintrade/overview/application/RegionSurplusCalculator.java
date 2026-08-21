@@ -14,6 +14,7 @@ import java.util.stream.Collectors;
 
 public final class RegionSurplusCalculator {
     public static final String CALCULATION_VERSION = "地区余粮口径第1版";
+    public static final String PUBLIC_CALCULATION_VERSION = "地区余粮公开填报口径第1版";
     private static final Comparator<RegionSurplusSource> LATEST_FIRST = Comparator
             .comparing(RegionSurplusSource::approvedAt, Comparator.reverseOrder())
             .thenComparing(RegionSurplusSource::sourceVersion, Comparator.reverseOrder())
@@ -34,6 +35,9 @@ public final class RegionSurplusCalculator {
         }
         String calculationVersion = selectedCalculationVersion;
         if (sources.isEmpty()) return unavailable("NO_APPROVED_SOURCES", sources, null, calculationVersion);
+        if (PUBLIC_CALCULATION_VERSION.equals(calculationVersion)) {
+            return calculatePublicBusinessFacts(sources, calculationVersion);
+        }
 
         if (sources.stream().map(RegionSurplusSource::calculationVersion).distinct().count() != 1
                 || sources.stream().anyMatch(source -> !calculationVersion.equals(source.calculationVersion()))) {
@@ -78,6 +82,70 @@ public final class RegionSurplusCalculator {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         return new RegionSurplusCalculation(
                 total, adopted.size(), cutoff, "AVAILABLE", calculationVersion, auditSources);
+    }
+
+    private static RegionSurplusCalculation calculatePublicBusinessFacts(
+            List<RegionSurplusSource> sources, String calculationVersion) {
+        if (sources.stream().map(RegionSurplusSource::calculationVersion).distinct().count() != 1
+                || sources.stream().anyMatch(source -> !calculationVersion.equals(source.calculationVersion()))) {
+            return unavailable("CALCULATION_VERSION_MISMATCH", sources, latestCutoff(sources), calculationVersion);
+        }
+        if (sources.stream().anyMatch(source -> publicContractIssue(source) != null)
+                || sources.stream().map(RegionSurplusSource::sourceRecordId).distinct().count() != sources.size()) {
+            return unavailable("UNRELIABLE_SOURCE_CONTRACT", sources, latestCutoff(sources), calculationVersion);
+        }
+
+        Comparator<RegionSurplusSource> latestPeriodFirst = Comparator
+                .comparing(RegionSurplusSource::dataCutoff, Comparator.reverseOrder())
+                .thenComparing(RegionSurplusSource::approvedAt, Comparator.reverseOrder())
+                .thenComparing(RegionSurplusSource::sourceVersion, Comparator.reverseOrder())
+                .thenComparing(RegionSurplusSource::sourceRecordId, Comparator.reverseOrder());
+        Map<String, Decision> decisions = new LinkedHashMap<>();
+        groupBy(sources, source -> String.join("|",
+                source.sourceDomain(), source.subjectKey(), source.regionCode())).values().forEach(group -> {
+                    List<RegionSurplusSource> ranked = group.stream().sorted(latestPeriodFirst).toList();
+                    decisions.put(ranked.getFirst().sourceRecordId(),
+                            new Decision(true, "LATEST_VISIBLE_APPROVED_SOURCE"));
+                    ranked.stream().skip(1).forEach(source -> decisions.put(source.sourceRecordId(),
+                            new Decision(false, "SUPERSEDED_BY_LATEST_VISIBLE_PERIOD")));
+                });
+
+        List<RegionSurplusSource> adopted = sources.stream()
+                .filter(source -> decisions.get(source.sourceRecordId()).adopted()).toList();
+        boolean productionPresent = adopted.stream()
+                .anyMatch(source -> source.sourceDomain().equals("PRODUCTION"));
+        boolean marketPresent = adopted.stream()
+                .anyMatch(source -> source.sourceDomain().equals("MARKET"));
+        String coverage = productionPresent && marketPresent ? "AVAILABLE" : "PARTIAL";
+        BigDecimal total = adopted.stream().map(RegionSurplusSource::valueTonnes)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        List<RegionSurplusAuditSource> auditSources = sources.stream()
+                .sorted(Comparator.comparing(RegionSurplusSource::sourceDomain)
+                        .thenComparing(RegionSurplusSource::sourceRecordId))
+                .map(source -> audit(source, decisions.get(source.sourceRecordId())))
+                .toList();
+        return new RegionSurplusCalculation(
+                total, adopted.size(), latestCutoff(adopted), coverage, calculationVersion, auditSources);
+    }
+
+    private static String publicContractIssue(RegionSurplusSource source) {
+        if (source == null) return "SOURCE_MISSING";
+        if (!blank(source.contractIssue())) return source.contractIssue();
+        if (blank(source.sourceDomain())
+                || !(source.sourceDomain().equals("PRODUCTION") || source.sourceDomain().equals("MARKET"))
+                || blank(source.sourceRecordId()) || source.sourceVersion() < 0
+                || blank(source.subjectKey()) || blank(source.regionCode())
+                || source.dataCutoff() == null || source.valueTonnes() == null
+                || source.valueTonnes().signum() < 0 || source.approvedAt() == null) {
+            return "REQUIRED_FIELD_MISSING";
+        }
+        return null;
+    }
+
+    private static LocalDate latestCutoff(List<RegionSurplusSource> sources) {
+        return sources.stream().filter(java.util.Objects::nonNull)
+                .map(RegionSurplusSource::dataCutoff).filter(java.util.Objects::nonNull)
+                .max(Comparator.naturalOrder()).orElse(null);
     }
 
     private static void adoptLatestProductionSources(

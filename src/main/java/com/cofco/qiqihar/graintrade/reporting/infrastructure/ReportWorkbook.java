@@ -14,13 +14,23 @@ public final class ReportWorkbook {
 
     public static byte[] create(ReportPreviewView preview) {
         List<List<String>> rows = new ArrayList<>();
-        rows.add(List.of("类型", "报告名称", "数据截止", "项目", "内容", "说明"));
+        rows.add(List.of("类型", "报告名称", "报告期间", "品种", "业务域", "审核后记录数", "数据截止", "项目", "内容", "说明"));
         for (ReportPreviewView.Line line : preview.lines()) {
-            rows.add(List.of("指标", preview.title(), preview.dataCutoffLabel(), line.label(), line.value(),
-                    line.note() == null ? "" : line.note()));
+            rows.add(List.of("报告指标", preview.title(), preview.dataCutoffLabel(), "全部", "全部", "", "",
+                    line.label(), line.value(), line.note() == null ? "" : line.note()));
+        }
+        for (ReportPreviewView.Product product : preview.products()) {
+            for (ReportPreviewView.Domain domain : product.domains()) {
+                for (ReportPreviewView.Line metric : domain.metrics()) {
+                    rows.add(List.of("审核后数据", preview.title(), preview.dataCutoffLabel(), product.label(),
+                            domain.label(), Long.toString(domain.approvedRecordCount()), value(domain.dataCutoff()),
+                            metric.label(), value(metric.value()), metric.note() == null ? "" : metric.note()));
+                }
+            }
         }
         for (ReportPreviewView.Section section : preview.sections()) {
-            rows.add(List.of("正文", preview.title(), preview.dataCutoffLabel(), section.title(), section.body(), ""));
+            rows.add(List.of("报告正文", preview.title(), preview.dataCutoffLabel(), "全部", "全部", "", "",
+                    section.title(), section.body(), ""));
         }
         try {
             ByteArrayOutputStream output = new ByteArrayOutputStream();
@@ -47,9 +57,9 @@ public final class ReportWorkbook {
                 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
                 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
                   <sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
-                  <cols><col min="1" max="6" width="24" customWidth="1"/></cols>
+                  <cols><col min="1" max="10" width="20" customWidth="1"/></cols>
                   <sheetData>%s</sheetData>
-                  <autoFilter ref="A1:F1"/>
+                  <autoFilter ref="A1:J1"/>
                 </worksheet>
                 """.formatted(data);
     }
@@ -134,8 +144,14 @@ public final class ReportWorkbook {
                 .replace("\"", "&quot;").replace("'", "&apos;");
     }
 
+    private static String value(String value) {
+        return value == null || value.isBlank() ? "暂无审核数据" : value;
+    }
+
     private static void entry(ZipOutputStream zip, String name, String content) throws Exception {
-        zip.putNextEntry(new ZipEntry(name));
+        ZipEntry entry = new ZipEntry(name);
+        entry.setTime(0L);
+        zip.putNextEntry(entry);
         zip.write(content.getBytes(StandardCharsets.UTF_8));
         zip.closeEntry();
     }

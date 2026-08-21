@@ -34,9 +34,10 @@ public class JdbcBusinessAuditReader implements BusinessAuditReader {
         List<BusinessAuditView> items = bind(jdbc.sql("""
                 SELECT e.event_id,e.aggregate_type,e.aggregate_id,e.action_code,e.actor_subject_id,
                        COALESCE(NULLIF(u.display_name,''),e.actor_subject_id) AS actor_display_name,
-                       e.work_unit_code,e.occurred_at,e.detail::text AS detail_json
+                       e.work_unit_code,w.name AS work_unit_name,e.occurred_at,e.detail::text AS detail_json
                 FROM platform.business_audit_event e
                 LEFT JOIN platform.security_user u ON u.subject_id=e.actor_subject_id
+                JOIN platform.work_unit w ON w.code=e.work_unit_code
                 """ + where + " ORDER BY e.occurred_at DESC,e.event_id DESC LIMIT :limit OFFSET :offset"),
                 workUnitCode, aggregateType, actorSubjectId, occurredFrom, occurredTo)
                 .param("limit", pageSize)
@@ -49,6 +50,7 @@ public class JdbcBusinessAuditReader implements BusinessAuditReader {
                         rs.getString("actor_subject_id"),
                         rs.getString("actor_display_name"),
                         rs.getString("work_unit_code"),
+                        rs.getString("work_unit_name"),
                         rs.getTimestamp("occurred_at").toInstant(),
                         rs.getString("detail_json")))
                 .list();

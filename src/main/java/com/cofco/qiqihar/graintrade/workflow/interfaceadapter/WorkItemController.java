@@ -5,6 +5,9 @@ import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.StrictQueryParameters;
 import com.cofco.qiqihar.graintrade.workflow.application.WorkItemReader;
+import com.cofco.qiqihar.graintrade.workflow.application.WorkItemBatchReviewService;
+import com.cofco.qiqihar.graintrade.workflow.application.WorkItemBatchReviewService.BatchReviewQuery;
+import com.cofco.qiqihar.graintrade.workflow.application.WorkItemBatchReviewService.BatchReviewResult;
 import com.cofco.qiqihar.graintrade.workflow.domain.WorkItem;
 import com.cofco.qiqihar.graintrade.workflow.domain.WorkItemQuery;
 import com.cofco.qiqihar.graintrade.workflow.domain.WorkItemScope;
@@ -13,6 +16,8 @@ import java.util.List;
 import java.util.Set;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -23,9 +28,16 @@ public class WorkItemController {
             "scope", "status", "domain", "regionId", "productCode", "page", "pageSize");
 
     private final WorkItemReader reader;
+    private final WorkItemBatchReviewService batchReview;
 
-    public WorkItemController(WorkItemReader reader) {
+    public WorkItemController(WorkItemReader reader, WorkItemBatchReviewService batchReview) {
         this.reader = reader;
+        this.batchReview = batchReview;
+    }
+
+    @PostMapping("/api/v1/work-items/batch-approve")
+    ApiResponse<BatchReviewResult> batchApprove(@RequestBody BatchReviewRequest request) {
+        return new ApiResponse<>(batchReview.approve(request.toQuery()));
     }
 
     @GetMapping("/api/v1/work-items")
@@ -50,6 +62,16 @@ public class WorkItemController {
     private static ClientRequestException invalidQuery() {
         return new ClientRequestException(
                 "INVALID_WORK_ITEM_QUERY", "Work item query context is invalid");
+    }
+
+    record BatchReviewRequest(String domain, String regionId, String productCode) {
+        BatchReviewQuery toQuery() {
+            return new BatchReviewQuery(optional(domain), optional(regionId), optional(productCode));
+        }
+
+        private static String optional(String value) {
+            return value == null || value.isBlank() ? null : value.trim();
+        }
     }
 
     record WorkItemResponse(

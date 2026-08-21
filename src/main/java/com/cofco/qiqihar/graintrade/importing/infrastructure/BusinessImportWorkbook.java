@@ -5,12 +5,14 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.text.Normalizer;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -25,6 +27,7 @@ public final class BusinessImportWorkbook {
     private static final String OBJECT_METADATA_NAME = "_业务模板校验_对象类型";
     private static final String VERSION_METADATA_NAME = "_业务模板校验_校验代号";
     private static final String DIGEST_METADATA_NAME = "_业务模板校验_校验摘要";
+    private static final String PURPOSE_METADATA_NAME = "_业务模板校验_工作簿用途";
     private static final List<String> CONTRACT_METADATA_NAMES = List.of(
             DOMAIN_METADATA_NAME, PRODUCT_METADATA_NAME, OBJECT_METADATA_NAME,
             VERSION_METADATA_NAME, DIGEST_METADATA_NAME);
@@ -104,6 +107,38 @@ public final class BusinessImportWorkbook {
         }
     }
 
+    public record WorkbookOptions(String dataSheetName, String purposeCode, String purposeLabel,
+                                  Set<String> hiddenColumnCodes,
+                                  List<List<String>> additionalInstructions) {
+        public WorkbookOptions {
+            if (dataSheetName == null || dataSheetName.isBlank() || dataSheetName.length() > 31
+                    || dataSheetName.matches(".*[\\\\/?*:\\[\\]].*")) {
+                throw new IllegalArgumentException("INVALID_WORKBOOK_OPTIONS");
+            }
+            dataSheetName = dataSheetName.trim();
+            purposeCode = optional(purposeCode);
+            purposeLabel = optional(purposeLabel);
+            if ((purposeCode == null) != (purposeLabel == null)) {
+                throw new IllegalArgumentException("INVALID_WORKBOOK_OPTIONS");
+            }
+            hiddenColumnCodes = hiddenColumnCodes == null ? Set.of() : Set.copyOf(hiddenColumnCodes);
+            if (hiddenColumnCodes.stream().anyMatch(code -> code == null || code.isBlank())) {
+                throw new IllegalArgumentException("INVALID_WORKBOOK_OPTIONS");
+            }
+            additionalInstructions = additionalInstructions == null ? List.of()
+                    : additionalInstructions.stream().map(row -> {
+                        if (row == null || row.size() != 2 || row.stream().anyMatch(value -> value == null || value.isBlank())) {
+                            throw new IllegalArgumentException("INVALID_WORKBOOK_OPTIONS");
+                        }
+                        return List.copyOf(row);
+                    }).toList();
+        }
+
+        private static String optional(String value) {
+            return value == null || value.isBlank() ? null : value.trim();
+        }
+    }
+
     private BusinessImportWorkbook() {}
 
     /** Returns the business-facing Chinese label for a template context code. */
@@ -121,20 +156,29 @@ public final class BusinessImportWorkbook {
     }
 
     public static byte[] create(Template template, List<List<String>> dataRows) {
+        return create(template, dataRows, new WorkbookOptions(
+                template.domainLabel() + "填报", null, null, Set.of(), List.of()));
+    }
+
+    public static byte[] create(
+            Template template, List<List<String>> dataRows, WorkbookOptions options) {
         List<List<String>> safeRows = dataRows == null ? List.of() : dataRows.stream().map(List::copyOf).toList();
         if (safeRows.size() > 5_000 || safeRows.stream().anyMatch(row -> row.size() != template.headers().size())) {
             throw new IllegalArgumentException("INVALID_TEMPLATE_ROWS");
+        }
+        if (options == null || !template.headers().containsAll(options.hiddenColumnCodes())) {
+            throw new IllegalArgumentException("INVALID_WORKBOOK_OPTIONS");
         }
         try {
             ByteArrayOutputStream output = new ByteArrayOutputStream();
             try (ZipOutputStream zip = new ZipOutputStream(output, StandardCharsets.UTF_8)) {
                 entry(zip, "[Content_Types].xml", contentTypes());
                 entry(zip, "_rels/.rels", packageRelationships());
-                entry(zip, "xl/workbook.xml", workbook(template));
+                entry(zip, "xl/workbook.xml", workbook(template, options));
                 entry(zip, "xl/_rels/workbook.xml.rels", workbookRelationships());
                 entry(zip, "xl/styles.xml", styles());
-                entry(zip, "xl/worksheets/sheet1.xml", dataSheet(template, safeRows));
-                entry(zip, "xl/worksheets/sheet2.xml", instructionSheet(template));
+                entry(zip, "xl/worksheets/sheet1.xml", dataSheet(template, safeRows, options));
+                entry(zip, "xl/worksheets/sheet2.xml", instructionSheet(template, options));
             }
             return output.toByteArray();
         } catch (Exception exception) {
@@ -145,6 +189,15 @@ public final class BusinessImportWorkbook {
     public record ImportSheet(String productCode, String objectTypeCode, List<List<String>> rows) {}
 
     public record Context(String productCode, String objectTypeCode, String contractVersion, String contractDigest) {}
+
+    public static String purpose(byte[] bytes) {
+        try {
+            return XlsxTable.parseDefinedNames(bytes, List.of(PURPOSE_METADATA_NAME))
+                    .get(PURPOSE_METADATA_NAME);
+        } catch (IllegalArgumentException exception) {
+            throw new IllegalArgumentException("INVALID_XLSX_PURPOSE", exception);
+        }
+    }
 
     public static Context context(byte[] bytes, String domainCode) {
         Map<String, String> visibleContext = instructionContext(bytes);
@@ -205,13 +258,35 @@ public final class BusinessImportWorkbook {
 
     /** Reads each product-workbook row independently; row validation is performed by the draft importer. */
     public static ImportSheet readDraft(byte[] bytes, Template template, int maxDataRows) {
+        return readDraft(bytes, template, List.of(), maxDataRows);
+    }
+
+    /**
+     * Reads a current workbook or one of the explicitly enumerated prior contracts. Prior contracts must
+     * have the same business context and columns; parsed rows are always normalized against current rules.
+     */
+    public static ImportSheet readDraft(byte[] bytes, Template template,
+            List<Template> compatiblePriorTemplates, int maxDataRows) {
         Context context = context(bytes, template.domainCode());
         if (!java.util.Objects.equals(template.productCode(), context.productCode())
                 || !java.util.Objects.equals(template.objectTypeCode(), context.objectTypeCode())) {
             throw new IllegalArgumentException("XLSX_CONTEXT_MISMATCH");
         }
-        if (!template.contractVersion().equals(context.contractVersion())
-                || !template.contractDigest().equals(context.contractDigest())) {
+        List<Template> compatible = compatiblePriorTemplates == null ? List.of() : compatiblePriorTemplates;
+        if (compatible.stream().anyMatch(candidate ->
+                !template.domainCode().equals(candidate.domainCode())
+                        || !java.util.Objects.equals(template.productCode(), candidate.productCode())
+                        || !java.util.Objects.equals(template.objectTypeCode(), candidate.objectTypeCode())
+                        || !template.headers().equals(candidate.headers())
+                        || !template.labels().equals(candidate.labels()))) {
+            throw new IllegalArgumentException("INVALID_COMPATIBLE_XLSX_CONTRACT");
+        }
+        boolean currentContract = template.contractVersion().equals(context.contractVersion())
+                && template.contractDigest().equals(context.contractDigest());
+        boolean priorContract = compatible.stream().anyMatch(candidate ->
+                candidate.contractVersion().equals(context.contractVersion())
+                        && candidate.contractDigest().equals(context.contractDigest()));
+        if (!currentContract && !priorContract) {
             throw new IllegalArgumentException("XLSX_CONTRACT_MISMATCH");
         }
         List<List<String>> sheet = XlsxTable.parseWorksheet(
@@ -243,12 +318,26 @@ public final class BusinessImportWorkbook {
         return rows.stream().map(row -> {
             ArrayList<String> values = new ArrayList<>(row);
             for (int index = 0; index < rules.size(); index++) {
-                if ("DATE".equals(rules.get(index).valueType()) && !values.get(index).isBlank()) {
-                    values.set(index, normalizeExcelDate(values.get(index).trim()));
+                if (!values.get(index).isBlank()) {
+                    values.set(index, normalizeCell(values.get(index), rules.get(index)));
                 }
             }
             return List.copyOf(values);
         }).toList();
+    }
+
+    /** Normalizes common human spreadsheet notation without changing the business value. */
+    public static String normalizeCell(String value, ColumnRule rule) {
+        if (value == null) return null;
+        String normalized = value.trim();
+        if ("DATE".equals(rule.valueType())) return normalizeExcelDate(normalized);
+        if (!"DECIMAL".equals(rule.valueType())) return normalized;
+        return Normalizer.normalize(normalized, Normalizer.Form.NFKC)
+                .replace(",", "")
+                .replace(" ", "")
+                .replace("\t", "")
+                .replace("\u00a0", "")
+                .replace("\u202f", "");
     }
 
     private static String normalizeExcelDate(String value) {
@@ -283,7 +372,8 @@ public final class BusinessImportWorkbook {
         return blank(value) ? null : value;
     }
 
-    private static String dataSheet(Template template, List<List<String>> dataRows) {
+    private static String dataSheet(
+            Template template, List<List<String>> dataRows, WorkbookOptions options) {
         StringBuilder rows = new StringBuilder();
         for (int index = 0; index < dataRows.size(); index++) {
             rows.append(dataRow(index + 2, dataRows.get(index), template.rules()));
@@ -297,12 +387,12 @@ public final class BusinessImportWorkbook {
                   <autoFilter ref="A1:%s1"/>
                   %s
                 </worksheet>
-                """.formatted(columns(template), row(1, template.labels(), 1, false),
+                """.formatted(columns(template, options.hiddenColumnCodes()), row(1, template.labels(), 1, false),
                 rows, columnName(template.headers().size()),
                 dataValidations(template));
     }
 
-    private static String instructionSheet(Template template) {
+    private static String instructionSheet(Template template, WorkbookOptions options) {
         java.util.ArrayList<List<String>> metadata = new java.util.ArrayList<>(List.of(
                 List.of("填报类别", publicContextValue(template.domainCode()))));
         if (template.productCode() != null) {
@@ -310,6 +400,9 @@ public final class BusinessImportWorkbook {
         }
         if (template.objectTypeCode() != null) {
             metadata.add(List.of("对象类型", publicContextValue(template.objectTypeCode())));
+        }
+        if (options.purposeCode() != null) {
+            metadata.add(List.of("工作簿用途", options.purposeLabel()));
         }
         StringBuilder xml = new StringBuilder();
         for (int index = 0; index < metadata.size(); index++) {
@@ -324,6 +417,7 @@ public final class BusinessImportWorkbook {
                     "请填写完整行政区划路径，如“齐齐哈尔市 / 梅里斯达斡尔族区 / 雅尔塞镇 / 音钦村”；旧模板可继续填写有效地区代码"));
         }
         instructions.add(List.of("处理方式", "5000 条以内即时处理；5001 至 50000 条转入后台任务处理"));
+        instructions.addAll(options.additionalInstructions());
         for (int index = 0; index < instructions.size(); index++) {
             xml.append(row(index + metadata.size() + 1, instructions.get(index), index == 0 ? 1 : 0, false));
         }
@@ -357,16 +451,22 @@ public final class BusinessImportWorkbook {
         return "<row r=\"" + number + "\">" + cells + "</row>";
     }
 
-    private static String columns(Template template) {
-        if (template.rules().isEmpty()) {
+    private static String columns(Template template, Set<String> hiddenColumnCodes) {
+        if (template.rules().isEmpty() && hiddenColumnCodes.isEmpty()) {
             return "<col min=\"1\" max=\"" + template.headers().size()
                     + "\" width=\"20\" customWidth=\"1\"/>";
         }
         StringBuilder columns = new StringBuilder();
-        for (int index = 0; index < template.rules().size(); index++) {
+        for (int index = 0; index < template.headers().size(); index++) {
             columns.append("<col min=\"").append(index + 1).append("\" max=\"").append(index + 1)
-                    .append("\" width=\"20\" customWidth=\"1\" style=\"")
-                    .append(style(template.rules().get(index))).append("\"/>");
+                    .append("\" width=\"20\" customWidth=\"1\"");
+            if (!template.rules().isEmpty()) {
+                columns.append(" style=\"").append(style(template.rules().get(index))).append("\"");
+            }
+            if (hiddenColumnCodes.contains(template.headers().get(index))) {
+                columns.append(" hidden=\"1\"");
+            }
+            columns.append("/>");
         }
         return columns.toString();
     }
@@ -382,30 +482,34 @@ public final class BusinessImportWorkbook {
         return value.reverse().toString();
     }
 
-    private static String workbook(Template template) {
+    private static String workbook(Template template, WorkbookOptions options) {
         return """
                 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
                 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-                  <sheets><sheet name="%s填报" sheetId="1" r:id="rId1"/><sheet name="填报说明" sheetId="2" r:id="rId2"/></sheets>
+                  <sheets><sheet name="%s" sheetId="1" r:id="rId1"/><sheet name="填报说明" sheetId="2" r:id="rId2"/></sheets>
                   %s
                 </workbook>
-                """.formatted(xml(template.domainLabel()), contractMetadata(template));
+                """.formatted(xml(options.dataSheetName()), contractMetadata(template, options));
     }
 
-    private static String contractMetadata(Template template) {
-        return """
+    private static String contractMetadata(Template template, WorkbookOptions options) {
+        String standard = """
                 <definedNames>
                   <definedName name="%s" hidden="1">&quot;%s&quot;</definedName>
                   <definedName name="%s" hidden="1">&quot;%s&quot;</definedName>
                   <definedName name="%s" hidden="1">&quot;%s&quot;</definedName>
                   <definedName name="%s" hidden="1">&quot;%s&quot;</definedName>
-                  <definedName name="%s" hidden="1">&quot;%s&quot;</definedName>
+                  <definedName name="%s" hidden="1">&quot;%s&quot;</definedName>%s
                 </definedNames>
                 """.formatted(DOMAIN_METADATA_NAME, xml(template.domainCode()),
                 PRODUCT_METADATA_NAME, xml(template.productCode() == null ? "" : template.productCode()),
                 OBJECT_METADATA_NAME, xml(template.objectTypeCode() == null ? "" : template.objectTypeCode()),
                 VERSION_METADATA_NAME, xml(template.contractVersion()),
-                DIGEST_METADATA_NAME, xml(template.contractDigest()));
+                DIGEST_METADATA_NAME, xml(template.contractDigest()),
+                options.purposeCode() == null ? "" : "\n                  <definedName name=\""
+                        + PURPOSE_METADATA_NAME + "\" hidden=\"1\">&quot;"
+                        + xml(options.purposeCode()) + "&quot;</definedName>");
+        return standard;
     }
 
     private static String publicContextValue(String internalValue) {
@@ -483,7 +587,7 @@ public final class BusinessImportWorkbook {
             ColumnRule rule = template.rules().get(index);
             String column = columnName(index + 1);
             String promptTitle = rule.required() ? "必填字段" : "字段格式";
-            String prompt = rule.required() ? "必填；" + formatHint(rule) : formatHint(rule);
+            String prompt = rule.required() ? "必填；" + validationHint(rule) : validationHint(rule);
             validations.append("<dataValidation showInputMessage=\"1\" showErrorMessage=\"1\" errorStyle=\"stop\"")
                     .append(" allowBlank=\"").append(rule.required() ? "0" : "1").append("\"")
                     .append(" promptTitle=\"").append(xml(promptTitle)).append("\"")
@@ -535,7 +639,8 @@ public final class BusinessImportWorkbook {
         return "";
     }
 
-    private static String formatHint(ColumnRule rule) {
+    /** Returns the same business-facing rule used by XLSX prompts and server-side row errors. */
+    public static String validationHint(ColumnRule rule) {
         String base = switch (rule.valueType()) {
             case "DECIMAL" -> "数字，精度 " + rule.precision() + "，小数位不超过 " + rule.scale();
             case "DATE" -> "日期格式 YYYY-MM-DD";
@@ -577,7 +682,7 @@ public final class BusinessImportWorkbook {
     /** Validates one non-blank business cell against the downloaded workbook contract. */
     public static void validateCell(String value, ColumnRule rule) {
         if (value == null || value.isBlank()) return;
-        validateValue(value.trim(), rule, 0);
+        validateValue(normalizeCell(value, rule), rule, 0);
     }
 
     private static String digest(String domainCode, String productCode, String objectTypeCode,

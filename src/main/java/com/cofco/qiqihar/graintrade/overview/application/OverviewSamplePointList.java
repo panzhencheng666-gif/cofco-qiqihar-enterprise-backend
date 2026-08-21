@@ -1,6 +1,8 @@
 package com.cofco.qiqihar.graintrade.overview.application;
 
+import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 public record OverviewSamplePointList(
@@ -37,11 +39,14 @@ public record OverviewSamplePointList(
             String dataQualityReason,
             List<CategoryRef> categories,
             List<TypeRef> types,
-            List<ProductRef> products) {
+            List<ProductRef> products,
+            LocalDate latestBusinessDate,
+            Map<String, OverviewSamplePointDetail.BusinessValue> summaryValues) {
         public Item {
             categories = List.copyOf(categories);
             types = List.copyOf(types);
             products = List.copyOf(products);
+            summaryValues = Map.copyOf(summaryValues);
         }
     }
 

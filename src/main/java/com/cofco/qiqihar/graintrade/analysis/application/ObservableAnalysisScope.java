@@ -8,6 +8,12 @@ public record ObservableAnalysisScope(
         String cultivarCode,
         String subjectTypeCode) {
 
+    public static final String ALL_AUTHORIZED_REGIONS = "__ALL_AUTHORIZED__";
+
+    public boolean isAllAuthorizedRegions() {
+        return ALL_AUTHORIZED_REGIONS.equals(regionCode);
+    }
+
     public ObservableAnalysisScope {
         productCode = required(productCode, "Product code");
         regionCode = required(regionCode, "Region code");

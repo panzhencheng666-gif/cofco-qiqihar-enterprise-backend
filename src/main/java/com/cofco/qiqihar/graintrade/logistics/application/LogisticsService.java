@@ -171,9 +171,14 @@ public class LogisticsService {
                 default -> null;
             };
             if(permission==null||!principal.permits(permission))return false;
-            return !Set.of("APPROVE","RETURN").contains(action)||separationOfDuties==null
-                    ||separationOfDuties.isIndependentReviewer(
-                            "LOGISTICS_RECORD",record.id(),"LOGISTICS_RECORD_SUBMITTED",principal);
+            if(separationOfDuties==null)return true;
+            return switch(action){
+                case "APPROVE" -> separationOfDuties.canApprove(
+                        "LOGISTICS_RECORD",record.id(),"LOGISTICS_RECORD_SUBMITTED",principal);
+                case "RETURN" -> separationOfDuties.canReturn(
+                        "LOGISTICS_RECORD",record.id(),"LOGISTICS_RECORD_SUBMITTED",principal);
+                default -> true;
+            };
         }).toList();
         return new LogisticsRecordView(record.id(),record.productCode(),record.values(),record.displayValues(),
                 record.status(),record.returnReason(),actions,record.version());

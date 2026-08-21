@@ -60,7 +60,7 @@ public class MarketImportController {
                 || hasProductWorkbookContext(bytes, "MARKET");
         ImportJobView job = productWorkbook
                 ? service.importProductWorkbook(idempotencyKey, productCode, file.getOriginalFilename(),
-                        file.getContentType(), bytes, photoParts(photos))
+                        file.getContentType(), bytes, photoParts(photos), objectTypeCode)
                 : service.importFile(idempotencyKey, productCode, objectTypeCode,
                         file.getOriginalFilename(), file.getContentType(), bytes);
         return acceptedOrCreated(job);

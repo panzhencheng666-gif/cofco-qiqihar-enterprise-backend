@@ -167,7 +167,8 @@ class CsvTableLimitTest {
                 Map.entry("regionCode", "230200"), Map.entry("cultivarCode", ""),
                 Map.entry("surveyDate", "2026-07-31"), Map.entry("cultivatedAreaMu", "10.5"),
                 Map.entry("yieldPerMuKilograms", "20"), Map.entry("PROD_REPORTER_NAME", "\u5bfc\u5165\u5458"),
-                Map.entry("PROD_REPORTER_PHONE", "13800000000"), Map.entry("PROD_SAMPLE_CONTACT", "13900000000"),
+                Map.entry("PROD_SURVEYOR_NAME", "王雷"),
+                Map.entry("PROD_SURVEYOR_PHONE", "13800000000"), Map.entry("PROD_SAMPLE_CONTACT", "13900000000"),
                 Map.entry("PROD_SAMPLE_LATITUDE", "47.3543"), Map.entry("PROD_SAMPLE_LONGITUDE", "123.9182")));
         values.putAll(overrides);
         return ProductionImportTemplate.HEADERS.stream().map(values::get).collect(java.util.stream.Collectors.joining(","));

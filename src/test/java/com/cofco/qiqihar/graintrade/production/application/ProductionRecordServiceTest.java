@@ -54,13 +54,13 @@ class ProductionRecordServiceTest {
         assertThat(result.groups().get(1).fields()).isEmpty();
         assertThat(result.groups().get(2).fields()).extracting(ProductionFactDefinition::code)
                 .containsExactly("PHOTO_COUNT");
-        assertThat(result.contractVersion()).isEqualTo("production-survey-fields-v1");
+        assertThat(result.contractVersion()).isEqualTo("production-survey-fields-v4");
         assertThat(result.fields()).extracting(ProductionSurveyField::code)
-                .startsWith("objectTypeCode", "regionCode", "PROD_CULTIVAR_NAME", "surveyYear",
+                .startsWith("objectTypeCode", "regionCode", "surveyYear",
                         "surveyMonth", "surveyDate", "PROD_SAMPLE_NAME")
                 .containsSubsequence("cultivatedAreaMu", "yieldPerMuKilograms", "estimatedOutputKilograms")
                 .containsSubsequence("MOISTURE", "IMPURITY", "PHOTO_COUNT")
-                .doesNotContain("PROD_SAMPLE_SUBJECT_CODE", "sample_point_id");
+                .doesNotContain("PROD_CULTIVAR_NAME", "PROD_SAMPLE_SUBJECT_CODE", "sample_point_id");
         ProductionSurveyField subjectName = result.fields().stream()
                 .filter(field -> field.code().equals("PROD_SAMPLE_NAME"))
                 .findFirst().orElseThrow();
@@ -222,7 +222,7 @@ class ProductionRecordServiceTest {
     private static Map<String, String> submissionMetadata() {
         return Map.of(
                 "PROD_REPORTER_NAME", "测试填报员",
-                "PROD_REPORTER_PHONE", "13800000000",
+                "PROD_SURVEYOR_PHONE", "13800000000",
                 "PROD_SAMPLE_CONTACT", "13900000000",
                 "PROD_SAMPLE_LATITUDE", "47.3543",
                 "PROD_SAMPLE_LONGITUDE", "123.9182");

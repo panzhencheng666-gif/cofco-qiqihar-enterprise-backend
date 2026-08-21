@@ -3,6 +3,7 @@ package com.cofco.qiqihar.graintrade.reporting.infrastructure;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
+import com.cofco.qiqihar.graintrade.reporting.application.ReportBusinessMetric;
 import com.cofco.qiqihar.graintrade.reporting.application.ReportPreviewCommand;
 import com.cofco.qiqihar.graintrade.reporting.application.ReportingRepository;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
@@ -15,6 +16,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.sql.DataSource;
@@ -90,6 +92,7 @@ class ReportingDatasetSnapshotConcurrencyIntegrationTest {
                             domain.insert(writer, sequence++, Instant.parse("2026-08-01T00:00:00Z")
                                     .plus(sequence, ChronoUnit.SECONDS));
                             firstCommitted.countDown();
+                            LockSupport.parkNanos(2_000_000L);
                         }
                         if (domain == Domain.SUPPLY) {
                             session.execute("SET session_replication_role=origin");
@@ -117,6 +120,7 @@ class ReportingDatasetSnapshotConcurrencyIntegrationTest {
                             .isEqualTo(maximumReportedAt);
                     assertThat(Instant.parse(snapshot.path("dataCutoff").asText()))
                             .isEqualTo(maximumReportedAt);
+                    assertBusinessMetrics(domain, material.businessMetrics(), sources.size());
                 }
             } finally {
                 running.set(false);
@@ -132,6 +136,35 @@ class ReportingDatasetSnapshotConcurrencyIntegrationTest {
             if (maximum == null || candidate.isAfter(maximum)) maximum = candidate;
         }
         return maximum;
+    }
+
+    private void assertBusinessMetrics(
+            Domain domain, List<ReportBusinessMetric> metrics, int sourceCount) {
+        switch (domain) {
+            case PRODUCTION -> {
+                assertMetric(metrics, "CULTIVATED_AREA", Integer.toString(sourceCount * 100), sourceCount);
+                assertMetric(metrics, "WEIGHTED_YIELD_PER_MU", "20", sourceCount);
+                assertMetric(metrics, "EXPECTED_OUTPUT", Integer.toString(sourceCount * 2), sourceCount);
+            }
+            case MARKET -> assertMetric(metrics, "AVERAGE_PURCHASE_PRICE", "2200", sourceCount);
+            case LOGISTICS -> assertThat(metrics).isEmpty();
+            case SUPPLY -> {
+                assertThat(sourceCount).isEqualTo(1);
+                assertMetric(metrics, "TOTAL_SUPPLY", "10", 1);
+                assertMetric(metrics, "TOTAL_USE", "8", 1);
+                assertMetric(metrics, "ADOPTED_ENDING_INVENTORY", "2", 1);
+            }
+        }
+    }
+
+    private void assertMetric(
+            List<ReportBusinessMetric> metrics, String code, String expectedValue, long sourceCount) {
+        ReportBusinessMetric metric = metrics.stream()
+                .filter(candidate -> candidate.code().equals(code))
+                .findFirst()
+                .orElseThrow();
+        assertThat(metric.value()).isEqualTo(expectedValue);
+        assertThat(metric.sourceCount()).isEqualTo(sourceCount);
     }
 
     private enum Domain {

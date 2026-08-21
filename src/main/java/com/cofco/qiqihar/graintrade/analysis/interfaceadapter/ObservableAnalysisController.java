@@ -5,6 +5,7 @@ import com.cofco.qiqihar.graintrade.analysis.application.AnalysisLineage;
 import com.cofco.qiqihar.graintrade.analysis.application.ObservableAnalysisScope;
 import com.cofco.qiqihar.graintrade.analysis.application.ObservableAnalysisService;
 import com.cofco.qiqihar.graintrade.analysis.application.ObservableAnalysisSnapshot;
+import com.cofco.qiqihar.graintrade.analysis.application.ObservableInventoryBreakdown;
 import com.cofco.qiqihar.graintrade.analysis.application.ObservableMetric;
 import com.cofco.qiqihar.graintrade.analysis.domain.ObservableSupplyCalculation;
 import com.cofco.qiqihar.graintrade.analysis.domain.ProductionSourceBalance;
@@ -12,6 +13,8 @@ import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.StrictQueryParameters;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Set;
@@ -113,8 +116,9 @@ public class ObservableAnalysisController {
                                     .toList()),
                     new MetricsResponse(snapshot.market().metrics()),
                     new MetricsResponse(snapshot.logistics().metrics()),
-                    new SupplyResponse(CalculationResponse.from(
-                            snapshot.supply().calculation())),
+                    new SupplyResponse(
+                            CalculationResponse.from(snapshot.supply().calculation()),
+                            InventoryResponse.from(snapshot.supply().inventory())),
                     snapshot.lineage().stream().map(LineageResponse::from).toList());
         }
     }
@@ -143,7 +147,39 @@ public class ObservableAnalysisController {
 
     record MetricsResponse(List<ObservableMetric> metrics) { }
 
-    record SupplyResponse(CalculationResponse calculation) { }
+    record SupplyResponse(
+            CalculationResponse calculation,
+            InventoryResponse inventory) { }
+
+    record InventoryResponse(
+            String productionOpeningTonnes,
+            String enterpriseOpeningTonnes,
+            String productionEndingTonnes,
+            String enterpriseEndingTonnes,
+            boolean openingComplete,
+            boolean endingComplete,
+            int adoptedRecordCount,
+            int reviewGroupCount,
+            LocalDate enterpriseOpeningObservedFrom,
+            LocalDate enterpriseOpeningObservedThrough,
+            LocalDate enterpriseEndingObservedFrom,
+            LocalDate enterpriseEndingObservedThrough) {
+        static InventoryResponse from(ObservableInventoryBreakdown inventory) {
+            return new InventoryResponse(
+                    decimal(inventory.productionOpeningTonnes()),
+                    decimal(inventory.enterpriseOpeningTonnes()),
+                    decimal(inventory.productionEndingTonnes()),
+                    decimal(inventory.enterpriseEndingTonnes()),
+                    inventory.openingComplete(),
+                    inventory.endingComplete(),
+                    inventory.adoptedRecordCount(),
+                    inventory.reviewGroupCount(),
+                    inventory.enterpriseOpeningObservedFrom(),
+                    inventory.enterpriseOpeningObservedThrough(),
+                    inventory.enterpriseEndingObservedFrom(),
+                    inventory.enterpriseEndingObservedThrough());
+        }
+    }
 
     record CalculationResponse(
             String qualityState,
@@ -154,6 +190,8 @@ public class ObservableAnalysisController {
             String outflowTonnes,
             String endingObservableInventoryTonnes,
             String inferredOtherAbsorptionTonnes,
+            String totalSupplyTonnes,
+            String totalUseTonnes,
             List<String> issues) {
         static CalculationResponse from(ObservableSupplyCalculation calculation) {
             return new CalculationResponse(
@@ -165,6 +203,8 @@ public class ObservableAnalysisController {
                     decimal(calculation.outflowTonnes()),
                     decimal(calculation.endingObservableInventoryTonnes()),
                     decimal(calculation.inferredOtherAbsorptionTonnes()),
+                    decimal(calculation.totalSupplyTonnes()),
+                    decimal(calculation.totalUseTonnes()),
                     calculation.issues());
         }
     }
@@ -210,6 +250,6 @@ public class ObservableAnalysisController {
     }
 
     private static String decimal(BigDecimal value) {
-        return value == null ? null : value.toPlainString();
+        return value == null ? null : value.setScale(4, RoundingMode.UNNECESSARY).toPlainString();
     }
 }

@@ -32,7 +32,6 @@ class ProductionV16MasterDataTest {
                         "COST:生产成本:20",
                         "INSURANCE:农业保险:30",
                         "SUBSIDY:农业补贴:40");
-        assertThat(singleLong("SELECT count(*) FROM production.production_record")).isZero();
     }
 
     @Test

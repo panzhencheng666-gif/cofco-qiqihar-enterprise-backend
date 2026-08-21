@@ -100,7 +100,7 @@ class AuthenticatedReporterContractIntegrationTest {
                 .andExpect(jsonPath("$.data.workUnitName").value("身份契约测试单位"))
                 .andExpect(jsonPath("$.data.accountStatus").value("ACTIVE"))
                 .andExpect(jsonPath("$.data.employmentStatus").value("ACTIVE"))
-                .andExpect(jsonPath("$.data.roleCodes[0]").value("SYSTEM_ADMIN"))
+                .andExpect(jsonPath("$.data.roleCodes[0]").value("BUSINESS_REVIEWER"))
                 .andExpect(jsonPath("$.data.positions[0].code").value("IDENTITY_CONTRACT_REPORTER"))
                 .andExpect(jsonPath("$.data.positions[0].name").value("区域业务专员"))
                 .andExpect(jsonPath("$.data.positions[0].primaryPosition").value(true))
@@ -276,8 +276,8 @@ class AuthenticatedReporterContractIntegrationTest {
     void productionImportOverwritesForgedReporterWithAuthenticatedEmployee() throws Exception {
         UUID photoId = stagePhoto(AUTHOR, "import.png");
         String csv = """
-                productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_REPORTER_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId
-                CORN,FARMER,230202,,2026-08-01,10,20,伪造导入人,13800000000,13900000000,47.3543,123.9182,%s
+                productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_SURVEYOR_NAME,PROD_SURVEYOR_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId
+                CORN,FARMER,230202,,2026-08-01,10,20,伪造导入人,王雷,13800000000,13900000000,47.3543,123.9182,%s
                 """.formatted(photoId);
 
         mvc.perform(multipart("/api/v1/imports/production")
@@ -317,7 +317,8 @@ class AuthenticatedReporterContractIntegrationTest {
                 {"productCode":"CORN","objectTypeCode":"FARMER","regionCode":"230202",
                  "surveyDate":"2026-08-01","cultivatedAreaMu":"10","yieldPerMuKilograms":"20",
                  "quality":{},"costs":{},"insurance":{},"subsidies":{},
-                 "submissionMetadata":{"PROD_REPORTER_NAME":"%s","PROD_REPORTER_PHONE":"13800000000",
+                 "submissionMetadata":{"PROD_REPORTER_NAME":"%s","PROD_SURVEYOR_NAME":"王雷",
+                   "PROD_SURVEYOR_PHONE":"13800000000",
                  "PROD_SAMPLE_CONTACT":"13900000000","PROD_SAMPLE_LATITUDE":"47.3543",
                  "PROD_SAMPLE_LONGITUDE":"123.9182"},"evidencePhotoIds":["%s"]%s}
                 """.formatted(forgedReporter, photoId, versionValue);
@@ -332,7 +333,8 @@ class AuthenticatedReporterContractIntegrationTest {
                  "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":"2300",
                  "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
                  "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",
-                 "MKT_REPORTER_NAME":"%s","MKT_REPORTER_PHONE":"13800000000",
+                 "MKT_REPORTER_NAME":"%s","MKT_SURVEYOR_NAME":"王雷",
+                 "MKT_SURVEYOR_PHONE":"13800000000",
                  "MKT_SAMPLE_NAME":"齐齐哈尔第一粮店","MKT_SAMPLE_CONTACT":"13900000000",
                  "MKT_SAMPLE_LATITUDE":"47.3543","MKT_SAMPLE_LONGITUDE":"123.9182"},
                  "facts":{"PURCHASE_VOLUME":"12","MOISTURE":"14.6"},

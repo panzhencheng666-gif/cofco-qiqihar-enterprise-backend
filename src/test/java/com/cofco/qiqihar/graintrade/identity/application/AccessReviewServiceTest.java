@@ -47,4 +47,31 @@ class AccessReviewServiceTest {
                 });
         verify(repository,never()).decide(reviewId,decisions,"reviewer",now);
     }
+
+    @Test
+    void ordinaryReviewerCannotDecideBootstrapOnlyGovernanceRoles() {
+        AccessReviewRepository repository=mock(AccessReviewRepository.class);
+        AccessControl access=mock(AccessControl.class);
+        BusinessAuditRecorder audit=mock(BusinessAuditRecorder.class);
+        Instant now=Instant.parse("2026-08-12T00:00:00Z");
+        AccessReviewService service=new AccessReviewService(repository,access,audit,
+                Clock.fixed(now,ZoneOffset.UTC));
+        SecurityPrincipal reviewer=new SecurityPrincipal("reviewer","复核员","UNIT-1","测试单位",
+                "ACTIVE","ACTIVE",Set.of("ACCESS_REVIEWER"),List.of(),
+                Set.of("ACCESS_REVIEW"),Set.of("230202997"));
+        UUID reviewId=UUID.randomUUID();
+        AccessReviewCampaign campaign=new AccessReviewCampaign(reviewId,"年度复核","UNIT-1","OPEN",
+                now.plusSeconds(3600),"administrator",now,List.of());
+        List<AccessReviewDecision> decisions=List.of(new AccessReviewDecision(
+                "platform-owner","ROLE","ACCOUNT_OWNER","RETAIN","平台所有者职责仍有效"));
+        when(access.require("ACCESS_REVIEW",null)).thenReturn(reviewer);
+        when(repository.find(reviewId)).thenReturn(Optional.of(campaign));
+
+        assertThatThrownBy(() -> service.decide(reviewId,decisions))
+                .isInstanceOfSatisfying(AccessDeniedException.class,error -> {
+                    assertThat(error.code()).isEqualTo("ACCESS_REVIEW_PROTECTED_ROLE_DENIED");
+                    assertThat(error.getMessage()).isEqualTo("平台治理角色只能由系统管理员复核");
+                });
+        verify(repository,never()).decide(reviewId,decisions,"reviewer",now);
+    }
 }

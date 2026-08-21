@@ -20,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class AccessReviewService {
     private static final Set<String> GRANT_TYPES=Set.of("ROLE","REGION","POSITION");
     private static final Set<String> DECISIONS=Set.of("RETAIN","REVOKE");
+    private static final Set<String> PROTECTED_GOVERNANCE_ROLES=Set.of("ACCOUNT_OWNER","SYSTEM_ADMIN");
     private final AccessReviewRepository repository;
     private final AccessControl access;
     private final BusinessAuditRecorder audit;
@@ -69,6 +70,11 @@ public class AccessReviewService {
                 ||decisions.size()>500||hasDuplicates(decisions)||decisions.stream().anyMatch(this::invalid))throw invalid();
         if(decisions.stream().anyMatch(decision->actor.subjectId().equals(decision.subjectId())))
             throw new AccessDeniedException("ACCESS_REVIEW_SELF_DECISION_DENIED","不能复核本人的权限");
+        if(!actor.roleCodes().contains("SYSTEM_ADMIN")&&decisions.stream().anyMatch(decision ->
+                "ROLE".equals(decision.grantType())
+                        && PROTECTED_GOVERNANCE_ROLES.contains(decision.grantKey())))
+            throw new AccessDeniedException(
+                    "ACCESS_REVIEW_PROTECTED_ROLE_DENIED","平台治理角色只能由系统管理员复核");
         Instant now=clock.instant();
         if(!repository.decide(reviewId,decisions,actor.subjectId(),now))throw new ConflictException(
                 "ACCESS_REVIEW_CONFLICT","Access review has already changed");

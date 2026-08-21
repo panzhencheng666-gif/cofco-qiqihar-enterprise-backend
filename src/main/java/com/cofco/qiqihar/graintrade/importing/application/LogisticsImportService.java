@@ -36,10 +36,12 @@ public class LogisticsImportService implements QueuedImportProcessor {
     private final Clock clock;
     private final BusinessImportLimits limits;
     private final GovernedDraftImportService draftImports;
+    private final OperationalReturnedCorrectionService returnedCorrections;
 
     public LogisticsImportService(ImportJobRepository jobs, LogisticsImportPort logistics,
             AccessControl access, BusinessAuditRecorder audit, Clock clock, BusinessImportLimits limits,
-            GovernedDraftImportService draftImports) {
+            GovernedDraftImportService draftImports,
+            OperationalReturnedCorrectionService returnedCorrections) {
         this.jobs = jobs;
         this.logistics = logistics;
         this.access = access;
@@ -47,6 +49,7 @@ public class LogisticsImportService implements QueuedImportProcessor {
         this.clock = clock;
         this.limits = limits;
         this.draftImports = draftImports;
+        this.returnedCorrections = returnedCorrections;
     }
 
     public BusinessImportWorkbook.Template template(String productCode) {
@@ -89,7 +92,7 @@ public class LogisticsImportService implements QueuedImportProcessor {
     @Transactional
     public ImportErrorFile errors(UUID importJobId) {
         SecurityPrincipal principal = access.require("BUSINESS_IMPORT", null);
-        ImportJob job = ownedJob(importJobId, principal);
+        ImportJob job = ownedOrdinary(importJobId, principal).job();
         List<String> headers = job.rows().stream().findFirst()
                 .map(row -> List.copyOf(row.values().keySet())).orElse(List.of());
         StringBuilder csv = new StringBuilder(String.join(",", headers)).append(",errorCode,errorMessage\n");
@@ -128,9 +131,7 @@ public class LogisticsImportService implements QueuedImportProcessor {
     @Transactional
     public ImportJobView retry(UUID importJobId) {
         SecurityPrincipal principal = access.require("BUSINESS_IMPORT", null);
-        var stored = jobs.findById(importJobId)
-                .filter(value -> value.job().domainCode().equals(LogisticsImportTemplate.DOMAIN))
-                .orElseThrow(() -> new ClientRequestException("IMPORT_JOB_NOT_FOUND", "Import job does not exist"));
+        var stored = ownedOrdinary(importJobId, principal);
         if (!stored.job().requestedBy().equals(principal.subjectId()))
             throw new ConflictException("IMPORT_RETRY_NOT_ALLOWED", "Import job belongs to a different subject");
         if ("FAILED".equals(stored.job().statusCode())) {
@@ -138,6 +139,9 @@ public class LogisticsImportService implements QueuedImportProcessor {
             return ImportJobView.from(jobs.queue(principal.subjectId(), LogisticsImportTemplate.DOMAIN, retryKey,
                     stored.job().contentSha256(), principal.workUnitCode(), stored.job().id(),
                     stored.sourceContent(), clock.instant()).stored().job());
+        }
+        if (draftImports.supports(stored.sourceContent())) {
+            return draftImports.retryFailedRows(stored, principal);
         }
         if (stored.job().failedRows() == 0)
             throw new ConflictException("IMPORT_RETRY_NOT_AVAILABLE", "Import job has no failed rows to retry");
@@ -159,7 +163,7 @@ public class LogisticsImportService implements QueuedImportProcessor {
     @Transactional(readOnly = true)
     public ImportJobView status(UUID importJobId) {
         SecurityPrincipal principal = access.require("BUSINESS_IMPORT", null);
-        return ImportJobView.from(ownedStored(importJobId, principal).job());
+        return ImportJobView.from(ownedOrdinary(importJobId, principal).job());
     }
 
     @Override public String domainCode() { return LogisticsImportTemplate.DOMAIN; }
@@ -170,6 +174,11 @@ public class LogisticsImportService implements QueuedImportProcessor {
         var stored = ownedStored(jobId, principal);
         if (!"PROCESSING".equals(stored.job().statusCode())) {
             throw new ConflictException("IMPORT_JOB_NOT_PROCESSING", "Import job is not processing");
+        }
+        if (returnedCorrections.supports(LogisticsImportTemplate.DOMAIN, stored.sourceContent())) {
+            returnedCorrections.processQueued(
+                    LogisticsImportTemplate.DOMAIN, stored, principal);
+            return;
         }
         if (draftImports.supports(stored.sourceContent())) {
             draftImports.processQueued(stored, principal);
@@ -287,6 +296,17 @@ public class LogisticsImportService implements QueuedImportProcessor {
         ImportJob job = stored.job();
         if (!job.requestedBy().equals(principal.subjectId()))
             throw new ConflictException("IMPORT_ERROR_FILE_NOT_ALLOWED", "Import job belongs to a different subject");
+        return stored;
+    }
+
+    private ImportJobRepository.StoredImportJob ownedOrdinary(
+            UUID id, SecurityPrincipal principal) {
+        ImportJobRepository.StoredImportJob stored = ownedStored(id, principal);
+        if (returnedCorrections.supports(
+                LogisticsImportTemplate.DOMAIN, stored.sourceContent())) {
+            throw new ClientRequestException(
+                    "IMPORT_JOB_NOT_FOUND", "Import job does not exist");
+        }
         return stored;
     }
 

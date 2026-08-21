@@ -63,6 +63,13 @@ public class BusinessEventStreamService implements SmartLifecycle {
         emitter.onCompletion(() -> closeConnection(connection, ConsumerRetirementReason.CLIENT_COMPLETED));
         emitter.onTimeout(() -> closeConnection(connection, ConsumerRetirementReason.CLIENT_TIMEOUT));
         emitter.onError(ignored -> closeConnection(connection, ConsumerRetirementReason.CLIENT_ERROR));
+        try {
+            emitter.send(SseEmitter.event().comment("connected"));
+        } catch (IOException unableToOpen) {
+            closeConnection(connection, ConsumerRetirementReason.CLIENT_ERROR);
+            emitter.completeWithError(unableToOpen);
+            throw new IllegalStateException("Unable to open business event stream", unableToOpen);
+        }
         connections.submit(() -> publish(connection, principal.subjectId(), scope));
         return emitter;
     }

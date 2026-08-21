@@ -34,7 +34,7 @@ class ProductionInventoryContractMigrationTest {
     @Test
     void freshMigrationVersionsPublicProductionInventoryWithoutRemovingBusinessFields() throws Exception {
         resetDatabase();
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(123);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(131);
 
         assertThat(query("""
                 SELECT EXISTS(
@@ -56,7 +56,7 @@ class ProductionInventoryContractMigrationTest {
                 SELECT name FROM overview.region_surplus_calculation_contract
                 WHERE status_code='ACTIVE' AND TIMESTAMPTZ '2026-08-12 23:59:59+08' >= effective_from
                   AND (effective_to IS NULL OR TIMESTAMPTZ '2026-08-12 23:59:59+08' < effective_to)
-                """)).isEqualTo("地区余粮口径第1版");
+                """)).isEqualTo("地区余粮公开填报口径第1版");
         assertThat(query("""
                 SELECT string_agg(code,',' ORDER BY code) FROM platform.production_fact_definition
                 WHERE code IN ('PROD_OPENING_INVENTORY','PROD_ENDING_INVENTORY')
@@ -170,7 +170,7 @@ class ProductionInventoryContractMigrationTest {
     @Test
     void freshMigrationGrantsRuntimeOverviewContractReadOnlyAccess() throws Exception {
         resetDatabase();
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(123);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(131);
 
         assertThat(query("""
                 SELECT has_table_privilege('cofco_app',

@@ -25,48 +25,55 @@ public class OverviewSamplePointService {
     }
 
     @Transactional(readOnly = true)
-    public List<OverviewSamplePointAggregate> aggregates(Integer year, String parentCode) {
+    public List<OverviewSamplePointAggregate> aggregates(Integer year, String productCode, String parentCode) {
         int effectiveYear = effectiveYear(year);
+        validateProduct(productCode);
         if (!blank(parentCode) && (!overview.knownRegion(parentCode)
                 || !"PREFECTURE".equals(samplePoints.regionLevel(parentCode)))) throw invalid();
         AuthorizedReadScope scope = accessControl.requireReadScope();
         if (scope.regionCodes().isEmpty()) return List.of();
         authorizeNavigation(parentCode, scope);
-        return samplePoints.aggregates(effectiveYear, parentCode, scope.regionCodes());
+        return samplePoints.aggregates(effectiveYear, productCode, parentCode, scope.regionCodes());
     }
 
     @Transactional(readOnly = true)
-    public OverviewSamplePointList list(Integer year, String regionCode, String categoryCode, String typeCode, String query) {
+    public OverviewSamplePointList list(Integer year, String productCode, String regionCode,
+            String categoryCode, String typeCode, String query) {
         int effectiveYear = effectiveYear(year);
+        validateProduct(productCode);
         validateFilter(regionCode, categoryCode, typeCode);
         String normalizedQuery = normalizeQuery(query);
         AuthorizedReadScope scope = accessControl.requireReadScope();
         authorizeNavigation(regionCode, scope);
-        return samplePoints.list(effectiveYear, regionCode, categoryCode, typeCode, normalizedQuery, scope.regionCodes());
+        return samplePoints.list(effectiveYear, productCode, regionCode, categoryCode, typeCode,
+                normalizedQuery, scope.regionCodes());
     }
 
     @Transactional(readOnly = true)
-    public List<OverviewSamplePointIcon> icons(Integer year, String regionCode, String categoryCode,
+    public List<OverviewSamplePointIcon> icons(Integer year, String productCode, String regionCode,
+            String categoryCode,
             String typeCode, String query) {
         int effectiveYear = effectiveYear(year);
+        validateProduct(productCode);
         validateFilter(regionCode, categoryCode, typeCode);
         if (blank(categoryCode) || !iconRegionLevel(samplePoints.regionLevel(regionCode))) throw invalid();
         String normalizedQuery = normalizeQuery(query);
         AuthorizedReadScope scope = accessControl.requireReadScope();
         authorizeNavigation(regionCode, scope);
-        return samplePoints.icons(effectiveYear, regionCode, categoryCode, typeCode, normalizedQuery,
+        return samplePoints.icons(effectiveYear, productCode, regionCode, categoryCode, typeCode, normalizedQuery,
                 scope.regionCodes());
     }
 
     @Transactional(readOnly = true)
-    public OverviewSamplePointDetail detail(Integer year, UUID samplePointId, String regionCode,
+    public OverviewSamplePointDetail detail(Integer year, String productCode, UUID samplePointId, String regionCode,
             String categoryCode, String typeCode) {
         int effectiveYear = effectiveYear(year);
+        validateProduct(productCode);
         validateFilter(regionCode, categoryCode, typeCode);
         if (samplePointId == null) throw invalid();
         AuthorizedReadScope scope = accessControl.requireReadScope();
         authorizeNavigation(regionCode, scope);
-        return samplePoints.detail(effectiveYear, samplePointId, regionCode, categoryCode, typeCode,
+        return samplePoints.detail(effectiveYear, productCode, samplePointId, regionCode, categoryCode, typeCode,
                         scope.regionCodes())
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "OVERVIEW_SAMPLE_POINT_NOT_FOUND", "Sample point was not found"));
@@ -79,6 +86,10 @@ public class OverviewSamplePointService {
                 || !samplePoints.knownType(categoryCode, typeCode))) {
             throw invalid();
         }
+    }
+
+    private void validateProduct(String productCode) {
+        if (blank(productCode) || !overview.knownProduct(productCode)) throw invalid();
     }
 
     private int effectiveYear(Integer year) {
@@ -99,7 +110,8 @@ public class OverviewSamplePointService {
     }
 
     private static boolean iconRegionLevel(String level) {
-        return "COUNTY".equals(level) || "TOWNSHIP".equals(level) || "VILLAGE".equals(level);
+        return "PREFECTURE".equals(level) || "COUNTY".equals(level)
+                || "TOWNSHIP".equals(level) || "VILLAGE".equals(level);
     }
 
     private static boolean blank(String value) { return value == null || value.isBlank(); }

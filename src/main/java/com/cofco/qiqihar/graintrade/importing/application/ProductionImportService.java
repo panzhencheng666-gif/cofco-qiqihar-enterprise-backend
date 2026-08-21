@@ -43,11 +43,13 @@ public class ProductionImportService implements QueuedImportProcessor {
     private final RegionImportResolver regions;
     private final BusinessImportTemplateCatalog templateCatalog;
     private final GovernedDraftImportService draftImports;
+    private final OperationalReturnedCorrectionService returnedCorrections;
 
     public ProductionImportService(ImportJobRepository repository, ProductionImportPort production,
             AccessControl accessControl, BusinessAuditRecorder audit, ObjectMapper objectMapper, Clock clock,
             BusinessImportLimits limits, RegionImportResolver regions,
-            BusinessImportTemplateCatalog templateCatalog, GovernedDraftImportService draftImports) {
+            BusinessImportTemplateCatalog templateCatalog, GovernedDraftImportService draftImports,
+            OperationalReturnedCorrectionService returnedCorrections) {
         this.repository = repository;
         this.production = production;
         this.accessControl = accessControl;
@@ -58,6 +60,7 @@ public class ProductionImportService implements QueuedImportProcessor {
         this.regions = regions;
         this.templateCatalog = templateCatalog;
         this.draftImports = draftImports;
+        this.returnedCorrections = returnedCorrections;
     }
 
     public String template() { return ProductionImportTemplate.csv(); }
@@ -81,13 +84,21 @@ public class ProductionImportService implements QueuedImportProcessor {
     public ImportJobView importProductWorkbook(String idempotencyKey, String productCode,
             String filename, String mediaType, byte[] bytes,
             List<BusinessImportPhotoPackage.PhotoPart> photoParts) {
+        return importProductWorkbook(idempotencyKey, productCode, filename, mediaType, bytes, photoParts, null);
+    }
+
+    public ImportJobView importProductWorkbook(String idempotencyKey, String productCode,
+            String filename, String mediaType, byte[] bytes,
+            List<BusinessImportPhotoPackage.PhotoPart> photoParts, String fallbackObjectTypeCode) {
         try {
             var objectTypes = templateCatalog.objectTypes(ProductionImportTemplate.DOMAIN, productCode);
             var definitions = objectTypes.stream()
                     .map(option -> production.importDefinition(productCode, option.code())).toList();
             var template = ProductionImportTemplate.productWorkbook(productCode, definitions, objectTypes);
             var sheet = com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook
-                    .readDraft(bytes, template, limits.maximumRows());
+                    .readDraft(bytes, template,
+                            ProductionImportTemplate.compatiblePriorProductWorkbooks(template),
+                            limits.maximumRows());
             if (sheet.rows().isEmpty()) throw invalid();
             Map<String, String> objectTypeByLabel = objectTypes.stream().collect(
                     java.util.stream.Collectors.toMap(
@@ -95,7 +106,7 @@ public class ProductionImportService implements QueuedImportProcessor {
                             BusinessImportTemplateCatalog.ObjectTypeOption::code));
             var rows = DraftWorkbookRows.map(sheet, template,
                     ProductionImportTemplate.productCodes(productCode, definitions),
-                    "objectTypeCode", objectTypeByLabel, null,
+                    "objectTypeCode", objectTypeByLabel, fallbackObjectTypeCode,
                     Map.of(),
                     "PROD_SAMPLE_NAME", "regionCode", Set.of("PROD_REPORTER_NAME"));
             return draftImports.submit(idempotencyKey, ProductionImportTemplate.DOMAIN, "产情", productCode,
@@ -103,6 +114,12 @@ public class ProductionImportService implements QueuedImportProcessor {
         } catch (ClientRequestException exception) {
             throw exception;
         } catch (IllegalArgumentException exception) {
+            String reason = exception.getMessage();
+            if (reason != null && reason.startsWith("XLSX_EXTRA_COLUMN:")) {
+                String column = reason.substring("XLSX_EXTRA_COLUMN:".length());
+                throw new ClientRequestException("INVALID_IMPORT_FORMAT",
+                        "文件多出第 " + column + " 列，请删除模板之外的列后重试。");
+            }
             throw new ClientRequestException("INVALID_IMPORT_FORMAT", "XLSX 模板或填写内容无效");
         }
     }
@@ -132,8 +149,7 @@ public class ProductionImportService implements QueuedImportProcessor {
     @Transactional
     public ImportJobView retry(UUID importJobId) {
         SecurityPrincipal principal = accessControl.require("BUSINESS_IMPORT", null);
-        var prior = repository.findById(importJobId).orElseThrow(() -> new ClientRequestException(
-                "IMPORT_JOB_NOT_FOUND", "Import job does not exist"));
+        var prior = ordinary(importJobId);
         if (!prior.job().requestedBy().equals(principal.subjectId())) {
             throw new ConflictException("IMPORT_RETRY_NOT_ALLOWED", "Import job belongs to a different subject");
         }
@@ -142,6 +158,9 @@ public class ProductionImportService implements QueuedImportProcessor {
             return ImportJobView.from(repository.queue(principal.subjectId(), ProductionImportTemplate.DOMAIN,
                     retryKey, prior.job().contentSha256(), principal.workUnitCode(), prior.job().id(),
                     prior.sourceContent(), clock.instant()).stored().job());
+        }
+        if (draftImports.supports(prior.sourceContent())) {
+            return draftImports.retryFailedRows(prior, principal);
         }
         Set<Integer> failedRows = prior.job().rows().stream().filter(row -> row.outcomeCode().equals("ERROR"))
                 .map(com.cofco.qiqihar.graintrade.importing.domain.ImportRowOutcome::rowNumber).collect(java.util.stream.Collectors.toSet());
@@ -158,8 +177,7 @@ public class ProductionImportService implements QueuedImportProcessor {
     @Transactional
     public ImportErrorFile errors(UUID importJobId) {
         SecurityPrincipal principal = accessControl.require("BUSINESS_IMPORT", null);
-        ImportJob job = repository.findById(importJobId).orElseThrow(() -> new ClientRequestException(
-                "IMPORT_JOB_NOT_FOUND", "Import job does not exist")).job();
+        ImportJob job = ordinary(importJobId).job();
         if (!job.requestedBy().equals(principal.subjectId())) {
             throw new ConflictException("IMPORT_ERROR_FILE_NOT_ALLOWED", "Import job belongs to a different subject");
         }
@@ -182,7 +200,12 @@ public class ProductionImportService implements QueuedImportProcessor {
     @Transactional(readOnly = true)
     public ImportJobView status(UUID importJobId) {
         SecurityPrincipal principal = accessControl.require("BUSINESS_IMPORT", null);
-        return ImportJobView.from(owned(importJobId, principal).job());
+        ImportJobRepository.StoredImportJob stored = ordinary(importJobId);
+        if (!stored.job().requestedBy().equals(principal.subjectId())) {
+            throw new ConflictException(
+                    "IMPORT_JOB_NOT_ALLOWED", "Import job belongs to a different subject");
+        }
+        return ImportJobView.from(stored.job());
     }
 
     @Override public String domainCode() { return ProductionImportTemplate.DOMAIN; }
@@ -193,6 +216,11 @@ public class ProductionImportService implements QueuedImportProcessor {
         var stored = owned(jobId, principal);
         if (!"PROCESSING".equals(stored.job().statusCode())) {
             throw new ConflictException("IMPORT_JOB_NOT_PROCESSING", "Import job is not processing");
+        }
+        if (returnedCorrections.supports(ProductionImportTemplate.DOMAIN, stored.sourceContent())) {
+            returnedCorrections.processQueued(
+                    ProductionImportTemplate.DOMAIN, stored, principal);
+            return;
         }
         if (draftImports.supports(stored.sourceContent())) {
             draftImports.processQueued(stored, principal);
@@ -208,6 +236,19 @@ public class ProductionImportService implements QueuedImportProcessor {
                 .orElseThrow(() -> new ClientRequestException("IMPORT_JOB_NOT_FOUND", "Import job does not exist"));
         if (!stored.job().requestedBy().equals(principal.subjectId())) {
             throw new ConflictException("IMPORT_JOB_NOT_ALLOWED", "Import job belongs to a different subject");
+        }
+        return stored;
+    }
+
+    private ImportJobRepository.StoredImportJob ordinary(UUID jobId) {
+        ImportJobRepository.StoredImportJob stored = repository.findById(jobId)
+                .filter(value -> value.job().domainCode().equals(ProductionImportTemplate.DOMAIN))
+                .orElseThrow(() -> new ClientRequestException(
+                        "IMPORT_JOB_NOT_FOUND", "Import job does not exist"));
+        if (returnedCorrections.supports(
+                ProductionImportTemplate.DOMAIN, stored.sourceContent())) {
+            throw new ClientRequestException(
+                    "IMPORT_JOB_NOT_FOUND", "Import job does not exist");
         }
         return stored;
     }
@@ -392,8 +433,7 @@ public class ProductionImportService implements QueuedImportProcessor {
             if (required(values, "regionCode") || required(values, "surveyYear")
                     || required(values, "cultivatedAreaMu")
                     || required(values, "yieldPerMuKilograms")
-                    || ProductionImportTemplate.SUBMISSION_METADATA_HEADERS.stream()
-                            .filter(header -> !header.equals("PROD_REPORTER_NAME"))
+                    || ProductionImportTemplate.REQUIRED_SUBMISSION_METADATA_HEADERS.stream()
                             .anyMatch(header -> required(values, header))) {
                 return ParsedRow.error(number, values,
                         "IMPORT_ROW_REQUIRED_VALUE", "Required production import value is blank");
@@ -453,8 +493,7 @@ public class ProductionImportService implements QueuedImportProcessor {
             if (required(values, "productCode") || required(values, "objectTypeCode") || required(values, "regionCode")
                     || required(values, "surveyDate") || required(values, "cultivatedAreaMu")
                     || required(values, "yieldPerMuKilograms") || required(values, "evidencePhotoId")
-                    || ProductionImportTemplate.SUBMISSION_METADATA_HEADERS.stream()
-                            .filter(header -> !header.equals("PROD_REPORTER_NAME"))
+                    || ProductionImportTemplate.REQUIRED_SUBMISSION_METADATA_HEADERS.stream()
                             .anyMatch(header -> required(values, header))) {
                 return ParsedRow.error(number, values, "IMPORT_ROW_REQUIRED_VALUE", "Required production import value is blank");
             }

@@ -7,12 +7,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.math.BigDecimal;
 import java.time.Instant;
 
 public interface MarketMonitoringRepository {
     PagedResult<MarketListRow> findPage(MarketRecordQuery query);
     Optional<MarketMonitoringRecord> findById(String id);
     boolean isKnownRegion(String regionCode);
+    boolean isPointWithinRegion(String regionCode, BigDecimal latitude, BigDecimal longitude);
     boolean isApplicableObjectType(String productCode, String objectTypeCode);
     boolean areApplicableFacts(String productCode, String objectTypeCode, Set<String> codes);
     List<MarketFactCategory> findFactCategories();
@@ -28,9 +30,4 @@ public interface MarketMonitoringRepository {
             MarketMonitoringRecord record, long expectedVersion, String actorId, Instant updatedAt);
     void linkApprovedSamplePoint(MarketMonitoringRecord record, Map<String, String> extensionCoreValues,
             String approvingActorId, Instant approvedAt);
-    void reconcileInventoryGovernance(
-            MarketMonitoringRecord record, Map<String, String> extensionCoreValues,
-            String actorId, Instant reconciledAt);
-    String inventoryGovernanceStatus(String id);
-    boolean inventoryGovernanceReady(String id);
 }

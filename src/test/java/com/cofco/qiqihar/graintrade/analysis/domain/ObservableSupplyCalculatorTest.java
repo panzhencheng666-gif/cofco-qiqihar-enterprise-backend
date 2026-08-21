@@ -33,17 +33,19 @@ class ObservableSupplyCalculatorTest {
     @Test
     void calculatesTheObservableRegionalResidualFromCurrentSurveyInputs() {
         ObservableSupplyCalculation result = ObservableSupplyCalculator.calculate(
-                input("10", "50", "5", "5", "15", "25", true, 6));
+                input("10", "50", "5", "5", "15", "25", true, true, 0, 6));
 
         assertThat(result.qualityState()).isEqualTo(AnalysisQualityState.AVAILABLE);
         assertThat(result.inferredOtherAbsorptionTonnes()).isEqualByComparingTo("20.0000");
+        assertThat(result.totalSupplyTonnes()).isEqualByComparingTo("65.0000");
+        assertThat(result.totalUseTonnes()).isEqualByComparingTo("40.0000");
         assertThat(result.issues()).isEmpty();
     }
 
     @Test
     void keepsAMissingCriticalQuantityMissingInsteadOfConvertingItToZero() {
         ObservableSupplyCalculation result = ObservableSupplyCalculator.calculate(
-                input("10", "50", "5", "5", "15", null, true, 5));
+                input("10", "50", "5", "5", "15", null, true, false, 0, 5));
 
         assertThat(result.qualityState()).isEqualTo(AnalysisQualityState.PARTIAL);
         assertThat(result.endingObservableInventoryTonnes()).isNull();
@@ -54,7 +56,7 @@ class ObservableSupplyCalculatorTest {
     @Test
     void blocksANegativeInferredResidual() {
         ObservableSupplyCalculation result = ObservableSupplyCalculator.calculate(
-                input("0", "10", "0", "5", "5", "5", true, 6));
+                input("0", "10", "0", "5", "5", "5", true, true, 0, 6));
 
         assertThat(result.qualityState()).isEqualTo(AnalysisQualityState.BLOCKED);
         assertThat(result.inferredOtherAbsorptionTonnes()).isEqualByComparingTo("-5.0000");
@@ -62,19 +64,32 @@ class ObservableSupplyCalculatorTest {
     }
 
     @Test
-    void refusesToAddProductionAndMarketInventoryWhenMutualExclusivityIsUnknown() {
+    void keepsKnownComponentsButDoesNotInferResidualUntilInventoryIsComplete() {
         ObservableSupplyCalculation result = ObservableSupplyCalculator.calculate(
-                input("10", "50", "5", "5", "15", "25", false, 6));
+                input("10", "50", "5", "5", "15", "25", false, true, 0, 6));
+
+        assertThat(result.qualityState()).isEqualTo(AnalysisQualityState.PARTIAL);
+        assertThat(result.openingObservableInventoryTonnes()).isEqualByComparingTo("10.0000");
+        assertThat(result.expectedOutputTonnes()).isEqualByComparingTo("50.0000");
+        assertThat(result.inferredOtherAbsorptionTonnes()).isNull();
+        assertThat(result.issues()).contains("OPENING_OBSERVABLE_INVENTORY_INCOMPLETE");
+    }
+
+    @Test
+    void localInventoryReviewKeepsKnownValuesAndPreventsOnlyTheResidual() {
+        ObservableSupplyCalculation result = ObservableSupplyCalculator.calculate(
+                input("10", "50", "5", "5", "15", "25", true, true, 1, 6));
 
         assertThat(result.qualityState()).isEqualTo(AnalysisQualityState.COVERAGE_REVIEW_REQUIRED);
+        assertThat(result.endingObservableInventoryTonnes()).isEqualByComparingTo("25.0000");
         assertThat(result.inferredOtherAbsorptionTonnes()).isNull();
-        assertThat(result.issues()).containsExactly("INVENTORY_MUTUAL_EXCLUSIVITY_UNPROVEN");
+        assertThat(result.issues()).containsExactly("INVENTORY_POSITION_REVIEW_REQUIRED");
     }
 
     @Test
     void reportsNoApprovedDataBeforeAttemptingAnyCalculation() {
         ObservableSupplyCalculation result = ObservableSupplyCalculator.calculate(
-                input(null, null, null, null, null, null, true, 0));
+                input(null, null, null, null, null, null, false, false, 0, 0));
 
         assertThat(result.qualityState()).isEqualTo(AnalysisQualityState.NO_APPROVED_DATA);
         assertThat(result.inferredOtherAbsorptionTonnes()).isNull();
@@ -95,12 +110,15 @@ class ObservableSupplyCalculatorTest {
             String selfUse,
             String outflow,
             String endingInventory,
-            boolean inventoryMutuallyExclusive,
+            boolean openingInventoryComplete,
+            boolean endingInventoryComplete,
+            int inventoryReviewGroupCount,
             int approvedRecordCount) {
         return new ObservableQuantityInput(
                 decimal(openingInventory), decimal(expectedOutput), decimal(inflow),
                 decimal(selfUse), decimal(outflow), decimal(endingInventory),
-                inventoryMutuallyExclusive, approvedRecordCount);
+                openingInventoryComplete, endingInventoryComplete,
+                inventoryReviewGroupCount, approvedRecordCount);
     }
 
     private static BigDecimal decimal(String value) {

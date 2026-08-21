@@ -61,8 +61,8 @@ class LogisticsImportRestIntegrationTest {
         assertThat(empty.productCode()).isEqualTo("CORN");
         assertThat(empty.objectTypeCode()).isNull();
         assertThat(LogisticsImportTemplate.headers(logisticsDefinition()))
-                .containsExactly("数据年份", "数据月份", "填报日期", "物流样本点名称", "地区", "填报人",
-                        "填报人联系方式", "物流样本点联系方式", "纬度（度）", "经度（度）", "运输方式",
+                .containsExactly("数据年份", "数据月份", "填报日期", "物流样本点名称", "地区",
+                        "调研人", "调研人联系方式", "物流样本点联系方式", "纬度（度）", "经度（度）", "运输方式",
                         "运输方向", "运输数量（吨）", "物流运价（不含车板价）（元/吨）", "车板价（元/吨）",
                         "填报状态", BusinessImportWorkbook.PHOTO_FILENAMES_LABEL)
                 .noneMatch(header -> header.matches(".*[A-Za-z_].*"));
@@ -201,7 +201,8 @@ class LogisticsImportRestIntegrationTest {
             case "surveyMonth" -> "8";
             case "LOG_SAMPLE_NAME" -> "齐齐哈尔物流中心";
             case "LOG_REGION" -> "230200";
-            case "LOG_REPORTER_PHONE" -> "13800000000";
+            case "LOG_SURVEYOR_NAME" -> "王雷";
+            case "LOG_SURVEYOR_PHONE" -> "13800000000";
             case "LOG_SAMPLE_CONTACT" -> "13900000000";
             case "LOG_SAMPLE_LATITUDE" -> "47.354300";
             case "LOG_SAMPLE_LONGITUDE" -> "123.918200";

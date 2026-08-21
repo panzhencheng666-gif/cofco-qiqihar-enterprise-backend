@@ -7,14 +7,14 @@ import java.util.Set;
 
 /** Builds the only field catalogue used by production XLSX, APIs and browser entry points. */
 public final class ProductionSurveyFieldContract {
-    public static final String VERSION = "production-survey-fields-v1";
+    public static final String VERSION = "production-survey-fields-v4";
     public static final String DIGEST =
-            "sha256:44997993c550cd093d2012bb0eb0520b5f693da046cca2573d4fbe6b93f62e32";
+            "sha256:07806fbda70354ee29b243020cd5508db52271f8d7c88ac540379a7c1c3297fe";
     private static final Set<String> FIXED_CODES = Set.of(
             "objectTypeCode", "regionCode", "PROD_CULTIVAR_NAME", "surveyYear", "surveyMonth", "surveyDate",
             "PROD_SAMPLE_SUBJECT_CODE", "PROD_SURPLUS_SUBJECT_CODE", "PROD_SURPLUS_CUTOFF_DATE",
-            "PROD_SAMPLE_NAME", "PROD_REPORTER_NAME",
-            "PROD_REPORTER_PHONE", "PROD_SAMPLE_CONTACT", "PROD_SAMPLE_LATITUDE",
+            "PROD_SAMPLE_NAME", "PROD_REPORTER_NAME", "PROD_SURVEYOR_NAME",
+            "PROD_SURVEYOR_PHONE", "PROD_SAMPLE_CONTACT", "PROD_SAMPLE_LATITUDE",
             "PROD_SAMPLE_LONGITUDE", "cultivatedAreaMu", "yieldPerMuKilograms",
             "estimatedOutputKilograms", "yearOnYear", "evidencePhotoId");
 
@@ -28,8 +28,6 @@ public final class ProductionSurveyFieldContract {
         fields.add(fixed("regionCode", "地区", "CONTEXT", "基础信息", 10, 20,
                 "TEXT", "REGION", null, true, false, false, true, true, 0, 0,
                 "完整行政区划路径或有效地区代码"));
-        fields.add(fixed("PROD_CULTIVAR_NAME", "具体品种", "CONTEXT", "基础信息", 10, 30,
-                "TEXT", "TEXT", null, false, false, false, true, true, 0, 0, null));
         fields.add(fixed("surveyYear", "数据年份", "CONTEXT", "数据时间", 10, 40,
                 "TEXT", "SELECT", null, true, false, false, true, true, 4, 0,
                 "数据所属年份，1900—2200"));
@@ -46,13 +44,15 @@ public final class ProductionSurveyFieldContract {
         fields.add(fixed("PROD_REPORTER_NAME", "填报人", "SUBJECT", "填报与定位", 20, 30,
                 "TEXT", "READONLY_TEXT", null, true, true, false, false, true, 0, 0,
                 "由登录账号自动记录"));
-        fields.add(fixed("PROD_REPORTER_PHONE", "填报人联系方式", "SUBJECT", "填报与定位", 20, 40,
+        fields.add(fixed("PROD_SURVEYOR_NAME", "调研人", "SUBJECT", "填报与定位", 20, 40,
+                "TEXT", "TEXT", null, false, false, false, true, true, 0, 0, null));
+        fields.add(fixed("PROD_SURVEYOR_PHONE", "调研人联系方式", "SUBJECT", "填报与定位", 20, 50,
+                "TEXT", "TEXT", null, false, false, false, true, true, 0, 0, null));
+        fields.add(fixed("PROD_SAMPLE_CONTACT", "样本点联系方式", "SUBJECT", "填报与定位", 20, 60,
                 "TEXT", "TEXT", null, true, false, false, true, true, 0, 0, null));
-        fields.add(fixed("PROD_SAMPLE_CONTACT", "样本点联系方式", "SUBJECT", "填报与定位", 20, 50,
-                "TEXT", "TEXT", null, true, false, false, true, true, 0, 0, null));
-        fields.add(fixed("PROD_SAMPLE_LATITUDE", "纬度", "SUBJECT", "填报与定位", 20, 60,
+        fields.add(fixed("PROD_SAMPLE_LATITUDE", "纬度", "SUBJECT", "填报与定位", 20, 70,
                 "DECIMAL", "DECIMAL", "度", true, false, false, true, true, 9, 6, "范围 -90 至 90"));
-        fields.add(fixed("PROD_SAMPLE_LONGITUDE", "经度", "SUBJECT", "填报与定位", 20, 70,
+        fields.add(fixed("PROD_SAMPLE_LONGITUDE", "经度", "SUBJECT", "填报与定位", 20, 80,
                 "DECIMAL", "DECIMAL", "度", true, false, false, true, true, 9, 6, "范围 -180 至 180"));
 
         fields.add(fixed("cultivatedAreaMu", "播种面积", "OUTPUT", "产量信息", 30, 10,
@@ -86,11 +86,20 @@ public final class ProductionSurveyFieldContract {
 
     private static ProductionSurveyField businessField(
             ProductionFactDefinition field, ProductionFactGroup group, int groupOrder) {
+        field = governed(field);
         return new ProductionSurveyField(
                 field.code(), field.label(), group.category(), group.label(), groupOrder,
                 field.sortOrder(), field.valueType(), controlType(field.valueType()), field.unit(),
                 false, List.of(), false, false, true, true,
                 field.description(), field.precision(), field.scale());
+    }
+
+    /** Allows human-entered business decimals up to the lossless database scale. */
+    public static ProductionFactDefinition governed(ProductionFactDefinition field) {
+        int scale = "DECIMAL".equals(field.valueType()) ? Math.max(field.scale(), 4) : field.scale();
+        return scale == field.scale() ? field : new ProductionFactDefinition(
+                field.code(), field.category(), field.label(), field.valueType(), field.unit(),
+                field.description(), field.precision(), scale, field.sortOrder());
     }
 
     private static ProductionSurveyField fixed(String code, String label, String groupCode, String groupLabel,

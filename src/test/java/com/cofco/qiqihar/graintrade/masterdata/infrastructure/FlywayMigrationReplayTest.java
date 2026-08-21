@@ -182,7 +182,7 @@ class FlywayMigrationReplayTest {
                 .containsEntry("product", 3L)
                 .containsEntry("cultivar", 2L)
                 .containsEntry("object_type", 12L)
-                .containsEntry("page_definition_field", 240L)
+                .containsEntry("page_definition_field", 216L)
                 .containsEntry("production_fact_category", 5L)
                 .containsEntry("production_fact_definition", 34L)
                 .containsEntry("production_fact_applicability", 231L);
@@ -931,7 +931,8 @@ class FlywayMigrationReplayTest {
         coreValues.put("MKT_PACKAGING_AMOUNT", "12");
         coreValues.put("MKT_FREIGHT_AMOUNT", "72");
         coreValues.put("MKT_REPORTER_NAME", "迁移回放填报员");
-        coreValues.put("MKT_REPORTER_PHONE", "13800000000");
+        coreValues.put("MKT_SURVEYOR_NAME", "王雷");
+        coreValues.put("MKT_SURVEYOR_PHONE", "13800000000");
         coreValues.put("MKT_SAMPLE_NAME", "迁移回放样本企业");
         coreValues.put("MKT_SAMPLE_CONTACT", "13900000000");
         coreValues.put("MKT_SAMPLE_LATITUDE", "47.3543");

@@ -8,6 +8,10 @@ import com.cofco.qiqihar.graintrade.market.importing.MarketImportDefinition;
 /** Server-owned fixed columns for market monitoring imports. */
 public final class MarketImportTemplate {
     public static final String DOMAIN = "MARKET";
+    private static final java.util.Map<String, String> PRIOR_PRODUCT_CONTRACT_DIGESTS = java.util.Map.of(
+            "CORN", "sha256:5fc9a7e9a33f66ca596e021c232d6f74da2dbd812e3e60bbb5f0a296f853ef70",
+            "SOYBEAN", "sha256:c533fb002a51e8be2307287f51c90ca2423c308f78ca1450a7f3ff0d9096fd83",
+            "RICE", "sha256:37a9e138632a9da63be9b7b545209099011fb52a3e0bf05a7349f3b4ae12cd1c");
     public static final List<String> HEADERS = List.of(
             "productCode", "objectTypeCode", "regionCode", "tradeDate",
             "purchaseBasePrice", "saleBasePrice", "carriageBoardAmount", "packagingAmount",
@@ -15,7 +19,7 @@ public final class MarketImportTemplate {
             "sampleContact", "latitude", "longitude", "purchaseVolume", "moisture", "evidencePhotoId");
     public static final String EVIDENCE_PHOTO_ID = "evidencePhotoId";
     private static final List<String> BUSINESS_CODES = List.of(
-            "MKT_SAMPLE_NAME", "MKT_REGION", "MKT_REPORTER_NAME", "MKT_REPORTER_PHONE",
+            "MKT_SAMPLE_NAME", "MKT_REGION", "MKT_SURVEYOR_NAME", "MKT_SURVEYOR_PHONE",
             "MKT_SAMPLE_CONTACT", "MKT_SAMPLE_LATITUDE", "MKT_SAMPLE_LONGITUDE",
             "MKT_PURCHASE_BASE_PRICE", "MKT_SALE_BASE_PRICE",
             "PURCHASE_VOLUME", "SALES_VOLUME", "MKT_CARRIAGE_BOARD_AMOUNT", "MKT_FREIGHT_AMOUNT",
@@ -25,7 +29,8 @@ public final class MarketImportTemplate {
             java.util.Map.entry("MKT_SAMPLE_NAME", "样本点名称"),
             java.util.Map.entry("MKT_REGION", "地区"),
             java.util.Map.entry("MKT_REPORTER_NAME", "填报人"),
-            java.util.Map.entry("MKT_REPORTER_PHONE", "填报人联系方式"),
+            java.util.Map.entry("MKT_SURVEYOR_NAME", "调研人"),
+            java.util.Map.entry("MKT_SURVEYOR_PHONE", "调研人联系方式"),
             java.util.Map.entry("MKT_SAMPLE_CONTACT", "样本点联系方式"),
             java.util.Map.entry("MKT_SAMPLE_LATITUDE", "纬度"),
             java.util.Map.entry("MKT_SAMPLE_LONGITUDE", "经度"),
@@ -52,8 +57,8 @@ public final class MarketImportTemplate {
                 java.util.stream.Stream.concat(
                         java.util.stream.Stream.of(
                                 new BusinessImportWorkbook.ColumnRule(
-                                        "surveyYear", "TEXT", "YEAR", false, List.of(), 4, 0,
-                                        "可留空；填写时为 1900—2200"),
+                                        "surveyYear", "TEXT", "YEAR", true, List.of(), 4, 0,
+                                        "必填，填写 1900—2200 的整数"),
                                 new BusinessImportWorkbook.ColumnRule(
                                         "surveyMonth", "TEXT", "MONTH", false, List.of(), 2, 0,
                                         "可留空；填写时为 1—12 月")),
@@ -79,19 +84,19 @@ public final class MarketImportTemplate {
                         java.util.stream.Stream.of(BusinessImportWorkbook.PHOTO_FILENAMES_CODE))
                 .flatMap(java.util.function.Function.identity()).toList();
         List<String> labels = java.util.stream.Stream.of(
-                        java.util.stream.Stream.of("对象类型", "数据年份", "数据月份"),
+                        java.util.stream.Stream.of("样本点类型", "数据年份", "数据月份"),
                         fields.stream().map(MarketImportTemplate::displayLabel),
                         java.util.stream.Stream.of(BusinessImportWorkbook.PHOTO_FILENAMES_LABEL))
                 .flatMap(java.util.function.Function.identity()).toList();
         List<BusinessImportWorkbook.ColumnRule> rules = java.util.stream.Stream.of(
                         java.util.stream.Stream.of(
                                 new BusinessImportWorkbook.ColumnRule(
-                                        "objectTypeCode", "TEXT", "SELECT", false,
+                                        "objectTypeCode", "TEXT", "SELECT", true,
                                         objectTypes.stream().map(ObjectTypeOption::label).toList(), 0, 0,
-                                        "可留空导入草稿；提升为正式记录前补充"),
+                                        "必填，请从下拉选项中选择样本点类型"),
                                 new BusinessImportWorkbook.ColumnRule(
-                                        "surveyYear", "TEXT", "YEAR", false, List.of(), 4, 0,
-                                        "可留空；填写时为 1900—2200"),
+                                        "surveyYear", "TEXT", "YEAR", true, List.of(), 4, 0,
+                                        "必填，填写 1900—2200 的整数"),
                                 new BusinessImportWorkbook.ColumnRule(
                                         "surveyMonth", "TEXT", "MONTH", false, List.of(), 2, 0,
                                         "可留空；填写时为 1—12 月")),
@@ -101,6 +106,15 @@ public final class MarketImportTemplate {
                 .flatMap(java.util.function.Function.identity()).toList();
         return new BusinessImportWorkbook.Template(DOMAIN, "市场", productCode, null,
                 BusinessImportWorkbook.CONTRACT_VERSION, null, headers, labels, rules);
+    }
+
+    public static List<BusinessImportWorkbook.Template> compatiblePriorProductWorkbooks(
+            BusinessImportWorkbook.Template current) {
+        String digest = PRIOR_PRODUCT_CONTRACT_DIGESTS.get(current.productCode());
+        if (digest == null) return List.of();
+        return List.of(new BusinessImportWorkbook.Template(
+                current.domainCode(), current.domainLabel(), current.productCode(), current.objectTypeCode(),
+                current.contractVersion(), digest, current.headers(), current.labels(), current.rules()));
     }
 
     public static List<String> productCodes(

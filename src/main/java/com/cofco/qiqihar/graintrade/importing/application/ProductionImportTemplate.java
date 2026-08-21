@@ -8,13 +8,19 @@ import com.cofco.qiqihar.graintrade.production.application.ProductionSurveyField
 
 public final class ProductionImportTemplate {
     public static final String DOMAIN = "PRODUCTION";
+    private static final java.util.Map<String, String> PRIOR_PRODUCT_CONTRACT_DIGESTS = java.util.Map.of(
+            "CORN", "sha256:6694ba15e979c57c01abf1151711f998e0e2e3826ec781af3b9cd61f18ff2544",
+            "SOYBEAN", "sha256:fce5752781c6e02d25e37ad561147dc2ffb03f7a673921fd0cc1fc0cad08073e",
+            "RICE", "sha256:2df52265d5dc0c5a63525da5fc92f30e852fbaff6f02280d23e8dcb9fd14af1d");
     public static final List<String> SUBMISSION_METADATA_HEADERS = List.of(
-            "PROD_REPORTER_NAME", "PROD_REPORTER_PHONE", "PROD_SAMPLE_CONTACT",
+            "PROD_REPORTER_NAME", "PROD_SURVEYOR_NAME", "PROD_SURVEYOR_PHONE", "PROD_SAMPLE_CONTACT",
             "PROD_SAMPLE_LATITUDE", "PROD_SAMPLE_LONGITUDE");
+    public static final java.util.Set<String> REQUIRED_SUBMISSION_METADATA_HEADERS = java.util.Set.of(
+            "PROD_SAMPLE_CONTACT", "PROD_SAMPLE_LATITUDE", "PROD_SAMPLE_LONGITUDE");
     private static final List<String> BUSINESS_HEADERS = List.of(
-            "surveyYear", "surveyMonth", "PROD_SAMPLE_NAME", "regionCode", "PROD_CULTIVAR_NAME",
-            "PROD_REPORTER_NAME",
-            "PROD_REPORTER_PHONE", "PROD_SAMPLE_CONTACT", "PROD_SAMPLE_LATITUDE", "PROD_SAMPLE_LONGITUDE",
+            "surveyYear", "surveyMonth", "PROD_SAMPLE_NAME", "regionCode",
+            "PROD_REPORTER_NAME", "PROD_SURVEYOR_NAME", "PROD_SURVEYOR_PHONE",
+            "PROD_SAMPLE_CONTACT", "PROD_SAMPLE_LATITUDE", "PROD_SAMPLE_LONGITUDE",
             "cultivatedAreaMu", "PROD_HARVEST_AREA_MU", "PROD_AFFECTED_AREA_MU", "PROD_GROWTH_STATUS",
             "PROD_GROWTH_STAGE", "yieldPerMuKilograms", "MOISTURE", "TEST_WEIGHT", "TOXIN", "IMPURITY",
             "IMPERFECT_GRAIN", "MILDEW", "PROTEIN", "OIL_YIELD", "MILLING_YIELD", "BROWN_RICE_YIELD",
@@ -22,20 +28,20 @@ public final class ProductionImportTemplate {
             "PROD_INTENDED_AREA_MU", "PROD_INTENTION_REASON", "LAND_RENT", "SEED_COST", "PESTICIDE_COST",
             "FERTILIZER_COST", "IRRIGATION_COST", "LABOR_COST", "MACHINERY_COST", "OTHER_COST",
             "SUBSIDY_AMOUNT", "INSURANCE_AMOUNT", "PROD_SOURCE_NOTE");
-    public static final List<String> DETAIL_HEADERS = List.of("PROD_CULTIVAR_NAME", "PROD_SAMPLE_NAME", "PROD_HARVEST_AREA_MU",
+    public static final List<String> DETAIL_HEADERS = List.of("PROD_SAMPLE_NAME", "PROD_HARVEST_AREA_MU",
             "PROD_AFFECTED_AREA_MU", "PROD_GROWTH_STATUS", "PROD_GROWTH_STAGE", "PROD_OPENING_INVENTORY",
             "PROD_SALES_VOLUME", "PROD_SELF_USE", "PROD_ENDING_INVENTORY", "PROD_INTENDED_AREA_MU",
-            "PROD_INTENTION_REASON", "PROD_SURPLUS_SUBJECT_CODE", "PROD_SURPLUS_CUTOFF_DATE");
+            "PROD_INTENTION_REASON");
     public static final List<String> QUALITY_HEADERS = List.of("MOISTURE", "TEST_WEIGHT", "TOXIN", "IMPURITY",
             "IMPERFECT_GRAIN", "MILDEW", "PROTEIN", "OIL_YIELD", "MILLING_YIELD", "BROWN_RICE_YIELD");
     public static final List<String> COST_HEADERS = List.of("LAND_RENT", "SEED_COST", "PESTICIDE_COST",
             "FERTILIZER_COST", "IRRIGATION_COST", "LABOR_COST", "MACHINERY_COST", "OTHER_COST");
     public static final List<String> HEADERS = List.of("productCode", "objectTypeCode", "regionCode", "cultivarCode",
             "surveyDate", "cultivatedAreaMu", "yieldPerMuKilograms",
-            "PROD_REPORTER_NAME", "PROD_REPORTER_PHONE", "PROD_SAMPLE_CONTACT",
+            "PROD_REPORTER_NAME", "PROD_SURVEYOR_NAME", "PROD_SURVEYOR_PHONE", "PROD_SAMPLE_CONTACT",
             "PROD_SAMPLE_LATITUDE", "PROD_SAMPLE_LONGITUDE", "evidencePhotoId");
-    public static final List<String> XLSX_HEADERS = List.of("regionCode", "PROD_CULTIVAR_NAME", "surveyDate",
-            "cultivatedAreaMu", "yieldPerMuKilograms", "PROD_REPORTER_PHONE", "PROD_SAMPLE_CONTACT",
+    public static final List<String> XLSX_HEADERS = List.of("regionCode", "surveyDate",
+            "cultivatedAreaMu", "yieldPerMuKilograms", "PROD_SURVEYOR_NAME", "PROD_SURVEYOR_PHONE", "PROD_SAMPLE_CONTACT",
             "PROD_SAMPLE_LATITUDE", "PROD_SAMPLE_LONGITUDE", "PROD_SAMPLE_NAME", "PROD_HARVEST_AREA_MU",
             "PROD_AFFECTED_AREA_MU", "PROD_GROWTH_STATUS", "PROD_GROWTH_STAGE", "PROD_OPENING_INVENTORY",
             "PROD_SALES_VOLUME", "PROD_SELF_USE", "PROD_ENDING_INVENTORY", "PROD_INTENDED_AREA_MU",
@@ -47,8 +53,8 @@ public final class ProductionImportTemplate {
     public static final List<String> XLSX_CANONICAL_HEADERS = java.util.stream.Stream.of(
             List.of("productCode", "objectTypeCode", "PROD_REPORTER_NAME"), XLSX_HEADERS)
             .flatMap(List::stream).toList();
-    public static final List<String> XLSX_LABELS = List.of("所在地区", "具体品种", "调查日期",
-            "种植面积（亩）", "权威采用单产（公斤/亩）", "填报人联系方式", "填报对象联系方式",
+    public static final List<String> XLSX_LABELS = List.of("所在地区", "调查日期",
+            "种植面积（亩）", "权威采用单产（公斤/亩）", "调研人", "调研人联系方式", "填报对象联系方式",
             "纬度（度）", "经度（度）", "填报对象", "预计收获面积（亩）", "灾损面积（亩）",
             "当前长势", "生育阶段", "期初库存（吨）", "销售数量（吨）", "自用数量（吨）", "期末余粮（吨）",
             "下年度意向面积（亩）", "调整原因", "水分（%）", "容重（克/升）", "毒素（%）", "杂质（%）",
@@ -109,15 +115,24 @@ public final class ProductionImportTemplate {
                 .flatMap(java.util.function.Function.identity()).toList();
         List<BusinessImportWorkbook.ColumnRule> rules = java.util.stream.Stream.of(
                         java.util.stream.Stream.of(new BusinessImportWorkbook.ColumnRule(
-                                "样本点类型", "TEXT", "SELECT", false,
+                                "样本点类型", "TEXT", "SELECT", true,
                                 objectTypes.stream().map(ObjectTypeOption::label).toList(), 0, 0,
-                                "可留空导入草稿；提升为正式记录前补充")),
+                                "必填，请从下拉选项中选择样本点类型")),
                         fields.stream().map(field -> columnRule(field, field.displayLabel())),
                         java.util.stream.Stream.of(BusinessImportWorkbook.photoFilenameRule(
                                 BusinessImportWorkbook.PHOTO_FILENAMES_LABEL)))
                 .flatMap(java.util.function.Function.identity()).toList();
         return new BusinessImportWorkbook.Template(DOMAIN, "产情", productCode, null,
                 BusinessImportWorkbook.CONTRACT_VERSION, null, headers, headers, rules);
+    }
+
+    public static List<BusinessImportWorkbook.Template> compatiblePriorProductWorkbooks(
+            BusinessImportWorkbook.Template current) {
+        String digest = PRIOR_PRODUCT_CONTRACT_DIGESTS.get(current.productCode());
+        if (digest == null) return List.of();
+        return List.of(new BusinessImportWorkbook.Template(
+                current.domainCode(), current.domainLabel(), current.productCode(), current.objectTypeCode(),
+                current.contractVersion(), digest, current.headers(), current.labels(), current.rules()));
     }
 
     public static List<String> productCodes(
@@ -188,7 +203,7 @@ public final class ProductionImportTemplate {
                 .collect(java.util.stream.Collectors.toMap(ProductionSurveyField::code, field -> field));
         return BUSINESS_HEADERS.stream()
                 .map(byCode::get).filter(java.util.Objects::nonNull)
-                .filter(field -> field.importable() || "PROD_REPORTER_NAME".equals(field.code())).toList();
+                .filter(ProductionSurveyField::importable).toList();
     }
 
     private static List<ProductionSurveyField> productFields(
@@ -211,7 +226,8 @@ public final class ProductionImportTemplate {
                     field.options(), field.precision(), field.scale(),
                     "由当前登录人员自动记录；模板中可留空，导入值不会覆盖登录身份");
         }
-        boolean required = "PROD_SAMPLE_NAME".equals(field.code()) || "regionCode".equals(field.code());
+        boolean required = field.required()
+                || "PROD_SAMPLE_NAME".equals(field.code()) || "regionCode".equals(field.code());
         return new BusinessImportWorkbook.ColumnRule(publicColumnName, field.valueType(), field.controlType(),
                 required, field.options(), field.precision(), field.scale(), field.description());
     }

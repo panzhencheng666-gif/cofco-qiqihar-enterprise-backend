@@ -26,6 +26,13 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
     private static final List<CategoryDefinition> CATEGORIES = List.of(
             new CategoryDefinition("PRODUCTION", "产情类"),
             new CategoryDefinition("MARKET", "市场类"));
+    private static final Map<String, List<String>> SUMMARY_FIELDS = Map.of(
+            "PRODUCTION", List.of(
+                    "SAMPLE_CONTACT", "SURVEYOR_NAME", "SURVEYOR_PHONE",
+                    "CULTIVATED_AREA_MU", "ESTIMATED_OUTPUT_KG", "YIELD_PER_MU_KG"),
+            "MARKET", List.of(
+                    "SAMPLE_CONTACT", "SURVEYOR_NAME", "SURVEYOR_PHONE",
+                    "PURCHASE_PRICE", "SALE_PRICE", "PURCHASE_VOLUME", "SALES_VOLUME"));
 
     private final JdbcClient jdbc;
 
@@ -61,7 +68,7 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
 
     @Override
     public List<OverviewSamplePointAggregate> aggregates(
-            int year, String parentCode, Set<String> authorizedRegionCodes) {
+            int year, String productCode, String parentCode, Set<String> authorizedRegionCodes) {
         List<AggregateRegion> regions = jdbc.sql("""
                 WITH RECURSIVE children AS (
                   SELECT code,name,administrative_level,sort_order
@@ -89,7 +96,7 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                         row.getString("administrative_level")))
                 .list();
         return regions.stream().map(region -> {
-            EntityProjection projection = projection(year, region.code(), null, null, null,
+            EntityProjection projection = projection(year, productCode, region.code(), null, null, null,
                     authorizedRegionCodes);
             long quality = projection.entities().stream()
                     .filter(entity -> entity.dataQualityReason() != null).count();
@@ -98,7 +105,7 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
             long productionCount = categoryPointCount(projection.entities(), "PRODUCTION");
             long marketCount = categoryPointCount(projection.entities(), "MARKET");
             return new OverviewSamplePointAggregate(region.code(), region.name(), region.level(),
-                    productionCount + marketCount, productionCount, marketCount,
+                    projection.entities().size(), productionCount, marketCount,
                     valid, quality, corrections, quality + corrections);
         }).toList();
     }
@@ -109,15 +116,15 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
     }
 
     @Override
-    public OverviewSamplePointList list(int year, String regionCode, String categoryCode, String typeCode,
-            String query, Set<String> authorizedRegionCodes) {
-        EntityProjection projection = projection(year, regionCode, categoryCode, typeCode, query,
+    public OverviewSamplePointList list(int year, String productCode, String regionCode,
+            String categoryCode, String typeCode, String query, Set<String> authorizedRegionCodes) {
+        EntityProjection projection = projection(year, productCode, regionCode, categoryCode, typeCode, query,
                 authorizedRegionCodes);
         EntityProjection catalogProjection = categoryCode == null && typeCode == null && query == null
                 ? projection
-                : projection(year, regionCode, null, null, null, authorizedRegionCodes);
+                : projection(year, productCode, regionCode, null, null, null, authorizedRegionCodes);
         List<OverviewSamplePointList.Item> items = projection.entities().stream()
-                .map(this::listItem)
+                .map(entity -> listItem(entity, categoryCode, typeCode, query))
                 .sorted(Comparator.comparing(OverviewSamplePointList.Item::name)
                         .thenComparing(item -> item.samplePointId().toString()))
                 .toList();
@@ -136,11 +143,12 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
     }
 
     @Override
-    public List<OverviewSamplePointIcon> icons(int year, String regionCode, String categoryCode, String typeCode,
-            String query, Set<String> authorizedRegionCodes) {
-        return projection(year, regionCode, categoryCode, typeCode, query, authorizedRegionCodes)
+    public List<OverviewSamplePointIcon> icons(int year, String productCode, String regionCode,
+            String categoryCode, String typeCode, String query, Set<String> authorizedRegionCodes) {
+        return projection(year, productCode, regionCode, categoryCode, typeCode, query, authorizedRegionCodes)
                 .entities().stream()
-                .filter(entity -> entity.dataQualityReason() == null)
+                .filter(entity -> entity.dataQualityReason() == null
+                        || "DUPLICATE_COORDINATE_UNVERIFIED".equals(entity.dataQualityReason()))
                 .map(this::icon)
                 .sorted(Comparator.comparing(OverviewSamplePointIcon::name)
                         .thenComparing(icon -> icon.samplePointId().toString()))
@@ -148,16 +156,20 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
     }
 
     @Override
-    public Optional<OverviewSamplePointDetail> detail(int year, UUID samplePointId, String regionCode,
-            String categoryCode, String typeCode, Set<String> authorizedRegionCodes) {
-        Optional<Entity> selected = projection(year, regionCode, categoryCode, typeCode, null,
+    public Optional<OverviewSamplePointDetail> detail(int year, String productCode, UUID samplePointId,
+            String regionCode, String categoryCode, String typeCode, Set<String> authorizedRegionCodes) {
+        Optional<Entity> selected = projection(year, productCode, regionCode, categoryCode, typeCode, null,
                 authorizedRegionCodes).entities().stream()
                 .filter(entity -> entity.samplePointId().equals(samplePointId)).findFirst();
         if (selected.isEmpty()) return Optional.empty();
         Entity entity = selected.get();
-        List<SourceRow> rows = entity.rows().stream()
-                .filter(row -> matchesFilter(row, categoryCode, typeCode, null)).toList();
-        SourceRow identity = rows.getFirst();
+        List<SourceRow> rows = latestRowsPerMonth(sourceRows(
+                year, productCode, regionCode, authorizedRegionCodes, true).stream()
+                .filter(SourceRow::approvedPoint)
+                .filter(row -> samplePointId.equals(row.samplePointId()))
+                .filter(row -> matchesFilter(row, categoryCode, typeCode, null))
+                .toList());
+        SourceRow identity = entity.rows().getFirst();
         List<OverviewSamplePointDetail.Association> associations = rows.stream()
                 .map(row -> new OverviewSamplePointDetail.Association(
                         row.categoryCode(), row.categoryName(), row.sourceRole(),
@@ -167,7 +179,8 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                 .sorted(Comparator.comparing(OverviewSamplePointDetail.Association::categoryCode)
                         .thenComparing(OverviewSamplePointDetail.Association::typeCode)
                         .thenComparing(OverviewSamplePointDetail.Association::productCode)
-                        .thenComparing(OverviewSamplePointDetail.Association::occurrenceDate)
+                        .thenComparing(OverviewSamplePointDetail.Association::occurrenceDate,
+                                Comparator.reverseOrder())
                         .thenComparing(OverviewSamplePointDetail.Association::sourceRole))
                 .toList();
         return Optional.of(new OverviewSamplePointDetail(samplePointId, identity.canonicalName(),
@@ -175,7 +188,9 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                 entity.dataQualityReason(), associations));
     }
 
-    private List<SourceRow> sourceRows(int year, String regionCode, Set<String> authorizedRegionCodes) {
+    private List<SourceRow> sourceRows(
+            int year, String productCode, String regionCode, Set<String> authorizedRegionCodes,
+            boolean includePeriodHistory) {
         return jdbc.sql("""
                 WITH RECURSIVE descendants(code) AS (
                   SELECT code FROM platform.region WHERE code=:region
@@ -210,6 +225,18 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                          THEN point.location_state END location_state,
                        CASE WHEN resolution.resolution_action='LINK' THEN NULL
                          ELSE source.unresolved_reason END unresolved_reason,
+                       CASE source.category_code
+                         WHEN 'PRODUCTION' THEN (
+                           SELECT metadata.value
+                           FROM production.production_record_submission_metadata metadata
+                           WHERE metadata.record_id=source.source_record_id
+                             AND metadata.field_code='PROD_SAMPLE_CONTACT')
+                         WHEN 'MARKET' THEN (
+                           SELECT value.value
+                           FROM market.market_record_core_value value
+                           WHERE value.record_id=source.source_record_id
+                             AND value.field_code='MKT_SAMPLE_CONTACT')
+                       END sample_contact,
                        ST_X(point.governed_point) longitude,
                        ST_Y(point.governed_point) latitude,
                        COALESCE(point.coordinate_shared_verified,false) coordinate_shared_verified
@@ -230,13 +257,20 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                       SELECT 1 FROM production.production_record record
                       WHERE record.record_id=source.source_record_id
                         AND record.survey_year=:year
-                        AND record.survey_period_governance_state='CONFIRMED')
+                        AND record.survey_period_governance_state='CONFIRMED'
+                        AND (:includePeriodHistory OR EXISTS(
+                          SELECT 1 FROM production.effective_approved_production_record effective
+                          WHERE effective.record_id=record.record_id)))
                     OR source.category_code='MARKET' AND EXISTS(
                       SELECT 1 FROM market.market_record record
                       WHERE record.record_id=source.source_record_id
                         AND record.survey_year=:year
-                        AND record.survey_period_governance_state='CONFIRMED'))
+                        AND record.survey_period_governance_state='CONFIRMED'
+                        AND (:includePeriodHistory OR EXISTS(
+                          SELECT 1 FROM market.effective_approved_market_record effective
+                          WHERE effective.record_id=record.record_id))))
                   AND resolution.resolution_action IS DISTINCT FROM 'VOID'
+                  AND source.product_code=:productCode
                   AND COALESCE(
                         CASE WHEN point.approval_state='APPROVED'
                           THEN point.region_code END,
@@ -248,7 +282,8 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                       OR point.region_code IN (:authorizedRegions))))
                 ORDER BY source.type_sort_order,source.canonical_name,source.sample_point_id,
                          source.product_code,source.source_role
-                """).param("year", year).param("region", regionCode)
+                """).param("year", year).param("productCode", productCode).param("region", regionCode)
+                .param("includePeriodHistory", includePeriodHistory)
                 .param("unrestricted", unrestricted(authorizedRegionCodes))
                 .param("authorizedRegions", authorizedRegionCodes)
                 .query((row, index) -> new SourceRow(
@@ -272,6 +307,7 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                         row.getString("point_approval_state"),
                         row.getString("location_state"),
                         row.getString("unresolved_reason"),
+                        row.getString("sample_contact"),
                         row.getObject("longitude", Double.class),
                         row.getObject("latitude", Double.class),
                         row.getBoolean("coordinate_shared_verified")))
@@ -287,53 +323,167 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
     }
 
     private Map<String, OverviewSamplePointDetail.BusinessValue> productionValues(String recordId) {
-        return jdbc.sql("""
+        Map<String, OverviewSamplePointDetail.BusinessValue> values = jdbc.sql("""
                 SELECT record.cultivated_area_mu,
                        record.estimated_output_kg,
                        record.yield_per_mu_kg,
                        (SELECT value FROM production.production_record_submission_metadata metadata
                         WHERE metadata.record_id=record.record_id
-                          AND metadata.field_code='PROD_SAMPLE_CONTACT') contact
+                          AND metadata.field_code='PROD_SAMPLE_CONTACT') sample_contact,
+                       (SELECT value FROM production.production_record_submission_metadata metadata
+                        WHERE metadata.record_id=record.record_id
+                          AND metadata.field_code='PROD_SURVEYOR_NAME') surveyor_name,
+                       (SELECT value FROM production.production_record_submission_metadata metadata
+                        WHERE metadata.record_id=record.record_id
+                          AND metadata.field_code='PROD_SURVEYOR_PHONE') surveyor_phone
                 FROM production.production_record record
                 WHERE record.record_id=:recordId
                 """).param("recordId", recordId).query((row, index) -> {
-                    Map<String, OverviewSamplePointDetail.BusinessValue> values = new LinkedHashMap<>();
-                    put(values, "CONTACT", "联系方式", row.getString("contact"), null);
-                    put(values, "CULTIVATED_AREA_MU", "种植面积",
+                    Map<String, OverviewSamplePointDetail.BusinessValue> initialValues = new LinkedHashMap<>();
+                    put(initialValues, "SAMPLE_CONTACT", "样本点联系方式",
+                            row.getString("sample_contact"), null);
+                    put(initialValues, "SURVEYOR_NAME", "调研人", row.getString("surveyor_name"), null);
+                    put(initialValues, "SURVEYOR_PHONE", "调研人联系方式",
+                            row.getString("surveyor_phone"), null);
+                    put(initialValues, "CULTIVATED_AREA_MU", "种植面积",
                             decimal(row.getBigDecimal("cultivated_area_mu")), "亩");
-                    put(values, "ESTIMATED_OUTPUT_KG", "总产量",
+                    put(initialValues, "ESTIMATED_OUTPUT_KG", "总产量",
                             decimal(row.getBigDecimal("estimated_output_kg")), "千克");
-                    put(values, "YIELD_PER_MU_KG", "单产",
+                    put(initialValues, "YIELD_PER_MU_KG", "单产",
                             decimal(row.getBigDecimal("yield_per_mu_kg")), "千克/亩");
-                    return values;
+                    return initialValues;
                 }).single();
+        jdbc.sql("""
+                WITH facts AS (
+                  SELECT quality_code code,value FROM production.production_record_quality
+                  WHERE record_id=:recordId
+                  UNION ALL
+                  SELECT cost_code,value FROM production.production_record_cost
+                  WHERE record_id=:recordId
+                  UNION ALL
+                  SELECT insurance_code,value FROM production.production_record_insurance
+                  WHERE record_id=:recordId
+                  UNION ALL
+                  SELECT subsidy_code,value FROM production.production_record_subsidy
+                  WHERE record_id=:recordId
+                )
+                SELECT facts.code,definition.label,definition.unit,facts.value
+                FROM facts
+                JOIN platform.production_fact_definition definition ON definition.code=facts.code
+                JOIN platform.production_fact_category category ON category.code=definition.category
+                JOIN production.production_record record ON record.record_id=:recordId
+                WHERE EXISTS(
+                  SELECT 1 FROM platform.production_fact_applicability applicability
+                  WHERE applicability.fact_code=facts.code
+                    AND applicability.product_code=record.product_code
+                    AND applicability.business_domain='PRODUCTION'
+                    AND applicability.page_kind='MONITORING'
+                    AND (applicability.object_type_code IS NULL
+                      OR applicability.object_type_code=record.object_type_code))
+                ORDER BY category.sort_order,
+                  (SELECT min(applicability.sort_order)
+                   FROM platform.production_fact_applicability applicability
+                   WHERE applicability.fact_code=facts.code
+                     AND applicability.product_code=record.product_code
+                     AND applicability.business_domain='PRODUCTION'
+                     AND applicability.page_kind='MONITORING'
+                     AND (applicability.object_type_code IS NULL
+                       OR applicability.object_type_code=record.object_type_code)),
+                  facts.code
+                """).param("recordId", recordId).query((row, index) -> new DirectoryValue(
+                        row.getString("code"), row.getString("label"), row.getString("unit"),
+                        decimal(row.getBigDecimal("value"))))
+                .list().forEach(value -> put(values, value.code(), value.label(), value.value(), value.unit()));
+        return values;
     }
 
     private Map<String, OverviewSamplePointDetail.BusinessValue> marketValues(String recordId) {
-        return jdbc.sql("""
+        Map<String, OverviewSamplePointDetail.BusinessValue> values = jdbc.sql("""
                 SELECT record.purchase_base_price,
+                       record.sale_base_price,
+                       record.trade_direction,
+                       record.carriage_board_amount,
+                       record.packaging_amount,
+                       record.freight_amount,
+                       record.packaging_form,
+                       record.actual_trade_price,
                        (SELECT value FROM market.market_record_core_value value
                         WHERE value.record_id=record.record_id
-                          AND value.field_code='MKT_SAMPLE_CONTACT') contact,
-                       (SELECT value FROM market.market_record_fact fact
-                        WHERE fact.record_id=record.record_id
-                          AND fact.fact_code='OPENING_INVENTORY') opening_inventory,
-                       (SELECT value FROM market.market_record_fact fact
-                        WHERE fact.record_id=record.record_id
-                          AND fact.fact_code='PURCHASE_VOLUME') purchase_volume
+                          AND value.field_code='MKT_SAMPLE_CONTACT') sample_contact,
+                       (SELECT value FROM market.market_record_core_value value
+                        WHERE value.record_id=record.record_id
+                          AND value.field_code='MKT_SURVEYOR_NAME') surveyor_name,
+                       (SELECT value FROM market.market_record_core_value value
+                        WHERE value.record_id=record.record_id
+                          AND value.field_code='MKT_SURVEYOR_PHONE') surveyor_phone,
+                       (SELECT option.label FROM platform.market_core_field_option option
+                        WHERE option.field_code='MKT_TRADE_DIRECTION'
+                          AND option.value=record.trade_direction) trade_direction_label,
+                       (SELECT option.label FROM platform.market_core_field_option option
+                        WHERE option.field_code='MKT_PACKAGING_FORM'
+                          AND option.value=record.packaging_form) packaging_form_label
                 FROM market.market_record record
                 WHERE record.record_id=:recordId
                 """).param("recordId", recordId).query((row, index) -> {
-                    Map<String, OverviewSamplePointDetail.BusinessValue> values = new LinkedHashMap<>();
-                    put(values, "CONTACT", "联系方式", row.getString("contact"), null);
-                    put(values, "OPENING_INVENTORY_TONNES", "期初库存",
-                            decimal(row.getBigDecimal("opening_inventory")), "吨");
-                    put(values, "PURCHASE_PRICE", "收购价格",
+                    Map<String, OverviewSamplePointDetail.BusinessValue> initialValues = new LinkedHashMap<>();
+                    put(initialValues, "SAMPLE_CONTACT", "样本点联系方式",
+                            row.getString("sample_contact"), null);
+                    put(initialValues, "SURVEYOR_NAME", "调研人", row.getString("surveyor_name"), null);
+                    put(initialValues, "SURVEYOR_PHONE", "调研人联系方式",
+                            row.getString("surveyor_phone"), null);
+                    put(initialValues, "PURCHASE_PRICE", "对象采购价格",
                             decimal(row.getBigDecimal("purchase_base_price")), "元/吨");
-                    put(values, "PURCHASE_VOLUME_TONNES", "收购量",
-                            decimal(row.getBigDecimal("purchase_volume")), "吨");
-                    return values;
+                    put(initialValues, "SALE_PRICE", "对象销售价格",
+                            decimal(row.getBigDecimal("sale_base_price")), "元/吨");
+                    put(initialValues, "TRADE_DIRECTION", "买卖方向",
+                            row.getString("trade_direction_label"), null);
+                    put(initialValues, "CARRIAGE_BOARD_AMOUNT", "车板组成",
+                            decimal(row.getBigDecimal("carriage_board_amount")), "元/吨");
+                    put(initialValues, "PACKAGING_FORM", "包装形态",
+                            row.getString("packaging_form_label"), null);
+                    put(initialValues, "PACKAGING_AMOUNT", "包装组成",
+                            decimal(row.getBigDecimal("packaging_amount")), "元/吨");
+                    put(initialValues, "FREIGHT_AMOUNT", "运费组成",
+                            decimal(row.getBigDecimal("freight_amount")), "元/吨");
+                    put(initialValues, "ACTUAL_TRADE_PRICE", "实际成交价",
+                            decimal(row.getBigDecimal("actual_trade_price")), "元/吨");
+                    return initialValues;
                 }).single();
+        jdbc.sql("""
+                SELECT fact.fact_code code,definition.label,definition.unit,fact.value
+                FROM market.market_record_fact fact
+                JOIN platform.market_fact_definition definition ON definition.code=fact.fact_code
+                JOIN platform.market_fact_category category ON category.code=definition.category
+                JOIN platform.market_fact_applicability applicability
+                  ON applicability.fact_code=fact.fact_code
+                 AND applicability.product_code=fact.product_code
+                 AND applicability.object_type_code=fact.object_type_code
+                WHERE fact.record_id=:recordId
+                ORDER BY category.sort_order,applicability.sort_order,fact.fact_code
+                """).param("recordId", recordId).query((row, index) -> new DirectoryValue(
+                        row.getString("code"), row.getString("label"), row.getString("unit"),
+                        decimal(row.getBigDecimal("value"))))
+                .list().forEach(value -> put(values, value.code(), value.label(), value.value(), value.unit()));
+        jdbc.sql("""
+                SELECT value.field_code code,definition.label,definition.unit,value.value
+                FROM market.market_record_core_value value
+                JOIN platform.market_core_field_definition definition ON definition.code=value.field_code
+                JOIN platform.page_definition_field mounted
+                  ON mounted.product_code=value.product_code
+                 AND mounted.business_domain='MARKET'
+                 AND mounted.page_kind='MONITORING'
+                 AND mounted.field_code=value.field_code
+                WHERE value.record_id=:recordId
+                  AND value.field_code NOT IN (
+                    'MKT_SAMPLE_NAME','MKT_SAMPLE_CONTACT',
+                    'MKT_SURVEYOR_NAME','MKT_SURVEYOR_PHONE',
+                    'MKT_REPORTER_NAME','MKT_REPORTER_PHONE','MKT_CULTIVAR_NAME')
+                ORDER BY mounted.sort_order,definition.sort_order,value.field_code
+                """).param("recordId", recordId).query((row, index) -> new DirectoryValue(
+                        row.getString("code"), row.getString("label"), row.getString("unit"),
+                        row.getString("value")))
+                .list().forEach(value -> put(values, value.code(), value.label(), value.value(), value.unit()));
+        return values;
     }
 
     private static void put(Map<String, OverviewSamplePointDetail.BusinessValue> values,
@@ -347,9 +497,11 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
         return value == null ? null : value.stripTrailingZeros().toPlainString();
     }
 
-    private EntityProjection projection(int year, String regionCode, String categoryCode,
+    private record DirectoryValue(String code, String label, String unit, String value) {}
+
+    private EntityProjection projection(int year, String productCode, String regionCode, String categoryCode,
             String typeCode, String query, Set<String> authorizedRegionCodes) {
-        List<SourceRow> rows = sourceRows(year, regionCode, authorizedRegionCodes);
+        List<SourceRow> rows = sourceRows(year, productCode, regionCode, authorizedRegionCodes, false);
         Map<UUID, List<SourceRow>> byPoint = rows.stream()
                 .filter(SourceRow::approvedPoint)
                 .collect(Collectors.groupingBy(SourceRow::samplePointId,
@@ -384,6 +536,19 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                 .distinct()
                 .toList();
         return new EntityProjection(entities, corrections);
+    }
+
+    private static List<SourceRow> latestRowsPerMonth(List<SourceRow> rows) {
+        Comparator<SourceRow> latestFirst = Comparator
+                .comparing(SourceRow::occurrenceDate, Comparator.reverseOrder())
+                .thenComparing(Comparator.comparingLong(SourceRow::sourceVersion).reversed())
+                .thenComparing(SourceRow::sourceRecordId, Comparator.reverseOrder());
+        Map<String, SourceRow> latest = new LinkedHashMap<>();
+        rows.stream().sorted(latestFirst).forEach(row -> latest.putIfAbsent(
+                String.join("|", row.categoryCode(), row.sourceRole(), row.typeCode(), row.productCode(),
+                        row.occurrenceDate().getYear() + "-" + row.occurrenceDate().getMonthValue()),
+                row));
+        return List.copyOf(latest.values());
     }
 
     private static String coordinateReason(List<SourceRow> rows) {
@@ -433,8 +598,10 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                 .list();
     }
 
-    private OverviewSamplePointList.Item listItem(Entity entity) {
-        List<SourceRow> rows = entity.rows();
+    private OverviewSamplePointList.Item listItem(
+            Entity entity, String categoryCode, String typeCode, String query) {
+        List<SourceRow> rows = entity.rows().stream()
+                .filter(row -> matchesFilter(row, categoryCode, typeCode, query)).toList();
         SourceRow identity = rows.getFirst();
         List<OverviewSamplePointList.CategoryRef> categories = distinct(rows,
                 SourceRow::categoryCode,
@@ -445,9 +612,27 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
         List<OverviewSamplePointList.ProductRef> products = distinct(rows,
                 SourceRow::productCode,
                 row -> new OverviewSamplePointList.ProductRef(row.productCode(), row.productName()));
+        SourceRow latest = rows.stream().sorted(
+                Comparator.comparing(SourceRow::occurrenceDate,
+                                Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(Comparator.comparingLong(SourceRow::sourceVersion).reversed())
+                        .thenComparing(SourceRow::sourceRecordId))
+                .findFirst().orElseThrow();
+        Map<String, OverviewSamplePointDetail.BusinessValue> summary = summaryValues(latest);
         return new OverviewSamplePointList.Item(identity.samplePointId(), identity.canonicalName(),
                 identity.governedRegionCode(), identity.governedRegionName(), identity.locationState(),
-                entity.dataQualityReason(), categories, types, products);
+                entity.dataQualityReason(), categories, types, products,
+                latest.occurrenceDate(), summary);
+    }
+
+    private Map<String, OverviewSamplePointDetail.BusinessValue> summaryValues(SourceRow row) {
+        Map<String, OverviewSamplePointDetail.BusinessValue> all = businessValues(row);
+        Map<String, OverviewSamplePointDetail.BusinessValue> summary = new LinkedHashMap<>();
+        SUMMARY_FIELDS.getOrDefault(row.categoryCode(), List.of()).forEach(code -> {
+            OverviewSamplePointDetail.BusinessValue value = all.get(code);
+            if (value != null) summary.put(code, value);
+        });
+        return summary;
     }
 
     private OverviewSamplePointIcon icon(Entity entity) {
@@ -458,15 +643,21 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
                 row -> new OverviewSamplePointIcon.TypeRef(row.typeCode(), row.typeName(), row.iconKey()));
         return new OverviewSamplePointIcon(identity.samplePointId(), identity.canonicalName(),
                 entity.iconKey(), types,
-                identity.longitude(), identity.latitude());
+                identity.longitude(), identity.latitude(), entity.dataQualityReason());
     }
 
     private static boolean matchesFilter(SourceRow row, String categoryCode, String typeCode, String query) {
         if (categoryCode != null && !row.categoryCode().equals(categoryCode)) return false;
         if (typeCode != null && !row.typeCode().equals(typeCode)) return false;
         if (query == null) return true;
-        return row.canonicalName() != null
-                && row.canonicalName().toLowerCase(Locale.ROOT).contains(query.toLowerCase(Locale.ROOT));
+        String normalized = query.toLowerCase(Locale.ROOT);
+        return contains(row.canonicalName(), normalized)
+                || contains(row.governedRegionName(), normalized)
+                || contains(row.sampleContact(), normalized);
+    }
+
+    private static boolean contains(String value, String normalizedQuery) {
+        return value != null && value.toLowerCase(Locale.ROOT).contains(normalizedQuery);
     }
 
     private static boolean matchesCorrectionFilter(
@@ -519,6 +710,7 @@ public class JdbcOverviewSamplePointRepository implements OverviewSamplePointRep
             String pointApprovalState,
             String locationState,
             String unresolvedReason,
+            String sampleContact,
             Double longitude,
             Double latitude,
             boolean coordinateSharedVerified) {

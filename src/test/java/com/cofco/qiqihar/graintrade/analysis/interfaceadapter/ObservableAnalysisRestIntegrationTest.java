@@ -78,6 +78,22 @@ class ObservableAnalysisRestIntegrationTest {
                 .andExpect(jsonPath("$.data.market.metrics[0].value").value("2500.0000"))
                 .andExpect(jsonPath("$.data.logistics.metrics[0].value").value("5.0000"))
                 .andExpect(jsonPath("$.data.supply.calculation.expectedOutputTonnes").value("50.0000"))
+                .andExpect(jsonPath("$.data.supply.calculation.totalSupplyTonnes").value("155.0000"))
+                .andExpect(jsonPath("$.data.supply.calculation.totalUseTonnes").value("40.0000"))
+                .andExpect(jsonPath("$.data.coverage.pendingReviewRecordCount").value(2))
+                .andExpect(jsonPath("$.data.supply.inventory.productionEndingTonnes").value("35.0000"))
+                .andExpect(jsonPath("$.data.supply.inventory.enterpriseEndingTonnes").value("80.0000"))
+                .andExpect(jsonPath("$.data.supply.inventory.enterpriseOpeningObservedFrom")
+                        .value("2026-07-31"))
+                .andExpect(jsonPath("$.data.supply.inventory.enterpriseOpeningObservedThrough")
+                        .value("2026-07-31"))
+                .andExpect(jsonPath("$.data.supply.inventory.enterpriseEndingObservedFrom")
+                        .value("2026-08-31"))
+                .andExpect(jsonPath("$.data.supply.inventory.enterpriseEndingObservedThrough")
+                        .value("2026-08-31"))
+                .andExpect(jsonPath("$.data.supply.inventory.endingComplete").value(true))
+                .andExpect(jsonPath("$.data.supply.inventory.adoptedRecordCount").value(2))
+                .andExpect(jsonPath("$.data.supply.inventory.reviewGroupCount").value(0))
                 .andExpect(jsonPath("$.data.lineage[0].subjectLabel").value("龙江县调查户"))
                 .andExpect(content().string(not(containsString("recordId"))))
                 .andExpect(content().string(not(containsString("subjectId"))))
@@ -167,13 +183,13 @@ class ObservableAnalysisRestIntegrationTest {
                 new ObservableAnalysisScope("CORN", "230200", 2026, 8, null, null);
         return ObservableAnalysisSnapshot.create(
                 scope,
-                "OBSERVABLE_ANALYSIS_V1",
+                "OBSERVABLE_ANALYSIS_V3",
                 CUTOFF,
                 CUTOFF.plusMinutes(1),
                 AnalysisQualityState.AVAILABLE,
                 List.of(),
                 List.of("样本覆盖仅代表当前核定范围"),
-                new AnalysisCoverage(3, 1, 1, 1),
+                new AnalysisCoverage(3, 1, 1, 1, 2),
                 new ProductionAnalysisView(
                         List.of(new ObservableMetric(
                                 "EXPECTED_OUTPUT", "预计总产", "50.0000", "吨", "SUM", 1, null)),
@@ -184,8 +200,15 @@ class ObservableAnalysisRestIntegrationTest {
                         "INFLOW_VOLUME", "确认流入量", "5.0000", "吨", "SUM", 1, null))),
                 new ObservableSupplyView(ObservableSupplyCalculator.calculate(
                         new ObservableQuantityInput(
-                                decimal("10"), decimal("50"), decimal("5"), decimal("5"),
-                                decimal("15"), decimal("25"), true, 3))),
+                                decimal("100"), decimal("50"), decimal("5"), decimal("5"),
+                                decimal("15"), decimal("115"), true, true, 0, 3)),
+                        new com.cofco.qiqihar.graintrade.analysis.application.ObservableInventoryBreakdown(
+                                decimal("60"), decimal("40"), decimal("35"), decimal("80"),
+                                true, true, 2, 0,
+                                java.time.LocalDate.of(2026, 7, 31),
+                                java.time.LocalDate.of(2026, 7, 31),
+                                java.time.LocalDate.of(2026, 8, 31),
+                                java.time.LocalDate.of(2026, 8, 31))),
                 List.of(new AnalysisLineage(
                         "PRODUCTION", "private-record-key", 7,
                         List.of("EXPECTED_OUTPUT"), "龙江县调查户", "龙江县", "2026年8月", CUTOFF)));

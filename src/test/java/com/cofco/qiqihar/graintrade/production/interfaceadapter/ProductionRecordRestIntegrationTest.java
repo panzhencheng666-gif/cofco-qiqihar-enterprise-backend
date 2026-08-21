@@ -106,11 +106,12 @@ class ProductionRecordRestIntegrationTest {
         mockMvc.perform(get("/api/v1/production-record-definitions")
                         .queryParam("productCode", "CORN").queryParam("objectTypeCode", "FARMER"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.contractVersion").value("production-survey-fields-v1"))
+                .andExpect(jsonPath("$.data.contractVersion").value("production-survey-fields-v4"))
                 .andExpect(jsonPath("$.data.contractDigest").value(
-                        "sha256:44997993c550cd093d2012bb0eb0520b5f693da046cca2573d4fbe6b93f62e32"))
+                        "sha256:07806fbda70354ee29b243020cd5508db52271f8d7c88ac540379a7c1c3297fe"))
                 .andExpect(jsonPath("$.data.fields[0].code").value("objectTypeCode"))
                 .andExpect(jsonPath("$.data.fields[1].code").value("regionCode"))
+                .andExpect(jsonPath("$.data.fields[?(@.code == 'PROD_CULTIVAR_NAME')]").isEmpty())
                 .andExpect(jsonPath("$.data.fields[?(@.code == 'PROD_SAMPLE_SUBJECT_CODE')]").isEmpty())
                 .andExpect(jsonPath("$.data.fields[?(@.code == 'PROD_SAMPLE_NAME')].label").value("样本点名称"))
                 .andExpect(jsonPath("$.data.fields[?(@.code == 'cultivatedAreaMu')].label").value("播种面积"))
@@ -119,6 +120,8 @@ class ProductionRecordRestIntegrationTest {
                 .andExpect(jsonPath("$.data.fields[?(@.code == 'yearOnYear')].label").value("与上年相比"))
                 .andExpect(jsonPath("$.data.fields[?(@.code == 'PROD_OPENING_INVENTORY')].displayed").value(true))
                 .andExpect(jsonPath("$.data.fields[?(@.code == 'PROD_ENDING_INVENTORY')].label").value("期末余粮"))
+                .andExpect(jsonPath("$.data.fields[?(@.code == 'TOXIN')].scale").value(4))
+                .andExpect(jsonPath("$.data.fields[?(@.code == 'LAND_RENT')].scale").value(4))
                 .andExpect(jsonPath("$.data.fields[?(@.code == 'sample_point_id')]").isEmpty())
                 .andExpect(jsonPath("$.data.groups[0].category").value("DETAIL"))
                 .andExpect(jsonPath("$.data.groups[0].fields[*].code").value(hasItem("PROD_SAMPLE_NAME")))
@@ -668,9 +671,9 @@ class ProductionRecordRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.productCode").value(product))
                 .andExpect(jsonPath("$.data.objectTypeCode").value(objectType))
-                .andExpect(jsonPath("$.data.contractVersion").value("production-survey-fields-v1"))
+                .andExpect(jsonPath("$.data.contractVersion").value("production-survey-fields-v4"))
                 .andExpect(jsonPath("$.data.contractDigest").value(
-                        "sha256:44997993c550cd093d2012bb0eb0520b5f693da046cca2573d4fbe6b93f62e32"))
+                        "sha256:07806fbda70354ee29b243020cd5508db52271f8d7c88ac540379a7c1c3297fe"))
                 .andExpect(jsonPath("$.data.groups[0].category").value("DETAIL"))
                 .andExpect(jsonPath("$.data.groups[0].fields[*].code").value(hasItem("PROD_SAMPLE_NAME")))
                 .andExpect(jsonPath("$.data.groups[1].fields[*].code").value(hasItem(qualityCode)));
@@ -692,7 +695,7 @@ class ProductionRecordRestIntegrationTest {
                 .andExpect(jsonPath("$.data.productCode").value(product))
                 .andExpect(jsonPath("$.data.objectTypeCode").value(objectType))
                 .andExpect(jsonPath("$.data.cultivatedAreaMu").value("1.2345"))
-                .andExpect(jsonPath("$.data.submissionMetadata.PROD_REPORTER_PHONE").value("13800000000"))
+                .andExpect(jsonPath("$.data.submissionMetadata.PROD_SURVEYOR_PHONE").value("13800000000"))
                 .andExpect(jsonPath("$.data.submissionMetadata.PROD_SAMPLE_CONTACT").value("13900000000"))
                 .andExpect(jsonPath("$.data.quality." + qualityCode).value("3.0000"))
                 .andExpect(jsonPath("$.data.costs.LAND_RENT").value("4.0000"))
@@ -806,7 +809,8 @@ class ProductionRecordRestIntegrationTest {
 
     private static String submissionMetadataProperty() {
         return """
-                 "submissionMetadata":{"PROD_REPORTER_NAME":"测试填报员","PROD_REPORTER_PHONE":"13800000000",
+                 "submissionMetadata":{"PROD_REPORTER_NAME":"测试填报员","PROD_SURVEYOR_NAME":"王雷",
+                   "PROD_SURVEYOR_PHONE":"13800000000",
                  "PROD_SAMPLE_CONTACT":"13900000000","PROD_SAMPLE_LATITUDE":"47.3543",
                  "PROD_SAMPLE_LONGITUDE":"123.9182"},"evidencePhotoIds":["%s"]
                 """.formatted(EVIDENCE_PHOTO_ID).strip();

@@ -7,10 +7,14 @@ import com.cofco.qiqihar.graintrade.analysis.application.MarketAnalysisView;
 import com.cofco.qiqihar.graintrade.analysis.application.ObservableAnalysisRepository;
 import com.cofco.qiqihar.graintrade.analysis.application.ObservableAnalysisScope;
 import com.cofco.qiqihar.graintrade.analysis.application.ObservableAnalysisSnapshot;
+import com.cofco.qiqihar.graintrade.analysis.application.ObservableInventoryBreakdown;
 import com.cofco.qiqihar.graintrade.analysis.application.ObservableMetric;
 import com.cofco.qiqihar.graintrade.analysis.application.ObservableSupplyView;
 import com.cofco.qiqihar.graintrade.analysis.application.ProductionAnalysisView;
 import com.cofco.qiqihar.graintrade.analysis.domain.AnalysisQualityState;
+import com.cofco.qiqihar.graintrade.analysis.domain.InventoryPositionObservation;
+import com.cofco.qiqihar.graintrade.analysis.domain.InventoryPositionSelection;
+import com.cofco.qiqihar.graintrade.analysis.domain.InventoryPositionSelector;
 import com.cofco.qiqihar.graintrade.analysis.domain.ObservableQuantityInput;
 import com.cofco.qiqihar.graintrade.analysis.domain.ObservableSupplyCalculation;
 import com.cofco.qiqihar.graintrade.analysis.domain.ObservableSupplyCalculator;
@@ -18,16 +22,18 @@ import com.cofco.qiqihar.graintrade.analysis.domain.ProductionSourceBalance;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.sql.Types;
+import java.text.Normalizer;
 import java.time.Clock;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
-import java.time.ZoneOffset;
+import java.time.YearMonth;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
@@ -38,11 +44,32 @@ import org.springframework.stereotype.Repository;
 
 @Repository
 public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepository {
-    static final String METHODOLOGY_VERSION = "OBSERVABLE_ANALYSIS_V1";
+    static final String METHODOLOGY_VERSION = "OBSERVABLE_ANALYSIS_V3";
     private static final int SCALE = 4;
+    private static final List<FactMetricDefinition> QUALITY_FACTS = List.of(
+            new FactMetricDefinition("MOISTURE", "水分", "%"),
+            new FactMetricDefinition("TEST_WEIGHT", "容重", "克/升"),
+            new FactMetricDefinition("IMPURITY", "杂质", "%"),
+            new FactMetricDefinition("IMPERFECT_GRAIN", "不完善粒", "%"),
+            new FactMetricDefinition("MILDEW", "霉变", "%"),
+            new FactMetricDefinition("TOXIN", "毒素", "%"),
+            new FactMetricDefinition("PROTEIN", "蛋白", "%"),
+            new FactMetricDefinition("OIL_YIELD", "出油率", "%"),
+            new FactMetricDefinition("MILLING_YIELD", "出米率", "%"),
+            new FactMetricDefinition("BROWN_RICE_YIELD", "出糙率", "%"));
+    private static final List<FactMetricDefinition> COST_FACTS = List.of(
+            new FactMetricDefinition("LAND_RENT", "地租", "元/亩"),
+            new FactMetricDefinition("SEED_COST", "种子费用", "元/亩"),
+            new FactMetricDefinition("PESTICIDE_COST", "农药费用", "元/亩"),
+            new FactMetricDefinition("FERTILIZER_COST", "化肥费用", "元/亩"),
+            new FactMetricDefinition("IRRIGATION_COST", "灌溉费用", "元/亩"),
+            new FactMetricDefinition("LABOR_COST", "人工费用", "元/亩"),
+            new FactMetricDefinition("MACHINERY_COST", "机耕费用", "元/亩"),
+            new FactMetricDefinition("OTHER_COST", "其他成本", "元/亩"));
     private static final String SCOPE = """
             WITH RECURSIVE requested_scope(code) AS (
-              SELECT code FROM platform.region WHERE code=:region
+              SELECT code FROM platform.region
+              WHERE :region=:allAuthorizedRegions OR code=:region
               UNION
               SELECT child.code FROM platform.region child
               JOIN requested_scope parent ON child.parent_code=parent.code
@@ -131,34 +158,40 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
         Set<String> effectiveAuthorization = normalizeAuthorization(authorizedRegionCodes);
         List<ProductionRow> production = selectLatestProduction(
                 productionRows(scope, effectiveAuthorization), scope.surveyMonth());
+        List<MarketRow> rawMarket = marketRows(scope, effectiveAuthorization);
         List<MarketRow> market = selectLatestMarket(
-                marketRows(scope, effectiveAuthorization));
+                rawMarket);
         List<LogisticsRow> logistics = selectLatestLogistics(
                 logisticsRows(scope, effectiveAuthorization));
 
         List<ProductionSourceBalance> sourceBalances = production.stream()
                 .map(this::productionBalance).toList();
+        SupplyAssembly supply = supply(
+                scope, effectiveAuthorization, production, rawMarket, logistics);
         List<ObservableMetric> productionMetrics = productionMetrics(production);
-        List<ObservableMetric> marketMetrics = marketMetrics(market);
+        List<ObservableMetric> marketMetrics = marketMetrics(
+                market, supply.view().inventory());
         List<ObservableMetric> logisticsMetrics = logisticsMetrics(logistics);
-        ObservableSupplyCalculation supply = supply(production, market, logistics);
 
-        List<AnalysisLineage> lineage = new ArrayList<>();
-        production.forEach(row -> lineage.add(row.lineage()));
-        market.forEach(row -> lineage.add(row.lineage()));
-        logistics.forEach(row -> lineage.add(row.lineage()));
+        Map<String, AnalysisLineage> adoptedLineage = new LinkedHashMap<>();
+        production.forEach(row -> addLineage(adoptedLineage, row.lineage()));
+        market.forEach(row -> addLineage(adoptedLineage, row.lineage()));
+        logistics.forEach(row -> addLineage(adoptedLineage, row.lineage()));
+        supply.inventoryLineage().forEach(item -> addLineage(adoptedLineage, item));
+        List<AnalysisLineage> lineage = new ArrayList<>(adoptedLineage.values());
         lineage.sort(Comparator.comparing(AnalysisLineage::sourceDomain)
                 .thenComparing(AnalysisLineage::recordId));
 
-        AnalysisQualityState quality = combinedQuality(lineage, sourceBalances, supply);
-        List<String> collectedIssues = new ArrayList<>(supply.issues());
+        AnalysisQualityState quality = combinedQuality(
+                lineage, sourceBalances, supply.view().calculation());
+        List<String> collectedIssues = new ArrayList<>(supply.view().calculation().issues());
         sourceBalances.forEach(balance -> collectedIssues.addAll(balance.issues()));
         List<String> issues = collectedIssues.stream().distinct().sorted().toList();
         List<String> blocking = quality == AnalysisQualityState.BLOCKED ? issues : List.of();
         List<String> warnings = quality == AnalysisQualityState.BLOCKED ? List.of() : issues;
         OffsetDateTime cutoff = lineage.stream().map(AnalysisLineage::approvedAt)
                 .max(Comparator.naturalOrder())
-                .orElse(OffsetDateTime.of(scope.surveyYear(), 1, 1, 0, 0, 0, 0, ZoneOffset.UTC));
+                .orElse(null);
         Set<String> subjectLabels = new LinkedHashSet<>();
         Set<String> regionLabels = new LinkedHashSet<>();
         lineage.forEach(item -> {
@@ -167,7 +200,8 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
         });
         int excluded = excludedRecordCount(scope, effectiveAuthorization);
         AnalysisCoverage coverage = new AnalysisCoverage(
-                lineage.size(), subjectLabels.size(), regionLabels.size(), excluded);
+                lineage.size(), subjectLabels.size(), regionLabels.size(), excluded,
+                pendingReviewRecordCount(scope, effectiveAuthorization));
 
         return ObservableAnalysisSnapshot.create(
                 scope, METHODOLOGY_VERSION, cutoff, OffsetDateTime.now(clock), quality,
@@ -175,7 +209,23 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                 new ProductionAnalysisView(productionMetrics, sourceBalances),
                 new MarketAnalysisView(marketMetrics),
                 new LogisticsAnalysisView(logisticsMetrics),
-                new ObservableSupplyView(supply), lineage);
+                supply.view(), lineage);
+    }
+
+    private static void addLineage(
+            Map<String, AnalysisLineage> target, AnalysisLineage lineage) {
+        String key = lineage.sourceDomain() + "|" + lineage.recordId();
+        AnalysisLineage existing = target.get(key);
+        if (existing == null) {
+            target.put(key, lineage);
+            return;
+        }
+        LinkedHashSet<String> factCodes = new LinkedHashSet<>(existing.factCodes());
+        factCodes.addAll(lineage.factCodes());
+        target.put(key, new AnalysisLineage(
+                existing.sourceDomain(), existing.recordId(), existing.recordVersion(),
+                List.copyOf(factCodes), existing.subjectLabel(), existing.regionLabel(),
+                existing.periodLabel(), existing.approvedAt()));
     }
 
     private List<ProductionRow> productionRows(
@@ -184,12 +234,15 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
         scoped(SCOPE + """
                 SELECT record.record_id,record.version,record.region_code,region.name region_name,
                        record.object_type_code,object_type.name object_type_name,
-                       record.cultivar_code,record.survey_date,record.survey_year,record.survey_month,
+                       record.cultivar_code,identity.business_identity,
+                       record.survey_date,record.survey_year,record.survey_month,
                        record.survey_period_precision,record.sample_point_id,
                        record.cultivated_area_mu,record.yield_per_mu_kg,record.estimated_output_kg,
                        COALESCE(approval.approved_at,record.updated_at,record.reported_at) approved_at,
                        fact.fact_code,fact.fact_value
                 FROM production.production_record record
+                JOIN production.production_record_business_identity identity
+                  ON identity.record_id=record.record_id
                 JOIN platform.region region ON region.code=record.region_code
                 JOIN platform.object_type object_type ON object_type.code=record.object_type_code
                 LEFT JOIN LATERAL (
@@ -200,6 +253,18 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                   SELECT quality.quality_code,quality.value::text
                   FROM production.production_record_quality quality
                   WHERE quality.record_id=record.record_id
+                  UNION ALL
+                  SELECT cost.cost_code,cost.value::text
+                  FROM production.production_record_cost cost
+                  WHERE cost.record_id=record.record_id
+                  UNION ALL
+                  SELECT insurance.insurance_code,insurance.value::text
+                  FROM production.production_record_insurance insurance
+                  WHERE insurance.record_id=record.record_id
+                  UNION ALL
+                  SELECT subsidy.subsidy_code,subsidy.value::text
+                  FROM production.production_record_subsidy subsidy
+                  WHERE subsidy.record_id=record.record_id
                 ) fact ON true
                 LEFT JOIN LATERAL (
                   SELECT max(event.occurred_at) approved_at
@@ -224,6 +289,7 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                                 id, result.getLong("version"), result.getString("region_code"),
                                 result.getString("region_name"), result.getString("object_type_code"),
                                 result.getString("object_type_name"), result.getString("cultivar_code"),
+                                result.getString("business_identity"),
                                 result.getObject("survey_date", LocalDate.class),
                                 result.getInt("survey_year"), (Integer) result.getObject("survey_month"),
                                 result.getString("survey_period_precision"), result.getString("sample_point_id"),
@@ -246,16 +312,30 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                 SELECT record.record_id,record.version,record.region_code,region.name region_name,
                        record.object_type_code,object_type.name object_type_name,
                        record.party_id,party.current_name party_name,record.sample_point_id,
+                       identity.business_identity,location.sample_name,location.sample_contact,
+                       location.latitude,location.longitude,
                        record.trade_date,record.survey_year,record.survey_month,record.survey_period_precision,
                        record.trade_direction,record.purchase_base_price,record.sale_base_price,
-                       record.actual_trade_price,
+                       record.actual_trade_price,record.carriage_board_amount,
+                       record.packaging_amount,record.freight_amount,record.packaging_form,
                        COALESCE(approval.approved_at,record.updated_at,record.reported_at) approved_at,
                        fact.fact_code,fact.value fact_value
                 FROM market.market_record record
+                JOIN market.market_record_business_identity identity
+                  ON identity.record_id=record.record_id
                 JOIN platform.region region ON region.code=record.region_code
                 JOIN platform.object_type object_type ON object_type.code=record.object_type_code
                 LEFT JOIN market.business_party party ON party.party_id=record.party_id
                 LEFT JOIN market.market_record_fact fact ON fact.record_id=record.record_id
+                LEFT JOIN LATERAL (
+                  SELECT
+                    max(value.value) FILTER (WHERE value.field_code='MKT_SAMPLE_NAME') sample_name,
+                    max(value.value) FILTER (WHERE value.field_code='MKT_SAMPLE_CONTACT') sample_contact,
+                    max(value.value) FILTER (WHERE value.field_code='MKT_SAMPLE_LATITUDE') latitude,
+                    max(value.value) FILTER (WHERE value.field_code='MKT_SAMPLE_LONGITUDE') longitude
+                  FROM market.market_record_core_value value
+                  WHERE value.record_id=record.record_id
+                ) location ON true
                 LEFT JOIN LATERAL (
                   SELECT max(event.occurred_at) approved_at
                   FROM platform.business_event_outbox event
@@ -279,10 +359,16 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                                 result.getString("region_name"), result.getString("object_type_code"),
                                 result.getString("object_type_name"), result.getString("party_id"),
                                 result.getString("party_name"), result.getString("sample_point_id"),
+                                result.getString("business_identity"), result.getString("sample_name"),
+                                result.getString("sample_contact"), result.getBigDecimal("latitude"),
+                                result.getBigDecimal("longitude"),
                                 result.getObject("trade_date", LocalDate.class), result.getInt("survey_year"),
                                 (Integer) result.getObject("survey_month"), result.getString("survey_period_precision"),
                                 result.getString("trade_direction"), result.getBigDecimal("purchase_base_price"),
                                 result.getBigDecimal("sale_base_price"), result.getBigDecimal("actual_trade_price"),
+                                result.getBigDecimal("carriage_board_amount"),
+                                result.getBigDecimal("packaging_amount"),
+                                result.getBigDecimal("freight_amount"), result.getString("packaging_form"),
                                 result.getObject("approved_at", OffsetDateTime.class));
                         rows.put(id, row);
                     }
@@ -309,9 +395,9 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                 LEFT JOIN LATERAL (
                   SELECT max(outbox.occurred_at) approved_at
                   FROM platform.business_event_outbox outbox
-                  WHERE outbox.aggregate_type='LOGISTICS_ROUTE_EVENT'
+                  WHERE outbox.aggregate_type='LOGISTICS_RECORD'
                     AND outbox.aggregate_id=event.event_id::text
-                    AND outbox.action_code='LOGISTICS_ROUTE_APPROVED'
+                    AND outbox.action_code='LOGISTICS_RECORD_APPROVED'
                 ) approval ON true
                 WHERE event.product_code=:product AND event.status_code='APPROVED'
                   AND event.survey_period_governance_state='CONFIRMED'
@@ -344,6 +430,7 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
     private JdbcClient.StatementSpec scoped(
             String sql, ObservableAnalysisScope scope, Set<String> authorizedRegions) {
         return jdbc.sql(sql).param("region", scope.regionCode())
+                .param("allAuthorizedRegions", ObservableAnalysisScope.ALL_AUTHORIZED_REGIONS)
                 .param("unrestricted", authorizedRegions.contains("*"))
                 .param("authorizedRegions", authorizedRegions)
                 .param("product", scope.productCode()).param("year", scope.surveyYear())
@@ -397,51 +484,133 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
         BigDecimal output = sum(rows, row -> tonnes(row.outputKg()));
         BigDecimal weightedYield = area == null || area.signum() == 0 || output == null ? null
                 : output.multiply(new BigDecimal("1000")).divide(area, SCALE, RoundingMode.HALF_UP);
-        return List.of(
-                metric("CULTIVATED_AREA", "核定播种面积", area, "亩", "SUM", rows.size()),
-                metric("WEIGHTED_YIELD_PER_MU", "加权亩产", weightedYield, "公斤/亩", "WEIGHTED_AVERAGE", rows.size()),
-                metric("EXPECTED_OUTPUT", "预计总产", output, "吨", "SUM", rows.size()),
-                metric("HARVEST_AREA", "预计收获面积", sumFact(rows, "PROD_HARVEST_AREA_MU"), "亩", "SUM", countFact(rows, "PROD_HARVEST_AREA_MU")),
-                metric("AFFECTED_AREA", "灾损面积", sumFact(rows, "PROD_AFFECTED_AREA_MU"), "亩", "SUM", countFact(rows, "PROD_AFFECTED_AREA_MU")),
-                metric("INTENDED_AREA", "下年度意向面积", sumFact(rows, "PROD_INTENDED_AREA_MU"), "亩", "SUM", countFact(rows, "PROD_INTENDED_AREA_MU")));
+        BigDecimal harvestArea = sumFact(rows, "PROD_HARVEST_AREA_MU");
+        BigDecimal affectedArea = sumFact(rows, "PROD_AFFECTED_AREA_MU");
+        BigDecimal intendedArea = sumFact(rows, "PROD_INTENDED_AREA_MU");
+        List<ObservableMetric> metrics = new ArrayList<>();
+        addMetric(metrics, "CULTIVATED_AREA", "核定播种面积", area, "亩", "SUM", rows.size());
+        addMetric(metrics, "HARVEST_AREA", "预计收获面积", harvestArea, "亩", "SUM",
+                countFact(rows, "PROD_HARVEST_AREA_MU"));
+        addMetric(metrics, "WEIGHTED_YIELD_PER_MU", "加权预计单产", weightedYield,
+                "公斤/亩", "WEIGHTED_AVERAGE", rows.size());
+        addMetric(metrics, "EXPECTED_OUTPUT", "预计总产", output, "吨", "SUM", rows.size());
+        addMetric(metrics, "EXPECTED_HARVEST_RATE", "预计收获率",
+                percentage(harvestArea, area), "%", "RATIO",
+                pairedProductionCount(rows, "PROD_HARVEST_AREA_MU"));
+        addMetric(metrics, "AFFECTED_AREA", "灾损面积", affectedArea, "亩", "SUM",
+                countFact(rows, "PROD_AFFECTED_AREA_MU"));
+        addMetric(metrics, "AFFECTED_AREA_RATE", "灾损面积占比",
+                percentage(affectedArea, area), "%", "RATIO",
+                pairedProductionCount(rows, "PROD_AFFECTED_AREA_MU"));
+        addProductionQualityMetrics(metrics, rows);
+        addProductionCostMetrics(metrics, rows);
+        addMetric(metrics, "INSURANCE_AMOUNT", "保险金额", sumFact(rows, "INSURANCE_AMOUNT"),
+                "元", "SUM", countFact(rows, "INSURANCE_AMOUNT"));
+        addMetric(metrics, "SUBSIDY_AMOUNT", "补贴金额", sumFact(rows, "SUBSIDY_AMOUNT"),
+                "元", "SUM", countFact(rows, "SUBSIDY_AMOUNT"));
+        addMetric(metrics, "INTENDED_AREA", "下年度意向面积", intendedArea, "亩", "SUM",
+                countFact(rows, "PROD_INTENDED_AREA_MU"));
+        addMetric(metrics, "INTENDED_AREA_CHANGE", "面积调整量",
+                difference(intendedArea, area), "亩", "DIFFERENCE",
+                pairedProductionCount(rows, "PROD_INTENDED_AREA_MU"));
+        addMetric(metrics, "INTENDED_AREA_CHANGE_RATE", "面积调整比例",
+                percentage(difference(intendedArea, area), area), "%", "RATIO",
+                pairedProductionCount(rows, "PROD_INTENDED_AREA_MU"));
+        return List.copyOf(metrics);
     }
 
-    private List<ObservableMetric> marketMetrics(List<MarketRow> rows) {
-        return List.of(
-                metric("AVERAGE_TRADE_PRICE", "核定平均成交价", average(rows, MarketRow::actualTradePrice), "元/吨", "AVERAGE", count(rows, MarketRow::actualTradePrice)),
-                metric("AVERAGE_PURCHASE_PRICE", "平均采购价", average(rows, MarketRow::purchaseBasePrice), "元/吨", "AVERAGE", count(rows, MarketRow::purchaseBasePrice)),
-                metric("AVERAGE_SALE_PRICE", "平均销售价", average(rows, MarketRow::saleBasePrice), "元/吨", "AVERAGE", count(rows, MarketRow::saleBasePrice)),
-                metric("PURCHASE_VOLUME", "采购量", sumMarketFact(rows, "PURCHASE_VOLUME"), "吨", "SUM", countMarketFact(rows, "PURCHASE_VOLUME")),
-                metric("SALES_VOLUME", "销售量", sumMarketFact(rows, "SALES_VOLUME"), "吨", "SUM", countMarketFact(rows, "SALES_VOLUME")),
-                metric("PROCESSING_INPUT", "加工投入量", sumMarketFact(rows, "PROCESSING_INPUT"), "吨/日", "SUM", countMarketFact(rows, "PROCESSING_INPUT")));
+    private List<ObservableMetric> marketMetrics(
+            List<MarketRow> rows, ObservableInventoryBreakdown inventory) {
+        List<ObservableMetric> metrics = new ArrayList<>();
+        addMetric(metrics, "AVERAGE_PURCHASE_PRICE", "平均采集对象收购价格",
+                average(rows, MarketRow::purchaseBasePrice), "元/吨", "AVERAGE",
+                count(rows, MarketRow::purchaseBasePrice));
+        addMetric(metrics, "AVERAGE_SALE_PRICE", "平均采集对象销售价格",
+                average(rows, MarketRow::saleBasePrice), "元/吨", "AVERAGE",
+                count(rows, MarketRow::saleBasePrice));
+        addMetric(metrics, "AVERAGE_PURCHASE_SALE_SPREAD", "平均购销价差",
+                averagePurchaseSaleSpread(rows), "元/吨", "AVERAGE",
+                pairedMarketPriceCount(rows));
+        addMetric(metrics, "AVERAGE_CARRIAGE_BOARD_AMOUNT", "平均车板组成",
+                average(rows, MarketRow::carriageBoardAmount), "元/吨", "AVERAGE",
+                count(rows, MarketRow::carriageBoardAmount));
+        addMetric(metrics, "AVERAGE_PACKAGING_AMOUNT", "平均包装组成",
+                average(rows, MarketRow::packagingAmount), "元/吨", "AVERAGE",
+                count(rows, MarketRow::packagingAmount));
+        addMetric(metrics, "AVERAGE_FREIGHT_AMOUNT", "平均运费组成",
+                average(rows, MarketRow::freightAmount), "元/吨", "AVERAGE",
+                count(rows, MarketRow::freightAmount));
+        addMetric(metrics, "PURCHASE_VOLUME", "采购量", sumMarketFact(rows, "PURCHASE_VOLUME"),
+                "吨", "SUM", countMarketFact(rows, "PURCHASE_VOLUME"));
+        addMetric(metrics, "SALES_VOLUME", "销售量", sumMarketFact(rows, "SALES_VOLUME"),
+                "吨", "SUM", countMarketFact(rows, "SALES_VOLUME"));
+        BigDecimal currentInventory = inventory.enterpriseEndingTonnes();
+        BigDecimal previousInventory = inventory.enterpriseOpeningTonnes();
+        BigDecimal inventoryChange = difference(currentInventory, previousInventory);
+        int enterpriseInventorySourceCount = countMarketFact(rows, "ENDING_INVENTORY");
+        addMetric(metrics, "CURRENT_INVENTORY", "当前企业库存", currentInventory,
+                "吨", "LATEST_EFFECTIVE", enterpriseInventorySourceCount);
+        addMetric(metrics, "INVENTORY_CHANGE", "企业库存变化量", inventoryChange,
+                "吨", "DIFFERENCE", enterpriseInventorySourceCount);
+        addMetric(metrics, "INVENTORY_CHANGE_RATE", "企业库存变化率",
+                percentage(inventoryChange, previousInventory), "%", "RATIO",
+                enterpriseInventorySourceCount);
+        addPackagingMetrics(metrics, rows);
+        addMarketQualityMetrics(metrics, rows);
+        return List.copyOf(metrics);
     }
 
     private List<ObservableMetric> logisticsMetrics(List<LogisticsRow> rows) {
         List<LogisticsRow> inflow = rows.stream().filter(row -> "INFLOW".equals(row.direction())).toList();
         List<LogisticsRow> outflow = rows.stream().filter(row -> "OUTFLOW".equals(row.direction())).toList();
-        return List.of(
-                metric("INFLOW_VOLUME", "区域流入量", sumLogisticsFact(inflow, "ROUTE_VOLUME"), "吨", "SUM", countLogisticsFact(inflow, "ROUTE_VOLUME")),
-                metric("OUTFLOW_VOLUME", "区域流出量", sumLogisticsFact(outflow, "ROUTE_VOLUME"), "吨", "SUM", countLogisticsFact(outflow, "ROUTE_VOLUME")),
-                metric("AVERAGE_FREIGHT_RATE", "平均物流运价", averageFact(rows, "FREIGHT_RATE"), "元/吨", "AVERAGE", countLogisticsFact(rows, "FREIGHT_RATE")));
+        List<ObservableMetric> metrics = new ArrayList<>();
+        addMetric(metrics, "INFLOW_VOLUME", "区域流入量", sumLogisticsFact(inflow, "ROUTE_VOLUME"),
+                "吨", "SUM", countLogisticsFact(inflow, "ROUTE_VOLUME"));
+        addMetric(metrics, "OUTFLOW_VOLUME", "区域流出量", sumLogisticsFact(outflow, "ROUTE_VOLUME"),
+                "吨", "SUM", countLogisticsFact(outflow, "ROUTE_VOLUME"));
+        addMetric(metrics, "AVERAGE_FREIGHT_RATE", "平均物流运价", averageFact(rows, "FREIGHT_RATE"),
+                "元/吨", "AVERAGE", countLogisticsFact(rows, "FREIGHT_RATE"));
+        return List.copyOf(metrics);
     }
 
-    private ObservableSupplyCalculation supply(
-            List<ProductionRow> production, List<MarketRow> market, List<LogisticsRow> logistics) {
-        List<ProductionRow> productionInventory = production.stream()
-                .filter(row -> row.has("PROD_OPENING_INVENTORY") || row.has("PROD_ENDING_INVENTORY"))
-                .toList();
-        List<MarketRow> latestMarketInventory = latestMarketInventory(market);
-        boolean bothInventoryDomains = !productionInventory.isEmpty() && !latestMarketInventory.isEmpty();
-        boolean mutuallyExclusive = !bothInventoryDomains;
-        BigDecimal opening = null;
-        BigDecimal ending = null;
-        if (!bothInventoryDomains && !productionInventory.isEmpty()) {
-            opening = requiredFactSum(productionInventory, "PROD_OPENING_INVENTORY");
-            ending = requiredFactSum(productionInventory, "PROD_ENDING_INVENTORY");
-        } else if (!bothInventoryDomains && !latestMarketInventory.isEmpty()) {
-            opening = requiredMarketFactSum(latestMarketInventory, "OPENING_INVENTORY");
-            ending = requiredMarketFactSum(latestMarketInventory, "ENDING_INVENTORY");
-        }
+    private SupplyAssembly supply(
+            ObservableAnalysisScope scope,
+            Set<String> authorizedRegions,
+            List<ProductionRow> production,
+            List<MarketRow> market,
+            List<LogisticsRow> logistics) {
+        MarketInventorySelection enterpriseEnding = selectMarketInventory(
+                market, "ENDING_INVENTORY");
+        List<MarketRow> previousMarket = marketRows(
+                previousPeriod(scope), authorizedRegions);
+        MarketInventorySelection enterpriseOpening = selectMarketInventory(
+                previousMarket, "ENDING_INVENTORY");
+
+        BigDecimal productionOpening = sumFact(production, "PROD_OPENING_INVENTORY");
+        BigDecimal productionEnding = sumFact(production, "PROD_ENDING_INVENTORY");
+        BigDecimal enterpriseOpeningTonnes = enterpriseOpening.selection().totalTonnes();
+        BigDecimal enterpriseEndingTonnes = enterpriseEnding.selection().totalTonnes();
+        BigDecimal opening = addAvailable(productionOpening, enterpriseOpeningTonnes);
+        BigDecimal ending = addAvailable(productionEnding, enterpriseEndingTonnes);
+
+        int reviewGroupCount = enterpriseOpening.selection().reviewGroupCount()
+                + enterpriseEnding.selection().reviewGroupCount();
+        boolean openingComplete = completeProductionFact(production, "PROD_OPENING_INVENTORY")
+                && completeEnterpriseInventory(enterpriseOpening.selection());
+        boolean endingComplete = completeProductionFact(production, "PROD_ENDING_INVENTORY")
+                && completeEnterpriseInventory(enterpriseEnding.selection());
+
+        Set<String> adoptedInventoryRecordIds = new LinkedHashSet<>();
+        production.stream()
+                .filter(row -> row.decimal("PROD_OPENING_INVENTORY") != null
+                        || row.decimal("PROD_ENDING_INVENTORY") != null)
+                .map(ProductionRow::recordId)
+                .forEach(adoptedInventoryRecordIds::add);
+        enterpriseOpening.rows().stream().map(MarketRow::recordId)
+                .forEach(adoptedInventoryRecordIds::add);
+        enterpriseEnding.rows().stream().map(MarketRow::recordId)
+                .forEach(adoptedInventoryRecordIds::add);
+
         BigDecimal expectedOutput = production.isEmpty() ? null
                 : sum(production, row -> tonnes(row.outputKg()));
         BigDecimal selfUse = production.isEmpty() ? null
@@ -452,18 +621,68 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                 .filter(row -> "OUTFLOW".equals(row.direction())).toList();
         BigDecimal inflow = inflows.isEmpty() ? null : requiredLogisticsFactSum(inflows, "ROUTE_VOLUME");
         BigDecimal outflow = outflows.isEmpty() ? null : requiredLogisticsFactSum(outflows, "ROUTE_VOLUME");
-        return ObservableSupplyCalculator.calculate(new ObservableQuantityInput(
+        ObservableSupplyCalculation calculation = ObservableSupplyCalculator.calculate(
+                new ObservableQuantityInput(
                 opening, expectedOutput, inflow, selfUse, outflow, ending,
-                mutuallyExclusive, production.size() + market.size() + logistics.size()));
+                openingComplete, endingComplete, reviewGroupCount,
+                production.size() + market.size() + previousMarket.size() + logistics.size()));
+        ObservableInventoryBreakdown inventory = new ObservableInventoryBreakdown(
+                productionOpening, enterpriseOpeningTonnes,
+                productionEnding, enterpriseEndingTonnes,
+                openingComplete, endingComplete,
+                adoptedInventoryRecordIds.size(), reviewGroupCount,
+                enterpriseOpening.selection().earliestObservedOn(),
+                enterpriseOpening.selection().latestObservedOn(),
+                enterpriseEnding.selection().earliestObservedOn(),
+                enterpriseEnding.selection().latestObservedOn());
+        List<AnalysisLineage> inventoryLineage = new ArrayList<>();
+        enterpriseOpening.rows().forEach(row -> inventoryLineage.add(
+                row.inventoryLineage("ENDING_INVENTORY")));
+        enterpriseEnding.rows().forEach(row -> inventoryLineage.add(
+                row.inventoryLineage("ENDING_INVENTORY")));
+        return new SupplyAssembly(
+                new ObservableSupplyView(calculation, inventory), inventoryLineage);
     }
 
-    private List<MarketRow> latestMarketInventory(List<MarketRow> rows) {
-        List<MarketRow> inventoryRows = rows.stream()
-                .filter(row -> row.has("OPENING_INVENTORY") || row.has("ENDING_INVENTORY"))
+    private MarketInventorySelection selectMarketInventory(
+            List<MarketRow> rows, String factCode) {
+        List<InventoryPositionObservation> observations = rows.stream()
+                .map(row -> row.inventoryObservation(factCode))
+                .filter(java.util.Objects::nonNull)
                 .toList();
-        return latest(inventoryRows, MarketRow::inventorySubjectKey,
-                Comparator.comparing(MarketRow::tradeDate)
-                        .thenComparingLong(MarketRow::version).thenComparing(MarketRow::recordId));
+        InventoryPositionSelection selection = InventoryPositionSelector.select(observations);
+        Set<String> adoptedIds = selection.adoptedRecordIds();
+        List<MarketRow> adoptedRows = rows.stream()
+                .filter(row -> adoptedIds.contains(row.recordId()))
+                .sorted(Comparator.comparing(MarketRow::recordId))
+                .toList();
+        return new MarketInventorySelection(selection, adoptedRows);
+    }
+
+    private static ObservableAnalysisScope previousPeriod(ObservableAnalysisScope scope) {
+        if (scope.surveyMonth() == null) {
+            return new ObservableAnalysisScope(
+                    scope.productCode(), scope.regionCode(), scope.surveyYear() - 1, null,
+                    scope.cultivarCode(), scope.subjectTypeCode());
+        }
+        YearMonth previous = YearMonth.of(scope.surveyYear(), scope.surveyMonth()).minusMonths(1);
+        return new ObservableAnalysisScope(
+                scope.productCode(), scope.regionCode(), previous.getYear(), previous.getMonthValue(),
+                scope.cultivarCode(), scope.subjectTypeCode());
+    }
+
+    private static BigDecimal addAvailable(BigDecimal first, BigDecimal second) {
+        if (first == null) return second;
+        if (second == null) return first;
+        return normalize(first.add(second));
+    }
+
+    private static boolean completeProductionFact(List<ProductionRow> rows, String factCode) {
+        return !rows.isEmpty() && rows.stream().allMatch(row -> row.decimal(factCode) != null);
+    }
+
+    private static boolean completeEnterpriseInventory(InventoryPositionSelection selection) {
+        return selection.totalTonnes() != null && selection.reviewGroupCount() == 0;
     }
 
     private AnalysisQualityState combinedQuality(
@@ -518,6 +737,39 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
         return value == null ? 0 : value;
     }
 
+    private int pendingReviewRecordCount(
+            ObservableAnalysisScope scope, Set<String> authorizedRegions) {
+        Integer value = scoped(SCOPE + """
+                SELECT count(*)::integer FROM (
+                  SELECT record.record_id
+                  FROM production.production_record record
+                  WHERE record.product_code=:product AND record.survey_year=:year
+                    AND (:month IS NULL OR record.survey_month=:month)
+                    AND (:cultivar IS NULL OR record.cultivar_code=:cultivar)
+                    AND (:subjectType IS NULL OR record.object_type_code=:subjectType)
+                    AND record.region_code IN(SELECT code FROM scope)
+                    AND record.status_code='PENDING_REVIEW'
+                  UNION ALL
+                  SELECT record.record_id
+                  FROM market.market_record record
+                  WHERE record.product_code=:product AND record.survey_year=:year
+                    AND (:month IS NULL OR record.survey_month=:month)
+                    AND (:subjectType IS NULL OR record.object_type_code=:subjectType)
+                    AND record.region_code IN(SELECT code FROM scope)
+                    AND record.status_code='PENDING_REVIEW'
+                  UNION ALL
+                  SELECT event.event_id::text
+                  FROM logistics.route_event event
+                  WHERE event.product_code=:product AND event.survey_year=:year
+                    AND (:month IS NULL OR event.survey_month=:month)
+                    AND event.business_region_code IN(SELECT code FROM scope)
+                    AND event.direction_code IN('INFLOW','OUTFLOW')
+                    AND event.status_code='PENDING_REVIEW'
+                ) pending
+                """, scope, authorizedRegions).query(Integer.class).single();
+        return value == null ? 0 : value;
+    }
+
     private static Set<String> normalizeAuthorization(Set<String> authorizedRegions) {
         if (authorizedRegions == null || authorizedRegions.isEmpty()) return Set.of("__NONE__");
         return Set.copyOf(authorizedRegions);
@@ -527,10 +779,172 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
         return Boolean.TRUE.equals(jdbc.sql(sql).param("value", value).query(Boolean.class).single());
     }
 
-    private static ObservableMetric metric(
-            String code, String label, BigDecimal value, String unit, String aggregation, int sources) {
-        return new ObservableMetric(code, label, decimal(value), unit, aggregation, sources,
-                value == null ? "当前范围没有核定数据" : null);
+    private static void addMetric(
+            List<ObservableMetric> metrics,
+            String code,
+            String label,
+            BigDecimal value,
+            String unit,
+            String aggregation,
+            int sources) {
+        if (value == null || sources <= 0) return;
+        metrics.add(new ObservableMetric(
+                code, label, decimal(value), unit, aggregation, sources, null));
+    }
+
+    private static BigDecimal percentage(BigDecimal numerator, BigDecimal denominator) {
+        if (numerator == null || denominator == null || denominator.signum() == 0) return null;
+        return numerator.multiply(new BigDecimal("100"))
+                .divide(denominator, SCALE, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal difference(BigDecimal current, BigDecimal baseline) {
+        return current == null || baseline == null ? null : normalize(current.subtract(baseline));
+    }
+
+    private static int pairedProductionCount(List<ProductionRow> rows, String factCode) {
+        return (int) rows.stream()
+                .filter(row -> row.areaMu() != null && row.decimal(factCode) != null)
+                .count();
+    }
+
+    private static int pairedMarketPriceCount(List<MarketRow> rows) {
+        return (int) rows.stream()
+                .filter(row -> row.purchaseBasePrice() != null && row.saleBasePrice() != null)
+                .count();
+    }
+
+    private static BigDecimal averagePurchaseSaleSpread(List<MarketRow> rows) {
+        return average(rows, row -> row.purchaseBasePrice() == null || row.saleBasePrice() == null
+                ? null : row.saleBasePrice().subtract(row.purchaseBasePrice()));
+    }
+
+    private static void addProductionQualityMetrics(
+            List<ObservableMetric> metrics, List<ProductionRow> rows) {
+        QUALITY_FACTS.forEach(definition -> {
+            int sources = countFact(rows, definition.code());
+            addMetric(metrics, "QUALITY_" + definition.code() + "_AVERAGE",
+                    definition.label() + "平均值", averageProductionFact(rows, definition.code()),
+                    definition.unit(), "AVERAGE", sources);
+            addMetric(metrics, "QUALITY_" + definition.code() + "_MINIMUM",
+                    definition.label() + "最低值", minimumProductionFact(rows, definition.code()),
+                    definition.unit(), "MINIMUM", sources);
+            addMetric(metrics, "QUALITY_" + definition.code() + "_MAXIMUM",
+                    definition.label() + "最高值", maximumProductionFact(rows, definition.code()),
+                    definition.unit(), "MAXIMUM", sources);
+        });
+    }
+
+    private static void addProductionCostMetrics(
+            List<ObservableMetric> metrics, List<ProductionRow> rows) {
+        COST_FACTS.forEach(definition -> addMetric(
+                metrics, "COST_" + definition.code(), definition.label(),
+                weightedProductionFact(rows, definition.code()), definition.unit(),
+                "AREA_WEIGHTED_AVERAGE", countFact(rows, definition.code())));
+        addMetric(metrics, "COMPLETE_COST_PER_MU", "完整亩均成本合计",
+                completeCostPerMu(rows), "元/亩", "AREA_WEIGHTED_AVERAGE",
+                completeCostSourceCount(rows));
+    }
+
+    private static BigDecimal averageProductionFact(List<ProductionRow> rows, String code) {
+        return average(rows, row -> row.decimal(code));
+    }
+
+    private static BigDecimal minimumProductionFact(List<ProductionRow> rows, String code) {
+        return rows.stream().map(row -> row.decimal(code))
+                .filter(java.util.Objects::nonNull).min(BigDecimal::compareTo)
+                .map(JdbcObservableAnalysisRepository::normalize).orElse(null);
+    }
+
+    private static BigDecimal maximumProductionFact(List<ProductionRow> rows, String code) {
+        return rows.stream().map(row -> row.decimal(code))
+                .filter(java.util.Objects::nonNull).max(BigDecimal::compareTo)
+                .map(JdbcObservableAnalysisRepository::normalize).orElse(null);
+    }
+
+    private static BigDecimal weightedProductionFact(List<ProductionRow> rows, String code) {
+        BigDecimal weightedTotal = BigDecimal.ZERO;
+        BigDecimal areaTotal = BigDecimal.ZERO;
+        for (ProductionRow row : rows) {
+            BigDecimal value = row.decimal(code);
+            if (value != null && row.areaMu() != null) {
+                weightedTotal = weightedTotal.add(value.multiply(row.areaMu()));
+                areaTotal = areaTotal.add(row.areaMu());
+            }
+        }
+        return areaTotal.signum() == 0 ? null
+                : weightedTotal.divide(areaTotal, SCALE, RoundingMode.HALF_UP);
+    }
+
+    private static int completeCostSourceCount(List<ProductionRow> rows) {
+        return (int) rows.stream().filter(row -> COST_FACTS.stream()
+                .allMatch(definition -> row.decimal(definition.code()) != null)).count();
+    }
+
+    private static BigDecimal completeCostPerMu(List<ProductionRow> rows) {
+        if (rows.isEmpty() || completeCostSourceCount(rows) != rows.size()) return null;
+        BigDecimal weightedTotal = BigDecimal.ZERO;
+        BigDecimal areaTotal = BigDecimal.ZERO;
+        for (ProductionRow row : rows) {
+            BigDecimal rowTotal = COST_FACTS.stream()
+                    .map(definition -> row.decimal(definition.code()))
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            weightedTotal = weightedTotal.add(rowTotal.multiply(row.areaMu()));
+            areaTotal = areaTotal.add(row.areaMu());
+        }
+        return areaTotal.signum() == 0 ? null
+                : weightedTotal.divide(areaTotal, SCALE, RoundingMode.HALF_UP);
+    }
+
+    private static void addPackagingMetrics(
+            List<ObservableMetric> metrics, List<MarketRow> rows) {
+        int total = (int) rows.stream().map(MarketRow::packagingForm)
+                .filter(value -> value != null && !value.isBlank()).count();
+        if (total == 0) return;
+        int bulk = (int) rows.stream().filter(row -> "BULK".equals(row.packagingForm())).count();
+        int bagged = (int) rows.stream().filter(row -> "BAGGED".equals(row.packagingForm())).count();
+        addMetric(metrics, "PACKAGING_BULK_COUNT", "散粮记录数", BigDecimal.valueOf(bulk),
+                "条", "COUNT", bulk);
+        addMetric(metrics, "PACKAGING_BAGGED_COUNT", "包粮记录数", BigDecimal.valueOf(bagged),
+                "条", "COUNT", bagged);
+        addMetric(metrics, "PACKAGING_BULK_SHARE", "散粮占比",
+                percentage(BigDecimal.valueOf(bulk), BigDecimal.valueOf(total)),
+                "%", "RATIO", bulk);
+        addMetric(metrics, "PACKAGING_BAGGED_SHARE", "包粮占比",
+                percentage(BigDecimal.valueOf(bagged), BigDecimal.valueOf(total)),
+                "%", "RATIO", bagged);
+    }
+
+    private static void addMarketQualityMetrics(
+            List<ObservableMetric> metrics, List<MarketRow> rows) {
+        QUALITY_FACTS.forEach(definition -> {
+            int sources = countMarketFact(rows, definition.code());
+            addMetric(metrics, "MARKET_QUALITY_" + definition.code() + "_AVERAGE",
+                    definition.label() + "平均值", averageMarketFact(rows, definition.code()),
+                    definition.unit(), "AVERAGE", sources);
+            addMetric(metrics, "MARKET_QUALITY_" + definition.code() + "_MINIMUM",
+                    definition.label() + "最低值", minimumMarketFact(rows, definition.code()),
+                    definition.unit(), "MINIMUM", sources);
+            addMetric(metrics, "MARKET_QUALITY_" + definition.code() + "_MAXIMUM",
+                    definition.label() + "最高值", maximumMarketFact(rows, definition.code()),
+                    definition.unit(), "MAXIMUM", sources);
+        });
+    }
+
+    private static BigDecimal averageMarketFact(List<MarketRow> rows, String code) {
+        return average(rows, row -> row.fact(code));
+    }
+
+    private static BigDecimal minimumMarketFact(List<MarketRow> rows, String code) {
+        return rows.stream().map(row -> row.fact(code))
+                .filter(java.util.Objects::nonNull).min(BigDecimal::compareTo)
+                .map(JdbcObservableAnalysisRepository::normalize).orElse(null);
+    }
+
+    private static BigDecimal maximumMarketFact(List<MarketRow> rows, String code) {
+        return rows.stream().map(row -> row.fact(code))
+                .filter(java.util.Objects::nonNull).max(BigDecimal::compareTo)
+                .map(JdbcObservableAnalysisRepository::normalize).orElse(null);
     }
 
     private static String decimal(BigDecimal value) {
@@ -615,15 +1029,12 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
     private record ProductionRow(
             String recordId, long version, String regionCode, String regionLabel,
             String objectTypeCode, String objectTypeLabel, String cultivarCode,
+            String businessIdentity,
             LocalDate surveyDate, int surveyYear, Integer surveyMonth, String periodPrecision,
             String samplePointId, BigDecimal areaMu, BigDecimal yieldPerMuKg,
             BigDecimal outputKg, OffsetDateTime approvedAt, Map<String, String> facts) {
         String businessKey() {
-            return String.join("|", regionCode, objectTypeCode,
-                    cultivarCode == null ? "*" : cultivarCode,
-                    facts.getOrDefault("PROD_SURPLUS_SUBJECT_CODE",
-                            samplePointId != null ? samplePointId
-                                    : facts.getOrDefault("PROD_SAMPLE_NAME", recordId)));
+            return businessIdentity;
         }
         BigDecimal decimal(String code) {
             String value = facts.get(code);
@@ -650,6 +1061,7 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
         private final String objectTypeCode;
         private final String objectTypeLabel;
         private final String cultivarCode;
+        private final String businessIdentity;
         private final LocalDate surveyDate;
         private final int surveyYear;
         private final Integer surveyMonth;
@@ -662,7 +1074,8 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
         private final Map<String, String> facts = new LinkedHashMap<>();
 
         ProductionRowBuilder(String recordId, long version, String regionCode, String regionLabel,
-                String objectTypeCode, String objectTypeLabel, String cultivarCode, LocalDate surveyDate,
+                String objectTypeCode, String objectTypeLabel, String cultivarCode,
+                String businessIdentity, LocalDate surveyDate,
                 int surveyYear, Integer surveyMonth, String periodPrecision, String samplePointId,
                 BigDecimal areaMu, BigDecimal yieldPerMuKg, BigDecimal outputKg,
                 OffsetDateTime approvedAt) {
@@ -673,6 +1086,7 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
             this.objectTypeCode = objectTypeCode;
             this.objectTypeLabel = objectTypeLabel;
             this.cultivarCode = cultivarCode;
+            this.businessIdentity = businessIdentity;
             this.surveyDate = surveyDate;
             this.surveyYear = surveyYear;
             this.surveyMonth = surveyMonth;
@@ -686,7 +1100,7 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
         void fact(String code, String value) { facts.put(code, value); }
         ProductionRow build() {
             return new ProductionRow(recordId, version, regionCode, regionLabel, objectTypeCode,
-                    objectTypeLabel, cultivarCode, surveyDate, surveyYear, surveyMonth, periodPrecision,
+                    objectTypeLabel, cultivarCode, businessIdentity, surveyDate, surveyYear, surveyMonth, periodPrecision,
                     samplePointId, areaMu, yieldPerMuKg, outputKg, approvedAt, Map.copyOf(facts));
         }
     }
@@ -694,26 +1108,52 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
     private record MarketRow(
             String recordId, long version, String regionCode, String regionLabel,
             String objectTypeCode, String objectTypeLabel, String partyId, String partyLabel,
-            String samplePointId, LocalDate tradeDate, int surveyYear, Integer surveyMonth,
+            String samplePointId, String businessIdentity, String sampleName, String sampleContact,
+            BigDecimal latitude, BigDecimal longitude,
+            LocalDate tradeDate, int surveyYear, Integer surveyMonth,
             String periodPrecision, String direction, BigDecimal purchaseBasePrice,
-            BigDecimal saleBasePrice, BigDecimal actualTradePrice, OffsetDateTime approvedAt,
+            BigDecimal saleBasePrice, BigDecimal actualTradePrice,
+            BigDecimal carriageBoardAmount, BigDecimal packagingAmount,
+            BigDecimal freightAmount, String packagingForm, OffsetDateTime approvedAt,
             Map<String, BigDecimal> facts) {
         String subjectKey() {
-            if (partyId != null) return partyId;
-            if (samplePointId != null) return samplePointId;
-            return recordId;
+            return businessIdentity;
         }
         String businessKey() {
             return String.join("|", regionCode, subjectKey(), tradeDate.toString(), direction);
         }
-        String inventorySubjectKey() { return regionCode + "|" + subjectKey(); }
         BigDecimal fact(String code) { return facts.get(code); }
         boolean has(String code) { return facts.containsKey(code); }
+        InventoryPositionObservation inventoryObservation(String factCode) {
+            BigDecimal value = fact(factCode);
+            if (value == null) return null;
+            String normalizedName = normalizeVisibleValue(sampleName, businessIdentity);
+            String normalizedContact = normalizeVisibleValue(sampleContact, businessIdentity);
+            return new InventoryPositionObservation(
+                    recordId, businessIdentity, normalizedName, normalizedContact,
+                    regionCode, latitude, longitude, tradeDate, version, approvedAt, value);
+        }
         AnalysisLineage lineage() {
-            LinkedHashSet<String> codes = new LinkedHashSet<>(facts.keySet());
-            codes.add("MKT_ACTUAL_TRADE_PRICE");
+            LinkedHashSet<String> codes = facts.keySet().stream()
+                    .filter(code -> !"OPENING_INVENTORY".equals(code))
+                    .filter(code -> !"ENDING_INVENTORY".equals(code))
+                    .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+            if (purchaseBasePrice != null) codes.add("MKT_PURCHASE_BASE_PRICE");
+            if (saleBasePrice != null) codes.add("MKT_SALE_BASE_PRICE");
+            if (carriageBoardAmount != null) codes.add("MKT_CARRIAGE_BOARD_AMOUNT");
+            if (packagingAmount != null) codes.add("MKT_PACKAGING_AMOUNT");
+            if (freightAmount != null) codes.add("MKT_FREIGHT_AMOUNT");
+            if (packagingForm != null) codes.add("MKT_PACKAGING_FORM");
+            return lineage(codes);
+        }
+        AnalysisLineage inventoryLineage(String factCode) {
+            return lineage(List.of(factCode));
+        }
+        private AnalysisLineage lineage(java.util.Collection<String> codes) {
             return new AnalysisLineage("MARKET", recordId, version, List.copyOf(codes),
-                    partyLabel == null ? objectTypeLabel : partyLabel, regionLabel,
+                    partyLabel != null ? partyLabel
+                            : sampleName == null || sampleName.isBlank() ? objectTypeLabel : sampleName,
+                    regionLabel,
                     periodLabel(surveyYear, surveyMonth, periodPrecision), approvedAt);
         }
     }
@@ -728,6 +1168,11 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
         private final String partyId;
         private final String partyLabel;
         private final String samplePointId;
+        private final String businessIdentity;
+        private final String sampleName;
+        private final String sampleContact;
+        private final BigDecimal latitude;
+        private final BigDecimal longitude;
         private final LocalDate tradeDate;
         private final int surveyYear;
         private final Integer surveyMonth;
@@ -736,14 +1181,22 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
         private final BigDecimal purchaseBasePrice;
         private final BigDecimal saleBasePrice;
         private final BigDecimal actualTradePrice;
+        private final BigDecimal carriageBoardAmount;
+        private final BigDecimal packagingAmount;
+        private final BigDecimal freightAmount;
+        private final String packagingForm;
         private final OffsetDateTime approvedAt;
         private final Map<String, BigDecimal> facts = new LinkedHashMap<>();
 
         MarketRowBuilder(String recordId, long version, String regionCode, String regionLabel,
                 String objectTypeCode, String objectTypeLabel, String partyId, String partyLabel,
-                String samplePointId, LocalDate tradeDate, int surveyYear, Integer surveyMonth,
+                String samplePointId, String businessIdentity, String sampleName, String sampleContact,
+                BigDecimal latitude, BigDecimal longitude,
+                LocalDate tradeDate, int surveyYear, Integer surveyMonth,
                 String periodPrecision, String direction, BigDecimal purchaseBasePrice,
-                BigDecimal saleBasePrice, BigDecimal actualTradePrice, OffsetDateTime approvedAt) {
+                BigDecimal saleBasePrice, BigDecimal actualTradePrice,
+                BigDecimal carriageBoardAmount, BigDecimal packagingAmount,
+                BigDecimal freightAmount, String packagingForm, OffsetDateTime approvedAt) {
             this.recordId = recordId;
             this.version = version;
             this.regionCode = regionCode;
@@ -753,6 +1206,11 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
             this.partyId = partyId;
             this.partyLabel = partyLabel;
             this.samplePointId = samplePointId;
+            this.businessIdentity = businessIdentity;
+            this.sampleName = sampleName;
+            this.sampleContact = sampleContact;
+            this.latitude = latitude;
+            this.longitude = longitude;
             this.tradeDate = tradeDate;
             this.surveyYear = surveyYear;
             this.surveyMonth = surveyMonth;
@@ -761,16 +1219,33 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
             this.purchaseBasePrice = purchaseBasePrice;
             this.saleBasePrice = saleBasePrice;
             this.actualTradePrice = actualTradePrice;
+            this.carriageBoardAmount = carriageBoardAmount;
+            this.packagingAmount = packagingAmount;
+            this.freightAmount = freightAmount;
+            this.packagingForm = packagingForm;
             this.approvedAt = approvedAt;
         }
         void fact(String code, BigDecimal value) { facts.put(code, value); }
         MarketRow build() {
             return new MarketRow(recordId, version, regionCode, regionLabel, objectTypeCode,
-                    objectTypeLabel, partyId, partyLabel, samplePointId, tradeDate, surveyYear,
+                    objectTypeLabel, partyId, partyLabel, samplePointId,
+                    businessIdentity, sampleName, sampleContact, latitude, longitude,
+                    tradeDate, surveyYear,
                     surveyMonth, periodPrecision, direction, purchaseBasePrice, saleBasePrice,
-                    actualTradePrice, approvedAt, Map.copyOf(facts));
+                    actualTradePrice, carriageBoardAmount, packagingAmount,
+                    freightAmount, packagingForm, approvedAt, Map.copyOf(facts));
         }
     }
+
+    private record FactMetricDefinition(String code, String label, String unit) { }
+
+    private record MarketInventorySelection(
+            InventoryPositionSelection selection,
+            List<MarketRow> rows) { }
+
+    private record SupplyAssembly(
+            ObservableSupplyView view,
+            List<AnalysisLineage> inventoryLineage) { }
 
     private record LogisticsRow(
             String recordId, long version, String regionCode, String regionLabel,
@@ -835,5 +1310,11 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
     private static String periodLabel(int year, Integer month, String precision) {
         return "YEAR".equals(precision) || month == null
                 ? year + "年" : "%d年%02d月".formatted(year, month);
+    }
+
+    private static String normalizeVisibleValue(String value, String fallback) {
+        if (value == null || value.isBlank()) return fallback;
+        return Normalizer.normalize(value, Normalizer.Form.NFKC).strip()
+                .toLowerCase(Locale.ROOT).replaceAll("[\\s\\u3000()（）-]+", "");
     }
 }

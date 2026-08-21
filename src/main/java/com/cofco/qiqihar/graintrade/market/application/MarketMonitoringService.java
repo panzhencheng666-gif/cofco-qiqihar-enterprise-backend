@@ -3,6 +3,7 @@ package com.cofco.qiqihar.graintrade.market.application;
 import com.cofco.qiqihar.graintrade.evidence.application.EvidencePhotoService;
 import com.cofco.qiqihar.graintrade.market.domain.MarketActionPolicy;
 import com.cofco.qiqihar.graintrade.market.domain.MarketMonitoringRecord;
+import com.cofco.qiqihar.graintrade.market.domain.MarketPricing;
 import com.cofco.qiqihar.graintrade.market.domain.MarketRecordQuery;
 import com.cofco.qiqihar.graintrade.market.domain.MarketTradeDirection;
 import com.cofco.qiqihar.graintrade.market.domain.MarketValidationException;
@@ -45,6 +46,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class MarketMonitoringService {
     private static final String DOMAIN = "MARKET";
     private static final String PAGE_KIND = "MONITORING";
+    private static final String COORDINATE_RETURN_REASON = "地区与经纬度不匹配";
     private static final ZoneId REPORTING_ZONE = ZoneId.of("Asia/Shanghai");
     private static final Set<String> REQUIRED_TYPED_BINDINGS = Set.of(
             "OBJECT_TYPE", "REGION", "TRADE_DATE", "REPORTED_AT",
@@ -143,7 +145,7 @@ public class MarketMonitoringService {
                 throw new IllegalStateException(
                         "Market fact category is absent from master data: " + field.category());
             }
-            group.add(field);
+            group.add(governedInputPrecision(field));
         });
         List<MarketFactGroup> groups = categories.stream().map(category -> new MarketFactGroup(
                 category.code(), category.label(), category.sortOrder(),
@@ -152,6 +154,14 @@ public class MarketMonitoringService {
                                 .thenComparing(MarketFactDefinition::code)).toList())).toList();
         return new MarketFormDefinition(
                 productCode, objectTypeCode, publicCoreFields(coreFields(productCode)), groups);
+    }
+
+    private static MarketFactDefinition governedInputPrecision(MarketFactDefinition field) {
+        int scale = "DECIMAL".equals(field.valueType()) ? Math.max(field.scale(), MarketPricing.SCALE)
+                : field.scale();
+        return scale == field.scale() ? field : new MarketFactDefinition(
+                field.code(), field.category(), field.label(), field.valueType(), field.unit(),
+                field.description(), field.precision(), scale, field.sortOrder());
     }
 
     /** Used by the write interceptor before request-body conversion. */
@@ -179,8 +189,6 @@ public class MarketMonitoringService {
                     parsed.purchaseBasePrice(), parsed.saleBasePrice(), parsed.carriageBoardAmount(),
                     parsed.packagingAmount(), parsed.freightAmount(), parsed.packagingForm(), parsed.facts());
             MarketMonitoringRecord persisted = repository.insert(record, principal.subjectId(), parsed.extensions());
-            repository.reconcileInventoryGovernance(
-                    persisted, parsed.extensions(), principal.subjectId(), clock.instant());
             if (evidencePhotos != null && !securedDraft.evidencePhotoIds().isEmpty()) {
                 evidencePhotos.attachToMarket(
                         securedDraft.evidencePhotoIds(), persisted.id(), persisted.regionCode(), principal.subjectId());
@@ -211,6 +219,44 @@ public class MarketMonitoringService {
         return create(draft, false).record().id();
     }
 
+    @Transactional(readOnly = true)
+    public void validateReturnedCorrection(
+            String id, long expectedVersion, MarketMonitoringDraft draft) {
+        MarketMonitoringRecord existing = required(id);
+        authorize("BUSINESS_UPDATE", existing.regionCode());
+        authorize("BUSINESS_SUBMIT", existing.regionCode());
+        if (existing.status() != com.cofco.qiqihar.graintrade.market.domain.MarketStatus.RETURNED
+                || existing.returnReason() == null
+                || !COORDINATE_RETURN_REASON.equals(existing.returnReason().trim())) {
+            throw new ConflictException(
+                    "MARKET_RETURNED_CORRECTION_STATE_CONFLICT", "原记录已不是可修正的退回状态");
+        }
+        if (expectedVersion != existing.version()) throw stale();
+
+        SecurityPrincipal principal = authorize("BUSINESS_UPDATE", existing.regionCode());
+        Map<String, String> originalExtensions = repository.findExtensionCoreValues(id);
+        String originalReporter = originalExtensions.get("MKT_REPORTER_NAME");
+        if (originalReporter == null || originalReporter.isBlank()) {
+            originalReporter = principal.displayName();
+        }
+        MarketMonitoringDraft securedDraft = withReporter(draft, originalReporter);
+        List<MarketCoreFieldDefinition> definitions = coreDefinitions(securedDraft);
+        ParsedDraft parsed = parseDraft(securedDraft, definitions);
+        if (!existing.productCode().equals(parsed.productCode())) {
+            throw invalid("Record product cannot change");
+        }
+        validate(parsed);
+        authorize("BUSINESS_UPDATE", parsed.regionCode());
+        authorize("BUSINESS_SUBMIT", parsed.regionCode());
+        BigDecimal latitude = requiredCorrectionCoordinate(parsed, "MKT_SAMPLE_LATITUDE");
+        BigDecimal longitude = requiredCorrectionCoordinate(parsed, "MKT_SAMPLE_LONGITUDE");
+        if (!repository.isPointWithinRegion(parsed.regionCode(), latitude, longitude)) {
+            throw new ClientRequestException(
+                    "MARKET_SAMPLE_POINT_OUTSIDE_REGION",
+                    "样本点经纬度不在所选地区范围内，请核对后重新上传");
+        }
+    }
+
     @Transactional
     public MarketRecordView save(String id, long expectedVersion, MarketMonitoringDraft draft) {
         MarketMonitoringRecord existing = required(id);
@@ -236,8 +282,6 @@ public class MarketMonitoringService {
                     parsed.packagingAmount(), parsed.freightAmount(), parsed.packagingForm(), parsed.facts());
             MarketMonitoringRecord persisted = repository.updateFacts(
                     revised, expectedVersion, principal.subjectId(), parsed.extensions());
-            repository.reconcileInventoryGovernance(
-                    persisted, parsed.extensions(), principal.subjectId(), clock.instant());
             audit(principal, persisted, "MARKET_RECORD_UPDATED");
             return view(persisted, definitions, repository.findExtensionCoreValues(persisted.id()));
         } catch (MarketValidationException exception) {
@@ -249,19 +293,11 @@ public class MarketMonitoringService {
 
     @Transactional
     public MarketRecordView submit(String id, long expectedVersion) {
-        reconcileInventoryGovernance(id, expectedVersion, "BUSINESS_SUBMIT");
         return transition(id, expectedVersion, "BUSINESS_SUBMIT", "MARKET_RECORD_SUBMITTED", MarketMonitoringRecord::submit);
     }
 
     @Transactional
     public MarketRecordView approve(String id, long expectedVersion) {
-        MarketMonitoringRecord existing = reconcileInventoryGovernance(id, expectedVersion, "BUSINESS_APPROVE");
-        if (existing.facts().containsKey("ENDING_INVENTORY")
-                && !repository.inventoryGovernanceReady(id)) {
-            throw new ConflictException(
-                    "MARKET_INVENTORY_GOVERNANCE_PENDING",
-                    "库存权属尚未核定，暂不能审核通过");
-        }
         return transition(id, expectedVersion, "BUSINESS_APPROVE", "MARKET_RECORD_APPROVED",
                 MarketMonitoringRecord::approve, (record, principal) -> repository.linkApprovedSamplePoint(
                         record, repository.findExtensionCoreValues(record.id()),
@@ -328,16 +364,6 @@ public class MarketMonitoringService {
             throw new ClientRequestException("INAPPLICABLE_MARKET_FACT",
                     "One or more facts are not applicable to this market context");
         }
-    }
-
-    private MarketMonitoringRecord reconcileInventoryGovernance(
-            String id, long expectedVersion, String permissionCode) {
-        MarketMonitoringRecord record = required(id);
-        SecurityPrincipal principal = authorize(permissionCode, record.regionCode());
-        if (expectedVersion != record.version()) throw stale();
-        repository.reconcileInventoryGovernance(
-                record, repository.findExtensionCoreValues(id), principal.subjectId(), clock.instant());
-        return record;
     }
 
     private List<MarketCoreFieldDefinition> coreDefinitions(MarketMonitoringDraft draft) {
@@ -523,7 +549,7 @@ public class MarketMonitoringService {
             }
             case "TEXT" -> {
                 BoundedInput.requireText("INVALID_MARKET_RECORD", value);
-                if (Set.of("MKT_REPORTER_PHONE", "MKT_SAMPLE_CONTACT").contains(definition.code())
+                if (Set.of("MKT_SURVEYOR_PHONE", "MKT_SAMPLE_CONTACT").contains(definition.code())
                         && !value.matches("^[0-9+()\\- ]{6,32}$")) {
                     throw invalid("Invalid contact value for market core field: " + definition.code());
                 }
@@ -593,8 +619,7 @@ public class MarketMonitoringService {
         return new MarketRecordView(record, values,
                 evidencePhotos == null ? List.of() : evidencePhotos.marketPhotos(record.id()),
                 MarketActionPolicy.allowedActions(record.status()).stream()
-                        .filter(action -> actionAllowed(action, record.id())).toList(),
-                repository.inventoryGovernanceStatus(record.id()));
+                        .filter(action -> actionAllowed(action, record.id())).toList());
     }
 
     private static List<MarketCoreFieldDefinition> publicCoreFields(
@@ -626,9 +651,14 @@ public class MarketMonitoringService {
             default -> null;
         };
         if (permission == null || !principal.permits(permission)) return false;
-        return !Set.of("APPROVE", "RETURN").contains(action) || separationOfDuties == null
-                || separationOfDuties.isIndependentReviewer(
-                        "MARKET_RECORD", recordId, "MARKET_RECORD_SUBMITTED", principal);
+        if (separationOfDuties == null) return true;
+        return switch (action) {
+            case "APPROVE" -> separationOfDuties.canApprove(
+                    "MARKET_RECORD", recordId, "MARKET_RECORD_SUBMITTED", principal);
+            case "RETURN" -> separationOfDuties.canReturn(
+                    "MARKET_RECORD", recordId, "MARKET_RECORD_SUBMITTED", principal);
+            default -> true;
+        };
     }
 
     private void validateEvidence(MarketMonitoringDraft draft, SecurityPrincipal principal) {
@@ -643,6 +673,14 @@ public class MarketMonitoringService {
         coreValues.put("MKT_REPORTER_NAME", authoritativeReporterName);
         return new MarketMonitoringDraft(
                 draft.productCode(), coreValues, draft.facts(), draft.evidencePhotoIds());
+    }
+
+    private static BigDecimal requiredCorrectionCoordinate(ParsedDraft draft, String code) {
+        String value = draft.extensions().get(code);
+        if (value == null || value.isBlank()) {
+            throw invalid("Sample point coordinates are required");
+        }
+        return new BigDecimal(value);
     }
 
     private static String decimal(BigDecimal value) {

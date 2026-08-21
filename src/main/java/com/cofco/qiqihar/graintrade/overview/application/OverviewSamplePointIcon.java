@@ -9,7 +9,8 @@ public record OverviewSamplePointIcon(
         String iconKey,
         List<TypeRef> types,
         double longitude,
-        double latitude) {
+        double latitude,
+        String dataQualityReason) {
     public OverviewSamplePointIcon { types = List.copyOf(types); }
     public record TypeRef(String code, String name, String iconKey) {}
 }

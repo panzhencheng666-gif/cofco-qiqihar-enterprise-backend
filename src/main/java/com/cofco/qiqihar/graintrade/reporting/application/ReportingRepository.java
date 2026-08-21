@@ -2,6 +2,7 @@ package com.cofco.qiqihar.graintrade.reporting.application;
 
 import com.cofco.qiqihar.graintrade.reporting.domain.ReportExportContent;
 import java.time.Instant;
+import java.util.List;
 
 public interface ReportingRepository {
     ReportParameterOptionsView options();
@@ -21,7 +22,9 @@ public interface ReportingRepository {
             String periodLabel,
             String approvedSummaryJson,
             long approvedRecordCount,
-            Instant dataCutoff) {}
+            Instant dataCutoff,
+            List<ReportBusinessMetric> businessMetrics,
+            List<ReportProductSnapshot> products) {}
     record ReportPreviewPersistence(
             ReportPreviewCommand command, ReportPreviewMaterial material, String actor, Instant now, Instant expiresAt,
             String datasetId, String datasetDigest, String contentJson, String contentDigest) {}
