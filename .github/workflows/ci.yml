@@ -69,8 +69,9 @@ jobs:
           DO $$
           BEGIN
             IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cofco_app') THEN
-              CREATE ROLE cofco_app LOGIN NOINHERIT PASSWORD 'ci-only-runtime';
+              CREATE ROLE cofco_app LOGIN INHERIT PASSWORD 'ci-only-runtime';
             END IF;
+            ALTER ROLE cofco_app LOGIN INHERIT;
             IF NOT EXISTS (
               SELECT 1 FROM pg_roles
               WHERE rolname = 'qiqihar_event_consumer_registrar_login'
