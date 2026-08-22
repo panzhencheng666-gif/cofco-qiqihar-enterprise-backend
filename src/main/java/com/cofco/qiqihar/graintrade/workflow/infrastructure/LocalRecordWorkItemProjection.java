@@ -54,7 +54,8 @@ public class LocalRecordWorkItemProjection implements WorkItemProjection {
                        source.region_code,
                        source.%s AS business_date,
                        source.status_code,
-                       COALESCE(created.actor_subject_id, source.last_modified_by) AS owner_subject_id,
+                       COALESCE(created.actor_subject_id, source.last_modified_by) AS responsible_subject_id,
+                       owner.subject_id AS owner_subject_id,
                        COALESCE(owner.display_name, created.actor_subject_id,
                                 source.last_modified_by) AS owner_display_name,
                        COALESCE(created.work_unit_code, owner.work_unit_code) AS owner_work_unit_code,
@@ -93,7 +94,8 @@ public class LocalRecordWorkItemProjection implements WorkItemProjection {
                        END AS region_code,
                        collection_date AS business_date,
                        event.status_code,
-                       event.created_by AS owner_subject_id,
+                       event.created_by AS responsible_subject_id,
+                       owner.subject_id AS owner_subject_id,
                        COALESCE(owner.display_name, event.created_by) AS owner_display_name,
                        owner.work_unit_code AS owner_work_unit_code,
                        unit.name AS owner_work_unit_name
@@ -188,6 +190,7 @@ public class LocalRecordWorkItemProjection implements WorkItemProjection {
                 row.getString("region_code"),
                 row.getObject("business_date", LocalDate.class),
                 row.getString("status_code"),
+                row.getString("responsible_subject_id"),
                 row.getString("owner_subject_id"),
                 row.getString("owner_display_name"),
                 row.getString("owner_work_unit_code"),
@@ -203,7 +206,8 @@ public class LocalRecordWorkItemProjection implements WorkItemProjection {
                     ? record.ownerWorkUnitCode() : record.ownerWorkUnitName();
             return new ResponsibleParty("WORK_UNIT", record.ownerWorkUnitCode(), workUnitName);
         }
-        return new ResponsibleParty("USER", record.ownerSubjectId(), record.ownerDisplayName());
+        return new ResponsibleParty(
+                "USER", record.responsibleSubjectId(), record.ownerDisplayName());
     }
 
     private Period period(LocalDate date) {
@@ -229,6 +233,7 @@ public class LocalRecordWorkItemProjection implements WorkItemProjection {
     private record SourceRecord(
             String recordId, String productCode, String regionCode,
             LocalDate businessDate, String statusCode,
+            String responsibleSubjectId,
             String ownerSubjectId, String ownerDisplayName,
             String ownerWorkUnitCode, String ownerWorkUnitName) {}
 

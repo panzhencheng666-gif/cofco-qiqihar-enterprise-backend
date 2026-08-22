@@ -205,6 +205,7 @@ class MasterDataGovernanceIntegrationTest {
                 Statement authorization = connection.createStatement()) {
             authorization.execute("SET SESSION AUTHORIZATION " + loginRole);
             authorization.execute("SET ROLE " + role);
+            authorization.execute("SET TIME ZONE 'UTC'");
             try {
                 return work.apply(JdbcClient.create(new SingleConnectionDataSource(connection, true)));
             } finally {
