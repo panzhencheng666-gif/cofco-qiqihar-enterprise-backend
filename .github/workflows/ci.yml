@@ -38,8 +38,8 @@ jobs:
       QIQIHAR_TEST_DB_USERNAME: postgres
       QIQIHAR_TEST_DB_PASSWORD: postgres
       QIQIHAR_EVENT_CONSUMER_REGISTRAR_DB_URL: jdbc:postgresql://127.0.0.1:5432/qiqihar_enterprise_test
-      QIQIHAR_EVENT_CONSUMER_REGISTRAR_DB_USERNAME: postgres
-      QIQIHAR_EVENT_CONSUMER_REGISTRAR_DB_PASSWORD: postgres
+      QIQIHAR_EVENT_CONSUMER_REGISTRAR_DB_USERNAME: qiqihar_event_consumer_registrar_login
+      QIQIHAR_EVENT_CONSUMER_REGISTRAR_DB_PASSWORD: ci-only-registrar
     steps:
       - name: Check out source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -57,6 +57,31 @@ jobs:
         run: |
           java -version
           mvn --version
+
+      - name: Provision CI database roles and report fonts
+        env:
+          PGPASSWORD: postgres
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes fonts-noto-cjk lsof postgresql-client
+          psql --host 127.0.0.1 --username postgres --dbname qiqihar_enterprise_test \
+            --set ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cofco_app') THEN
+              CREATE ROLE cofco_app LOGIN NOINHERIT PASSWORD 'ci-only-runtime';
+            END IF;
+            IF NOT EXISTS (
+              SELECT 1 FROM pg_roles
+              WHERE rolname = 'qiqihar_event_consumer_registrar_login'
+            ) THEN
+              CREATE ROLE qiqihar_event_consumer_registrar_login
+                LOGIN NOINHERIT PASSWORD 'ci-only-registrar';
+            END IF;
+          END
+          $$;
+          SQL
+          fc-match "Noto Sans CJK SC"
 
       - name: Check patch whitespace
         run: |
