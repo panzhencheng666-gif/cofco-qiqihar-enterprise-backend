@@ -549,8 +549,16 @@ class LocalLauncherOwnershipIntegrationTest {
                     "COFCO_ENTERPRISE_FRONTEND_ROOT", temporaryDirectoryStaticWorkaround(),
                     "COFCO_ENTERPRISE_WEB_ROOT", temporaryDirectoryStaticWorkaround(),
                     "COFCO_ENTERPRISE_REGION_VERIFY_SCRIPT", "/usr/bin/true",
-                    "JAVA_HOME", "/opt/homebrew/opt/openjdk@21",
+                    "JAVA_HOME", compatibleJavaHome(),
                     "PATH", fakeBin + ":" + System.getenv("PATH")));
+        }
+
+        private static String compatibleJavaHome() {
+            String configured = System.getenv("JAVA_HOME");
+            if (configured != null && Files.isExecutable(Path.of(configured, "bin", "java"))) {
+                return configured;
+            }
+            return System.getProperty("java.home");
         }
 
         private String temporaryDirectoryStaticWorkaround() {

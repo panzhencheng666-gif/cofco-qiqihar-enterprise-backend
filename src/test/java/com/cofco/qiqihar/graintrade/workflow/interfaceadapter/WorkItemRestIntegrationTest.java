@@ -21,9 +21,10 @@ class WorkItemRestIntegrationTest {
     private MockMvc mockMvc;
 
     @Test
-    void returnsAnEmptyCanonicalServerPageForAnEmptyProductionTable() throws Exception {
+    void returnsAnEmptyCanonicalServerPageForAValidNonMonitoringRegion() throws Exception {
         mockMvc.perform(get("/api/v1/work-items")
                         .queryParam("scope", "PENDING")
+                        .queryParam("regionId", "150721")
                         .queryParam("page", "0")
                         .queryParam("pageSize", "20"))
                 .andExpect(status().isOk())
@@ -80,6 +81,7 @@ class WorkItemRestIntegrationTest {
     void returnsAConsistentEmptyPageForTheLargestSupportedPageNumber() throws Exception {
         mockMvc.perform(get("/api/v1/work-items")
                         .queryParam("scope", "PENDING")
+                        .queryParam("regionId", "150721")
                         .queryParam("page", String.valueOf(Integer.MAX_VALUE))
                         .queryParam("pageSize", "100"))
                 .andExpect(status().isOk())

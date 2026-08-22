@@ -9,6 +9,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -21,7 +22,7 @@ class LocalLauncherSecurityContractTest {
     private static final Path HEALTHCHECK = Path.of("scripts/healthcheck-local.sh");
     private static final Path RUNTIME_MANAGER = Path.of("scripts/local-runtime.sh");
     private static final Path REGION_HIERARCHY_VERIFIER = Path.of("scripts/verify-local-region-hierarchy.sh");
-    private static final Path REAL_LSOF = Path.of("/usr/sbin/lsof");
+    private static final Path REAL_LSOF = realLsof();
 
     @TempDir
     Path tempDir;
@@ -187,6 +188,16 @@ class LocalLauncherSecurityContractTest {
 
     private static int occurrences(String text, String fragment) {
         return (text.length() - text.replace(fragment, "").length()) / fragment.length();
+    }
+
+    private static Path realLsof() {
+        for (String candidate : List.of("/usr/sbin/lsof", "/usr/bin/lsof")) {
+            Path path = Path.of(candidate);
+            if (Files.isExecutable(path)) {
+                return path;
+            }
+        }
+        throw new IllegalStateException("lsof is required for local listener contract tests");
     }
 
     private static ProcessResult runListenerGuard(int port) throws Exception {

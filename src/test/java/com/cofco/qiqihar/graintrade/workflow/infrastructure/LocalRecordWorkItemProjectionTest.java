@@ -210,4 +210,36 @@ class LocalRecordWorkItemProjectionTest {
                 .containsEntry("party_type", "USER")
                 .containsEntry("external_code", OWNER);
     }
+
+    @Test
+    void preservesAnExternalCreatorWithoutForgingAGovernedSecuritySubject() {
+        String externalCreator = "retired-external-operator";
+        jdbc.sql("""
+                UPDATE logistics.route_event
+                SET created_by = :externalCreator
+                WHERE event_id = CAST(:id AS uuid)
+                """)
+                .param("externalCreator", externalCreator)
+                .param("id", EVENT_ID)
+                .update();
+
+        projection.refresh();
+
+        assertThat(jdbc.sql("""
+                SELECT item.owner_subject_id, item.owner_work_unit_code,
+                       party.party_type, party.external_code, party.display_name
+                FROM workflow.work_item item
+                JOIN workflow.responsible_party party
+                  ON party.responsible_party_id = item.responsible_party_id
+                WHERE item.source_type = 'LOGISTICS' AND item.source_id = :id
+                """)
+                .param("id", EVENT_ID)
+                .query()
+                .singleRow())
+                .containsEntry("party_type", "USER")
+                .containsEntry("external_code", externalCreator)
+                .containsEntry("display_name", externalCreator)
+                .containsEntry("owner_subject_id", null)
+                .containsEntry("owner_work_unit_code", null);
+    }
 }
