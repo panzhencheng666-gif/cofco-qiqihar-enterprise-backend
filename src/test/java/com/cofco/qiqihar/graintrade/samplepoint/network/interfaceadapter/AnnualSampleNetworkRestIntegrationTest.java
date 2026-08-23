@@ -76,6 +76,7 @@ class AnnualSampleNetworkRestIntegrationTest {
     @Autowired PlatformTransactionManager transactions;
     @Autowired CoordinatedAnnualSampleNetworkRepository networkRepository;
     private JdbcClient jdbc;
+    private boolean concurrentTransactionsTerminated = true;
 
     @BeforeEach
     void setUp() {
@@ -162,14 +163,24 @@ class AnnualSampleNetworkRestIntegrationTest {
 
     @AfterEach
     void tearDown() {
-        cleanOperationalRows();
-        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id IN (:subjects)")
-                .param("subjects", List.of(OPERATOR, REVIEWER, NO_PERMISSION)).update();
-        jdbc.sql("DELETE FROM platform.work_unit_region_scope WHERE work_unit_code=:unit")
-                .param("unit", WORK_UNIT).update();
-        GovernedMasterDataFixtures.deleteRegions(
-                jdbc, List.of(VILLAGE_ONE, VILLAGE_TWO, TOWNSHIP,
-                        OUTSIDE_VILLAGE, OUTSIDE_TOWNSHIP, OUTSIDE_COUNTY));
+        if (!concurrentTransactionsTerminated) {
+            return;
+        }
+        TransactionTemplate cleanup = new TransactionTemplate(transactions);
+        cleanup.setTimeout(10);
+        cleanup.executeWithoutResult(status -> {
+            jdbc.sql("SET LOCAL lock_timeout = '2s'").update();
+            jdbc.sql("SET LOCAL statement_timeout = '8s'").update();
+            cleanOperationalRows();
+            jdbc.sql("DELETE FROM platform.security_user_region_scope "
+                            + "WHERE subject_id IN (:subjects)")
+                    .param("subjects", List.of(OPERATOR, REVIEWER, NO_PERMISSION)).update();
+            jdbc.sql("DELETE FROM platform.work_unit_region_scope WHERE work_unit_code=:unit")
+                    .param("unit", WORK_UNIT).update();
+            GovernedMasterDataFixtures.deleteRegions(
+                    jdbc, List.of(VILLAGE_ONE, VILLAGE_TWO, TOWNSHIP,
+                            OUTSIDE_VILLAGE, OUTSIDE_TOWNSHIP, OUTSIDE_COUNTY));
+        });
     }
 
     @Test
@@ -227,6 +238,8 @@ class AnnualSampleNetworkRestIntegrationTest {
         Future<Integer> submit = null;
         TransactionTemplate submitTransaction = new TransactionTemplate(transactions);
         ExecutorService executor = Executors.newFixedThreadPool(2);
+        concurrentTransactionsTerminated = false;
+        Throwable failure = null;
         try {
             member = executor.submit(() -> mvc.perform(
                             put("/api/v1/sample-networks/{year}/members/{samplePointId}",
@@ -251,16 +264,34 @@ class AnnualSampleNetworkRestIntegrationTest {
 
             assertThat(member.get(5, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(200);
             assertThat(submit.get(5, TimeUnit.SECONDS)).isEqualTo(1);
+        } catch (Throwable primaryFailure) {
+            failure = primaryFailure;
         } finally {
-            releaseMemberWrite.countDown();
-            executor.shutdown();
-            boolean memberFinished = awaitFutureCompletion(member);
-            boolean submitFinished = awaitFutureCompletion(submit);
-            boolean executorFinished = awaitExecutorTermination(executor);
-            networkRepository.resetCoordination();
-            assertThat(memberFinished).as("member transaction thread finished").isTrue();
-            assertThat(submitFinished).as("submit transaction thread finished").isTrue();
-            assertThat(executorFinished).as("concurrent transaction executor terminated").isTrue();
+            boolean memberFinished = false;
+            boolean submitFinished = false;
+            Throwable cleanupFailure = null;
+            try {
+                releaseMemberWrite.countDown();
+                executor.shutdown();
+                memberFinished = awaitFutureCompletion(member);
+                submitFinished = awaitFutureCompletion(submit);
+                awaitExecutorTermination(executor);
+            } catch (Throwable unexpectedCleanupFailure) {
+                cleanupFailure = unexpectedCleanupFailure;
+            } finally {
+                concurrentTransactionsTerminated = executor.isTerminated();
+                try {
+                    networkRepository.resetCoordination();
+                } catch (Throwable resetFailure) {
+                    cleanupFailure = retainPrimaryFailure(cleanupFailure, resetFailure);
+                }
+            }
+            cleanupFailure = retainPrimaryFailure(cleanupFailure, concurrentCleanupFailure(
+                    memberFinished, submitFinished, concurrentTransactionsTerminated));
+            failure = retainPrimaryFailure(failure, cleanupFailure);
+        }
+        if (failure != null) {
+            rethrow(failure);
         }
 
         assertThat(jdbc.sql("""
@@ -273,6 +304,37 @@ class AnnualSampleNetworkRestIntegrationTest {
         assertThat(jdbc.sql("""
                 SELECT status_code FROM registry.sample_network_year WHERE network_year=2026
                 """).query(String.class).single()).isEqualTo("IN_REVIEW");
+    }
+
+    private static Throwable concurrentCleanupFailure(
+            boolean memberFinished, boolean submitFinished, boolean executorFinished) {
+        if (memberFinished && submitFinished && executorFinished) {
+            return null;
+        }
+        return new AssertionError("Concurrent transaction cleanup failed: memberFinished="
+                + memberFinished + ", submitFinished=" + submitFinished
+                + ", executorFinished=" + executorFinished);
+    }
+
+    private static Throwable retainPrimaryFailure(
+            Throwable primaryFailure, Throwable cleanupFailure) {
+        if (primaryFailure == null) {
+            return cleanupFailure;
+        }
+        if (cleanupFailure != null) {
+            primaryFailure.addSuppressed(cleanupFailure);
+        }
+        return primaryFailure;
+    }
+
+    private static void rethrow(Throwable failure) throws Exception {
+        if (failure instanceof Exception exception) {
+            throw exception;
+        }
+        if (failure instanceof Error error) {
+            throw error;
+        }
+        throw new AssertionError(failure);
     }
 
     private static boolean awaitFutureCompletion(Future<?> future) {
@@ -762,12 +824,14 @@ class AnnualSampleNetworkRestIntegrationTest {
 
     static class CoordinatedAnnualSampleNetworkRepository
             extends JdbcAnnualSampleNetworkRepository {
+        private final JdbcClient jdbc;
         private volatile CountDownLatch membershipWriteReached;
         private volatile CountDownLatch membershipWriteRelease;
         private volatile CountDownLatch submitReached;
 
         CoordinatedAnnualSampleNetworkRepository(JdbcClient jdbc) {
             super(jdbc);
+            this.jdbc = jdbc;
         }
 
         @Override
@@ -778,6 +842,7 @@ class AnnualSampleNetworkRestIntegrationTest {
             CountDownLatch reached = membershipWriteReached;
             CountDownLatch release = membershipWriteRelease;
             if (reached != null && release != null) {
+                boundConcurrentStatements();
                 reached.countDown();
                 try {
                     if (!release.await(15, TimeUnit.SECONDS)) {
@@ -799,9 +864,15 @@ class AnnualSampleNetworkRestIntegrationTest {
         public int submit(int year, long version, String actor, Instant now) {
             CountDownLatch reached = submitReached;
             if (reached != null) {
+                boundConcurrentStatements();
                 reached.countDown();
             }
             return super.submit(year, version, actor, now);
+        }
+
+        private void boundConcurrentStatements() {
+            jdbc.sql("SET LOCAL lock_timeout = '5s'").update();
+            jdbc.sql("SET LOCAL statement_timeout = '10s'").update();
         }
 
         void coordinateNextMembershipWrite(
