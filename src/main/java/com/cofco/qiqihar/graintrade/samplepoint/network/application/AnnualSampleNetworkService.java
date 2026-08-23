@@ -85,11 +85,12 @@ public class AnnualSampleNetworkService {
         validateYear(year);
         validateMembership(statusCode, sourceCode, reason, version);
         validateRelation(designVillageRegionCode, relationType, evidenceReference);
+        SecurityPrincipal principal = access.require("BUSINESS_UPDATE", null);
         AnnualSampleNetworkRepository.SamplePointLocation location =
                 repository.samplePointLocation(samplePointId)
                         .orElseThrow(() -> new ResourceNotFoundException(
                                 "SAMPLE_POINT_NOT_FOUND", "真实样本点不存在或尚未通过主数据审核"));
-        SecurityPrincipal principal = access.require("BUSINESS_UPDATE", location.regionCode());
+        access.require("BUSINESS_UPDATE", location.regionCode());
         if (designVillageRegionCode != null) {
             access.require("BUSINESS_UPDATE", designVillageRegionCode);
         }

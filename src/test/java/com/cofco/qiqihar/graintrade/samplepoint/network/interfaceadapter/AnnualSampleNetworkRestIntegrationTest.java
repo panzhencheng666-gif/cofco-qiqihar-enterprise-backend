@@ -8,28 +8,45 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
+import com.cofco.qiqihar.graintrade.samplepoint.network.application.AnnualSampleNetworkRepository;
+import com.cofco.qiqihar.graintrade.samplepoint.network.infrastructure.JdbcAnnualSampleNetworkRepository;
 import com.cofco.qiqihar.graintrade.testsupport.GovernedMasterDataFixtures;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @SpringBootTest(classes = GrainTradeApplication.class,
         properties = "qiqihar.security.require-read-authentication=true")
 @AutoConfigureMockMvc
 @UsesProtectedTestDatabase
+@Import(AnnualSampleNetworkRestIntegrationTest.RepositoryTestConfiguration.class)
 class AnnualSampleNetworkRestIntegrationTest {
     private static final String OPERATOR = "annual-network-operator";
     private static final String REVIEWER = "annual-network-reviewer";
+    private static final String NO_PERMISSION = "annual-network-no-permission";
     private static final String WORK_UNIT = "ANNUAL_NETWORK_TEST";
     private static final String PREFECTURE = "230200";
     private static final String TOWNSHIP = "230202995";
@@ -48,9 +65,13 @@ class AnnualSampleNetworkRestIntegrationTest {
             "13300000-0000-0000-0000-000000000005";
     private static final String OUTSIDE_SAMPLE_POINT =
             "13300000-0000-0000-0000-000000000006";
+    private static final String MISSING_SAMPLE_POINT =
+            "13300000-0000-0000-0000-000000000099";
 
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
+    @Autowired PlatformTransactionManager transactions;
+    @Autowired CoordinatedAnnualSampleNetworkRepository networkRepository;
     private JdbcClient jdbc;
 
     @BeforeEach
@@ -100,7 +121,8 @@ class AnnualSampleNetworkRestIntegrationTest {
                 INSERT INTO platform.work_unit_region_scope(work_unit_code,region_code)
                 VALUES(:unit,:prefecture) ON CONFLICT DO NOTHING;
                 INSERT INTO platform.security_user(subject_id,display_name,work_unit_code)
-                VALUES(:operator,'年度网络填报员',:unit),(:reviewer,'年度网络管理员',:unit)
+                VALUES(:operator,'年度网络填报员',:unit),(:reviewer,'年度网络管理员',:unit),
+                      (:noPermission,'年度网络无写权限人员',:unit)
                 ON CONFLICT(subject_id) DO NOTHING;
                 INSERT INTO platform.security_user_role(subject_id,role_code)
                 VALUES(:operator,'BUSINESS_OPERATOR'),(:reviewer,'BUSINESS_REVIEWER')
@@ -108,7 +130,8 @@ class AnnualSampleNetworkRestIntegrationTest {
                 INSERT INTO platform.security_user_region_scope(subject_id,region_code)
                 VALUES(:operator,:prefecture),(:reviewer,:prefecture) ON CONFLICT DO NOTHING
                 """).param("unit", WORK_UNIT).param("operator", OPERATOR)
-                .param("reviewer", REVIEWER).param("prefecture", PREFECTURE).update();
+                .param("reviewer", REVIEWER).param("noPermission", NO_PERMISSION)
+                .param("prefecture", PREFECTURE).update();
         jdbc.sql("""
                 INSERT INTO registry.sample_point(
                   sample_point_id,kind_code,canonical_name,region_code,approval_state,
@@ -138,12 +161,115 @@ class AnnualSampleNetworkRestIntegrationTest {
     void tearDown() {
         cleanOperationalRows();
         jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id IN (:subjects)")
-                .param("subjects", List.of(OPERATOR, REVIEWER)).update();
+                .param("subjects", List.of(OPERATOR, REVIEWER, NO_PERMISSION)).update();
         jdbc.sql("DELETE FROM platform.work_unit_region_scope WHERE work_unit_code=:unit")
                 .param("unit", WORK_UNIT).update();
         GovernedMasterDataFixtures.deleteRegions(
                 jdbc, List.of(VILLAGE_ONE, VILLAGE_TWO, TOWNSHIP,
                         OUTSIDE_VILLAGE, OUTSIDE_TOWNSHIP, OUTSIDE_COUNTY));
+    }
+
+    @Test
+    void authenticatesAndAuthorizesBeforeLookingUpTheSamplePointIdentity() throws Exception {
+        String body = """
+                {"statusCode":"ACTIVE","sourceCode":"NEW",
+                 "reason":"不得用响应差异枚举样本身份","version":0}
+                """;
+
+        mvc.perform(put("/api/v1/sample-networks/{year}/members/{samplePointId}",
+                        2026, VILLAGE_SAMPLE_POINT)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error.code").value("AUTHENTICATION_REQUIRED"));
+        mvc.perform(put("/api/v1/sample-networks/{year}/members/{samplePointId}",
+                        2026, MISSING_SAMPLE_POINT)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.error.code").value("AUTHENTICATION_REQUIRED"));
+
+        mvc.perform(put("/api/v1/sample-networks/{year}/members/{samplePointId}",
+                        2026, VILLAGE_SAMPLE_POINT).principal(() -> NO_PERMISSION)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_PERMISSION_DENIED"));
+        mvc.perform(put("/api/v1/sample-networks/{year}/members/{samplePointId}",
+                        2026, MISSING_SAMPLE_POINT).principal(() -> NO_PERMISSION)
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_PERMISSION_DENIED"));
+    }
+
+    @Test
+    void blocksSubmitUntilTheLockedMemberTransactionCommits() throws Exception {
+        mvc.perform(post("/api/v1/sample-networks/{year}", 2026)
+                        .principal(() -> OPERATOR)
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isCreated());
+        mvc.perform(put("/api/v1/sample-networks/{year}/members/{samplePointId}",
+                        2026, COUNTY_SAMPLE_POINT).principal(() -> OPERATOR)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"statusCode":"ACTIVE","sourceCode":"NEW",
+                                 "reason":"并发提交前既有成员","version":0}
+                                """))
+                .andExpect(status().isOk());
+
+        CountDownLatch memberReachedWrite = new CountDownLatch(1);
+        CountDownLatch releaseMemberWrite = new CountDownLatch(1);
+        CountDownLatch submitReachedRepository = new CountDownLatch(1);
+        networkRepository.coordinateNextMembershipWrite(
+                memberReachedWrite, releaseMemberWrite, submitReachedRepository);
+
+        Future<MvcResult> member = null;
+        Future<Integer> submit = null;
+        TransactionTemplate submitTransaction = new TransactionTemplate(transactions);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            member = executor.submit(() -> mvc.perform(
+                            put("/api/v1/sample-networks/{year}/members/{samplePointId}",
+                                    2026, VILLAGE_SAMPLE_POINT).principal(() -> OPERATOR)
+                                    .contentType(MediaType.APPLICATION_JSON)
+                                    .content("""
+                                            {"designVillageRegionCode":"%s",
+                                             "relationType":"EXACT_VILLAGE",
+                                             "statusCode":"ACTIVE","sourceCode":"NEW",
+                                             "reason":"并发成员写入","version":0}
+                                            """.formatted(VILLAGE_ONE)))
+                    .andReturn());
+            assertThat(memberReachedWrite.await(5, TimeUnit.SECONDS)).isTrue();
+
+            submit = executor.submit(() -> submitTransaction.execute(status ->
+                    networkRepository.submit(2026, 0, OPERATOR, Instant.now())));
+
+            assertThat(submitReachedRepository.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(awaitSubmitRowLock()).isTrue();
+            assertThat(submit.isDone()).isFalse();
+            releaseMemberWrite.countDown();
+
+            assertThat(member.get(5, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(200);
+            assertThat(submit.get(5, TimeUnit.SECONDS)).isEqualTo(1);
+        } finally {
+            releaseMemberWrite.countDown();
+            networkRepository.resetCoordination();
+            if (member != null && !member.isDone()) {
+                member.cancel(true);
+            }
+            if (submit != null && !submit.isDone()) {
+                submit.cancel(true);
+            }
+            executor.shutdownNow();
+        }
+
+        assertThat(jdbc.sql("""
+                SELECT (SELECT count(*) FROM registry.sample_network_membership
+                        WHERE network_year=2026 AND sample_point_id=CAST(:sample AS uuid))
+                     + (SELECT count(*) FROM registry.sample_network_design_relation
+                        WHERE network_year=2026 AND sample_point_id=CAST(:sample AS uuid))
+                """).param("sample", VILLAGE_SAMPLE_POINT).query(Long.class).single())
+                .isEqualTo(2);
+        assertThat(jdbc.sql("""
+                SELECT status_code FROM registry.sample_network_year WHERE network_year=2026
+                """).query(String.class).single()).isEqualTo("IN_REVIEW");
     }
 
     @Test
@@ -534,6 +660,26 @@ class AnnualSampleNetworkRestIntegrationTest {
                 """).param("sample", TOWNSHIP_SAMPLE_POINT).query(Long.class).single()).isZero();
     }
 
+    private boolean awaitSubmitRowLock() throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (System.nanoTime() < deadline) {
+            boolean waiting = Boolean.TRUE.equals(jdbc.sql("""
+                    SELECT EXISTS(
+                      SELECT 1
+                      FROM pg_stat_activity
+                      WHERE datname=current_database()
+                        AND pid<>pg_backend_pid()
+                        AND wait_event_type='Lock'
+                        AND query LIKE '%UPDATE registry.sample_network_year%')
+                    """).query(Boolean.class).single());
+            if (waiting) {
+                return true;
+            }
+            Thread.sleep(20);
+        }
+        return false;
+    }
+
     private void cleanOperationalRows() {
         jdbc.sql("DELETE FROM registry.sample_network_design_relation "
                 + "WHERE network_year IN (2026,2027,2028)").update();
@@ -552,5 +698,74 @@ class AnnualSampleNetworkRestIntegrationTest {
                 .param("regions", List.of(VILLAGE_ONE, VILLAGE_TWO)).update();
         jdbc.sql("DELETE FROM platform.geography_import_batch WHERE dataset_sha256=repeat('c',64)")
                 .update();
+    }
+
+    @TestConfiguration(proxyBeanMethods = false)
+    static class RepositoryTestConfiguration {
+        @Bean
+        @Primary
+        CoordinatedAnnualSampleNetworkRepository coordinatedAnnualSampleNetworkRepository(
+                DataSource dataSource) {
+            return new CoordinatedAnnualSampleNetworkRepository(
+                    JdbcClient.create(dataSource));
+        }
+    }
+
+    static class CoordinatedAnnualSampleNetworkRepository
+            extends JdbcAnnualSampleNetworkRepository {
+        private volatile CountDownLatch membershipWriteReached;
+        private volatile CountDownLatch membershipWriteRelease;
+        private volatile CountDownLatch submitReached;
+
+        CoordinatedAnnualSampleNetworkRepository(JdbcClient jdbc) {
+            super(jdbc);
+        }
+
+        @Override
+        public AnnualSampleNetworkRepository.MembershipWriteResult upsertMembership(
+                int year, UUID samplePointId, String designVillageRegionCode,
+                String relationType, String evidenceReference, String statusCode,
+                String sourceCode, String reason, long version, String actor, Instant now) {
+            CountDownLatch reached = membershipWriteReached;
+            CountDownLatch release = membershipWriteRelease;
+            if (reached != null && release != null) {
+                reached.countDown();
+                try {
+                    if (!release.await(15, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException(
+                                "Member write was not released by the concurrency test");
+                    }
+                } catch (InterruptedException exception) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(
+                            "Concurrent member write was interrupted", exception);
+                }
+            }
+            return super.upsertMembership(
+                    year, samplePointId, designVillageRegionCode, relationType,
+                    evidenceReference, statusCode, sourceCode, reason, version, actor, now);
+        }
+
+        @Override
+        public int submit(int year, long version, String actor, Instant now) {
+            CountDownLatch reached = submitReached;
+            if (reached != null) {
+                reached.countDown();
+            }
+            return super.submit(year, version, actor, now);
+        }
+
+        void coordinateNextMembershipWrite(
+                CountDownLatch reached, CountDownLatch release, CountDownLatch submit) {
+            membershipWriteReached = reached;
+            membershipWriteRelease = release;
+            submitReached = submit;
+        }
+
+        void resetCoordination() {
+            membershipWriteReached = null;
+            membershipWriteRelease = null;
+            submitReached = null;
+        }
     }
 }
