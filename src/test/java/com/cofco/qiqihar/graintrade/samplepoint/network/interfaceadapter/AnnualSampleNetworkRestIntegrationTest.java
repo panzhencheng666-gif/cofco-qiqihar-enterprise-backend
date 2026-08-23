@@ -15,11 +15,14 @@ import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -250,14 +253,14 @@ class AnnualSampleNetworkRestIntegrationTest {
             assertThat(submit.get(5, TimeUnit.SECONDS)).isEqualTo(1);
         } finally {
             releaseMemberWrite.countDown();
+            executor.shutdown();
+            boolean memberFinished = awaitFutureCompletion(member);
+            boolean submitFinished = awaitFutureCompletion(submit);
+            boolean executorFinished = awaitExecutorTermination(executor);
             networkRepository.resetCoordination();
-            if (member != null && !member.isDone()) {
-                member.cancel(true);
-            }
-            if (submit != null && !submit.isDone()) {
-                submit.cancel(true);
-            }
-            executor.shutdownNow();
+            assertThat(memberFinished).as("member transaction thread finished").isTrue();
+            assertThat(submitFinished).as("submit transaction thread finished").isTrue();
+            assertThat(executorFinished).as("concurrent transaction executor terminated").isTrue();
         }
 
         assertThat(jdbc.sql("""
@@ -270,6 +273,39 @@ class AnnualSampleNetworkRestIntegrationTest {
         assertThat(jdbc.sql("""
                 SELECT status_code FROM registry.sample_network_year WHERE network_year=2026
                 """).query(String.class).single()).isEqualTo("IN_REVIEW");
+    }
+
+    private static boolean awaitFutureCompletion(Future<?> future) {
+        if (future == null) {
+            return true;
+        }
+        try {
+            future.get(5, TimeUnit.SECONDS);
+            return true;
+        } catch (ExecutionException | CancellationException ignored) {
+            return true;
+        } catch (TimeoutException exception) {
+            future.cancel(true);
+            return false;
+        } catch (InterruptedException exception) {
+            future.cancel(true);
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    }
+
+    private static boolean awaitExecutorTermination(ExecutorService executor) {
+        try {
+            if (executor.awaitTermination(5, TimeUnit.SECONDS)) {
+                return true;
+            }
+            executor.shutdownNow();
+            return executor.awaitTermination(5, TimeUnit.SECONDS);
+        } catch (InterruptedException exception) {
+            executor.shutdownNow();
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
     @Test
@@ -504,7 +540,7 @@ class AnnualSampleNetworkRestIntegrationTest {
     }
 
     @Test
-    void rejectsOutOfScopeActualAndDesignRegionsBeforeWritingMemberships() throws Exception {
+    void hidesOutOfScopeActualIdentitiesAndRejectsOutOfScopeDesignRegions() throws Exception {
         mvc.perform(post("/api/v1/sample-networks/{year}", 2026)
                         .principal(() -> OPERATOR)
                         .contentType(MediaType.APPLICATION_JSON).content("{}"))
@@ -520,8 +556,21 @@ class AnnualSampleNetworkRestIntegrationTest {
                                  "statusCode":"ACTIVE","sourceCode":"NEW",
                                  "reason":"外辖样本","version":0}
                                 """.formatted(VILLAGE_ONE)))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("SAMPLE_POINT_NOT_FOUND"));
+
+        mvc.perform(put("/api/v1/sample-networks/{year}/members/{samplePointId}",
+                        2026, MISSING_SAMPLE_POINT).principal(() -> OPERATOR)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"designVillageRegionCode":"%s",
+                                 "relationType":"EXPLICIT_REPRESENTATION",
+                                 "evidenceReference":"不存在样本也不得被枚举",
+                                 "statusCode":"ACTIVE","sourceCode":"NEW",
+                                 "reason":"不存在样本","version":0}
+                                """.formatted(VILLAGE_ONE)))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("SAMPLE_POINT_NOT_FOUND"));
 
         mvc.perform(put("/api/v1/sample-networks/{year}/members/{samplePointId}",
                         2026, TOWNSHIP_SAMPLE_POINT).principal(() -> OPERATOR)

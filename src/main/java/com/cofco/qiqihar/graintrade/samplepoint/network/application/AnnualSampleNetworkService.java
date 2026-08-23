@@ -90,6 +90,10 @@ public class AnnualSampleNetworkService {
                 repository.samplePointLocation(samplePointId)
                         .orElseThrow(() -> new ResourceNotFoundException(
                                 "SAMPLE_POINT_NOT_FOUND", "真实样本点不存在或尚未通过主数据审核"));
+        if (!principal.includesRegion(location.regionCode())) {
+            throw new ResourceNotFoundException(
+                    "SAMPLE_POINT_NOT_FOUND", "真实样本点不存在或尚未通过主数据审核");
+        }
         access.require("BUSINESS_UPDATE", location.regionCode());
         if (designVillageRegionCode != null) {
             access.require("BUSINESS_UPDATE", designVillageRegionCode);
