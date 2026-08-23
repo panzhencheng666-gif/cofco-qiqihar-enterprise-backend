@@ -138,6 +138,12 @@ public class ProductionRecordService implements ProductionImportPort {
         return create(draft, true);
     }
 
+    @Transactional
+    public ProductionRecordView createAndSubmit(ProductionDraft draft) {
+        ProductionRecordView created = create(draft, true);
+        return submit(created.record().id(), created.record().version());
+    }
+
     private ProductionRecordView create(ProductionDraft draft, boolean requireEvidence) {
         SecurityPrincipal principal = authorize("BUSINESS_CREATE", draft.regionCode());
         Map<String, String> submissionMetadata = canonicalSubmissionMetadata(
@@ -211,6 +217,12 @@ public class ProductionRecordService implements ProductionImportPort {
         ProductionRecord persisted = repository.updateFacts(revised, expectedVersion, principal.subjectId());
         audit(principal, persisted, "PRODUCTION_RECORD_UPDATED");
         return view(persisted);
+    }
+
+    @Transactional
+    public ProductionRecordView saveAndSubmit(String id, long expectedVersion, ProductionDraft draft) {
+        ProductionRecordView saved = saveDraft(id, expectedVersion, draft);
+        return submit(saved.record().id(), saved.record().version());
     }
 
     @Transactional

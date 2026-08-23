@@ -174,6 +174,12 @@ public class MarketMonitoringService {
         return create(draft, true);
     }
 
+    @Transactional
+    public MarketRecordView createAndSubmit(MarketMonitoringDraft draft) {
+        MarketRecordView created = create(draft, true);
+        return submit(created.record().id(), created.record().version());
+    }
+
     private MarketRecordView create(MarketMonitoringDraft draft, boolean requireEvidence) {
         SecurityPrincipal principal = authorize("BUSINESS_CREATE", null);
         MarketMonitoringDraft securedDraft = withReporter(draft, principal.displayName());
@@ -289,6 +295,13 @@ public class MarketMonitoringService {
         } catch (IllegalStateException exception) {
             throw invalidTransition(exception);
         }
+    }
+
+    @Transactional
+    public MarketRecordView saveAndSubmit(
+            String id, long expectedVersion, MarketMonitoringDraft draft) {
+        MarketRecordView saved = save(id, expectedVersion, draft);
+        return submit(saved.record().id(), saved.record().version());
     }
 
     @Transactional

@@ -60,10 +60,22 @@ public class MarketMonitoringCommandController {
         return new ApiResponse<>(RecordResponse.from(service.create(request.toDraft())));
     }
 
+    @PostMapping("/api/v1/market-records/submit")
+    @ResponseStatus(HttpStatus.CREATED)
+    ApiResponse<RecordResponse> createAndSubmit(@RequestBody DraftRequest request) {
+        return new ApiResponse<>(RecordResponse.from(service.createAndSubmit(request.toDraft())));
+    }
+
     @PutMapping("/api/v1/market-records/{id}")
     ApiResponse<RecordResponse> save(@PathVariable String id, @RequestBody DraftRequest request) {
         return new ApiResponse<>(RecordResponse.from(
                 service.save(id, request.requiredVersion(), request.toDraft())));
+    }
+
+    @PutMapping("/api/v1/market-records/{id}/submit")
+    ApiResponse<RecordResponse> saveAndSubmit(@PathVariable String id, @RequestBody DraftRequest request) {
+        return new ApiResponse<>(RecordResponse.from(
+                service.saveAndSubmit(id, request.requiredVersion(), request.toDraft())));
     }
 
     @PostMapping("/api/v1/market-records/{id}/submit")

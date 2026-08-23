@@ -395,6 +395,45 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    void createsAndResubmitsMarketRecordsThroughAtomicSubmissionEndpoints() throws Exception {
+        String body = draftBody("CORN", "FEED_MILL", "MOISTURE", null);
+        String id = mockMvc.perform(post("/api/v1/market-records/submit")
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"))
+                .andExpect(jsonPath("$.data.version").value(1))
+                .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"))
+                .andReturn().getResponse().getContentAsString()
+                .replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        assertThat(jdbc.sql("SELECT status_code FROM market.market_record WHERE record_id=:id")
+                .param("id", id).query(String.class).single()).isEqualTo("PENDING_REVIEW");
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type='MARKET_RECORD' AND aggregate_id=:id
+                  AND action_code IN ('MARKET_RECORD_CREATED','MARKET_RECORD_SUBMITTED')
+                """).param("id", id).query(Long.class).single()).isEqualTo(2L);
+
+        mockMvc.perform(post("/api/v1/market-records/{id}/return", id)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1,\"reason\":\"补充现场依据\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("RETURNED"))
+                .andExpect(jsonPath("$.data.version").value(2));
+
+        mockMvc.perform(put("/api/v1/market-records/{id}/submit", id)
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(versioned(body, 2)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(id))
+                .andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"))
+                .andExpect(jsonPath("$.data.version").value(4));
+    }
+
+    @Test
     void rejectsMissingConcreteReportedObjectWithoutCreatingARecord() throws Exception {
         long before = recordCount();
         String body = draftBody("CORN", "FEED_MILL", "MOISTURE", null)
