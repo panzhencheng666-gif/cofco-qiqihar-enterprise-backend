@@ -20,6 +20,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,6 +36,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.MvcResult;
 
 @SpringBootTest(classes = GrainTradeApplication.class)
 @AutoConfigureMockMvc
@@ -69,10 +75,16 @@ class GovernedProductWorkbookImportIntegrationTest {
                 DELETE FROM production.production_record
                 WHERE sample_point_id IN (
                   SELECT sample_point_id FROM registry.sample_point
-                  WHERE canonical_name='跨月稳定身份样本')
+                  WHERE canonical_name LIKE '期间守卫%')
                 """).update();
         jdbc.sql("""
-                DELETE FROM registry.sample_point WHERE canonical_name='跨月稳定身份样本'
+                DELETE FROM market.market_record
+                WHERE sample_point_id IN (
+                  SELECT sample_point_id FROM registry.sample_point
+                  WHERE canonical_name LIKE '期间守卫%')
+                """).update();
+        jdbc.sql("""
+                DELETE FROM registry.sample_point WHERE canonical_name LIKE '期间守卫%'
                 """).update();
     }
 
@@ -598,27 +610,27 @@ class GovernedProductWorkbookImportIntegrationTest {
     }
 
     @Test
-    void preservesOneSampleIdentityAcrossMonthsAndRoutesSamePeriodChangesToReview() throws Exception {
-        byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
-                        .param("format", "xlsx").param("productCode", "CORN")
-                        .principal(() -> "production-tester"))
-                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
-        List<String> labels = withoutTrailingBlanks(XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
-        BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, "PRODUCTION");
-        BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
-                "PRODUCTION", "产情", "CORN", null, context.contractVersion(), context.contractDigest(),
-                labels, labels, List.of());
+    void preservesOneProductionSampleIdentityAcrossMonthsAndRejectsAGlobalSamePeriodDuplicate()
+            throws Exception {
+        WorkbookFixture fixture = workbookFixture("production", "PRODUCTION", "产情",
+                "production-tester", "样本点名称");
         Map<String, String> julyValues = new LinkedHashMap<>(completeProductionValues());
         julyValues.put("数据月份", "7");
         Map<String, String> augustValues = new LinkedHashMap<>(completeProductionValues());
         augustValues.put("数据月份", "8");
-        byte[] julyWorkbook = productionWorkbook(template, labels, "跨月稳定身份样本", julyValues);
-        byte[] augustWorkbook = productionWorkbook(template, labels, "跨月稳定身份样本", augustValues);
+        String sampleName = "期间守卫产情样本";
+        byte[] julyWorkbook = workbook(fixture, sampleName, julyValues);
+        byte[] augustWorkbook = workbook(fixture, sampleName, augustValues);
 
-        importProductionWorkbook("production-period-2026-07", julyWorkbook, 1, 0);
-        approveProductionRecordForMonth(7);
-        importProductionWorkbook("production-period-2026-08", augustWorkbook, 1, 0);
-        approveProductionRecordForMonth(8);
+        importWorkbook("production", "production-tester", "production-period-2026-07", julyWorkbook, 1, 0);
+        approveCanonicalRecord("production.production_record", "record_id", 7,
+                "/api/v1/production-records/{id}/approve", "market-tester");
+        importWorkbook("production", "production-tester", "production-period-2026-08", augustWorkbook, 1, 0);
+        approveCanonicalRecord("production.production_record", "record_id", 8,
+                "/api/v1/production-records/{id}/approve", "market-tester");
+        String augustRecordId = jdbc.sql("""
+                SELECT record_id FROM production.production_record WHERE survey_month=8
+                """).query(String.class).single();
 
         assertThat(jdbc.sql("SELECT count(DISTINCT sample_point_id) FROM production.production_record")
                 .query(Long.class).single()).isOne();
@@ -627,28 +639,144 @@ class GovernedProductWorkbookImportIntegrationTest {
         assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
                 .query(Long.class).single()).isEqualTo(2);
 
-        importProductionWorkbook("production-period-2026-08", augustWorkbook, 1, 0);
+        assertSameKeyReplayKeepsOriginalJobAndDraft("production", "production-tester",
+                "production-period-2026-08", augustWorkbook);
         assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
-                .query(Long.class).single()).isEqualTo(2);
-        assertThat(jdbc.sql("SELECT count(*) FROM platform.import_job")
                 .query(Long.class).single()).isEqualTo(2);
 
         Map<String, String> changedAugustValues = new LinkedHashMap<>(augustValues);
         changedAugustValues.put("预计单产（公斤/亩）", "510");
-        byte[] changedAugustWorkbook = productionWorkbook(
-                template, labels, "跨月稳定身份样本", changedAugustValues);
-        importProductionWorkbook("production-period-2026-08-correction", changedAugustWorkbook, 1, 1);
+        byte[] changedAugustWorkbook = workbook(fixture, sampleName, changedAugustValues);
+        importWorkbook("production", "market-tester", "production-period-2026-08-correction",
+                changedAugustWorkbook, 0, 1);
 
         assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
                 .query(Long.class).single()).isEqualTo(2);
+        Map<String, Object> conflict = jdbc.sql("""
+                SELECT error_code,error_message FROM platform.import_row_result result
+                JOIN platform.import_job job ON job.import_job_id=result.import_job_id
+                WHERE job.idempotency_key='production-period-2026-08-correction'
+                """).query().singleRow();
+        assertThat(conflict.get("error_code")).isEqualTo("SAMPLE_PERIOD_RECORD_CONFLICT");
+        assertThat(conflict.get("error_message").toString())
+                .contains(augustRecordId, "退回补充", "修正流程");
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.business_import_draft WHERE sample_name=:sample")
+                .param("sample", sampleName).query(Long.class).single()).isEqualTo(2);
+    }
+
+    @Test
+    void preservesOneMarketSampleIdentityAcrossMonthsAndRejectsAGlobalSamePeriodDuplicate()
+            throws Exception {
+        WorkbookFixture fixture = workbookFixture("market", "MARKET", "市场",
+                "market-tester", "样本点名称");
+        Map<String, String> julyValues = new LinkedHashMap<>(completeMarketValues());
+        julyValues.put("数据月份", "7");
+        Map<String, String> augustValues = new LinkedHashMap<>(completeMarketValues());
+        augustValues.put("数据月份", "8");
+        String sampleName = "期间守卫市场样本";
+        byte[] julyWorkbook = workbook(fixture, sampleName, julyValues);
+        byte[] augustWorkbook = workbook(fixture, sampleName, augustValues);
+
+        importWorkbook("market", "market-tester", "market-period-2026-07", julyWorkbook, 1, 0);
+        approveCanonicalRecord("market.market_record", "record_id", 7,
+                "/api/v1/market-records/{id}/approve", "production-tester");
+        importWorkbook("market", "market-tester", "market-period-2026-08", augustWorkbook, 1, 0);
+        approveCanonicalRecord("market.market_record", "record_id", 8,
+                "/api/v1/market-records/{id}/approve", "production-tester");
+
+        assertThat(jdbc.sql("SELECT count(DISTINCT sample_point_id) FROM market.market_record")
+                .query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("SELECT count(DISTINCT survey_month) FROM market.market_record")
+                .query(Long.class).single()).isEqualTo(2);
+        assertSameKeyReplayKeepsOriginalJobAndDraft("market", "market-tester",
+                "market-period-2026-08", augustWorkbook);
+
+        Map<String, String> changedAugustValues = new LinkedHashMap<>(augustValues);
+        changedAugustValues.put("采集对象销售价格（元/吨）", "2390");
+        importWorkbook("market", "production-tester", "market-period-2026-08-correction",
+                workbook(fixture, sampleName, changedAugustValues), 0, 1);
+
+        assertThat(jdbc.sql("SELECT count(*) FROM market.market_record")
+                .query(Long.class).single()).isEqualTo(2);
+        assertPeriodConflict("market-period-2026-08-correction");
+    }
+
+    @Test
+    void preservesTheLogisticsSampleBusinessKeyAcrossMonthsWithoutInventingASurveySite()
+            throws Exception {
+        WorkbookFixture fixture = workbookFixture("logistics", "LOGISTICS", "物流",
+                "logistics-tester", "物流样本点名称");
+        Map<String, String> julyValues = new LinkedHashMap<>(completeLogisticsValues());
+        julyValues.put("数据月份", "7");
+        Map<String, String> augustValues = new LinkedHashMap<>(completeLogisticsValues());
+        augustValues.put("数据月份", "8");
+        String sampleName = "期间守卫物流样本";
+        byte[] julyWorkbook = workbook(fixture, sampleName, julyValues);
+        byte[] augustWorkbook = workbook(fixture, sampleName, augustValues);
+
+        importWorkbook("logistics", "logistics-tester", "logistics-period-2026-07", julyWorkbook, 1, 0);
+        approveCanonicalRecord("logistics.route_event", "event_id", 7,
+                "/api/v1/logistics-records/{id}/approve", "production-tester");
+        importWorkbook("logistics", "logistics-tester", "logistics-period-2026-08", augustWorkbook, 1, 0);
+        approveCanonicalRecord("logistics.route_event", "event_id", 8,
+                "/api/v1/logistics-records/{id}/approve", "production-tester");
+
         assertThat(jdbc.sql("""
-                SELECT count(*) FROM platform.business_import_draft
-                WHERE sample_name='跨月稳定身份样本' AND survey_period='2026-08' AND state_code='DRAFT'
+                SELECT count(*) FROM logistics.route_event
+                WHERE source_organization=:sample AND sample_contact='13900000000'
+                """).param("sample", sampleName).query(Long.class).single()).isEqualTo(2);
+        assertThat(jdbc.sql("SELECT count(DISTINCT survey_month) FROM logistics.route_event")
+                .query(Long.class).single()).isEqualTo(2);
+        assertSameKeyReplayKeepsOriginalJobAndDraft("logistics", "logistics-tester",
+                "logistics-period-2026-08", augustWorkbook);
+
+        Map<String, String> changedAugustValues = new LinkedHashMap<>(augustValues);
+        changedAugustValues.put("物流运价（不含车板价）（元/吨）", "81.2500");
+        importWorkbook("logistics", "production-tester", "logistics-period-2026-08-correction",
+                workbook(fixture, sampleName, changedAugustValues), 0, 1);
+
+        assertThat(jdbc.sql("SELECT count(*) FROM logistics.route_event")
+                .query(Long.class).single()).isEqualTo(2);
+        assertPeriodConflict("logistics-period-2026-08-correction");
+    }
+
+    @Test
+    void serializesConcurrentGlobalPeriodImportsFromDifferentOperators() throws Exception {
+        WorkbookFixture fixture = workbookFixture("production", "PRODUCTION", "产情",
+                "production-tester", "样本点名称");
+        byte[] workbook = workbook(fixture, "期间守卫并发产情样本", completeProductionValues());
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        Future<MvcResult> first = executor.submit(() -> {
+            start.await();
+            return performImport("production", "production-tester",
+                    "production-period-concurrent-a", workbook);
+        });
+        Future<MvcResult> second = executor.submit(() -> {
+            start.await();
+            return performImport("production", "market-tester",
+                    "production-period-concurrent-b", workbook);
+        });
+        start.countDown();
+        try {
+            assertThat(first.get(15, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(201);
+            assertThat(second.get(15, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(201);
+        } finally {
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
+        }
+
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM production.production_record_submission_metadata
+                WHERE field_code='PROD_SAMPLE_NAME' AND value='期间守卫并发产情样本'
                 """).query(Long.class).single()).isOne();
         assertThat(jdbc.sql("""
-                SELECT warning_code FROM platform.import_row_result
-                WHERE warning_code='SAMPLE_IDENTITY_RECORD_CONFLICT'
-                """).query(String.class).single()).isEqualTo("SAMPLE_IDENTITY_RECORD_CONFLICT");
+                SELECT count(*) FROM platform.import_row_result result
+                JOIN platform.import_job job ON job.import_job_id=result.import_job_id
+                WHERE job.idempotency_key IN ('production-period-concurrent-a','production-period-concurrent-b')
+                  AND result.outcome_code='ERROR'
+                  AND result.error_code='SAMPLE_PERIOD_RECORD_CONFLICT'
+                """).query(Long.class).single()).isOne();
     }
 
     @Test
@@ -1282,38 +1410,95 @@ class GovernedProductWorkbookImportIntegrationTest {
         return recordId;
     }
 
-    private byte[] productionWorkbook(BusinessImportWorkbook.Template template, List<String> labels,
-            String sampleName, Map<String, String> supplied) {
-        List<String> row = sparse(labels, "样本点名称", "地区", sampleName, "");
-        for (Map.Entry<String, String> value : supplied.entrySet()) {
-            row = withValue(row, labels, value.getKey(), value.getValue());
-        }
-        return BusinessImportWorkbook.create(template, List.of(row));
+    private WorkbookFixture workbookFixture(String route, String domainCode, String domainLabel,
+            String operator, String sampleLabel) throws Exception {
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/" + route + "/template")
+                        .param("format", "xlsx").param("productCode", "CORN")
+                        .principal(() -> operator))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        List<String> labels = withoutTrailingBlanks(XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
+        BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, domainCode);
+        BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
+                domainCode, domainLabel, "CORN", null, context.contractVersion(), context.contractDigest(),
+                labels, labels, List.of());
+        return new WorkbookFixture(template, labels, sampleLabel);
     }
 
-    private void importProductionWorkbook(String idempotencyKey, byte[] workbook,
-            int importedRows, int warningRows) throws Exception {
-        mvc.perform(multipart("/api/v1/imports/production")
-                        .file(new MockMultipartFile("file", "产情-玉米-跨月身份.xlsx", XLSX, workbook))
+    private byte[] workbook(WorkbookFixture fixture, String sampleName, Map<String, String> supplied) {
+        List<String> row = sparse(fixture.labels(), fixture.sampleLabel(), "地区", sampleName, "");
+        for (Map.Entry<String, String> value : supplied.entrySet()) {
+            row = withValue(row, fixture.labels(), value.getKey(), value.getValue());
+        }
+        return BusinessImportWorkbook.create(fixture.template(), List.of(row));
+    }
+
+    private MvcResult performImport(String route, String principal, String idempotencyKey, byte[] workbook)
+            throws Exception {
+        return mvc.perform(multipart("/api/v1/imports/" + route)
+                        .file(new MockMultipartFile("file", route + "-玉米-期间守卫.xlsx", XLSX, workbook))
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", idempotencyKey)
-                        .principal(() -> "production-tester"))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.importedRows").value(importedRows))
-                .andExpect(jsonPath("$.data.failedRows").value(0))
-                .andExpect(jsonPath("$.data.warningRows").value(warningRows));
+                        .principal(() -> principal))
+                .andExpect(status().isCreated()).andReturn();
     }
 
-    private void approveProductionRecordForMonth(int surveyMonth) throws Exception {
+    private void importWorkbook(String route, String principal, String idempotencyKey, byte[] workbook,
+            int importedRows, int failedRows) throws Exception {
+        mvc.perform(multipart("/api/v1/imports/" + route)
+                        .file(new MockMultipartFile("file", route + "-玉米-期间守卫.xlsx", XLSX, workbook))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", idempotencyKey)
+                        .principal(() -> principal))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(importedRows))
+                .andExpect(jsonPath("$.data.failedRows").value(failedRows));
+    }
+
+    private void approveCanonicalRecord(String table, String idColumn, int surveyMonth,
+            String route, String reviewer) throws Exception {
         Map<String, Object> record = jdbc.sql("""
-                SELECT record_id,version FROM production.production_record
+                SELECT %s AS record_id,version FROM %s
                 WHERE product_code='CORN' AND survey_year=2026 AND survey_month=:month
-                """).param("month", surveyMonth).query().singleRow();
-        mvc.perform(post("/api/v1/production-records/{id}/approve", record.get("record_id"))
-                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                """.formatted(idColumn, table)).param("month", surveyMonth).query().singleRow();
+        mvc.perform(post(route, record.get("record_id"))
+                        .principal(() -> reviewer).contentType(MediaType.APPLICATION_JSON)
                         .content("{\"version\":" + record.get("version") + "}"))
                 .andExpect(status().isOk());
     }
+
+    private void assertSameKeyReplayKeepsOriginalJobAndDraft(
+            String route, String principal, String key, byte[] workbook) throws Exception {
+        Map<String, Object> before = jdbc.sql("""
+                SELECT job.import_job_id,draft.import_draft_id
+                FROM platform.import_job job
+                JOIN platform.business_import_draft draft ON draft.import_job_id=job.import_job_id
+                WHERE job.requested_by=:principal AND job.domain_code=upper(:route)
+                  AND job.idempotency_key=:key
+                """).param("principal", principal).param("route", route).param("key", key)
+                .query().singleRow();
+        importWorkbook(route, principal, key, workbook, 1, 0);
+        Map<String, Object> after = jdbc.sql("""
+                SELECT job.import_job_id,draft.import_draft_id
+                FROM platform.import_job job
+                JOIN platform.business_import_draft draft ON draft.import_job_id=job.import_job_id
+                WHERE job.requested_by=:principal AND job.domain_code=upper(:route)
+                  AND job.idempotency_key=:key
+                """).param("principal", principal).param("route", route).param("key", key)
+                .query().singleRow();
+        assertThat(after).isEqualTo(before);
+    }
+
+    private void assertPeriodConflict(String key) {
+        assertThat(jdbc.sql("""
+                SELECT error_code FROM platform.import_row_result result
+                JOIN platform.import_job job ON job.import_job_id=result.import_job_id
+                WHERE job.idempotency_key=:key
+                """).param("key", key).query(String.class).single())
+                .isEqualTo("SAMPLE_PERIOD_RECORD_CONFLICT");
+    }
+
+    private record WorkbookFixture(BusinessImportWorkbook.Template template,
+            List<String> labels, String sampleLabel) {}
 
     private static Map<String, String> completeProductionValues() {
         return Map.ofEntries(

@@ -13,17 +13,20 @@ import org.springframework.transaction.annotation.Transactional;
 public class ImportDraftRowExecutor {
     private final ImportDraftRepository repository;
     private final ImportDraftPromotionService promotion;
+    private final BusinessPeriodRecordGuard periodRecords;
     private final BusinessAuditRecorder audit;
 
     public ImportDraftRowExecutor(ImportDraftRepository repository, ImportDraftPromotionService promotion,
-            BusinessAuditRecorder audit) {
+            BusinessPeriodRecordGuard periodRecords, BusinessAuditRecorder audit) {
         this.repository = repository;
         this.promotion = promotion;
+        this.periodRecords = periodRecords;
         this.audit = audit;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public SubmissionResult createAndSubmit(ImportDraft draft, List<UUID> evidenceIds) {
+        periodRecords.lockAndRequireAvailable(draft);
         ImportDraft stored = repository.insert(draft);
         List<UUID> requested = evidenceIds == null ? List.of() : List.copyOf(evidenceIds);
         int bound = repository.bindEvidence(stored.id(), requested, stored.createdAt());
@@ -37,6 +40,7 @@ public class ImportDraftRowExecutor {
     public SubmissionResult createPendingIdentityReview(ImportDraft draft, List<UUID> evidenceIds,
             String warningCode, String warningMessage, SecurityPrincipal principal,
             String auditDetailJson) {
+        periodRecords.lockAndRequireAvailable(draft);
         ImportDraft stored = repository.insert(draft);
         List<UUID> requested = evidenceIds == null ? List.of() : List.copyOf(evidenceIds);
         int bound = repository.bindEvidence(stored.id(), requested, stored.createdAt());

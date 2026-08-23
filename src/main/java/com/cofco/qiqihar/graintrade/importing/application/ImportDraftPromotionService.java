@@ -33,18 +33,21 @@ public class ImportDraftPromotionService {
     private final ProductionImportPort production;
     private final MarketImportPort market;
     private final LogisticsImportPort logistics;
+    private final BusinessPeriodRecordGuard periodRecords;
     private final EvidencePhotoService evidencePhotos;
     private final AccessControl access;
     private final BusinessAuditRecorder audit;
     private final Clock clock;
 
     public ImportDraftPromotionService(ImportDraftRepository drafts, ProductionImportPort production,
-            MarketImportPort market, LogisticsImportPort logistics, EvidencePhotoService evidencePhotos,
+            MarketImportPort market, LogisticsImportPort logistics, BusinessPeriodRecordGuard periodRecords,
+            EvidencePhotoService evidencePhotos,
             AccessControl access, BusinessAuditRecorder audit, Clock clock) {
         this.drafts = drafts;
         this.production = production;
         this.market = market;
         this.logistics = logistics;
+        this.periodRecords = periodRecords;
         this.evidencePhotos = evidencePhotos;
         this.access = access;
         this.audit = audit;
@@ -74,6 +77,7 @@ public class ImportDraftPromotionService {
             throw new ConflictException("IMPORT_DRAFT_NOT_SUBMITTABLE", "该导入草稿当前不能提交");
         }
         List<UUID> evidenceIds = drafts.evidenceIds(id);
+        periodRecords.lockAndRequireAvailable(draft);
         String recordId;
         try {
             recordId = switch (draft.domainCode()) {

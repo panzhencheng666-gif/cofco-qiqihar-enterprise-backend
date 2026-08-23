@@ -37,7 +37,6 @@ public class GovernedDraftImportService {
     private static final String SOURCE_PREFIX = "GOVERNED-DRAFT-V1:";
     private final ImportJobWriteExecutor jobWrites;
     private final ImportDraftRowExecutor rows;
-    private final ImportDraftRepository drafts;
     private final BusinessImportPhotoPackage photos;
     private final RegionImportResolver regions;
     private final JdbcSampleIdentityGovernanceRepository identities;
@@ -47,14 +46,12 @@ public class GovernedDraftImportService {
     private final Clock clock;
 
     public GovernedDraftImportService(ImportJobWriteExecutor jobWrites, ImportDraftRowExecutor rows,
-            ImportDraftRepository drafts,
             BusinessImportPhotoPackage photos,
             RegionImportResolver regions, JdbcSampleIdentityGovernanceRepository identities,
             AccessControl access, BusinessImportLimits limits,
             ObjectMapper objectMapper, Clock clock) {
         this.jobWrites = jobWrites;
         this.rows = rows;
-        this.drafts = drafts;
         this.photos = photos;
         this.regions = regions;
         this.identities = identities;
@@ -220,18 +217,6 @@ public class GovernedDraftImportService {
                 return ImportRowOutcome.draftImported(row.rowNumber(), pending.draft().id(),
                         pending.warningCode(), pending.warningMessage(), row.values());
             }
-            ImportDraft samePeriod = samePeriodImport(draft, storedValues, principal.subjectId());
-            if (samePeriod != null) {
-                var pending = rows.createPendingIdentityReview(draft, evidenceIds,
-                        "SAMPLE_IDENTITY_RECORD_CONFLICT",
-                        "相同样本身份、产品和月份已有正式导入记录；本次数据需按修正流程核验",
-                        principal, json(Map.of(
-                                "draftId", draft.id(), "reasonCode", "SAMPLE_IDENTITY_RECORD_CONFLICT",
-                                "reasonMessage", "相同样本身份、产品和月份已有正式导入记录",
-                                "conflictingDraftId", samePeriod.id())));
-                return ImportRowOutcome.draftImported(row.rowNumber(), pending.draft().id(),
-                        pending.warningCode(), pending.warningMessage(), row.values());
-            }
             var submitted = rows.createAndSubmit(draft, evidenceIds);
             if (submitted.warningCode() != null) {
                 warningCode = warningCode == null ? submitted.warningCode() : "IMPORT_PHOTO_WARNING";
@@ -297,32 +282,10 @@ public class GovernedDraftImportService {
                 draft.regionCode(), draft.surveyPeriod().strip());
     }
 
-    private ImportDraft samePeriodImport(ImportDraft candidate, Map<String, String> candidateValues,
-            String createdBy) {
-        String contactCode = switch (candidate.domainCode()) {
-            case "PRODUCTION" -> "PROD_SAMPLE_CONTACT";
-            case "MARKET" -> "MKT_SAMPLE_CONTACT";
-            default -> null;
-        };
-        if (contactCode == null || blank(candidate.surveyPeriod())) return null;
-        String candidateName = SampleIdentityAssessment.normalizedName(candidate.sampleName());
-        String candidateContact = SampleIdentityAssessment.normalizedContact(candidateValues.get(contactCode));
-        if (candidateContact.isEmpty()) return null;
-        return drafts.findByOwnerAndScope(createdBy, candidate.domainCode(), candidate.productCode(), "PROMOTED")
-                .stream()
-                .filter(existing -> java.util.Objects.equals(existing.objectTypeCode(), candidate.objectTypeCode()))
-                .filter(existing -> existing.regionCode().equals(candidate.regionCode()))
-                .filter(existing -> candidate.surveyPeriod().equals(existing.surveyPeriod()))
-                .filter(existing -> SampleIdentityAssessment.normalizedName(existing.sampleName())
-                        .equals(candidateName))
-                .filter(existing -> SampleIdentityAssessment.normalizedContact(
-                        existing.values().get(contactCode)).equals(candidateContact))
-                .findFirst().orElse(null);
-    }
-
     private static boolean retryable(ImportRowOutcome row) {
         return !"IMPORT_DUPLICATE_ROW".equals(row.errorCode())
-                && !"SAMPLE_IDENTITY_RECORD_CONFLICT".equals(row.errorCode());
+                && !"SAMPLE_IDENTITY_RECORD_CONFLICT".equals(row.errorCode())
+                && !"SAMPLE_PERIOD_RECORD_CONFLICT".equals(row.errorCode());
     }
 
     private void validateRequest(String key, String filename, String mediaType, byte[] bytes,
