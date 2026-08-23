@@ -40,8 +40,9 @@ public class AnnualSampleNetworkController {
     @GetMapping("/{year}/comparison")
     ApiResponse<SampleNetworkComparisonView> comparison(
             @PathVariable int year,
-            @RequestParam(required = false) String regionCode) {
-        return new ApiResponse<>(service.comparison(year, regionCode));
+            @RequestParam(required = false) String regionCode,
+            @RequestParam(required = false) String productCode) {
+        return new ApiResponse<>(service.comparison(year, regionCode, productCode));
     }
 
     @PostMapping("/{year}")

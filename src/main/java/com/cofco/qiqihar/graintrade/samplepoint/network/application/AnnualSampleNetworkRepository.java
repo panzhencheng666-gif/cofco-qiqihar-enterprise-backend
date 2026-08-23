@@ -12,15 +12,21 @@ public interface AnnualSampleNetworkRepository {
     Optional<AnnualSampleNetworkView> find(int year, Set<String> authorizedRegions);
 
     SampleNetworkComparisonView comparison(
-            int year, String regionCode, Set<String> authorizedRegions);
+            int year, String regionCode, String productCode, Set<String> authorizedRegions);
 
     boolean exists(int year);
 
     boolean isPublished(int year);
 
-    Optional<SamplePointLocation> samplePointLocation(UUID samplePointId);
+    boolean knownProduct(String productCode);
+
+    Optional<SamplePointLocation> samplePointLocation(UUID samplePointId, int networkYear);
+
+    boolean canGovernNetwork(int year, Set<String> authorizedRegions);
 
     boolean lockDraft(int year);
+
+    boolean lockInReview(int year);
 
     void create(int year, Integer carriedFromYear, String actor, Instant now);
 

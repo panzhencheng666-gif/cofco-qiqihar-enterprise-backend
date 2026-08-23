@@ -14,4 +14,13 @@ class LocalBusinessDataResetContractTest {
 
         assertThat(resetSql).contains(") IS NOT TRUE)),\n    ('village'");
     }
+
+    @Test
+    void deletesAnnualDesignRelationsBeforeTheirRestrictedMembershipParents() throws Exception {
+        String resetSql = Files.readString(Path.of("ops/reset_local_2026_production_market.sql"));
+
+        assertThat(resetSql.indexOf("DELETE FROM registry.sample_network_design_relation"))
+                .isGreaterThanOrEqualTo(0)
+                .isLessThan(resetSql.indexOf("DELETE FROM registry.sample_network_membership"));
+    }
 }

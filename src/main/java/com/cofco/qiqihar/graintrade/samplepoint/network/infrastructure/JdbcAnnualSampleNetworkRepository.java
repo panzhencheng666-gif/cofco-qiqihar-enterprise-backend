@@ -72,11 +72,11 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
 
     @Override
     public SampleNetworkComparisonView comparison(
-            int year, String regionCode, Set<String> authorizedRegions) {
+            int year, String regionCode, String productCode, Set<String> authorizedRegions) {
+        String status = header(year).map(NetworkHeader::status).orElse("NOT_CREATED");
         if (authorizedRegions.isEmpty()) {
-            String status = header(year).map(NetworkHeader::status).orElse("NOT_CREATED");
             return new SampleNetworkComparisonView(
-                    year, status, 0, 0, 0, 0, 0, 0,
+                    year, status, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                     new SampleNetworkComparisonView.LevelCounts(0, 0, 0, 0),
                     List.of(), List.of(), List.of());
         }
@@ -86,8 +86,30 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                                 point.villageRegionCode(), point.villageName(),
                                 point.townshipRegionCode(), point.townshipName(),
                                 point.countyRegionCode(), point.countyName(),
-                                point.longitude(), point.latitude()))
+                                point.longitude(), point.latitude(), point.coordinateSourceName(),
+                                point.coordinateSourceRevision(), point.coordinateMatchConfidence(),
+                                point.coordinateReviewStatus()))
                         .toList();
+        int designCoordinateCount = (int) designPoints.stream()
+                .filter(point -> point.designLongitude() != null && point.designLatitude() != null)
+                .count();
+        int pendingVerificationDesignPointCount = (int) designPoints.stream()
+                // Historical REVIEWED values predate authoritative boundary validation.
+                // Only the explicit final governance state may unlock a precise map pin.
+                .filter(point -> !"AUTHORITY_APPROVED".equals(
+                        point.coordinateReviewStatus()))
+                .count();
+        boolean formalNetwork = Set.of("PUBLISHED", "RETIRED").contains(status);
+        List<SampleNetworkComparisonView.Relation> relations =
+                relations(year, regionCode, authorizedRegions, formalNetwork);
+        if (!formalNetwork) {
+            return new SampleNetworkComparisonView(
+                    year, status, designPoints.size(), designCoordinateCount,
+                    0, 0, pendingVerificationDesignPointCount, 0, 0, 0, 0, 0,
+                    designPoints.size(),
+                    new SampleNetworkComparisonView.LevelCounts(0, 0, 0, 0),
+                    designPoints, List.of(), relations);
+        }
         List<SampleNetworkComparisonView.ActualPoint> actualPoints = jdbc.sql("""
                 WITH RECURSIVE selected_region(code) AS (
                   SELECT code FROM platform.region WHERE code=CAST(:region AS varchar)
@@ -157,9 +179,6 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                         row.getBigDecimal("actual_longitude"), row.getBigDecimal("actual_latitude"),
                         row.getString("location_state")))
                 .list();
-        List<SampleNetworkComparisonView.Relation> relations = relations(
-                year, regionCode, authorizedRegions);
-
         Set<UUID> activeIds = new HashSet<>();
         int prefectures = 0;
         int counties = 0;
@@ -201,13 +220,51 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                 .filter(code -> !exact.contains(code) && !represented.contains(code))
                 .forEach(regional::add);
         int associated = exact.size() + represented.size() + regional.size();
-        String status = header(year).map(NetworkHeader::status).orElse("NOT_CREATED");
+        int approvedSubmissionSamplePointCount = approvedSubmissionSamplePointCount(
+                year, productCode, activeIds);
+        int multipleActualPerDesignPointCount = (int) relations.stream()
+                .filter(relation -> activeIds.contains(relation.samplePointId()))
+                .filter(relation -> "APPROVED".equals(relation.reviewStatus()))
+                .filter(relation -> Set.of("EXACT_VILLAGE", "EXPLICIT_REPRESENTATION")
+                        .contains(relation.relationType()))
+                .collect(java.util.stream.Collectors.groupingBy(
+                        SampleNetworkComparisonView.Relation::designVillageRegionCode,
+                        java.util.stream.Collectors.mapping(
+                                SampleNetworkComparisonView.Relation::samplePointId,
+                                java.util.stream.Collectors.toSet())))
+                .values().stream().filter(ids -> ids.size() > 1).count();
+        int anomalyCount = (int) actualPoints.stream()
+                .filter(point -> Set.of("INVALID", "OUTSIDE_REGION").contains(point.locationState()))
+                .count();
+        anomalyCount += (int) designPoints.stream()
+                .filter(point -> "LOW".equals(point.coordinateMatchConfidence()))
+                .count();
+        anomalyCount += (int) relations.stream()
+                .filter(relation -> "RETURNED".equals(relation.reviewStatus()))
+                .count();
         return new SampleNetworkComparisonView(
-                year, status, designPoints.size(), activeIds.size(), exact.size(),
+                year, status, designPoints.size(), designCoordinateCount, activeIds.size(),
+                approvedSubmissionSamplePointCount, pendingVerificationDesignPointCount,
+                multipleActualPerDesignPointCount, anomalyCount, exact.size(),
                 represented.size(), regional.size(), designPoints.size() - associated,
                 new SampleNetworkComparisonView.LevelCounts(
                         prefectures, counties, townships, villages),
                 designPoints, actualPoints, relations);
+    }
+
+    private int approvedSubmissionSamplePointCount(
+            int year, String productCode, Set<UUID> activeIds) {
+        if (activeIds.isEmpty()) {
+            return 0;
+        }
+        return jdbc.sql("""
+                SELECT count(DISTINCT source.sample_point_id)
+                FROM overview.sample_point_query_source source
+                WHERE source.sample_point_id IN (:activeIds)
+                  AND EXTRACT(YEAR FROM source.occurrence_date)=:year
+                  AND (CAST(:product AS varchar) IS NULL OR source.product_code=:product)
+                """).param("activeIds", activeIds).param("year", year)
+                .param("product", productCode).query(Integer.class).single();
     }
 
     @Override
@@ -226,19 +283,56 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
     }
 
     @Override
+    public boolean knownProduct(String productCode) {
+        return Boolean.TRUE.equals(jdbc.sql("""
+                SELECT EXISTS(
+                  SELECT 1 FROM platform.product
+                  WHERE code=:product)
+                """).param("product", productCode).query(Boolean.class).single());
+    }
+
+    @Override
     public Optional<AnnualSampleNetworkRepository.SamplePointLocation> samplePointLocation(
-            UUID samplePointId) {
+            UUID samplePointId, int networkYear) {
         return jdbc.sql("""
                 SELECT sample.region_code,region.administrative_level
                 FROM registry.sample_point sample
                 JOIN platform.region region ON region.code=sample.region_code
                 WHERE sample.sample_point_id=:id AND sample.approval_state='APPROVED'
                   AND sample.kind_code='SURVEY_SITE'
-                  AND (sample.effective_to IS NULL OR sample.effective_to>=CURRENT_DATE)
-                """).param("id", samplePointId)
+                  AND sample.effective_from<=make_date(:year,12,31)
+                  AND (sample.effective_to IS NULL OR sample.effective_to>=make_date(:year,1,1))
+                """).param("id", samplePointId).param("year", networkYear)
                 .query((row, index) -> new AnnualSampleNetworkRepository.SamplePointLocation(
                         row.getString("region_code"), row.getString("administrative_level")))
                 .optional();
+    }
+
+    @Override
+    public boolean canGovernNetwork(int year, Set<String> authorizedRegions) {
+        if (authorizedRegions.isEmpty()) {
+            return false;
+        }
+        return Boolean.TRUE.equals(jdbc.sql("""
+                SELECT EXISTS(
+                         SELECT 1 FROM registry.village_design_sample_point)
+                   AND NOT EXISTS(
+                         SELECT 1 FROM registry.village_design_sample_point design
+                         WHERE design.village_region_code NOT IN (:authorizedRegions))
+                   AND NOT EXISTS(
+                         SELECT 1
+                         FROM registry.sample_network_membership membership
+                         JOIN registry.sample_point sample
+                           ON sample.sample_point_id=membership.sample_point_id
+                         WHERE membership.network_year=:year
+                           AND sample.region_code NOT IN (:authorizedRegions))
+                   AND NOT EXISTS(
+                         SELECT 1
+                         FROM registry.sample_network_design_relation relation
+                         WHERE relation.network_year=:year
+                           AND relation.design_village_region_code NOT IN (:authorizedRegions))
+                """).param("year", year).param("authorizedRegions", authorizedRegions)
+                .query(Boolean.class).single());
     }
 
     @Override
@@ -250,6 +344,17 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                 FOR UPDATE
                 """).param("year", year).query(String.class).optional()
                 .filter("DRAFT"::equals).isPresent();
+    }
+
+    @Override
+    public boolean lockInReview(int year) {
+        return jdbc.sql("""
+                SELECT status_code
+                FROM registry.sample_network_year
+                WHERE network_year=:year
+                FOR UPDATE
+                """).param("year", year).query(String.class).optional()
+                .filter("IN_REVIEW"::equals).isPresent();
     }
 
     @Override
@@ -467,7 +572,8 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
     }
 
     private List<SampleNetworkComparisonView.Relation> relations(
-            int year, String regionCode, Set<String> authorizedRegions) {
+            int year, String regionCode, Set<String> authorizedRegions,
+            boolean includeRegionalAssociations) {
         if (authorizedRegions.isEmpty()) {
             return List.of();
         }
@@ -546,7 +652,8 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                   FROM scoped_actual actual
                   JOIN design_ancestor ancestor
                     ON ancestor.ancestor_region_code=actual.located_region_code
-                  WHERE actual.membership_status_code<>'REMOVED'
+                  WHERE :includeRegionalAssociations=true
+                    AND actual.membership_status_code<>'REMOVED'
                     AND actual.located_region_level IN (
                       'PREFECTURE','COUNTY','TOWNSHIP')
                     AND NOT EXISTS (
@@ -563,6 +670,7 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                            WHEN 'EXPLICIT_REPRESENTATION' THEN 2 ELSE 3 END,
                          combined.design_village_region_code,combined.sample_point_id
                 """).param("year", year).param("region", regionCode)
+                .param("includeRegionalAssociations", includeRegionalAssociations)
                 .param("authorizedRegions", authorizedRegions)
                 .query((row, index) -> new SampleNetworkComparisonView.Relation(
                         row.getObject("sample_point_id", UUID.class),

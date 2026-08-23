@@ -9,7 +9,12 @@ public record SampleNetworkComparisonView(
         int networkYear,
         String networkStatus,
         int designPointCount,
+        int designCoordinateCount,
         int activeSamplePointCount,
+        int approvedSubmissionSamplePointCount,
+        int pendingVerificationDesignPointCount,
+        int multipleActualPerDesignPointCount,
+        int anomalyCount,
         int exactCoveredDesignPointCount,
         int representedDesignPointCount,
         int regionalAssociationDesignPointCount,
@@ -35,7 +40,11 @@ public record SampleNetworkComparisonView(
             String countyRegionCode,
             String countyName,
             BigDecimal designLongitude,
-            BigDecimal designLatitude) {}
+            BigDecimal designLatitude,
+            String coordinateSourceName,
+            String coordinateSourceRevision,
+            String coordinateMatchConfidence,
+            String coordinateReviewStatus) {}
 
     public record ActualPoint(
             UUID samplePointId,

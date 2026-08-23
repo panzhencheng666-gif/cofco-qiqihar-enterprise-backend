@@ -442,19 +442,12 @@ class AnnualSampleNetworkRestIntegrationTest {
                         .principal(() -> OPERATOR).queryParam("regionCode", VILLAGE_TWO))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.designPointCount").value(1))
-                .andExpect(jsonPath("$.data.actualPoints[?(@.samplePointId=='%s')]"
-                        .formatted(TOWNSHIP_SAMPLE_POINT)).exists())
-                .andExpect(jsonPath("$.data.actualPoints[?(@.samplePointId=='%s')]"
-                        .formatted(COUNTY_SAMPLE_POINT)).exists())
-                .andExpect(jsonPath("$.data.actualPoints[?(@.samplePointId=='%s')]"
-                        .formatted(PREFECTURE_SAMPLE_POINT)).exists())
-                .andExpect(jsonPath("$.data.relations[?(@.samplePointId=='%s' && "
-                        .formatted(TOWNSHIP_SAMPLE_POINT)
-                        + "@.relationType=='EXPLICIT_REPRESENTATION')]"
-                        + ".reviewStatus").value("PENDING_REVIEW"))
-                .andExpect(jsonPath("$.data.relations[?(@.samplePointId=='%s' && "
-                        .formatted(TOWNSHIP_SAMPLE_POINT)
-                        + "@.relationType=='REGIONAL_ASSOCIATION')]").exists());
+                .andExpect(jsonPath("$.data.networkStatus").value("DRAFT"))
+                .andExpect(jsonPath("$.data.activeSamplePointCount").value(0))
+                .andExpect(jsonPath("$.data.actualPoints.length()").value(0))
+                .andExpect(jsonPath("$.data.relations.length()").value(1))
+                .andExpect(jsonPath("$.data.relations[0].reviewStatus")
+                        .value("PENDING_REVIEW"));
 
         mvc.perform(post("/api/v1/sample-networks/{year}/submit", 2026)
                         .principal(() -> OPERATOR).contentType(MediaType.APPLICATION_JSON)
@@ -474,7 +467,12 @@ class AnnualSampleNetworkRestIntegrationTest {
                         .principal(() -> OPERATOR).queryParam("regionCode", TOWNSHIP))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.designPointCount").value(2))
+                .andExpect(jsonPath("$.data.designCoordinateCount").value(2))
                 .andExpect(jsonPath("$.data.activeSamplePointCount").value(4))
+                .andExpect(jsonPath("$.data.approvedSubmissionSamplePointCount").value(0))
+                .andExpect(jsonPath("$.data.pendingVerificationDesignPointCount").value(2))
+                .andExpect(jsonPath("$.data.multipleActualPerDesignPointCount").value(0))
+                .andExpect(jsonPath("$.data.anomalyCount").value(0))
                 .andExpect(jsonPath("$.data.actualLevelCounts.prefecture").value(1))
                 .andExpect(jsonPath("$.data.actualLevelCounts.township").value(1))
                 .andExpect(jsonPath("$.data.actualLevelCounts.county").value(1))
@@ -484,6 +482,14 @@ class AnnualSampleNetworkRestIntegrationTest {
                 .andExpect(jsonPath("$.data.regionalAssociationDesignPointCount").value(0))
                 .andExpect(jsonPath("$.data.unrelatedDesignPointCount").value(0))
                 .andExpect(jsonPath("$.data.designPoints.length()").value(2))
+                .andExpect(jsonPath("$.data.designPoints[0].coordinateSourceName")
+                        .value("test source"))
+                .andExpect(jsonPath("$.data.designPoints[0].coordinateSourceRevision")
+                        .value("annual-network-rest-test"))
+                .andExpect(jsonPath("$.data.designPoints[0].coordinateMatchConfidence")
+                        .value("HIGH"))
+                .andExpect(jsonPath("$.data.designPoints[0].coordinateReviewStatus")
+                        .value("REVIEWED"))
                 .andExpect(jsonPath("$.data.actualPoints.length()").value(4))
                 .andExpect(jsonPath("$.data.actualPoints[?(@.locatedRegionLevel=='PREFECTURE')]")
                         .exists())
@@ -523,12 +529,11 @@ class AnnualSampleNetworkRestIntegrationTest {
         mvc.perform(get("/api/v1/sample-networks/{year}/comparison", 2027)
                         .principal(() -> OPERATOR).queryParam("regionCode", TOWNSHIP))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.actualPoints.length()").value(4))
-                .andExpect(jsonPath("$.data.relations[?(@.relationType=='EXACT_VILLAGE')]"
-                        + ".reviewStatus").value("PENDING_REVIEW"))
-                .andExpect(jsonPath(
-                        "$.data.relations[?(@.relationType=='EXPLICIT_REPRESENTATION')]"
-                                + ".reviewStatus")
+                .andExpect(jsonPath("$.data.networkStatus").value("DRAFT"))
+                .andExpect(jsonPath("$.data.activeSamplePointCount").value(0))
+                .andExpect(jsonPath("$.data.actualPoints.length()").value(0))
+                .andExpect(jsonPath("$.data.relations.length()").value(2))
+                .andExpect(jsonPath("$.data.relations[0].reviewStatus")
                         .value("PENDING_REVIEW"));
 
         assertThat(jdbc.sql("""
@@ -547,6 +552,30 @@ class AnnualSampleNetworkRestIntegrationTest {
 
         assertThat(networkRepository.find(2028, Set.of())).hasValueSatisfying(network ->
                 assertThat(network.memberships()).isEmpty());
+        jdbc.sql("""
+                UPDATE registry.sample_network_year
+                SET status_code='PUBLISHED',submitted_by=:submitter,
+                    submitted_at=CURRENT_TIMESTAMP,reviewed_by=:reviewer,
+                    reviewed_at=CURRENT_TIMESTAMP,review_reason='测试发布态',
+                    published_by=:reviewer,published_at=CURRENT_TIMESTAMP
+                WHERE network_year=2028
+                """).param("submitter", OPERATOR).param("reviewer", REVIEWER).update();
+        assertThat(networkRepository.comparison(2028, null, null, Set.of()))
+                .satisfies(comparison -> {
+                    assertThat(comparison.designPoints()).isEmpty();
+                    assertThat(comparison.actualPoints()).isEmpty();
+                    assertThat(comparison.relations()).isEmpty();
+                });
+    }
+
+    @Test
+    void rejectsAnUnknownProductInsteadOfReportingZeroApprovedSubmissions()
+            throws Exception {
+        mvc.perform(get("/api/v1/sample-networks/{year}/comparison", 2026)
+                        .principal(() -> OPERATOR)
+                        .queryParam("productCode", "UNKNOWN_PRODUCT"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("SAMPLE_NETWORK_PRODUCT_INVALID"));
     }
 
     @Test
@@ -691,13 +720,94 @@ class AnnualSampleNetworkRestIntegrationTest {
         mvc.perform(get("/api/v1/sample-networks/{year}/comparison", 2026)
                         .principal(() -> OPERATOR).queryParam("regionCode", VILLAGE_ONE))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.actualPoints[?(@.samplePointId=='%s')]"
-                        .formatted(VILLAGE_SAMPLE_POINT)).exists())
-                .andExpect(jsonPath("$.data.relations[?(@.samplePointId=='%s' && "
-                        .formatted(VILLAGE_SAMPLE_POINT)
-                        + "@.relationType=='REGIONAL_ASSOCIATION')]").doesNotExist())
+                .andExpect(jsonPath("$.data.actualPoints.length()").value(0))
+                .andExpect(jsonPath("$.data.relations.length()").value(0))
                 .andExpect(jsonPath("$.data.regionalAssociationDesignPointCount").value(0))
                 .andExpect(jsonPath("$.data.unrelatedDesignPointCount").value(1));
+    }
+
+    @Test
+    void refusesToSubmitAWholeNetworkContainingMembersOutsideTheActorScope() throws Exception {
+        mvc.perform(post("/api/v1/sample-networks/{year}", 2026)
+                        .principal(() -> OPERATOR)
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isCreated());
+        jdbc.sql("""
+                INSERT INTO registry.sample_network_membership(
+                  network_year,sample_point_id,status_code,source_code,version,
+                  decision_reason,decided_by,decided_at,created_by,created_at)
+                VALUES(2026,CAST(:sample AS uuid),'ACTIVE','NEW',0,
+                       '辖区外成员',:operator,CURRENT_TIMESTAMP,:operator,CURRENT_TIMESTAMP)
+                """).param("sample", OUTSIDE_SAMPLE_POINT).param("operator", OPERATOR).update();
+
+        mvc.perform(post("/api/v1/sample-networks/{year}/submit", 2026)
+                        .principal(() -> OPERATOR).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+
+        assertThat(jdbc.sql("""
+                SELECT status_code FROM registry.sample_network_year WHERE network_year=2026
+                """).query(String.class).single()).isEqualTo("DRAFT");
+    }
+
+    @Test
+    void refusesToCreateTheCitywideNetworkFromARestrictedCountyScope() throws Exception {
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id=:operator")
+                .param("operator", OPERATOR).update();
+        jdbc.sql("DELETE FROM platform.work_unit_region_scope WHERE work_unit_code=:unit")
+                .param("unit", WORK_UNIT).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_region_scope(subject_id,region_code)
+                VALUES(:operator,'230202')
+                """).param("operator", OPERATOR).update();
+
+        mvc.perform(post("/api/v1/sample-networks/{year}", 2026)
+                        .principal(() -> OPERATOR)
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM registry.sample_network_year WHERE network_year=2026
+                """).query(Long.class).single()).isZero();
+    }
+
+    @Test
+    void evaluatesSamplePointEligibilityAgainstTheRequestedNetworkYear() throws Exception {
+        jdbc.sql("""
+                UPDATE registry.sample_point
+                SET effective_from=DATE '2025-01-01',effective_to=DATE '2025-12-31'
+                WHERE sample_point_id=CAST(:sample AS uuid)
+                """).param("sample", VILLAGE_SAMPLE_POINT).update();
+        mvc.perform(post("/api/v1/sample-networks/{year}", 2025)
+                        .principal(() -> OPERATOR)
+                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                .andExpect(status().isCreated());
+
+        mvc.perform(put("/api/v1/sample-networks/{year}/members/{samplePointId}",
+                        2025, VILLAGE_SAMPLE_POINT).principal(() -> OPERATOR)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"statusCode":"ACTIVE","sourceCode":"NEW",
+                                 "reason":"2025年度有效样本","version":0}
+                                """))
+                .andExpect(status().isOk());
+
+        jdbc.sql("""
+                UPDATE registry.sample_point
+                SET effective_from=DATE '2027-01-01',effective_to=NULL
+                WHERE sample_point_id=CAST(:sample AS uuid)
+                """).param("sample", TOWNSHIP_SAMPLE_POINT).update();
+        mvc.perform(put("/api/v1/sample-networks/{year}/members/{samplePointId}",
+                        2025, TOWNSHIP_SAMPLE_POINT).principal(() -> OPERATOR)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"statusCode":"ACTIVE","sourceCode":"NEW",
+                                 "reason":"未来样本不得提前加入","version":0}
+                                """))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("SAMPLE_POINT_NOT_FOUND"));
     }
 
     @Test
@@ -814,10 +924,12 @@ class AnnualSampleNetworkRestIntegrationTest {
 
     private void cleanOperationalRows() {
         jdbc.sql("DELETE FROM registry.sample_network_design_relation "
-                + "WHERE network_year IN (2026,2027,2028)").update();
-        jdbc.sql("DELETE FROM registry.sample_network_membership WHERE network_year IN (2026,2027,2028)")
+                + "WHERE network_year IN (2025,2026,2027,2028)").update();
+        jdbc.sql("DELETE FROM registry.sample_network_membership "
+                + "WHERE network_year IN (2025,2026,2027,2028)")
                 .update();
-        jdbc.sql("DELETE FROM registry.sample_network_year WHERE network_year IN (2026,2027,2028)")
+        jdbc.sql("DELETE FROM registry.sample_network_year "
+                + "WHERE network_year IN (2025,2026,2027,2028)")
                 .update();
         jdbc.sql("DELETE FROM registry.sample_point WHERE sample_point_id IN (:ids)")
                 .param("ids", List.of(UUID.fromString(VILLAGE_SAMPLE_POINT),

@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade.samplepoint.network.application;
 
+import com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
@@ -52,10 +53,15 @@ public class AnnualSampleNetworkService {
     }
 
     @Transactional(readOnly = true)
-    public SampleNetworkComparisonView comparison(int year, String regionCode) {
+    public SampleNetworkComparisonView comparison(int year, String regionCode, String productCode) {
         validateYear(year);
         SecurityPrincipal principal = access.require("BUSINESS_READ", regionCode);
-        return repository.comparison(year, regionCode, principal.regionCodes());
+        String normalizedProduct = normalized(productCode);
+        if (normalizedProduct != null && !repository.knownProduct(normalizedProduct)) {
+            throw invalid("SAMPLE_NETWORK_PRODUCT_INVALID", "产品代码不存在或已停用");
+        }
+        return repository.comparison(
+                year, regionCode, normalizedProduct, principal.regionCodes());
     }
 
     @Transactional
@@ -65,11 +71,13 @@ public class AnnualSampleNetworkService {
         if (repository.exists(year)) {
             throw conflict("SAMPLE_NETWORK_ALREADY_EXISTS", "该年度样本网络已经存在");
         }
+        requireWholeNetworkScope(year, principal.regionCodes());
         if (carriedFromYear != null) {
             validateYear(carriedFromYear);
             if (carriedFromYear >= year || !repository.isPublished(carriedFromYear)) {
                 throw invalid("SAMPLE_NETWORK_CARRY_SOURCE_INVALID", "只能引用较早年度已发布的样本网络");
             }
+            requireWholeNetworkScope(carriedFromYear, principal.regionCodes());
         }
         Instant now = clock.instant();
         repository.create(year, carriedFromYear, principal.subjectId(), now);
@@ -87,7 +95,7 @@ public class AnnualSampleNetworkService {
         validateRelation(designVillageRegionCode, relationType, evidenceReference);
         SecurityPrincipal principal = access.require("BUSINESS_UPDATE", null);
         AnnualSampleNetworkRepository.SamplePointLocation location =
-                repository.samplePointLocation(samplePointId)
+                repository.samplePointLocation(samplePointId, year)
                         .orElseThrow(() -> new ResourceNotFoundException(
                                 "SAMPLE_POINT_NOT_FOUND", "真实样本点不存在或尚未通过主数据审核"));
         if (!principal.includesRegion(location.regionCode())) {
@@ -125,6 +133,10 @@ public class AnnualSampleNetworkService {
     public AnnualSampleNetworkView submit(int year, long version) {
         validateYear(year);
         SecurityPrincipal principal = access.require("BUSINESS_SUBMIT", null);
+        if (!repository.lockDraft(year)) {
+            throw conflict("SAMPLE_NETWORK_SUBMIT_CONFLICT", "年度样本网络状态或版本已经变化");
+        }
+        requireWholeNetworkScope(year, principal.regionCodes());
         Instant now = clock.instant();
         if (repository.submit(year, version, principal.subjectId(), now) != 1) {
             throw conflict("SAMPLE_NETWORK_SUBMIT_CONFLICT", "年度样本网络状态或版本已经变化");
@@ -146,11 +158,15 @@ public class AnnualSampleNetworkService {
         String action;
         if ("APPROVE".equals(decision)) {
             principal = access.require("BUSINESS_APPROVE", null);
+            requireInReviewLock(year);
+            requireWholeNetworkScope(year, principal.regionCodes());
             duties.requireIndependentApprover(AGGREGATE, Integer.toString(year), SUBMITTED, principal);
             changed = repository.approve(year, version, principal.subjectId(), reason.trim(), now);
             action = "SAMPLE_NETWORK_PUBLISHED";
         } else if ("RETURN".equals(decision)) {
             principal = access.require("BUSINESS_RETURN", null);
+            requireInReviewLock(year);
+            requireWholeNetworkScope(year, principal.regionCodes());
             duties.requireIndependentReturner(AGGREGATE, Integer.toString(year), SUBMITTED, principal);
             changed = repository.returnToDraft(year, version, principal.subjectId(), reason.trim(), now);
             action = "SAMPLE_NETWORK_RETURNED";
@@ -167,6 +183,19 @@ public class AnnualSampleNetworkService {
     private AnnualSampleNetworkView required(int year, Set<String> regions) {
         return repository.find(year, regions).orElseThrow(() -> new ResourceNotFoundException(
                 "SAMPLE_NETWORK_NOT_FOUND", "该年度样本网络尚未创建"));
+    }
+
+    private void requireWholeNetworkScope(int year, Set<String> regions) {
+        if (!repository.canGovernNetwork(year, regions)) {
+            throw new AccessDeniedException(
+                    "ACCESS_REGION_DENIED", "年度样本网络包含当前账号辖区外的成员或设计关系");
+        }
+    }
+
+    private void requireInReviewLock(int year) {
+        if (!repository.lockInReview(year)) {
+            throw conflict("SAMPLE_NETWORK_REVIEW_CONFLICT", "年度样本网络状态或版本已经变化");
+        }
     }
 
     private static void validateYear(int year) {

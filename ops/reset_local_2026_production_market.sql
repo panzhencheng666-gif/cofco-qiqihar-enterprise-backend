@@ -34,6 +34,10 @@ BEGIN
         EXECUTE 'LOCK TABLE registry.sample_network_year,registry.sample_network_membership '
              || 'IN SHARE ROW EXCLUSIVE MODE';
     END IF;
+    IF to_regclass('registry.sample_network_design_relation') IS NOT NULL THEN
+        EXECUTE 'LOCK TABLE registry.sample_network_design_relation '
+             || 'IN SHARE ROW EXCLUSIVE MODE';
+    END IF;
 END;
 $$;
 \endif
@@ -256,6 +260,9 @@ $$;
 DO $$
 BEGIN
     IF to_regclass('registry.sample_network_year') IS NOT NULL THEN
+        IF to_regclass('registry.sample_network_design_relation') IS NOT NULL THEN
+            EXECUTE 'DELETE FROM registry.sample_network_design_relation WHERE network_year=2026';
+        END IF;
         EXECUTE 'DELETE FROM registry.sample_network_membership WHERE network_year=2026';
         EXECUTE 'DELETE FROM registry.sample_network_year WHERE network_year=2026';
     END IF;
