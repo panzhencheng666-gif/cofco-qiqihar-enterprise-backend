@@ -54,7 +54,7 @@ assertThat(query("""
 Run:
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 21) ./mvnw -Dtest=AnnualSampleNetworkMigrationIntegrationTest test
+JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -Dtest=AnnualSampleNetworkMigrationIntegrationTest test
 ```
 
 Expected: FAIL，因为 V134 和关系表尚不存在。
@@ -155,7 +155,7 @@ git commit -m "feat(sample-network): support multilevel annual members"
 - [ ] **Step 2: 运行 REST 测试并确认旧 DTO 失败**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 21) ./mvnw -Dtest=AnnualSampleNetworkRestIntegrationTest test
+JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -Dtest=AnnualSampleNetworkRestIntegrationTest test
 ```
 
 Expected: FAIL，因为旧实现强制 `villageRegionCode` 且只返回扁平 `points`。
@@ -246,7 +246,7 @@ assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
 - [ ] **Step 2: 运行回归测试**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 21) ./mvnw \
+JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn \
   -Dtest=GovernedProductWorkbookImportIntegrationTest test
 ```
 
@@ -440,7 +440,7 @@ Expected: 2332 行均有唯一行政村代码；每行明确 `REVIEWED` 或具�
 Backend:
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 21) ./mvnw verify
+JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn verify
 ```
 
 Frontend/Web 分别执行仓库现有 Node 24 全量 verify 命令；必须包括测试、format、lint、架构检查、构建，Web 还包括 bundle budget 与 UI inventory。长命令无输出时读取进程和最新日志，不以静默等待代替检查。
@@ -456,4 +456,3 @@ Frontend/Web 分别执行仓库现有 Node 24 全量 verify 命令；必须包�
 - [ ] **Step 7: 最终 Git 边界核对**
 
 三仓执行 `git diff --check`、`git status --short --branch`、`git log -5 --oneline --decorate`。确认无数据库、坐标原始私有文件、运行产物、日志或截图进入提交。记录三仓分支 SHA、受管产物摘要和验收结果；仍保持任务分支未合并 `main`，随后按“远端任务分支 → PR → 检查/复核 → main”流程处理。
-
