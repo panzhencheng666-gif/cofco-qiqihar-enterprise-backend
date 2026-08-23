@@ -28,7 +28,7 @@ class AnnualSampleNetworkMigrationIntegrationTest {
     void freshMigrationExposesExactlyOneDesignReferenceForEveryVillage() throws Exception {
         resetDatabase();
 
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(133);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(134);
         insertVillageFixtures(true);
         assertThat(query("""
                 SELECT (SELECT count(*) FROM platform.region
@@ -45,9 +45,10 @@ class AnnualSampleNetworkMigrationIntegrationTest {
     }
 
     @Test
-    void membershipIsUniquePerYearAndRequiresAVillageRegion() throws Exception {
+    void migratesVillageMembersToDesignRelationsAndAllowsCountyMembersWithoutAVillage()
+            throws Exception {
         resetDatabase();
-        DATABASE.flyway().migrate();
+        DATABASE.flywayToVersion("133").migrate();
         insertVillageFixtures(false);
         execute("""
                 INSERT INTO registry.sample_point(
@@ -59,9 +60,16 @@ class AnnualSampleNetworkMigrationIntegrationTest {
                   'database-master-data-automation')
                 """);
         execute("""
+                INSERT INTO platform.security_user(subject_id,display_name,work_unit_code)
+                VALUES('annual-network-reviewer','年度网络审核员','DATABASE_AUTOMATION')
+                """);
+        execute("""
                 INSERT INTO registry.sample_network_year(
-                  network_year,status_code,version,created_by,created_at)
-                VALUES(2026,'DRAFT',0,'database-master-data-automation',now())
+                  network_year,status_code,version,created_by,created_at,
+                  submitted_by,submitted_at,reviewed_by,reviewed_at,published_by,published_at)
+                VALUES(2026,'PUBLISHED',0,'database-master-data-automation',now(),
+                  'database-master-data-automation',now(),'annual-network-reviewer',now(),
+                  'database-master-data-automation',now())
                 """);
         execute("""
                 INSERT INTO registry.sample_network_membership(
@@ -71,6 +79,41 @@ class AnnualSampleNetworkMigrationIntegrationTest {
                   'ACTIVE','NEW',0,'database-master-data-automation',now(),
                   'database-master-data-automation',now())
                 """);
+
+        DATABASE.flyway().migrate();
+
+        assertThat(query("""
+                SELECT is_nullable FROM information_schema.columns
+                WHERE table_schema='registry' AND table_name='sample_network_membership'
+                  AND column_name='village_region_code'
+                """)).isEqualTo("YES");
+        assertThat(query("""
+                SELECT count(*) FROM registry.sample_network_design_relation
+                WHERE relation_type='EXACT_VILLAGE' AND review_status='APPROVED'
+                """)).isEqualTo("1");
+        execute("""
+                INSERT INTO registry.sample_point(
+                  sample_point_id,kind_code,canonical_name,region_code,approval_state,
+                  location_state,effective_from,created_by,updated_by)
+                VALUES('13300000-0000-0000-0000-000000000002','SURVEY_SITE',
+                  '年度网络迁移测试区县样本点','230202','APPROVED','MISSING',
+                  DATE '2026-01-01','database-master-data-automation',
+                  'database-master-data-automation')
+                """);
+        execute("""
+                INSERT INTO registry.sample_network_membership(
+                  network_year,sample_point_id,status_code,source_code,
+                  version,decided_by,decided_at,created_by,created_at)
+                VALUES(2026,'13300000-0000-0000-0000-000000000002',
+                  'ACTIVE','NEW',0,'database-master-data-automation',now(),
+                  'database-master-data-automation',now())
+                """);
+        assertThat(query("""
+                SELECT point.region_code || ':' || COALESCE(membership.village_region_code,'NULL')
+                FROM registry.sample_network_membership membership
+                JOIN registry.sample_point point USING(sample_point_id)
+                WHERE membership.sample_point_id='13300000-0000-0000-0000-000000000002'
+                """)).isEqualTo("230202:NULL");
 
         assertThat(query("""
                 SELECT network_year || ':' || status_code || ':' || source_code
@@ -85,11 +128,35 @@ class AnnualSampleNetworkMigrationIntegrationTest {
                   'ACTIVE','NEW',0,'database-master-data-automation',now(),
                   'database-master-data-automation',now())
                 """)).hasMessageContaining("sample_network_membership_pkey");
-        assertThatThrownBy(() -> execute("""
+        execute("""
                 UPDATE registry.sample_network_membership
-                SET village_region_code='230202'
+                SET village_region_code=NULL
                 WHERE sample_point_id='13300000-0000-0000-0000-000000000001'
-                """)).hasMessageStartingWith("ERROR: sample network membership region must be a village");
+                """);
+        assertThatThrownBy(() -> execute("""
+                INSERT INTO registry.sample_network_design_relation(
+                  network_year,sample_point_id,design_village_region_code,relation_type,
+                  evidence_reference,review_status,created_by)
+                VALUES(2026,'13300000-0000-0000-0000-000000000003','230202997001',
+                  'EXACT_VILLAGE','test evidence','PENDING_REVIEW',
+                  'database-master-data-automation')
+                """)).hasMessageContaining("violates foreign key constraint");
+        assertThatThrownBy(() -> execute("""
+                INSERT INTO registry.sample_network_design_relation(
+                  network_year,sample_point_id,design_village_region_code,relation_type,
+                  evidence_reference,review_status,created_by)
+                VALUES(2026,'13300000-0000-0000-0000-000000000001','230202997',
+                  'EXACT_VILLAGE','test evidence','PENDING_REVIEW',
+                  'database-master-data-automation')
+                """)).hasMessageContaining("design relation village must be a village");
+        assertThatThrownBy(() -> execute("""
+                INSERT INTO registry.sample_network_design_relation(
+                  network_year,sample_point_id,design_village_region_code,relation_type,
+                  review_status,created_by)
+                VALUES(2026,'13300000-0000-0000-0000-000000000001','230202997001',
+                  'EXPLICIT_REPRESENTATION','PENDING_REVIEW',
+                  'database-master-data-automation')
+                """)).hasMessageContaining("violates check constraint");
     }
 
     @Test
