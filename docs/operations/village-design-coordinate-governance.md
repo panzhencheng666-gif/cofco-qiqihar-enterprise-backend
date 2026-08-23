@@ -55,7 +55,9 @@ CSV 只有一行表头和 2,332 行数据。每行原始和 WGS84 坐标都以 E
 `stored_review_status` 是数据库中既存的历史匹配/治理输入；`final_governance_status` 是
 本次审计的独立保守结论，不会覆盖或把前者升级为后者。即使历史字段为 `REVIEWED`，
 最终字段仍必须是 `PENDING_AUTHORITY_REVIEW_STATUS_REQUIRES_RECHECK`。守卫只检查最终
-状态列，绝不因历史字段包含 `REVIEWED` 而拒绝导出。
+状态列，绝不因历史字段包含 `REVIEWED` 而拒绝导出。该映射只定义在
+`scripts/sql/village-design-final-status.sql`：生产导出和只读 `VALUES ('REVIEWED')` fixture
+读取同一 SQL 片段，脚本没有测试专用的成功旁路。
 
 | 结论 | 含义和处置 |
 | --- | --- |
@@ -87,8 +89,10 @@ CSV 只有一行表头和 2,332 行数据。每行原始和 WGS84 坐标都以 E
 
 脚本会在输出前验证精确数据库名、数值 loopback 服务器/端口、`transaction_read_only=on`
 以及三项 2,332 断言和固定的三地/来源/双哈希身份；任何失败均不会留下成功证据。
-输出只能是物理仓库目录 `.local-runtime/evidence/` 内、未被 Git 跟踪且文件名安全的
-`.csv` 文件；仓库外路径、跟踪路径和符号链接目录一律拒绝。临时 CSV 必须在全部汇总
+输出只能是物理仓库目录 `.local-runtime/evidence/` 内、未被 Git 跟踪且文件名全部由
+`A-Za-z0-9._-` 构成、并以 `.csv` 结尾的文件；仓库外路径、跟踪路径和符号链接目录
+一律拒绝。`final_governance_status` 是 CSV 首列，守卫以锚定首列检查，避免按逗号拆分
+可能含引号内容的 CSV。临时 CSV 必须在全部汇总
 查询成功后才原子替换最终证据，失败不会留下新的表面成功文件。标准输出只提供来源/
 修订、审核状态、重复坐标、缺失行和名称/层级异常的计数，不显示密码或连接凭据。
 

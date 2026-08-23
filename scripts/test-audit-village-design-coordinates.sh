@@ -3,6 +3,7 @@ set -eu
 
 script_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 audit_script="$script_directory/audit-village-design-coordinates.sh"
+final_status_fragment="$script_directory/sql/village-design-final-status.sql"
 verification_temp=$(mktemp -d "${TMPDIR:-/tmp}/cofco-village-design-audit.XXXXXX")
 audit_output=.local-runtime/evidence/task6a-focused-audit-test.csv
 trap 'rm -rf -- "$verification_temp"; rm -f -- "$audit_output"' EXIT HUP INT TERM
@@ -45,13 +46,29 @@ expect_rejection \
   --database qiqihar_enterprise_dev \
   --output .local-runtime/evidence/task6a-test-invalid.txt
 
+expect_rejection \
+  whitespace-basename \
+  'safe CSV basename' \
+  --database qiqihar_enterprise_dev \
+  --output '.local-runtime/evidence/task 6a.csv'
+
 [ ! -e "$verification_temp/outside.csv" ] || {
   echo 'verification failed: rejected external output left an evidence file' >&2
   exit 1
 }
 
-fixture_status=$(AUDIT_LIBRARY_ONLY=1 sh -c '. "$1"; final_governance_status REVIEWED' sh \
-  "$audit_script")
+fixture_expression=$(sed 's/__STORED_REVIEW_STATUS__/fixture.stored_review_status/g' \
+  "$final_status_fragment")
+fixture_status=$(psql --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
+  --host=127.0.0.1 --port=5432 --dbname=qiqihar_enterprise_dev \
+  --no-align --tuples-only <<SQL
+BEGIN TRANSACTION READ ONLY;
+WITH fixture(stored_review_status) AS (VALUES ('REVIEWED'))
+SELECT ${fixture_expression}
+FROM fixture;
+COMMIT;
+SQL
+)
 [ "$fixture_status" = 'PENDING_AUTHORITY_REVIEW_STATUS_REQUIRES_RECHECK' ] || {
   echo 'verification failed: stored REVIEWED fixture was not transformed to final pending' >&2
   exit 1
@@ -100,11 +117,11 @@ after_snapshot=$(snapshot)
   echo 'verification failed: audit CSV did not contain header plus 2332 rows' >&2
   exit 1
 }
-head -n 1 "$audit_output" | grep -Fq 'village_code,village_name,' || {
-  echo 'verification failed: audit CSV header is missing' >&2
+head -n 1 "$audit_output" | grep -Fq 'final_governance_status,village_code,village_name,' || {
+  echo 'verification failed: audit CSV does not put final status in the first column' >&2
   exit 1
 }
-if awk -F',' 'NR > 1 && $30 == "REVIEWED" { found=1 } END { exit(found ? 0 : 1) }' "$audit_output"; then
+if grep -Eq '^REVIEWED,' "$audit_output"; then
   echo 'verification failed: audit promoted a coordinate to REVIEWED' >&2
   exit 1
 fi
@@ -119,6 +136,14 @@ grep -Fq -- "--host=127.0.0.1 --port=5432" "$audit_script" || {
 }
 grep -Fq 'transaction_read_only' "$audit_script" || {
   echo 'verification failed: audit does not assert transaction read-only' >&2
+  exit 1
+}
+if grep -Fq 'AUDIT_LIBRARY_ONLY' "$audit_script"; then
+  echo 'verification failed: audit retains a success bypass' >&2
+  exit 1
+fi
+grep -Fq 'village-design-final-status.sql' "$audit_script" || {
+  echo 'verification failed: audit does not consume the shared final-status SQL' >&2
   exit 1
 }
 grep -Fq 'SOURCE_REVISION_COUNT|中国·国家地名信息库|2025-12-31|2332' \

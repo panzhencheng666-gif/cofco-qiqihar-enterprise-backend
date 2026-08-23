@@ -6,17 +6,6 @@ usage() {
   exit 64
 }
 
-final_governance_status() {
-  case "$1" in
-    REVIEWED) printf '%s\n' 'PENDING_AUTHORITY_REVIEW_STATUS_REQUIRES_RECHECK' ;;
-    *) printf '%s%s\n' 'PENDING_SPATIAL_AUTHORITY_' "$1" ;;
-  esac
-}
-
-if [ "${AUDIT_LIBRARY_ONLY:-}" = '1' ]; then
-  return 0 2>/dev/null || exit 0
-fi
-
 database=''
 output=''
 while [ "$#" -gt 0 ]; do
@@ -48,7 +37,13 @@ evidence_directory="$runtime_directory/evidence"
 output_basename=$(basename -- "$output")
 
 case "$output_basename" in
-  [A-Za-z0-9][A-Za-z0-9._-]*.csv) ;;
+  ''|*[!A-Za-z0-9._-]*|[!A-Za-z0-9]*)
+    echo 'refusing audit: output requires a safe CSV basename' >&2
+    exit 64
+    ;;
+esac
+case "$output_basename" in
+  *.csv) ;;
   *)
     echo 'refusing audit: output requires a safe CSV basename' >&2
     exit 64
@@ -82,6 +77,13 @@ if git -C "$repository_root" ls-files --error-unmatch -- "$output_relative" >/de
   exit 64
 fi
 final_output="$evidence_directory/$output_basename"
+final_status_fragment="$script_directory/sql/village-design-final-status.sql"
+[ -r "$final_status_fragment" ] || {
+  echo 'refusing audit: final-status SQL fragment is unavailable' >&2
+  exit 1
+}
+final_status_expression=$(sed 's/__STORED_REVIEW_STATUS__/village.review_status/g' \
+  "$final_status_fragment")
 
 psql_readonly() {
   psql --no-psqlrc --quiet --set=ON_ERROR_STOP=1 \
@@ -200,7 +202,8 @@ WITH village AS (
    GROUP BY ST_AsEWKB(original_coordinate)
   HAVING count(*) > 1
 )
-SELECT village.village_code,
+SELECT ${final_status_expression} AS final_governance_status,
+       village.village_code,
        village.village_name,
        village.township_code,
        village.township_name,
@@ -256,10 +259,6 @@ SELECT village.village_code,
        ), ''), 'NONE') AS hierarchy_name_anomaly,
        'PENDING_AUTHORITY_NO_AUTHORITATIVE_PREFECTURE_COUNTY_TOWNSHIP_POLYGONS'
          AS spatial_authority_status,
-       CASE WHEN village.review_status='REVIEWED'
-              THEN 'PENDING_AUTHORITY_REVIEW_STATUS_REQUIRES_RECHECK'
-            ELSE 'PENDING_SPATIAL_AUTHORITY_' || village.review_status END
-         AS final_governance_status,
        village.review_note
   FROM village
   LEFT JOIN coordinate_duplicates duplicate
@@ -272,7 +271,7 @@ data_rows=$(awk 'END { print NR - 1 }' "$temporary_output")
   echo "refusing audit: expected 2332 CSV data rows; got $data_rows" >&2
   exit 1
 }
-if awk -F',' 'NR > 1 && $30 == "REVIEWED" { found=1 } END { exit(found ? 0 : 1) }' "$temporary_output"; then
+if grep -Eq '^REVIEWED,' "$temporary_output"; then
   echo 'refusing audit: CSV would promote a row to REVIEWED' >&2
   exit 1
 fi
