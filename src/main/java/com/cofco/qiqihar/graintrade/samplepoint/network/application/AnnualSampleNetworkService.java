@@ -10,11 +10,13 @@ import com.cofco.qiqihar.graintrade.shared.security.application.SeparationOfDuti
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.databind.ObjectMapper;
 
 @Service
 public class AnnualSampleNetworkService {
@@ -24,6 +26,7 @@ public class AnnualSampleNetworkService {
     private final AccessControl access;
     private final SeparationOfDutiesPolicy duties;
     private final BusinessAuditRecorder audit;
+    private final ObjectMapper objectMapper;
     private final Clock clock;
 
     public AnnualSampleNetworkService(
@@ -31,11 +34,13 @@ public class AnnualSampleNetworkService {
             AccessControl access,
             SeparationOfDutiesPolicy duties,
             BusinessAuditRecorder audit,
+            ObjectMapper objectMapper,
             Clock clock) {
         this.repository = repository;
         this.access = access;
         this.duties = duties;
         this.audit = audit;
+        this.objectMapper = objectMapper;
         this.clock = clock;
     }
 
@@ -81,7 +86,7 @@ public class AnnualSampleNetworkService {
         }
         Instant now = clock.instant();
         repository.create(year, carriedFromYear, principal.subjectId(), now);
-        audit.record(principal, AGGREGATE, Integer.toString(year), "SAMPLE_NETWORK_CREATED", now, "{}");
+        recordNetworkEvent(principal, year, "SAMPLE_NETWORK_CREATED", now);
         return required(year, principal.regionCodes());
     }
 
@@ -124,8 +129,8 @@ public class AnnualSampleNetworkService {
         if (changed.membershipChanges() != 1 || changed.relationChanges() != expectedRelations) {
             throw conflict("SAMPLE_NETWORK_MEMBER_VERSION_CONFLICT", "年度样本成员已被其他操作更新");
         }
-        audit.record(principal, AGGREGATE, Integer.toString(year),
-                "SAMPLE_NETWORK_MEMBER_DECIDED", now, "{}");
+        recordNetworkEvent(principal, year, "SAMPLE_NETWORK_MEMBER_DECIDED", now,
+                location.regionCode(), designVillageRegionCode);
         return required(year, principal.regionCodes());
     }
 
@@ -141,7 +146,7 @@ public class AnnualSampleNetworkService {
         if (repository.submit(year, version, principal.subjectId(), now) != 1) {
             throw conflict("SAMPLE_NETWORK_SUBMIT_CONFLICT", "年度样本网络状态或版本已经变化");
         }
-        audit.record(principal, AGGREGATE, Integer.toString(year), SUBMITTED, now, "{}");
+        recordNetworkEvent(principal, year, SUBMITTED, now);
         return required(year, principal.regionCodes());
     }
 
@@ -176,8 +181,30 @@ public class AnnualSampleNetworkService {
         if (changed != 1) {
             throw conflict("SAMPLE_NETWORK_REVIEW_CONFLICT", "年度样本网络状态或版本已经变化");
         }
-        audit.record(principal, AGGREGATE, Integer.toString(year), action, now, "{}");
+        recordNetworkEvent(principal, year, action, now);
         return required(year, principal.regionCodes());
+    }
+
+    private void recordNetworkEvent(
+            SecurityPrincipal principal, int year, String action, Instant occurredAt,
+            String... affectedRegionCodes) {
+        Set<String> regionCodes = new LinkedHashSet<>(principal.regionCodes());
+        for (String regionCode : affectedRegionCodes) {
+            if (regionCode != null && !regionCode.isBlank()) {
+                regionCodes.add(regionCode);
+            }
+        }
+        audit.record(principal, AGGREGATE, Integer.toString(year), action, occurredAt,
+                eventDetail(year, regionCodes));
+    }
+
+    private String eventDetail(int year, Set<String> regionCodes) {
+        try {
+            return objectMapper.writeValueAsString(new SampleNetworkEventDetail(
+                    year, regionCodes.stream().sorted().toList()));
+        } catch (Exception exception) {
+            throw new IllegalStateException("Sample network event detail cannot be serialized", exception);
+        }
     }
 
     private AnnualSampleNetworkView required(int year, Set<String> regions) {
@@ -243,4 +270,6 @@ public class AnnualSampleNetworkService {
     private static ConflictException conflict(String code, String message) {
         return new ConflictException(code, message);
     }
+
+    private record SampleNetworkEventDetail(int surveyYear, List<String> regionCodes) {}
 }

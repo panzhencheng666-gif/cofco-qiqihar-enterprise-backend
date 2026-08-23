@@ -381,6 +381,10 @@ class AnnualSampleNetworkRestIntegrationTest {
 
     @Test
     void exposesDesignReferencesAndPublishesAnIndependentlyReviewedAnnualNetwork() throws Exception {
+        long initialEventSequence = jdbc.sql("""
+                SELECT COALESCE(max(event_sequence),0)
+                FROM platform.business_event_outbox
+                """).query(Long.class).single();
         mvc.perform(get("/api/v1/sample-networks/design-points")
                         .principal(() -> OPERATOR).queryParam("regionCode", TOWNSHIP))
                 .andExpect(status().isOk())
@@ -462,6 +466,31 @@ class AnnualSampleNetworkRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.statusCode").value("PUBLISHED"))
                 .andExpect(jsonPath("$.data.version").value(2));
+
+        assertThat(jdbc.sql("""
+                SELECT action_code
+                FROM platform.business_event_outbox
+                WHERE aggregate_type='SAMPLE_NETWORK_YEAR' AND aggregate_id='2026'
+                  AND event_sequence>:initialEventSequence
+                ORDER BY event_sequence
+                """).param("initialEventSequence", initialEventSequence)
+                .query(String.class).list()).containsExactly(
+                        "SAMPLE_NETWORK_CREATED",
+                        "SAMPLE_NETWORK_MEMBER_DECIDED",
+                        "SAMPLE_NETWORK_MEMBER_DECIDED",
+                        "SAMPLE_NETWORK_MEMBER_DECIDED",
+                        "SAMPLE_NETWORK_MEMBER_DECIDED",
+                        "SAMPLE_NETWORK_SUBMITTED",
+                        "SAMPLE_NETWORK_PUBLISHED");
+        assertThat(jdbc.sql("""
+                SELECT count(*)
+                FROM platform.business_event_outbox
+                WHERE aggregate_type='SAMPLE_NETWORK_YEAR' AND aggregate_id='2026'
+                  AND event_sequence>:initialEventSequence
+                  AND detail->>'surveyYear'='2026'
+                  AND :prefecture=ANY(region_codes)
+                """).param("initialEventSequence", initialEventSequence)
+                .param("prefecture", PREFECTURE).query(Long.class).single()).isEqualTo(7L);
 
         mvc.perform(get("/api/v1/sample-networks/{year}/comparison", 2026)
                         .principal(() -> OPERATOR).queryParam("regionCode", TOWNSHIP))
