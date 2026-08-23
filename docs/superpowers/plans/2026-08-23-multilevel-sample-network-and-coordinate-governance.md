@@ -54,7 +54,8 @@ assertThat(query("""
 Run:
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -Dtest=AnnualSampleNetworkMigrationIntegrationTest test
+JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PATH \
+  mvn -Dtest=AnnualSampleNetworkMigrationIntegrationTest test
 ```
 
 Expected: FAIL，因为 V134 和关系表尚不存在。
@@ -155,7 +156,8 @@ git commit -m "feat(sample-network): support multilevel annual members"
 - [ ] **Step 2: 运行 REST 测试并确认旧 DTO 失败**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -Dtest=AnnualSampleNetworkRestIntegrationTest test
+JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PATH \
+  mvn -Dtest=AnnualSampleNetworkRestIntegrationTest test
 ```
 
 Expected: FAIL，因为旧实现强制 `villageRegionCode` 且只返回扁平 `points`。
@@ -246,7 +248,7 @@ assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
 - [ ] **Step 2: 运行回归测试**
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn \
+JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PATH mvn \
   -Dtest=GovernedProductWorkbookImportIntegrationTest test
 ```
 
@@ -440,7 +442,8 @@ Expected: 2332 行均有唯一行政村代码；每行明确 `REVIEWED` 或具�
 Backend:
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn verify
+JAVA_HOME=/opt/homebrew/opt/openjdk@21 PATH=/opt/homebrew/opt/openjdk@21/bin:$PATH \
+  mvn verify
 ```
 
 Frontend/Web 分别执行仓库现有 Node 24 全量 verify 命令；必须包括测试、format、lint、架构检查、构建，Web 还包括 bundle budget 与 UI inventory。长命令无输出时读取进程和最新日志，不以静默等待代替检查。
