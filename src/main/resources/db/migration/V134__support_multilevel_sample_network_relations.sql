@@ -23,7 +23,15 @@ CREATE TABLE registry.sample_network_design_relation (
     CHECK (relation_type IN ('EXACT_VILLAGE','EXPLICIT_REPRESENTATION')),
     CHECK (review_status IN ('PENDING_REVIEW','APPROVED','RETURNED')),
     CHECK (relation_type<>'EXPLICIT_REPRESENTATION'
-           OR (evidence_reference IS NOT NULL AND length(btrim(evidence_reference))>0))
+           OR (evidence_reference IS NOT NULL AND length(btrim(evidence_reference))>0)),
+    CONSTRAINT sample_network_design_relation_review_shape_check CHECK (
+        (review_status='PENDING_REVIEW' AND reviewed_by IS NULL AND reviewed_at IS NULL)
+        OR
+        (review_status='APPROVED' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL
+            AND reviewed_by<>created_by)
+        OR
+        (review_status='RETURNED' AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL)
+    )
 );
 
 INSERT INTO registry.sample_network_design_relation(
@@ -45,6 +53,8 @@ RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = pg_catalog,platform,registry
 AS $$
+DECLARE
+    membership_region_level varchar(30);
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM platform.region
@@ -53,12 +63,24 @@ BEGIN
         RAISE EXCEPTION 'sample network design relation village must be a village'
             USING ERRCODE='23514';
     END IF;
+    SELECT region.administrative_level INTO membership_region_level
+    FROM registry.sample_network_membership membership
+    JOIN registry.sample_point point ON point.sample_point_id=membership.sample_point_id
+    JOIN platform.region region ON region.code=point.region_code
+    WHERE membership.network_year=NEW.network_year
+      AND membership.sample_point_id=NEW.sample_point_id;
+    IF NEW.relation_type='EXACT_VILLAGE'
+       AND membership_region_level IS NOT NULL
+       AND membership_region_level<>'VILLAGE' THEN
+        RAISE EXCEPTION 'EXACT_VILLAGE relation requires a village-level sample member'
+            USING ERRCODE='23514';
+    END IF;
     RETURN NEW;
 END;
 $$;
 
 CREATE TRIGGER sample_network_design_relation_village_guard
-BEFORE INSERT OR UPDATE OF design_village_region_code
+BEFORE INSERT OR UPDATE OF network_year,sample_point_id,design_village_region_code,relation_type
 ON registry.sample_network_design_relation
 FOR EACH ROW EXECUTE FUNCTION registry.guard_sample_network_design_relation_village();
 
@@ -82,4 +104,4 @@ COMMENT ON COLUMN registry.sample_network_membership.village_region_code IS
 COMMENT ON TABLE registry.sample_network_design_relation IS
     'Reviewed relationship from an annual real-sample member to an administrative-village design reference.';
 COMMENT ON FUNCTION registry.guard_sample_network_design_relation_village() IS
-    'Requires every annual sample-network design relation to reference an administrative village.';
+    'Requires an administrative-village design reference and permits EXACT_VILLAGE only for village-level members.';

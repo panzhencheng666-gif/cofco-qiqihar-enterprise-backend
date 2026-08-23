@@ -114,6 +114,62 @@ class AnnualSampleNetworkMigrationIntegrationTest {
                 JOIN registry.sample_point point USING(sample_point_id)
                 WHERE membership.sample_point_id='13300000-0000-0000-0000-000000000002'
                 """)).isEqualTo("230202:NULL");
+        assertThatThrownBy(() -> execute("""
+                INSERT INTO registry.sample_network_design_relation(
+                  network_year,sample_point_id,design_village_region_code,relation_type,
+                  evidence_reference,review_status,created_by)
+                VALUES(2026,'13300000-0000-0000-0000-000000000002','230202997001',
+                  'EXACT_VILLAGE','test evidence','PENDING_REVIEW',
+                  'database-master-data-automation')
+                """)).hasMessageContaining("EXACT_VILLAGE relation requires a village-level sample member");
+        assertThatThrownBy(() -> execute("""
+                INSERT INTO registry.sample_network_design_relation(
+                  network_year,sample_point_id,design_village_region_code,relation_type,
+                  evidence_reference,review_status,created_by)
+                VALUES(2026,'13300000-0000-0000-0000-000000000002','230202997001',
+                  'EXPLICIT_REPRESENTATION','test evidence','APPROVED',
+                  'database-master-data-automation')
+                """)).hasMessageContaining("violates check constraint");
+        assertThatThrownBy(() -> execute("""
+                INSERT INTO registry.sample_network_design_relation(
+                  network_year,sample_point_id,design_village_region_code,relation_type,
+                  evidence_reference,review_status,created_by,reviewed_by,reviewed_at)
+                VALUES(2026,'13300000-0000-0000-0000-000000000002','230202997001',
+                  'EXPLICIT_REPRESENTATION','test evidence','APPROVED',
+                  'database-master-data-automation','database-master-data-automation',now())
+                """)).hasMessageContaining("violates check constraint");
+        assertThatThrownBy(() -> execute("""
+                INSERT INTO registry.sample_network_design_relation(
+                  network_year,sample_point_id,design_village_region_code,relation_type,
+                  evidence_reference,review_status,created_by,reviewed_by,reviewed_at)
+                VALUES(2026,'13300000-0000-0000-0000-000000000002','230202997001',
+                  'EXPLICIT_REPRESENTATION','test evidence','PENDING_REVIEW',
+                  'database-master-data-automation','annual-network-reviewer',now())
+                """)).hasMessageContaining("violates check constraint");
+        assertThatThrownBy(() -> execute("""
+                INSERT INTO registry.sample_network_design_relation(
+                  network_year,sample_point_id,design_village_region_code,relation_type,
+                  evidence_reference,review_status,created_by)
+                VALUES(2026,'13300000-0000-0000-0000-000000000002','230202997001',
+                  'EXPLICIT_REPRESENTATION','test evidence','RETURNED',
+                  'database-master-data-automation')
+                """)).hasMessageContaining("violates check constraint");
+        execute("""
+                INSERT INTO registry.sample_network_design_relation(
+                  network_year,sample_point_id,design_village_region_code,relation_type,
+                  evidence_reference,review_status,created_by)
+                VALUES(2026,'13300000-0000-0000-0000-000000000002','230202997001',
+                  'EXPLICIT_REPRESENTATION','test evidence','PENDING_REVIEW',
+                  'database-master-data-automation')
+                """);
+        assertThatThrownBy(() -> execute("""
+                UPDATE registry.sample_network_design_relation
+                SET relation_type='EXACT_VILLAGE'
+                WHERE network_year=2026
+                  AND sample_point_id='13300000-0000-0000-0000-000000000002'
+                  AND design_village_region_code='230202997001'
+                  AND relation_type='EXPLICIT_REPRESENTATION'
+                """)).hasMessageContaining("EXACT_VILLAGE relation requires a village-level sample member");
 
         assertThat(query("""
                 SELECT network_year || ':' || status_code || ':' || source_code
