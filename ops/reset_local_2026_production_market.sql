@@ -51,7 +51,7 @@ INSERT INTO protected_count_before(code,value) VALUES
       WHERE NOT (survey_year=2026 AND product_code IN ('CORN','RICE','SOYBEAN')))),
     ('draft_other',(
       SELECT count(*) FROM platform.business_import_draft
-      WHERE NOT (domain_code IN ('PRODUCTION','MARKET')
+      WHERE (domain_code IN ('PRODUCTION','MARKET')
         AND product_code IN ('CORN','RICE','SOYBEAN')
         AND (survey_period LIKE '2026%'
           OR canonical_record_id IN (
@@ -59,7 +59,7 @@ INSERT INTO protected_count_before(code,value) VALUES
             WHERE survey_year=2026 AND product_code IN ('CORN','RICE','SOYBEAN')
             UNION ALL
             SELECT record_id FROM market.market_record
-            WHERE survey_year=2026 AND product_code IN ('CORN','RICE','SOYBEAN')))))),
+            WHERE survey_year=2026 AND product_code IN ('CORN','RICE','SOYBEAN')))) IS NOT TRUE)),
     ('village',(
       SELECT count(*) FROM platform.region WHERE administrative_level='VILLAGE')),
     ('village_location',(
