@@ -27,12 +27,14 @@ public record AnnualSampleNetworkView(
             UUID samplePointId,
             String samplePointName,
             String samplePointKindCode,
-            String villageRegionCode,
-            String villageName,
+            String locatedRegionCode,
+            String locatedRegionName,
+            String locatedRegionLevel,
             String statusCode,
             String sourceCode,
             String decisionReason,
             long version,
             BigDecimal longitude,
-            BigDecimal latitude) {}
+            BigDecimal latitude,
+            String locationState) {}
 }

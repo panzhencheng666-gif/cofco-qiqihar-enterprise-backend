@@ -55,10 +55,11 @@ public class AnnualSampleNetworkController {
     ApiResponse<AnnualSampleNetworkView> decideMembership(
             @PathVariable int year,
             @PathVariable UUID samplePointId,
-            @RequestBody MembershipRequest request) {
+            @RequestBody MemberDecisionRequest request) {
         return new ApiResponse<>(service.decideMembership(
-                year, samplePointId, request.villageRegionCode(), request.statusCode(),
-                request.sourceCode(), request.reason(), request.version()));
+                year, samplePointId, request.designVillageRegionCode(), request.relationType(),
+                request.evidenceReference(), request.statusCode(), request.sourceCode(),
+                request.reason(), request.version()));
     }
 
     @PostMapping("/{year}/submit")
@@ -76,8 +77,10 @@ public class AnnualSampleNetworkController {
 
     record CreateRequest(Integer carriedFromYear) {}
 
-    record MembershipRequest(
-            String villageRegionCode,
+    record MemberDecisionRequest(
+            String designVillageRegionCode,
+            String relationType,
+            String evidenceReference,
             String statusCode,
             String sourceCode,
             String reason,

@@ -20,11 +20,13 @@ public interface AnnualSampleNetworkRepository {
 
     boolean samplePointExists(UUID samplePointId);
 
+    boolean exactRelationMatches(UUID samplePointId, String designVillageRegionCode);
+
     void create(int year, Integer carriedFromYear, String actor, Instant now);
 
-    int upsertMembership(int year, UUID samplePointId, String villageRegionCode,
-            String statusCode, String sourceCode, String reason, long version,
-            String actor, Instant now);
+    int upsertMembership(int year, UUID samplePointId, String designVillageRegionCode,
+            String relationType, String evidenceReference, String statusCode,
+            String sourceCode, String reason, long version, String actor, Instant now);
 
     int submit(int year, long version, String actor, Instant now);
 

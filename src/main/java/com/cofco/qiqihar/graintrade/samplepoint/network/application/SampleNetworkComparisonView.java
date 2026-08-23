@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.samplepoint.network.application;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -9,15 +10,24 @@ public record SampleNetworkComparisonView(
         String networkStatus,
         int designPointCount,
         int activeSamplePointCount,
-        int coveredDesignPointCount,
-        int uncoveredDesignPointCount,
-        List<Point> points) {
+        int exactCoveredDesignPointCount,
+        int representedDesignPointCount,
+        int regionalAssociationDesignPointCount,
+        int unrelatedDesignPointCount,
+        LevelCounts actualLevelCounts,
+        List<DesignPoint> designPoints,
+        List<ActualPoint> actualPoints,
+        List<Relation> relations) {
 
     public SampleNetworkComparisonView {
-        points = List.copyOf(points);
+        designPoints = List.copyOf(designPoints);
+        actualPoints = List.copyOf(actualPoints);
+        relations = List.copyOf(relations);
     }
 
-    public record Point(
+    public record LevelCounts(int county, int township, int village) {}
+
+    public record DesignPoint(
             String villageRegionCode,
             String villageName,
             String townshipRegionCode,
@@ -25,12 +35,28 @@ public record SampleNetworkComparisonView(
             String countyRegionCode,
             String countyName,
             BigDecimal designLongitude,
-            BigDecimal designLatitude,
+            BigDecimal designLatitude) {}
+
+    public record ActualPoint(
             UUID samplePointId,
             String samplePointName,
             String samplePointKindCode,
             String membershipStatusCode,
+            String locatedRegionCode,
+            String locatedRegionName,
+            String locatedRegionLevel,
             BigDecimal actualLongitude,
             BigDecimal actualLatitude,
-            String comparisonState) {}
+            String locationState) {}
+
+    public record Relation(
+            UUID samplePointId,
+            String designVillageRegionCode,
+            String relationType,
+            String evidenceReference,
+            String reviewStatus,
+            String createdBy,
+            Instant createdAt,
+            String reviewedBy,
+            Instant reviewedAt) {}
 }
