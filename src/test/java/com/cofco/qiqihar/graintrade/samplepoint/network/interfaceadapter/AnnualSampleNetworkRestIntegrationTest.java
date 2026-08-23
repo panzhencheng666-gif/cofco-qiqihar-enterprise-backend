@@ -14,6 +14,7 @@ import com.cofco.qiqihar.graintrade.testsupport.GovernedMasterDataFixtures;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.time.Instant;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
@@ -121,18 +122,26 @@ class AnnualSampleNetworkRestIntegrationTest {
         jdbc.sql("""
                 INSERT INTO platform.work_unit(code,name,sort_order)
                 VALUES(:unit,'年度样本网络测试单位',9935)
-                ON CONFLICT(code) DO NOTHING;
+                ON CONFLICT(code) DO UPDATE SET
+                  name=EXCLUDED.name,active=true,sort_order=EXCLUDED.sort_order;
                 INSERT INTO platform.work_unit_region_scope(work_unit_code,region_code)
                 VALUES(:unit,:prefecture) ON CONFLICT DO NOTHING;
                 INSERT INTO platform.security_user(subject_id,display_name,work_unit_code)
                 VALUES(:operator,'年度网络填报员',:unit),(:reviewer,'年度网络管理员',:unit),
                       (:noPermission,'年度网络无写权限人员',:unit)
-                ON CONFLICT(subject_id) DO NOTHING;
+                ON CONFLICT(subject_id) DO UPDATE SET
+                  display_name=EXCLUDED.display_name,
+                  work_unit_code=EXCLUDED.work_unit_code,
+                  enabled=true,account_status='ACTIVE',employment_status='ACTIVE',
+                  termination_effective_at=NULL;
                 INSERT INTO platform.security_user_role(subject_id,role_code)
                 VALUES(:operator,'BUSINESS_OPERATOR'),(:reviewer,'BUSINESS_REVIEWER')
-                ON CONFLICT DO NOTHING;
+                ON CONFLICT(subject_id,role_code,valid_from) DO UPDATE SET
+                  valid_until=NULL,review_due_at=NULL;
                 INSERT INTO platform.security_user_region_scope(subject_id,region_code)
-                VALUES(:operator,:prefecture),(:reviewer,:prefecture) ON CONFLICT DO NOTHING
+                VALUES(:operator,:prefecture),(:reviewer,:prefecture)
+                ON CONFLICT(subject_id,region_code,valid_from) DO UPDATE SET
+                  valid_until=NULL,review_due_at=NULL
                 """).param("unit", WORK_UNIT).param("operator", OPERATOR)
                 .param("reviewer", REVIEWER).param("noPermission", NO_PERMISSION)
                 .param("prefecture", PREFECTURE).update();
@@ -373,7 +382,7 @@ class AnnualSampleNetworkRestIntegrationTest {
     @Test
     void exposesDesignReferencesAndPublishesAnIndependentlyReviewedAnnualNetwork() throws Exception {
         mvc.perform(get("/api/v1/sample-networks/design-points")
-                        .principal(() -> OPERATOR).queryParam("regionCode", "230202"))
+                        .principal(() -> OPERATOR).queryParam("regionCode", TOWNSHIP))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(2))
                 .andExpect(jsonPath("$.data[0].coordinateSourceRevision")
@@ -462,7 +471,7 @@ class AnnualSampleNetworkRestIntegrationTest {
                 .andExpect(jsonPath("$.data.version").value(2));
 
         mvc.perform(get("/api/v1/sample-networks/{year}/comparison", 2026)
-                        .principal(() -> OPERATOR).queryParam("regionCode", "230202"))
+                        .principal(() -> OPERATOR).queryParam("regionCode", TOWNSHIP))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.designPointCount").value(2))
                 .andExpect(jsonPath("$.data.activeSamplePointCount").value(4))
@@ -512,7 +521,7 @@ class AnnualSampleNetworkRestIntegrationTest {
                 .andExpect(jsonPath("$.data.memberships[3].sourceCode").value("CARRIED_FORWARD"));
 
         mvc.perform(get("/api/v1/sample-networks/{year}/comparison", 2027)
-                        .principal(() -> OPERATOR).queryParam("regionCode", "230202"))
+                        .principal(() -> OPERATOR).queryParam("regionCode", TOWNSHIP))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.actualPoints.length()").value(4))
                 .andExpect(jsonPath("$.data.relations[?(@.relationType=='EXACT_VILLAGE')]"
@@ -526,6 +535,18 @@ class AnnualSampleNetworkRestIntegrationTest {
                 SELECT (SELECT count(*) FROM production.production_record WHERE survey_year=2027)
                      + (SELECT count(*) FROM market.market_record WHERE survey_year=2027)
                 """).query(Long.class).single()).isZero();
+    }
+
+    @Test
+    void returnsAnEmptyMembershipListWhenTheAuthorizedRegionSetIsEmpty() {
+        jdbc.sql("""
+                INSERT INTO registry.sample_network_year(
+                  network_year,status_code,version,created_by,created_at)
+                VALUES(2028,'DRAFT',0,:actor,CURRENT_TIMESTAMP)
+                """).param("actor", OPERATOR).update();
+
+        assertThat(networkRepository.find(2028, Set.of())).hasValueSatisfying(network ->
+                assertThat(network.memberships()).isEmpty());
     }
 
     @Test

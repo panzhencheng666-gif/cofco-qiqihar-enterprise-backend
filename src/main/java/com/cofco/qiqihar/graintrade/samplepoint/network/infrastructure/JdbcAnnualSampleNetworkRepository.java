@@ -25,6 +25,9 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
     @Override
     public List<DesignSamplePointView> designPoints(
             String regionCode, Set<String> authorizedRegions) {
+        if (authorizedRegions.isEmpty()) {
+            return List.of();
+        }
         return jdbc.sql("""
                 WITH RECURSIVE selected_region(code) AS (
                   SELECT code FROM platform.region WHERE code=CAST(:region AS varchar)
@@ -70,6 +73,13 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
     @Override
     public SampleNetworkComparisonView comparison(
             int year, String regionCode, Set<String> authorizedRegions) {
+        if (authorizedRegions.isEmpty()) {
+            String status = header(year).map(NetworkHeader::status).orElse("NOT_CREATED");
+            return new SampleNetworkComparisonView(
+                    year, status, 0, 0, 0, 0, 0, 0,
+                    new SampleNetworkComparisonView.LevelCounts(0, 0, 0, 0),
+                    List.of(), List.of(), List.of());
+        }
         List<SampleNetworkComparisonView.DesignPoint> designPoints =
                 designPoints(regionCode, authorizedRegions).stream()
                         .map(point -> new SampleNetworkComparisonView.DesignPoint(
@@ -416,6 +426,9 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
 
     private List<AnnualSampleNetworkView.Membership> memberships(
             int year, Set<String> authorizedRegions) {
+        if (authorizedRegions.isEmpty()) {
+            return List.of();
+        }
         return jdbc.sql("""
                 SELECT membership.sample_point_id,sample.canonical_name,sample.kind_code,
                        sample.region_code,located.name region_name,
@@ -455,6 +468,9 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
 
     private List<SampleNetworkComparisonView.Relation> relations(
             int year, String regionCode, Set<String> authorizedRegions) {
+        if (authorizedRegions.isEmpty()) {
+            return List.of();
+        }
         return jdbc.sql("""
                 WITH RECURSIVE selected_region(code) AS (
                   SELECT code FROM platform.region WHERE code=CAST(:region AS varchar)
