@@ -18,13 +18,14 @@ public interface AnnualSampleNetworkRepository {
 
     boolean isPublished(int year);
 
-    boolean samplePointExists(UUID samplePointId);
+    Optional<SamplePointLocation> samplePointLocation(UUID samplePointId);
 
-    boolean exactRelationMatches(UUID samplePointId, String designVillageRegionCode);
+    boolean lockDraft(int year);
 
     void create(int year, Integer carriedFromYear, String actor, Instant now);
 
-    int upsertMembership(int year, UUID samplePointId, String designVillageRegionCode,
+    MembershipWriteResult upsertMembership(
+            int year, UUID samplePointId, String designVillageRegionCode,
             String relationType, String evidenceReference, String statusCode,
             String sourceCode, String reason, long version, String actor, Instant now);
 
@@ -33,4 +34,8 @@ public interface AnnualSampleNetworkRepository {
     int approve(int year, long version, String actor, String reason, Instant now);
 
     int returnToDraft(int year, long version, String actor, String reason, Instant now);
+
+    record SamplePointLocation(String regionCode, String regionLevel) {}
+
+    record MembershipWriteResult(int membershipChanges, int relationChanges) {}
 }

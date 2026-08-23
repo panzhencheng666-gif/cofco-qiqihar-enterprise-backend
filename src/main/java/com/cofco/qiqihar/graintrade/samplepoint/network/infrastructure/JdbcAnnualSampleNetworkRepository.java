@@ -84,6 +84,29 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                   UNION ALL
                   SELECT child.code FROM platform.region child
                   JOIN selected_region parent ON child.parent_code=parent.code
+                ),
+                scoped_design(design_village_region_code) AS (
+                  SELECT design.village_region_code
+                  FROM registry.village_design_sample_point design
+                  WHERE design.village_region_code IN (:authorizedRegions)
+                    AND (CAST(:region AS varchar) IS NULL
+                         OR design.village_region_code IN (SELECT code FROM selected_region))
+                ),
+                design_ancestor(design_village_region_code,ancestor_region_code) AS (
+                  SELECT design_village_region_code,design_village_region_code
+                  FROM scoped_design
+                  UNION ALL
+                  SELECT ancestor.design_village_region_code,region.parent_code
+                  FROM design_ancestor ancestor
+                  JOIN platform.region region ON region.code=ancestor.ancestor_region_code
+                  WHERE region.parent_code IS NOT NULL
+                ),
+                explicitly_related_actual(sample_point_id) AS (
+                  SELECT DISTINCT relation.sample_point_id
+                  FROM registry.sample_network_design_relation relation
+                  JOIN scoped_design design
+                    ON design.design_village_region_code=relation.design_village_region_code
+                  WHERE relation.network_year=:year
                 )
                 SELECT membership.sample_point_id,sample.canonical_name,sample.kind_code,
                        membership.status_code,sample.region_code,located.name region_name,
@@ -100,12 +123,19 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                 WHERE membership.network_year=:year
                   AND sample.region_code IN (:authorizedRegions)
                   AND (CAST(:region AS varchar) IS NULL
-                       OR sample.region_code IN (SELECT code FROM selected_region))
+                       OR sample.region_code IN (SELECT code FROM selected_region)
+                       OR membership.sample_point_id IN (
+                            SELECT sample_point_id FROM explicitly_related_actual)
+                       OR (located.administrative_level IN (
+                              'PREFECTURE','COUNTY','TOWNSHIP')
+                           AND sample.region_code IN (
+                              SELECT ancestor_region_code FROM design_ancestor)))
                 ORDER BY CASE membership.status_code
                            WHEN 'ACTIVE' THEN 1 WHEN 'CANDIDATE' THEN 2
                            WHEN 'PAUSED' THEN 3 ELSE 4 END,
                          CASE located.administrative_level
-                           WHEN 'COUNTY' THEN 1 WHEN 'TOWNSHIP' THEN 2 ELSE 3 END,
+                           WHEN 'PREFECTURE' THEN 1 WHEN 'COUNTY' THEN 2
+                           WHEN 'TOWNSHIP' THEN 3 ELSE 4 END,
                          sample.canonical_name,membership.sample_point_id
                 """).param("year", year).param("region", regionCode)
                 .param("authorizedRegions", authorizedRegions)
@@ -121,6 +151,7 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                 year, regionCode, authorizedRegions);
 
         Set<UUID> activeIds = new HashSet<>();
+        int prefectures = 0;
         int counties = 0;
         int townships = 0;
         int villages = 0;
@@ -130,6 +161,7 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
             }
             activeIds.add(point.samplePointId());
             switch (point.locatedRegionLevel()) {
+                case "PREFECTURE" -> prefectures++;
                 case "COUNTY" -> counties++;
                 case "TOWNSHIP" -> townships++;
                 case "VILLAGE" -> villages++;
@@ -163,7 +195,8 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
         return new SampleNetworkComparisonView(
                 year, status, designPoints.size(), activeIds.size(), exact.size(),
                 represented.size(), regional.size(), designPoints.size() - associated,
-                new SampleNetworkComparisonView.LevelCounts(counties, townships, villages),
+                new SampleNetworkComparisonView.LevelCounts(
+                        prefectures, counties, townships, villages),
                 designPoints, actualPoints, relations);
     }
 
@@ -183,27 +216,30 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
     }
 
     @Override
-    public boolean samplePointExists(UUID samplePointId) {
-        return Boolean.TRUE.equals(jdbc.sql("""
-                SELECT EXISTS(SELECT 1 FROM registry.sample_point
-                              WHERE sample_point_id=:id AND approval_state='APPROVED'
-                                AND kind_code='SURVEY_SITE'
-                                AND (effective_to IS NULL OR effective_to>=CURRENT_DATE))
-                """).param("id", samplePointId).query(Boolean.class).single());
+    public Optional<AnnualSampleNetworkRepository.SamplePointLocation> samplePointLocation(
+            UUID samplePointId) {
+        return jdbc.sql("""
+                SELECT sample.region_code,region.administrative_level
+                FROM registry.sample_point sample
+                JOIN platform.region region ON region.code=sample.region_code
+                WHERE sample.sample_point_id=:id AND sample.approval_state='APPROVED'
+                  AND sample.kind_code='SURVEY_SITE'
+                  AND (sample.effective_to IS NULL OR sample.effective_to>=CURRENT_DATE)
+                """).param("id", samplePointId)
+                .query((row, index) -> new AnnualSampleNetworkRepository.SamplePointLocation(
+                        row.getString("region_code"), row.getString("administrative_level")))
+                .optional();
     }
 
     @Override
-    public boolean exactRelationMatches(UUID samplePointId, String designVillageRegionCode) {
-        return Boolean.TRUE.equals(jdbc.sql("""
-                SELECT EXISTS(
-                  SELECT 1
-                  FROM registry.sample_point sample
-                  JOIN platform.region located ON located.code=sample.region_code
-                  WHERE sample.sample_point_id=:id
-                    AND sample.region_code=:designVillage
-                    AND located.administrative_level='VILLAGE')
-                """).param("id", samplePointId).param("designVillage", designVillageRegionCode)
-                .query(Boolean.class).single());
+    public boolean lockDraft(int year) {
+        return jdbc.sql("""
+                SELECT status_code
+                FROM registry.sample_network_year
+                WHERE network_year=:year
+                FOR UPDATE
+                """).param("year", year).query(String.class).optional()
+                .filter("DRAFT"::equals).isPresent();
     }
 
     @Override
@@ -244,7 +280,7 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
     }
 
     @Override
-    public int upsertMembership(
+    public AnnualSampleNetworkRepository.MembershipWriteResult upsertMembership(
             int year, UUID samplePointId, String designVillageRegionCode,
             String relationType, String evidenceReference, String statusCode,
             String sourceCode, String reason, long version, String actor, Instant now) {
@@ -273,8 +309,9 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                 .param("decidedAt", candidate ? null : Timestamp.from(now))
                 .param("actor", actor).param("now", Timestamp.from(now))
                 .param("version", version).update();
+        int relationChanges = 0;
         if (changed == 1 && designVillageRegionCode != null) {
-            jdbc.sql("""
+            relationChanges = jdbc.sql("""
                     INSERT INTO registry.sample_network_design_relation(
                       network_year,sample_point_id,design_village_region_code,relation_type,
                       evidence_reference,review_status,created_by,created_at)
@@ -292,7 +329,7 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                     .param("relationType", relationType).param("evidence", evidenceReference)
                     .param("actor", actor).param("now", Timestamp.from(now)).update();
         }
-        return changed;
+        return new AnnualSampleNetworkRepository.MembershipWriteResult(changed, relationChanges);
     }
 
     @Override
@@ -400,7 +437,8 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                            WHEN 'ACTIVE' THEN 1 WHEN 'CANDIDATE' THEN 2
                            WHEN 'PAUSED' THEN 3 ELSE 4 END,
                          CASE located.administrative_level
-                           WHEN 'COUNTY' THEN 1 WHEN 'TOWNSHIP' THEN 2 ELSE 3 END,
+                           WHEN 'PREFECTURE' THEN 1 WHEN 'COUNTY' THEN 2
+                           WHEN 'TOWNSHIP' THEN 3 ELSE 4 END,
                          sample.canonical_name,membership.sample_point_id
                 """).param("year", year).param("authorizedRegions", authorizedRegions)
                 .query((row, index) -> new AnnualSampleNetworkView.Membership(
@@ -431,16 +469,6 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                     AND (CAST(:region AS varchar) IS NULL
                          OR design.village_region_code IN (SELECT code FROM selected_region))
                 ),
-                scoped_actual(sample_point_id,located_region_code,membership_status_code) AS (
-                  SELECT membership.sample_point_id,sample.region_code,membership.status_code
-                  FROM registry.sample_network_membership membership
-                  JOIN registry.sample_point sample
-                    ON sample.sample_point_id=membership.sample_point_id
-                  WHERE membership.network_year=:year
-                    AND sample.region_code IN (:authorizedRegions)
-                    AND (CAST(:region AS varchar) IS NULL
-                         OR sample.region_code IN (SELECT code FROM selected_region))
-                ),
                 design_ancestor(design_village_region_code,ancestor_region_code) AS (
                   SELECT design_village_region_code,design_village_region_code
                   FROM scoped_design
@@ -449,6 +477,33 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                   FROM design_ancestor ancestor
                   JOIN platform.region region ON region.code=ancestor.ancestor_region_code
                   WHERE region.parent_code IS NOT NULL
+                ),
+                explicitly_related_actual(sample_point_id) AS (
+                  SELECT DISTINCT relation.sample_point_id
+                  FROM registry.sample_network_design_relation relation
+                  JOIN scoped_design design
+                    ON design.design_village_region_code=relation.design_village_region_code
+                  WHERE relation.network_year=:year
+                ),
+                scoped_actual(
+                  sample_point_id,located_region_code,located_region_level,
+                  membership_status_code) AS (
+                  SELECT membership.sample_point_id,sample.region_code,
+                         located.administrative_level,membership.status_code
+                  FROM registry.sample_network_membership membership
+                  JOIN registry.sample_point sample
+                    ON sample.sample_point_id=membership.sample_point_id
+                  JOIN platform.region located ON located.code=sample.region_code
+                  WHERE membership.network_year=:year
+                    AND sample.region_code IN (:authorizedRegions)
+                    AND (CAST(:region AS varchar) IS NULL
+                         OR sample.region_code IN (SELECT code FROM selected_region)
+                         OR membership.sample_point_id IN (
+                              SELECT sample_point_id FROM explicitly_related_actual)
+                         OR (located.administrative_level IN (
+                                'PREFECTURE','COUNTY','TOWNSHIP')
+                             AND sample.region_code IN (
+                                SELECT ancestor_region_code FROM design_ancestor)))
                 )
                 SELECT combined.sample_point_id,combined.design_village_region_code,
                        combined.relation_type,combined.evidence_reference,
@@ -476,6 +531,8 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                   JOIN design_ancestor ancestor
                     ON ancestor.ancestor_region_code=actual.located_region_code
                   WHERE actual.membership_status_code<>'REMOVED'
+                    AND actual.located_region_level IN (
+                      'PREFECTURE','COUNTY','TOWNSHIP')
                     AND NOT EXISTS (
                       SELECT 1
                       FROM registry.sample_network_design_relation explicit_relation
@@ -483,7 +540,7 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                         AND explicit_relation.sample_point_id=actual.sample_point_id
                         AND explicit_relation.design_village_region_code=
                             ancestor.design_village_region_code
-                        AND explicit_relation.review_status<>'RETURNED')
+                        AND explicit_relation.review_status='APPROVED')
                 ) combined
                 ORDER BY CASE combined.relation_type
                            WHEN 'EXACT_VILLAGE' THEN 1

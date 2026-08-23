@@ -85,24 +85,30 @@ public class AnnualSampleNetworkService {
         validateYear(year);
         validateMembership(statusCode, sourceCode, reason, version);
         validateRelation(designVillageRegionCode, relationType, evidenceReference);
-        SecurityPrincipal principal = access.require("BUSINESS_UPDATE", designVillageRegionCode);
-        if (!repository.samplePointExists(samplePointId)) {
-            throw new ResourceNotFoundException(
-                    "SAMPLE_POINT_NOT_FOUND", "真实样本点不存在或尚未通过主数据审核");
+        AnnualSampleNetworkRepository.SamplePointLocation location =
+                repository.samplePointLocation(samplePointId)
+                        .orElseThrow(() -> new ResourceNotFoundException(
+                                "SAMPLE_POINT_NOT_FOUND", "真实样本点不存在或尚未通过主数据审核"));
+        SecurityPrincipal principal = access.require("BUSINESS_UPDATE", location.regionCode());
+        if (designVillageRegionCode != null) {
+            access.require("BUSINESS_UPDATE", designVillageRegionCode);
         }
         if ("EXACT_VILLAGE".equals(relationType)
-                && !repository.exactRelationMatches(samplePointId, designVillageRegionCode)) {
+                && (!"VILLAGE".equals(location.regionLevel())
+                        || !location.regionCode().equals(designVillageRegionCode))) {
             throw invalid("SAMPLE_NETWORK_RELATION_INVALID", "精确关系必须连接同村的村级真实样本");
         }
         AnnualSampleNetworkView existing = required(year, principal.regionCodes());
-        if (!"DRAFT".equals(existing.statusCode())) {
+        if (!"DRAFT".equals(existing.statusCode()) || !repository.lockDraft(year)) {
             throw conflict("SAMPLE_NETWORK_NOT_EDITABLE", "只有草稿年度网络可以修改样本名单");
         }
         Instant now = clock.instant();
-        int changed = repository.upsertMembership(year, samplePointId, designVillageRegionCode,
-                relationType, normalized(evidenceReference), statusCode, sourceCode,
-                reason.trim(), version, principal.subjectId(), now);
-        if (changed != 1) {
+        AnnualSampleNetworkRepository.MembershipWriteResult changed =
+                repository.upsertMembership(year, samplePointId, designVillageRegionCode,
+                        relationType, normalized(evidenceReference), statusCode, sourceCode,
+                        reason.trim(), version, principal.subjectId(), now);
+        int expectedRelations = designVillageRegionCode == null ? 0 : 1;
+        if (changed.membershipChanges() != 1 || changed.relationChanges() != expectedRelations) {
             throw conflict("SAMPLE_NETWORK_MEMBER_VERSION_CONFLICT", "年度样本成员已被其他操作更新");
         }
         audit.record(principal, AGGREGATE, Integer.toString(year),
@@ -166,7 +172,8 @@ public class AnnualSampleNetworkService {
 
     private static void validateMembership(
             String statusCode, String sourceCode, String reason, long version) {
-        if (!Set.of("CANDIDATE", "ACTIVE", "PAUSED", "REMOVED").contains(statusCode)
+        if (statusCode == null || sourceCode == null
+                || !Set.of("CANDIDATE", "ACTIVE", "PAUSED", "REMOVED").contains(statusCode)
                 || !Set.of("CARRIED_FORWARD", "NEW", "MANUAL").contains(sourceCode)
                 || reason == null || reason.isBlank() || reason.length() > 500 || version < 0) {
             throw invalid("SAMPLE_NETWORK_MEMBER_INVALID", "年度样本成员决定不完整或无效");

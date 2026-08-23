@@ -25,7 +25,7 @@ public record SampleNetworkComparisonView(
         relations = List.copyOf(relations);
     }
 
-    public record LevelCounts(int county, int township, int village) {}
+    public record LevelCounts(int prefecture, int county, int township, int village) {}
 
     public record DesignPoint(
             String villageRegionCode,
