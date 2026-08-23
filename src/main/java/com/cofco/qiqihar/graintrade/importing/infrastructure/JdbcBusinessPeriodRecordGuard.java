@@ -2,9 +2,7 @@ package com.cofco.qiqihar.graintrade.importing.infrastructure;
 
 import com.cofco.qiqihar.graintrade.importing.application.BusinessPeriodRecordGuard;
 import com.cofco.qiqihar.graintrade.importing.domain.ImportDraft;
-import com.cofco.qiqihar.graintrade.samplepoint.identity.application.SampleIdentityAssessment;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
-import java.util.List;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
@@ -22,10 +20,12 @@ public class JdbcBusinessPeriodRecordGuard implements BusinessPeriodRecordGuard 
 
     @Override
     public void lockAndRequireAvailable(ImportDraft draft) {
-        PeriodKey key = PeriodKey.from(draft);
-        if (key == null) return;
+        RawPeriodKey rawKey = RawPeriodKey.from(draft);
+        if (rawKey == null) return;
+        PeriodKey key = normalizeIdentity(rawKey);
+        if (key.sampleName().isEmpty() || key.sampleContact().isEmpty()) return;
         jdbc.sql("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))")
-                .param("key", key.lockKey()).query((row, ignored) -> Boolean.TRUE).single();
+                .param("key", key.businessFingerprint()).query((row, ignored) -> Boolean.TRUE).single();
         String canonicalRecordId = switch (key.domainCode()) {
             case "PRODUCTION" -> productionConflict(key);
             case "MARKET" -> marketConflict(key);
@@ -37,6 +37,32 @@ public class JdbcBusinessPeriodRecordGuard implements BusinessPeriodRecordGuard 
                     "相同样本、产品和调查期间已有当前记录 " + canonicalRecordId
                             + "；请在该记录的退回补充或修正流程中更新，不要重复导入");
         }
+    }
+
+    private PeriodKey normalizeIdentity(RawPeriodKey raw) {
+        return jdbc.sql("""
+                WITH normalized AS (
+                  SELECT
+                    lower(regexp_replace(normalize(CAST(:sampleName AS text),NFKC),
+                      '[[:space:]　]+','','g')) AS sample_name,
+                    lower(regexp_replace(normalize(CAST(:sampleContact AS text),NFKC),
+                      '[[:space:]　()（）-]+','','g')) AS sample_contact
+                )
+                SELECT sample_name,sample_contact,
+                  encode(sha256(convert_to(jsonb_build_array(
+                    CAST(:domain AS text),CAST(:product AS text),CAST(:objectType AS text),
+                    CAST(:region AS text),CAST(:year AS integer),CAST(:month AS integer),
+                    sample_name,sample_contact)::text,'UTF8')),'hex') AS business_fingerprint
+                FROM normalized
+                """).param("sampleName", raw.sampleName()).param("sampleContact", raw.sampleContact())
+                .param("domain", raw.domainCode()).param("product", raw.productCode())
+                .param("objectType", raw.objectTypeCode()).param("region", raw.regionCode())
+                .param("year", raw.surveyYear())
+                .param("month", raw.surveyMonth(), java.sql.Types.INTEGER)
+                .query((row, ignored) -> new PeriodKey(raw.domainCode(), raw.productCode(),
+                        raw.objectTypeCode(), raw.regionCode(), raw.surveyYear(), raw.surveyMonth(),
+                        row.getString("sample_name"), row.getString("sample_contact"),
+                        row.getString("business_fingerprint"))).single();
     }
 
     private String productionConflict(PeriodKey key) {
@@ -100,8 +126,12 @@ public class JdbcBusinessPeriodRecordGuard implements BusinessPeriodRecordGuard 
 
     private record PeriodKey(String domainCode, String productCode, String objectTypeCode,
             String regionCode, int surveyYear, Integer surveyMonth,
+            String sampleName, String sampleContact, String businessFingerprint) {}
+
+    private record RawPeriodKey(String domainCode, String productCode, String objectTypeCode,
+            String regionCode, int surveyYear, Integer surveyMonth,
             String sampleName, String sampleContact) {
-        private static PeriodKey from(ImportDraft draft) {
+        private static RawPeriodKey from(ImportDraft draft) {
             String contactCode = switch (draft.domainCode()) {
                 case "PRODUCTION" -> "PROD_SAMPLE_CONTACT";
                 case "MARKET" -> "MKT_SAMPLE_CONTACT";
@@ -109,11 +139,11 @@ public class JdbcBusinessPeriodRecordGuard implements BusinessPeriodRecordGuard 
                 default -> null;
             };
             if (contactCode == null) return null;
-            String sampleName = SampleIdentityAssessment.normalizedName(draft.sampleName());
-            String sampleContact = SampleIdentityAssessment.normalizedContact(draft.values().get(contactCode));
+            String sampleName = draft.sampleName();
+            String sampleContact = draft.values().get(contactCode);
             String yearValue = draft.values().get("surveyYear");
             String monthValue = draft.values().get("surveyMonth");
-            if (sampleName.isEmpty() || sampleContact.isEmpty() || blank(yearValue)) return null;
+            if (blank(sampleName) || blank(sampleContact) || blank(yearValue)) return null;
             int year;
             Integer month = null;
             try {
@@ -125,19 +155,8 @@ public class JdbcBusinessPeriodRecordGuard implements BusinessPeriodRecordGuard 
             String objectType = draft.objectTypeCode();
             if ("LOGISTICS".equals(draft.domainCode())) objectType = "ROUTE_EVENT";
             if (blank(objectType) || blank(draft.productCode()) || blank(draft.regionCode())) return null;
-            return new PeriodKey(draft.domainCode(), draft.productCode().strip(), objectType.strip(),
+            return new RawPeriodKey(draft.domainCode(), draft.productCode().strip(), objectType.strip(),
                     draft.regionCode().strip(), year, month, sampleName, sampleContact);
-        }
-
-        private String lockKey() {
-            return "BUSINESS_PERIOD_RECORD|" + framed(List.of(domainCode, productCode, objectTypeCode,
-                    regionCode, Integer.toString(surveyYear), surveyMonth == null ? "" : surveyMonth.toString(),
-                    sampleName, sampleContact));
-        }
-
-        private static String framed(List<String> values) {
-            return values.stream().map(value -> value.length() + ":" + value)
-                    .collect(java.util.stream.Collectors.joining("|"));
         }
 
         private static boolean blank(String value) {

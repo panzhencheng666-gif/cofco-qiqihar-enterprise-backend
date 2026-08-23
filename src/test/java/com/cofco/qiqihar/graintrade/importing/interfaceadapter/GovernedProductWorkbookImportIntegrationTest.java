@@ -8,7 +8,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
+import com.cofco.qiqihar.graintrade.importing.application.BusinessPeriodRecordGuard;
+import com.cofco.qiqihar.graintrade.importing.domain.ImportDraft;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
+import com.cofco.qiqihar.graintrade.importing.infrastructure.JdbcBusinessPeriodRecordGuard;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.awt.Color;
@@ -25,13 +28,19 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.http.MediaType;
 import org.springframework.mock.web.MockMultipartFile;
@@ -41,11 +50,13 @@ import org.springframework.test.web.servlet.MvcResult;
 @SpringBootTest(classes = GrainTradeApplication.class)
 @AutoConfigureMockMvc
 @UsesProtectedTestDatabase
+@Import(GovernedProductWorkbookImportIntegrationTest.PeriodGuardTestConfiguration.class)
 class GovernedProductWorkbookImportIntegrationTest {
     private static final String XLSX =
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
+    @Autowired CoordinatingBusinessPeriodRecordGuard coordinatingPeriodGuard;
     private JdbcClient jdbc;
 
     @BeforeEach
@@ -741,34 +752,67 @@ class GovernedProductWorkbookImportIntegrationTest {
     }
 
     @Test
+    void treatsPostgresUnicodeIdentityVariantsAsOneSequentialPeriodKey() throws Exception {
+        WorkbookFixture fixture = workbookFixture("production", "PRODUCTION", "产情",
+                "production-tester", "样本点名称");
+        String canonicalName = "期间守卫Ai样本";
+        String unicodeVariant = "期间守卫Ａİ\u2003样本";
+        Map<String, String> canonicalValues = new LinkedHashMap<>(completeProductionValues());
+        canonicalValues.put("数据月份", "8");
+        byte[] canonical = workbook(fixture, canonicalName, canonicalValues);
+        importWorkbook("production", "production-tester", "production-unicode-canonical",
+                canonical, 1, 0);
+        approveCanonicalRecord("production.production_record", "record_id", 8,
+                "/api/v1/production-records/{id}/approve", "market-tester");
+
+        Map<String, String> changedVariantValues = new LinkedHashMap<>(canonicalValues);
+        changedVariantValues.put("样本点联系方式", "（１３９）\u2003００００-００００");
+        changedVariantValues.put("预计单产（公斤/亩）", "510");
+        importWorkbook("production", "market-tester", "production-unicode-variant",
+                workbook(fixture, unicodeVariant, changedVariantValues), 0, 1);
+
+        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
+                .query(Long.class).single()).isOne();
+        assertPeriodConflict("production-unicode-variant");
+    }
+
+    @Test
     void serializesConcurrentGlobalPeriodImportsFromDifferentOperators() throws Exception {
         WorkbookFixture fixture = workbookFixture("production", "PRODUCTION", "产情",
                 "production-tester", "样本点名称");
-        byte[] workbook = workbook(fixture, "期间守卫并发产情样本", completeProductionValues());
-        CountDownLatch start = new CountDownLatch(1);
+        String canonicalName = "期间守卫并发Ai样本";
+        String unicodeVariant = "期间守卫并发Ａİ\u2003样本";
+        byte[] canonical = workbook(fixture, canonicalName, completeProductionValues());
+        Map<String, String> variantValues = new LinkedHashMap<>(completeProductionValues());
+        variantValues.put("样本点联系方式", "（１３９）\u2003００００-００００");
+        byte[] variant = workbook(fixture, unicodeVariant, variantValues);
         ExecutorService executor = Executors.newFixedThreadPool(2);
+        GuardCompetition competition = coordinatingPeriodGuard.arm();
         Future<MvcResult> first = executor.submit(() -> {
-            start.await();
             return performImport("production", "production-tester",
-                    "production-period-concurrent-a", workbook);
+                    "production-period-concurrent-a", canonical);
         });
-        Future<MvcResult> second = executor.submit(() -> {
-            start.await();
-            return performImport("production", "market-tester",
-                    "production-period-concurrent-b", workbook);
-        });
-        start.countDown();
+        Future<MvcResult> second = null;
         try {
+            assertThat(competition.firstLockHeld().await(5, TimeUnit.SECONDS)).isTrue();
+            second = executor.submit(() -> performImport("production", "market-tester",
+                    "production-period-concurrent-b", variant));
+            assertThat(competition.secondLockAttempted().await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(observeAdvisoryLockWait(5, TimeUnit.SECONDS)).isTrue();
+            competition.releaseFirst().countDown();
             assertThat(first.get(15, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(201);
             assertThat(second.get(15, TimeUnit.SECONDS).getResponse().getStatus()).isEqualTo(201);
         } finally {
+            competition.releaseFirst().countDown();
+            coordinatingPeriodGuard.disarm(competition);
             executor.shutdownNow();
             assertThat(executor.awaitTermination(5, TimeUnit.SECONDS)).isTrue();
         }
 
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM production.production_record_submission_metadata
-                WHERE field_code='PROD_SAMPLE_NAME' AND value='期间守卫并发产情样本'
+                WHERE field_code='PROD_SAMPLE_NAME'
+                  AND value IN ('期间守卫并发Ai样本','期间守卫并发Ａİ\u2003样本')
                 """).query(Long.class).single()).isOne();
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM platform.import_row_result result
@@ -777,6 +821,20 @@ class GovernedProductWorkbookImportIntegrationTest {
                   AND result.outcome_code='ERROR'
                   AND result.error_code='SAMPLE_PERIOD_RECORD_CONFLICT'
                 """).query(Long.class).single()).isOne();
+    }
+
+    private boolean observeAdvisoryLockWait(long timeout, TimeUnit unit) throws InterruptedException {
+        long deadline = System.nanoTime() + unit.toNanos(timeout);
+        while (System.nanoTime() < deadline) {
+            long waiting = jdbc.sql("""
+                    SELECT count(*) FROM pg_stat_activity
+                    WHERE datname=current_database() AND wait_event_type='Lock'
+                      AND wait_event='advisory'
+                    """).query(Long.class).single();
+            if (waiting > 0) return true;
+            Thread.sleep(25);
+        }
+        return false;
     }
 
     @Test
@@ -1499,6 +1557,66 @@ class GovernedProductWorkbookImportIntegrationTest {
 
     private record WorkbookFixture(BusinessImportWorkbook.Template template,
             List<String> labels, String sampleLabel) {}
+
+    @TestConfiguration
+    static class PeriodGuardTestConfiguration {
+        @Bean
+        @Primary
+        CoordinatingBusinessPeriodRecordGuard coordinatingBusinessPeriodRecordGuard(
+                JdbcBusinessPeriodRecordGuard delegate) {
+            return new CoordinatingBusinessPeriodRecordGuard(delegate);
+        }
+    }
+
+    static final class CoordinatingBusinessPeriodRecordGuard implements BusinessPeriodRecordGuard {
+        private final JdbcBusinessPeriodRecordGuard delegate;
+        private final AtomicReference<GuardCompetition> active = new AtomicReference<>();
+
+        CoordinatingBusinessPeriodRecordGuard(JdbcBusinessPeriodRecordGuard delegate) {
+            this.delegate = delegate;
+        }
+
+        GuardCompetition arm() {
+            GuardCompetition competition = new GuardCompetition(new AtomicInteger(),
+                    new CountDownLatch(1), new CountDownLatch(1), new CountDownLatch(1));
+            assertThat(active.compareAndSet(null, competition)).isTrue();
+            return competition;
+        }
+
+        void disarm(GuardCompetition competition) {
+            active.compareAndSet(competition, null);
+        }
+
+        @Override
+        public void lockAndRequireAvailable(ImportDraft draft) {
+            GuardCompetition competition = active.get();
+            if (competition == null) {
+                delegate.lockAndRequireAvailable(draft);
+                return;
+            }
+            int attempt = competition.attempts().incrementAndGet();
+            if (attempt == 2) competition.secondLockAttempted().countDown();
+            delegate.lockAndRequireAvailable(draft);
+            if (attempt == 1) {
+                competition.firstLockHeld().countDown();
+                await(competition.releaseFirst());
+            }
+        }
+
+        private static void await(CountDownLatch latch) {
+            try {
+                if (!latch.await(10, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("PERIOD_GUARD_TEST_RELEASE_TIMEOUT");
+                }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("PERIOD_GUARD_TEST_INTERRUPTED", exception);
+            }
+        }
+    }
+
+    private record GuardCompetition(AtomicInteger attempts, CountDownLatch firstLockHeld,
+            CountDownLatch secondLockAttempted, CountDownLatch releaseFirst) {}
 
     private static Map<String, String> completeProductionValues() {
         return Map.ofEntries(
