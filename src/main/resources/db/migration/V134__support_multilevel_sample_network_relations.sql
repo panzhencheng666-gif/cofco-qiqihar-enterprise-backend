@@ -38,14 +38,32 @@ INSERT INTO registry.sample_network_design_relation(
   network_year,sample_point_id,design_village_region_code,relation_type,
   evidence_reference,review_status,created_by,created_at,reviewed_by,reviewed_at)
 SELECT membership.network_year,membership.sample_point_id,membership.village_region_code,
-       'EXACT_VILLAGE','V133 annual membership migration',
-       CASE WHEN network.status_code='PUBLISHED' THEN 'APPROVED'
+       CASE WHEN point.region_code=membership.village_region_code
+                   AND point_region.administrative_level='VILLAGE'
+                 THEN 'EXACT_VILLAGE'
+            ELSE 'EXPLICIT_REPRESENTATION' END,
+       CASE WHEN point.region_code=membership.village_region_code
+                   AND point_region.administrative_level='VILLAGE'
+                 THEN 'V133 annual membership migration'
+            ELSE 'legacy V133 binding requiring annual review' END,
+       CASE WHEN network.status_code='PUBLISHED'
+                   AND point.region_code=membership.village_region_code
+                   AND point_region.administrative_level='VILLAGE'
+                   AND network.reviewed_by<>membership.created_by THEN 'APPROVED'
             ELSE 'PENDING_REVIEW' END,
        membership.created_by,membership.created_at,
-       CASE WHEN network.status_code='PUBLISHED' THEN network.reviewed_by END,
-       CASE WHEN network.status_code='PUBLISHED' THEN network.reviewed_at END
+       CASE WHEN network.status_code='PUBLISHED'
+                   AND point.region_code=membership.village_region_code
+                   AND point_region.administrative_level='VILLAGE'
+                   AND network.reviewed_by<>membership.created_by THEN network.reviewed_by END,
+       CASE WHEN network.status_code='PUBLISHED'
+                   AND point.region_code=membership.village_region_code
+                   AND point_region.administrative_level='VILLAGE'
+                   AND network.reviewed_by<>membership.created_by THEN network.reviewed_at END
 FROM registry.sample_network_membership membership
 JOIN registry.sample_network_year network USING(network_year)
+JOIN registry.sample_point point ON point.sample_point_id=membership.sample_point_id
+JOIN platform.region point_region ON point_region.code=point.region_code
 WHERE membership.village_region_code IS NOT NULL;
 
 CREATE FUNCTION registry.guard_sample_network_design_relation_village()
@@ -55,6 +73,7 @@ SET search_path = pg_catalog,platform,registry
 AS $$
 DECLARE
     membership_region_level varchar(30);
+    membership_region_code varchar(12);
 BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM platform.region
@@ -63,7 +82,8 @@ BEGIN
         RAISE EXCEPTION 'sample network design relation village must be a village'
             USING ERRCODE='23514';
     END IF;
-    SELECT region.administrative_level INTO membership_region_level
+    SELECT region.administrative_level,point.region_code
+    INTO membership_region_level,membership_region_code
     FROM registry.sample_network_membership membership
     JOIN registry.sample_point point ON point.sample_point_id=membership.sample_point_id
     JOIN platform.region region ON region.code=point.region_code
@@ -73,6 +93,12 @@ BEGIN
        AND membership_region_level IS NOT NULL
        AND membership_region_level<>'VILLAGE' THEN
         RAISE EXCEPTION 'EXACT_VILLAGE relation requires a village-level sample member'
+            USING ERRCODE='23514';
+    END IF;
+    IF NEW.relation_type='EXACT_VILLAGE'
+       AND membership_region_code IS NOT NULL
+       AND membership_region_code<>NEW.design_village_region_code THEN
+        RAISE EXCEPTION 'EXACT_VILLAGE relation must match the sample member village'
             USING ERRCODE='23514';
     END IF;
     RETURN NEW;
@@ -104,4 +130,4 @@ COMMENT ON COLUMN registry.sample_network_membership.village_region_code IS
 COMMENT ON TABLE registry.sample_network_design_relation IS
     'Reviewed relationship from an annual real-sample member to an administrative-village design reference.';
 COMMENT ON FUNCTION registry.guard_sample_network_design_relation_village() IS
-    'Requires an administrative-village design reference and permits EXACT_VILLAGE only for village-level members.';
+    'Requires an administrative-village design reference and permits EXACT_VILLAGE only when it matches a village-level member.';
