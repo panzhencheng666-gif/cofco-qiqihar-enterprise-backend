@@ -7,6 +7,10 @@ import com.cofco.qiqihar.graintrade.identity.application.AssignmentOptions;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.sql.Timestamp;
+import java.time.Instant;
+import java.util.UUID;
+import com.cofco.qiqihar.graintrade.identity.application.IdentityInvitation;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
@@ -40,8 +44,25 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
                         """).param("unit",value.workUnitCode()).param("regions",value.regionCodes())
                         .query(Long.class).single()==value.regionCodes().size()
                 && (privileged || jdbc.sql("""
-                        SELECT count(*) FROM platform.region
-                        WHERE code IN (:regions) AND administrative_level='TOWNSHIP'
+                        SELECT count(*)
+                        FROM platform.region region
+                        WHERE region.code IN (:regions)
+                          AND (region.administrative_level='TOWNSHIP'
+                            OR (region.administrative_level='COUNTY'
+                              AND EXISTS (
+                                SELECT 1 FROM platform.monitoring_scope_region governed
+                                WHERE governed.scope_code='FORMAL_BUSINESS'
+                                  AND governed.region_code=region.code AND governed.included)
+                              AND NOT EXISTS (
+                                WITH RECURSIVE descendant(code,administrative_level) AS (
+                                  SELECT child.code,child.administrative_level
+                                  FROM platform.region child WHERE child.parent_code=region.code
+                                  UNION ALL
+                                  SELECT child.code,child.administrative_level
+                                  FROM platform.region child
+                                  JOIN descendant parent ON child.parent_code=parent.code)
+                                SELECT 1 FROM descendant
+                                WHERE administrative_level='TOWNSHIP')))
                         """).param("regions",value.regionCodes()).query(Long.class).single()==value.regionCodes().size());
     }
 
@@ -122,7 +143,7 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
                 SELECT code,name FROM platform.access_role WHERE active ORDER BY sort_order,code
                 """).query((row,index)->new AssignmentOptions.Option(row.getString(1),row.getString(2))).list();
         List<AssignmentOptions.Option> positions=List.of();
-        List<String> regions=jdbc.sql("""
+        List<AssignmentOptions.RegionOption> regions=jdbc.sql("""
                 WITH RECURSIVE authorized_region(code) AS (
                     SELECT scope.region_code
                     FROM platform.work_unit_region_scope scope
@@ -132,15 +153,155 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
                     FROM platform.region child
                     JOIN authorized_region parent ON child.parent_code=parent.code
                 )
-                SELECT region.code
+                SELECT region.code,region.name,region.administrative_level,region.parent_code
                 FROM platform.region region
                 JOIN authorized_region authorized ON authorized.code=region.code
                 WHERE region.administrative_level='TOWNSHIP'
+                   OR (region.administrative_level='COUNTY'
+                     AND EXISTS (
+                       SELECT 1 FROM platform.monitoring_scope_region governed
+                       WHERE governed.scope_code='FORMAL_BUSINESS'
+                         AND governed.region_code=region.code AND governed.included)
+                     AND NOT EXISTS (
+                       WITH RECURSIVE descendant(code,administrative_level) AS (
+                         SELECT child.code,child.administrative_level
+                         FROM platform.region child WHERE child.parent_code=region.code
+                         UNION ALL
+                         SELECT child.code,child.administrative_level
+                         FROM platform.region child
+                         JOIN descendant parent ON child.parent_code=parent.code)
+                       SELECT 1 FROM descendant WHERE administrative_level='TOWNSHIP'))
                 ORDER BY region.code
-                """).param("unit",workUnitCode).query(String.class).list();
+                """).param("unit",workUnitCode).query((row,index)->new AssignmentOptions.RegionOption(
+                        row.getString(1),row.getString(2),row.getString(3),row.getString(4))).list();
         if(workUnits.stream().noneMatch(unit->unit.code().equals(workUnitCode)))return new AssignmentOptions(
-                workUnits,roles,positions,List.of());
-        return new AssignmentOptions(workUnits,roles,positions,regions);
+                workUnits,roles,positions,List.of(),List.of());
+        return new AssignmentOptions(workUnits,roles,positions,
+                regions.stream().map(AssignmentOptions.RegionOption::code).toList(),regions);
+    }
+
+    @Override
+    public Optional<IdentityInvitation> findInvitationByIdempotency(
+            String actorSubjectId,String idempotencyKey) {
+        return jdbc.sql("""
+                SELECT invitation_id,security_subject_id,state,delivery_status,
+                       expires_at,request_fingerprint
+                FROM platform.identity_invitation
+                WHERE created_by=:actor AND idempotency_key=:key
+                """).param("actor",actorSubjectId).param("key",idempotencyKey)
+                .query((row,index)->new IdentityInvitation(
+                        row.getObject(1,UUID.class),row.getString(2),row.getString(3),
+                        row.getString(4),row.getTimestamp(5).toInstant(),row.getString(6)))
+                .optional();
+    }
+
+    @Override
+    public Optional<IdentityInvitation> findInvitation(UUID invitationId) {
+        return jdbc.sql("""
+                SELECT invitation_id,security_subject_id,state,delivery_status,
+                       expires_at,request_fingerprint
+                FROM platform.identity_invitation WHERE invitation_id=:id
+                """).param("id",invitationId).query((row,index)->new IdentityInvitation(
+                        row.getObject(1,UUID.class),row.getString(2),row.getString(3),
+                        row.getString(4),row.getTimestamp(5).toInstant(),row.getString(6))).optional();
+    }
+
+    @Override
+    public Optional<IdentityInvitation> revokeInvitation(UUID invitationId,Instant revokedAt) {
+        IdentityInvitation existing=findInvitation(invitationId).orElse(null);
+        if(existing==null||existing.invitationStatus().equals("ACTIVATED"))return Optional.empty();
+        if(existing.invitationStatus().equals("PENDING"))jdbc.sql("""
+                UPDATE platform.identity_invitation
+                SET state='REVOKED',revoked_at=:revokedAt,version=version+1
+                WHERE invitation_id=:id AND state='PENDING'
+                """).param("revokedAt",Timestamp.from(revokedAt)).param("id",invitationId).update();
+        return findInvitation(invitationId);
+    }
+
+    @Override
+    public void revokePendingInvitations(String subjectId,Instant revokedAt) {
+        jdbc.sql("""
+                UPDATE platform.identity_invitation
+                SET state='REVOKED',revoked_at=:revokedAt,version=version+1
+                WHERE security_subject_id=:subject AND state='PENDING'
+                """).param("revokedAt",Timestamp.from(revokedAt)).param("subject",subjectId).update();
+    }
+
+    @Override
+    public IdentityInvitation createInvitation(
+            UUID invitationId,String subjectId,String tokenSha256,
+            String encryptedDeliveryPayload,String deliveryAddressSha256,Instant expiresAt,
+            String actorSubjectId,String idempotencyKey,String requestSha256) {
+        jdbc.sql("""
+                INSERT INTO platform.identity_invitation(
+                    invitation_id,security_subject_id,token_hash,encrypted_delivery_payload,
+                    delivery_address_sha256,expires_at,created_by,idempotency_key,request_fingerprint)
+                VALUES(:id,:subject,:tokenHash,:payload,:addressHash,:expiresAt,:actor,:key,:requestHash)
+                """).param("id",invitationId).param("subject",subjectId)
+                .param("tokenHash",tokenSha256).param("payload",encryptedDeliveryPayload)
+                .param("addressHash",deliveryAddressSha256).param("expiresAt",Timestamp.from(expiresAt))
+                .param("actor",actorSubjectId).param("key",idempotencyKey)
+                .param("requestHash",requestSha256).update();
+        jdbc.sql("""
+                INSERT INTO platform.identity_delivery_outbox(
+                    event_id,invitation_id,security_subject_id,event_type)
+                VALUES(:eventId,:invitationId,:subject,'INVITATION_DELIVERY')
+                """).param("eventId",UUID.randomUUID()).param("invitationId",invitationId)
+                .param("subject",subjectId).update();
+        return findInvitationByIdempotency(actorSubjectId,idempotencyKey).orElseThrow();
+    }
+
+    @Override
+    public Optional<EmployeeProfile> activateInvitation(
+            String tokenSha256,String issuerUri,String providerSubject,Instant activatedAt) {
+        record Candidate(UUID invitationId,String subjectId,String status,Instant expiresAt) {}
+        Candidate candidate=jdbc.sql("""
+                SELECT invitation_id,security_subject_id,state,expires_at
+                FROM platform.identity_invitation
+                WHERE token_hash=:tokenHash
+                FOR UPDATE
+                """).param("tokenHash",tokenSha256)
+                .query((row,index)->new Candidate(row.getObject(1,UUID.class),row.getString(2),
+                        row.getString(3),row.getTimestamp(4).toInstant())).optional().orElse(null);
+        if(candidate==null||!candidate.status().equals("PENDING")
+                ||!activatedAt.isBefore(candidate.expiresAt()))return Optional.empty();
+        long providerBinding=countInBinding(issuerUri,providerSubject,candidate.subjectId());
+        if(providerBinding>0)return Optional.empty();
+        jdbc.sql("""
+                INSERT INTO platform.identity_provider_binding(
+                    binding_id,provider_code,issuer_uri,provider_subject,security_subject_id,
+                    state,valid_from,approved_by,approved_at)
+                VALUES(:id,'ENTERPRISE_OIDC',:issuer,:providerSubject,:subject,
+                       'ACTIVE',:activatedAt,:subject,:activatedAt)
+                """).param("id",UUID.randomUUID()).param("issuer",issuerUri)
+                .param("providerSubject",providerSubject).param("subject",candidate.subjectId())
+                .param("activatedAt",Timestamp.from(activatedAt)).update();
+        int activated=jdbc.sql("""
+                UPDATE platform.security_user
+                SET account_status='ACTIVE',enabled=true,activated_at=COALESCE(activated_at,:activatedAt),
+                    version=version+1,updated_at=:activatedAt
+                WHERE subject_id=:subject AND account_status='INVITED'
+                  AND employment_status='ACTIVE'
+                """).param("activatedAt",Timestamp.from(activatedAt))
+                .param("subject",candidate.subjectId()).update();
+        if(activated!=1)return Optional.empty();
+        jdbc.sql("""
+                UPDATE platform.identity_invitation
+                SET state='ACTIVATED',activated_at=:activatedAt,version=version+1
+                WHERE invitation_id=:id AND state='PENDING'
+                """).param("activatedAt",Timestamp.from(activatedAt))
+                .param("id",candidate.invitationId()).update();
+        return find(candidate.subjectId(),null);
+    }
+
+    private long countInBinding(String issuerUri,String providerSubject,String subjectId) {
+        return jdbc.sql("""
+                SELECT count(*) FROM platform.identity_provider_binding
+                WHERE state='ACTIVE' AND valid_until IS NULL
+                  AND ((issuer_uri=:issuer AND provider_subject=:providerSubject)
+                    OR security_subject_id=:subject)
+                """).param("issuer",issuerUri).param("providerSubject",providerSubject)
+                .param("subject",subjectId).query(Long.class).single();
     }
 
     private EmployeeProfile profile(String subject,String name,String unit,String unitName,

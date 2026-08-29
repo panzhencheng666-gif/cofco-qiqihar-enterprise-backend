@@ -3,11 +3,13 @@ package com.cofco.qiqihar.graintrade.shared.security.interfaceadapter;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.oidcLogin;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.identity.application.AccessReviewRepository;
+import com.cofco.qiqihar.graintrade.identity.application.IdentityInvitationTokenCodec;
 import com.cofco.qiqihar.graintrade.testsupport.GovernedMasterDataFixtures;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import javax.sql.DataSource;
@@ -21,6 +23,8 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
+import org.springframework.security.oauth2.core.oidc.IdTokenClaimNames;
 import java.util.UUID;
 
 @SpringBootTest(classes=GrainTradeApplication.class)
@@ -32,6 +36,7 @@ class IdentityGovernanceRestIntegrationTest {
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
     @Autowired AccessReviewRepository accessReviewRepository;
+    @Autowired IdentityInvitationTokenCodec invitationTokens;
     private JdbcClient jdbc;
     private String employee;
     private UUID reviewId;
@@ -100,8 +105,12 @@ class IdentityGovernanceRestIntegrationTest {
         if(reviewId!=null)jdbc.sql("DELETE FROM platform.access_review_campaign WHERE review_id=:review")
                 .param("review",reviewId).update();
         if(employee!=null){
+            deleteIdentityLifecycle(employee);
             deleteAssignments(employee);
-            jdbc.sql("DELETE FROM platform.security_user WHERE subject_id=:employee")
+            long immutableAudit=jdbc.sql("""
+                    SELECT count(*) FROM platform.business_audit_event WHERE actor_subject_id=:subject
+                    """).param("subject",employee).query(Long.class).single();
+            if(immutableAudit==0)jdbc.sql("DELETE FROM platform.security_user WHERE subject_id=:employee")
                     .param("employee",employee).update();
         }
         deleteAssignments("identity-governance-outside-reviewer");
@@ -184,7 +193,7 @@ class IdentityGovernanceRestIntegrationTest {
                 VALUES(:subject,'SYSTEM_ADMIN')
                 """).param("subject",UNIT_SYSTEM_ADMIN).update();
 
-        mvc.perform(post("/api/v1/identity/employees")
+        mvc.perform(inviteRequest()
                         .principal(() -> "identity-governance-outside-reviewer")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
@@ -218,7 +227,7 @@ class IdentityGovernanceRestIntegrationTest {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error.code").value("ACCESS_WORK_UNIT_DENIED"));
 
-        mvc.perform(post("/api/v1/identity/employees")
+        mvc.perform(inviteRequest()
                         .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"越权测试员工",
@@ -228,7 +237,7 @@ class IdentityGovernanceRestIntegrationTest {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error.code").value("ACCESS_ROLE_ASSIGNMENT_DENIED"));
 
-        mvc.perform(post("/api/v1/identity/employees")
+        mvc.perform(inviteRequest()
                         .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"跨单位测试员工",
@@ -239,7 +248,7 @@ class IdentityGovernanceRestIntegrationTest {
                 .andExpect(jsonPath("$.error.code").value("ACCESS_WORK_UNIT_DENIED"))
                 .andExpect(jsonPath("$.error.message").value("无权访问其他工作单位"));
 
-        mvc.perform(post("/api/v1/identity/employees")
+        mvc.perform(inviteRequest()
                         .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"identity-governance-outside-reviewer","displayName":"越权探测",
@@ -255,14 +264,14 @@ class IdentityGovernanceRestIntegrationTest {
                  "workUnitCode":"QIQIHAR_BUSINESS","positionCodes":["GOVERNANCE_REPORTER"],
                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["INVALID_REGION"]}
                 """;
-        mvc.perform(post("/api/v1/identity/employees")
+        mvc.perform(inviteRequest()
                         .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content(invalidAssignment.formatted("identity-governance-outside-reviewer")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("INVALID_IDENTITY_ASSIGNMENT"))
                 .andExpect(jsonPath("$.error.message").value("员工账号或授权信息不完整"));
 
-        mvc.perform(post("/api/v1/identity/employees")
+        mvc.perform(inviteRequest()
                         .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"本单位受邀员工",
@@ -272,7 +281,7 @@ class IdentityGovernanceRestIntegrationTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.accountStatus").value("INVITED"))
                 .andExpect(jsonPath("$.data.workUnitCode").value("QIQIHAR_BUSINESS"));
-        mvc.perform(post("/api/v1/identity/employees")
+        mvc.perform(inviteRequest()
                         .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content(invalidAssignment.formatted(employee)))
                 .andExpect(status().isBadRequest())
@@ -358,6 +367,17 @@ class IdentityGovernanceRestIntegrationTest {
                 .param("subject",subjectId).update();
     }
 
+    private void deleteIdentityLifecycle(String subjectId) {
+        jdbc.sql("DELETE FROM platform.oidc_session_registry WHERE security_subject_id=:subject")
+                .param("subject",subjectId).update();
+        jdbc.sql("DELETE FROM platform.identity_delivery_outbox WHERE security_subject_id=:subject")
+                .param("subject",subjectId).update();
+        jdbc.sql("DELETE FROM platform.identity_invitation WHERE security_subject_id=:subject")
+                .param("subject",subjectId).update();
+        jdbc.sql("DELETE FROM platform.identity_provider_binding WHERE security_subject_id=:subject")
+                .param("subject",subjectId).update();
+    }
+
     @Test
     void systemAdministratorRoleIncludesEveryActivePermission() {
         long missing=jdbc.sql("""
@@ -380,7 +400,7 @@ class IdentityGovernanceRestIntegrationTest {
                 .andExpect(jsonPath("$.data.roles[?(@.code == 'ACCOUNT_OWNER')]").doesNotExist())
                 .andExpect(jsonPath("$.data.roles[?(@.code == 'SYSTEM_ADMIN')]").doesNotExist());
 
-        mvc.perform(post("/api/v1/identity/employees")
+        mvc.perform(inviteRequest()
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"所有者角色越权探测",
@@ -390,7 +410,7 @@ class IdentityGovernanceRestIntegrationTest {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error.code").value("ACCOUNT_OWNER_ASSIGNMENT_DENIED"));
 
-        mvc.perform(post("/api/v1/identity/employees")
+        mvc.perform(inviteRequest()
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"系统管理员角色越权探测",
@@ -416,7 +436,7 @@ class IdentityGovernanceRestIntegrationTest {
                  "workUnitCode":"QIQIHAR_BUSINESS","positionCodes":["GOVERNANCE_REPORTER"],
                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
                 """.formatted(employee,TOWNSHIP);
-        mvc.perform(post("/api/v1/identity/employees")
+        mvc.perform(inviteRequest()
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content(invitation))
                 .andExpect(status().isCreated())
@@ -435,12 +455,7 @@ class IdentityGovernanceRestIntegrationTest {
                  "positionCodes":["GOVERNANCE_REPORTER"],
                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
                 """.formatted(TOWNSHIP);
-        mvc.perform(put("/api/v1/identity/employees/{subjectId}",employee)
-                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content(activation))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.accountStatus").value("ACTIVE"))
-                .andExpect(jsonPath("$.data.version").value(1));
+        activateInvitedEmployee();
         mvc.perform(get("/api/v1/session/me").principal(() -> employee))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.permissions[?(@ == 'BUSINESS_CREATE')]").exists());
@@ -481,7 +496,7 @@ class IdentityGovernanceRestIntegrationTest {
                 .andExpect(jsonPath("$.data.roles[1].code").value("BUSINESS_REVIEWER"))
                 .andExpect(jsonPath("$.data.roles[1].name").value("管理员"));
 
-        mvc.perform(post("/api/v1/identity/employees")
+        mvc.perform(inviteRequest()
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"业务管理员",
@@ -491,15 +506,7 @@ class IdentityGovernanceRestIntegrationTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.roles.length()").value(1))
                 .andExpect(jsonPath("$.data.roles[0].code").value("BUSINESS_REVIEWER"));
-        mvc.perform(put("/api/v1/identity/employees/{subjectId}",employee)
-                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"version":0,"displayName":"业务管理员","workUnitCode":"QIQIHAR_BUSINESS",
-                                 "accountStatus":"ACTIVE","employmentStatus":"ACTIVE",
-                                 "positionCodes":["GOVERNANCE_REPORTER"],
-                                 "roleCodes":["BUSINESS_REVIEWER"],"regionCodes":["%s"]}
-                                """.formatted(TOWNSHIP)))
-                .andExpect(status().isOk());
+        activateInvitedEmployee();
 
         mvc.perform(get("/api/v1/session/me").principal(() -> employee))
                 .andExpect(status().isOk())
@@ -523,7 +530,7 @@ class IdentityGovernanceRestIntegrationTest {
 
     @Test
     void rejectsRegionAssignmentsOutsideTheSelectedWorkUnit() throws Exception {
-        mvc.perform(post("/api/v1/identity/employees")
+        mvc.perform(inviteRequest()
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"张敏",
@@ -537,7 +544,7 @@ class IdentityGovernanceRestIntegrationTest {
     @Test
     void ordinaryEmployeesCanOnlyBeAnchoredAtTownshipLevel() throws Exception {
         for(String forbiddenRegion : java.util.List.of("230202",VILLAGE)) {
-            mvc.perform(post("/api/v1/identity/employees")
+            mvc.perform(inviteRequest()
                             .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                             .content("""
                                     {"subjectId":"%s-%s","displayName":"层级越权探测",
@@ -547,6 +554,81 @@ class IdentityGovernanceRestIntegrationTest {
                     .andExpect(status().isBadRequest())
                     .andExpect(jsonPath("$.error.code").value("INVALID_IDENTITY_ASSIGNMENT"));
         }
+    }
+
+    @Test
+    void leafFormalBusinessCountyIsAssignableButOrdinaryCountyAndVillageRemainDenied() throws Exception {
+        jdbc.sql("""
+                INSERT INTO platform.work_unit_region_scope(work_unit_code,region_code)
+                VALUES(:unit,'232700')
+                ON CONFLICT DO NOTHING
+                """).param("unit", WORK_UNIT).update();
+
+        mvc.perform(get("/api/v1/identity/employees/assignment-options")
+                        .param("workUnitCode", WORK_UNIT).principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.regionCodes[?(@ == '232761')]").exists())
+                .andExpect(jsonPath("$.data.regions[?(@.code == '232761' && @.administrativeLevel == 'COUNTY')]")
+                        .exists());
+
+        mvc.perform(inviteRequest()
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"subjectId":"%s","displayName":"加格达奇责任员工",
+                                 "workUnitCode":"QIQIHAR_BUSINESS","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["232761"]}
+                                """.formatted(employee)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.regionCodes[0]").value("232761"));
+
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.security_user_region_scope
+                WHERE subject_id=:subject AND region_code='232761' AND valid_until IS NULL
+                """).param("subject", employee).query(Long.class).single()).isOne();
+    }
+
+    @Test
+    void invitationReturnsLifecycleContractAndAdministratorsCannotBypassOidcActivation() throws Exception {
+        String response = mvc.perform(inviteRequest()
+                        .header("Idempotency-Key", "invite-contract-001")
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"subjectId":"%s","displayName":"可信激活员工",
+                                 "workUnitCode":"QIQIHAR_BUSINESS","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
+                                """.formatted(employee, TOWNSHIP)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.invitationId").isNotEmpty())
+                .andExpect(jsonPath("$.data.expiresAt").isNotEmpty())
+                .andExpect(jsonPath("$.data.deliveryStatus").value("QUEUED"))
+                .andExpect(jsonPath("$.data.activationUrl").doesNotExist())
+                .andExpect(jsonPath("$.data.token").doesNotExist())
+                .andReturn().getResponse().getContentAsString();
+
+        mvc.perform(inviteRequest()
+                        .header("Idempotency-Key", "invite-contract-001")
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"subjectId":"%s","displayName":"可信激活员工",
+                                 "workUnitCode":"QIQIHAR_BUSINESS","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
+                                """.formatted(employee, TOWNSHIP)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.replayed").value(true));
+
+        String activation = """
+                {"version":0,"displayName":"可信激活员工","workUnitCode":"QIQIHAR_BUSINESS",
+                 "accountStatus":"ACTIVE","employmentStatus":"ACTIVE",
+                 "positionCodes":["GOVERNANCE_REPORTER"],
+                 "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
+                """.formatted(TOWNSHIP);
+        mvc.perform(put("/api/v1/identity/employees/{subjectId}", employee)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content(activation))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("IDENTITY_OIDC_ACTIVATION_REQUIRED"));
+
+        org.assertj.core.api.Assertions.assertThat(response).doesNotContain("tokenHash");
     }
 
     @Test
@@ -564,7 +646,7 @@ class IdentityGovernanceRestIntegrationTest {
                 .andExpect(jsonPath("$.data.regionCodes.length()").value(1))
                 .andExpect(jsonPath("$.data.regionCodes[0]").value(TOWNSHIP));
 
-        mvc.perform(post("/api/v1/identity/employees")
+        mvc.perform(inviteRequest()
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"乡镇责任员工",
@@ -574,15 +656,7 @@ class IdentityGovernanceRestIntegrationTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.regionCodes[0]").value(TOWNSHIP));
 
-        mvc.perform(put("/api/v1/identity/employees/{subjectId}",employee)
-                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"version":0,"displayName":"乡镇责任员工","workUnitCode":"QIQIHAR_BUSINESS",
-                                 "accountStatus":"ACTIVE","employmentStatus":"ACTIVE",
-                                 "positionCodes":["GOVERNANCE_REPORTER"],
-                                 "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
-                                """.formatted(TOWNSHIP)))
-                .andExpect(status().isOk());
+        activateInvitedEmployee();
 
         mvc.perform(get("/api/v1/session/me").principal(() -> employee))
                 .andExpect(status().isOk())
@@ -594,7 +668,7 @@ class IdentityGovernanceRestIntegrationTest {
 
     @Test
     void townshipAssignmentAutomaticallyCoversVillagesAndReturnsBusinessNamePath() throws Exception {
-        mvc.perform(post("/api/v1/identity/employees")
+        mvc.perform(inviteRequest()
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"乡镇填报员",
@@ -602,15 +676,7 @@ class IdentityGovernanceRestIntegrationTest {
                                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
                                 """.formatted(employee,TOWNSHIP)))
                 .andExpect(status().isCreated());
-        mvc.perform(put("/api/v1/identity/employees/{subjectId}",employee)
-                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"version":0,"displayName":"乡镇填报员","workUnitCode":"QIQIHAR_BUSINESS",
-                                 "accountStatus":"ACTIVE","employmentStatus":"ACTIVE",
-                                 "positionCodes":["GOVERNANCE_REPORTER"],
-                                 "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
-                                """.formatted(TOWNSHIP)))
-                .andExpect(status().isOk());
+        activateInvitedEmployee();
 
         mvc.perform(get("/api/v1/session/me").principal(() -> employee))
                 .andExpect(status().isOk())
@@ -626,7 +692,7 @@ class IdentityGovernanceRestIntegrationTest {
     @Test
     void authorizedAdministratorsCanTraceImmutableUnitAuditEventsButOperatorsCannot() throws Exception {
         String governedUnit=WORK_UNIT;
-        mvc.perform(post("/api/v1/identity/employees")
+        mvc.perform(inviteRequest()
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"审计权限测试员工",
@@ -634,15 +700,7 @@ class IdentityGovernanceRestIntegrationTest {
                                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
                                 """.formatted(employee,TOWNSHIP)))
                 .andExpect(status().isCreated());
-        mvc.perform(put("/api/v1/identity/employees/{subjectId}",employee)
-                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"version":0,"displayName":"审计权限测试员工","workUnitCode":"QIQIHAR_BUSINESS",
-                                 "accountStatus":"ACTIVE","employmentStatus":"ACTIVE",
-                                 "positionCodes":["GOVERNANCE_REPORTER"],
-                                 "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
-                                """.formatted(TOWNSHIP)))
-                .andExpect(status().isOk());
+        activateInvitedEmployee();
 
         long beforeAuditReads = auditReadCount();
         mvc.perform(get("/api/v1/audit-events")
@@ -675,7 +733,7 @@ class IdentityGovernanceRestIntegrationTest {
 
     @Test
     void reviewersCertifyEffectiveAccessAndRevocationsTakeEffectImmediately() throws Exception {
-        mvc.perform(post("/api/v1/identity/employees")
+        mvc.perform(inviteRequest()
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"张敏","workUnitCode":"QIQIHAR_BUSINESS",
@@ -741,7 +799,7 @@ class IdentityGovernanceRestIntegrationTest {
 
     @Test
     void accessReviewSnapshotExcludesTheReviewersOwnAssignments() throws Exception {
-        mvc.perform(post("/api/v1/identity/employees")
+        mvc.perform(inviteRequest()
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"待复核员工",
@@ -784,7 +842,7 @@ class IdentityGovernanceRestIntegrationTest {
 
     @Test
     void overdueRoleAndRegionGrantsFailClosedUntilTheyAreReviewed() throws Exception {
-        mvc.perform(post("/api/v1/identity/employees")
+        mvc.perform(inviteRequest()
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"过期授权员工",
@@ -792,15 +850,7 @@ class IdentityGovernanceRestIntegrationTest {
                                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
                                 """.formatted(employee,TOWNSHIP)))
                 .andExpect(status().isCreated());
-        mvc.perform(put("/api/v1/identity/employees/{subjectId}",employee)
-                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"version":0,"displayName":"过期授权员工","workUnitCode":"QIQIHAR_BUSINESS",
-                                 "accountStatus":"ACTIVE","employmentStatus":"ACTIVE",
-                                 "positionCodes":["GOVERNANCE_REPORTER"],
-                                 "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
-                                """.formatted(TOWNSHIP)))
-                .andExpect(status().isOk());
+        activateInvitedEmployee();
 
         jdbc.sql("UPDATE platform.security_user_role SET review_due_at=now()-interval '1 second' WHERE subject_id=:subject")
                 .param("subject",employee).update();
@@ -817,5 +867,38 @@ class IdentityGovernanceRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.roles.length()").value(0))
                 .andExpect(jsonPath("$.data.regionCodes.length()").value(0));
+    }
+
+    /** Supplies the complete lifecycle contract to legacy authorization scenarios. */
+    private static MockHttpServletRequestBuilder inviteRequest() {
+        return post("/api/v1/identity/employees").with(request -> {
+            if (request.getHeader("Idempotency-Key") == null) {
+                request.addHeader("Idempotency-Key", "identity-test-" + UUID.randomUUID());
+            }
+            String json = new String(request.getContentAsByteArray(),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            if (!json.contains("\"deliveryAddress\"")) {
+                request.setContent(("{\"deliveryAddress\":\"identity-fixture@example.test\"," +
+                        json.substring(1)).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+            return request;
+        });
+    }
+
+    private void activateInvitedEmployee() throws Exception {
+        String encrypted=jdbc.sql("""
+                SELECT encrypted_delivery_payload FROM platform.identity_invitation
+                WHERE security_subject_id=:subject AND state='PENDING'
+                """).param("subject",employee).query(String.class).single();
+        String token=invitationTokens.decryptDeliveryPayload(encrypted).token();
+        mvc.perform(post("/api/v1/identity/invitations/activate")
+                        .with(oidcLogin().idToken(idToken -> idToken
+                                .claim(IdTokenClaimNames.ISS,"https://idp.example.test/realms/cofco")
+                                .claim(IdTokenClaimNames.SUB,"provider-"+employee)))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"token\":\""+token+"\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.subjectId").value(employee))
+                .andExpect(jsonPath("$.data.accountStatus").value("ACTIVE"));
     }
 }

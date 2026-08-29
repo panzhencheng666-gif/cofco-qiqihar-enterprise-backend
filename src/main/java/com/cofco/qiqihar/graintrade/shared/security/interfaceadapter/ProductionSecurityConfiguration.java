@@ -12,6 +12,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
+import com.cofco.qiqihar.graintrade.shared.security.infrastructure.JdbcOidcSessionRegistry;
+import tools.jackson.databind.ObjectMapper;
 import com.cofco.qiqihar.graintrade.shared.security.application.SecurityPrincipalRepository;
 import com.cofco.qiqihar.graintrade.shared.security.application.SecuritySessionAuditRecorder;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
@@ -19,6 +21,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.authentication.AnonymousAuthenticationToken;
 import org.springframework.security.authentication.AuthenticationServiceException;
@@ -49,7 +52,6 @@ import org.springframework.security.web.authentication.logout.LogoutHandler;
 import org.springframework.security.web.authentication.logout.LogoutSuccessHandler;
 import org.springframework.security.web.context.SecurityContextHolderFilter;
 import org.springframework.security.oauth2.client.oidc.web.logout.OidcClientInitiatedLogoutSuccessHandler;
-import org.springframework.security.oauth2.client.oidc.session.InMemoryOidcSessionRegistry;
 import org.springframework.security.oauth2.client.oidc.session.OidcSessionRegistry;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.csrf.CsrfToken;
@@ -62,8 +64,10 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class ProductionSecurityConfiguration {
 
     @Bean
-    OidcSessionRegistry enterpriseOidcSessionRegistry() {
-        return new InMemoryOidcSessionRegistry();
+    OidcSessionRegistry enterpriseOidcSessionRegistry(
+            JdbcClient jdbc,ObjectMapper json,
+            @Value("${qiqihar.security.maximum-concurrent-sessions:1}") int maximumSessions) {
+        return new JdbcOidcSessionRegistry(jdbc,json,maximumSessions);
     }
 
     @Bean
@@ -210,7 +214,12 @@ public class ProductionSecurityConfiguration {
                     deny(request,response,authentication,"BINDING_CHANGED");
                     return;
                 }
-                authentication=bindStableSubject(authentication,principal.subjectId());
+                if(authentication instanceof StableSubjectOAuth2AuthenticationToken stable
+                        && !stable.authorizationFingerprint().equals(authorizationFingerprint(principal))) {
+                    deny(request,response,authentication,"IDENTITY_CHANGED");
+                    return;
+                }
+                authentication=bindStableSubject(authentication,principal);
             }
             filterChain.doFilter(request, response);
         }
@@ -271,7 +280,7 @@ public class ProductionSecurityConfiguration {
                 return;
             }
             var session=request.getSession();
-            Authentication stableAuthentication=bindStableSubject(authentication,principal.subjectId());
+            Authentication stableAuthentication=bindStableSubject(authentication,principal);
             audit.record(stableAuthentication.getName(),session.getId(),"LOGIN_SUCCESS","{}");
             delegate.onAuthenticationSuccess(request,response,stableAuthentication);
         }
@@ -363,12 +372,21 @@ public class ProductionSecurityConfiguration {
         return acrClaim!=null&&acceptedAcr.contains(acrClaim.toString());
     }
 
-    private static Authentication bindStableSubject(Authentication authentication,String stableSubjectId) {
+    private static Authentication bindStableSubject(Authentication authentication,SecurityPrincipal principal) {
         if (!(authentication instanceof OAuth2AuthenticationToken token)
-                || stableSubjectId.equals(authentication.getName())) return authentication;
-        var stable=new StableSubjectOAuth2AuthenticationToken(token,stableSubjectId);
+                || authentication instanceof StableSubjectOAuth2AuthenticationToken) return authentication;
+        var stable=new StableSubjectOAuth2AuthenticationToken(
+                token,principal.subjectId(),authorizationFingerprint(principal));
         SecurityContextHolder.getContext().setAuthentication(stable);
         return stable;
+    }
+
+    private static String authorizationFingerprint(SecurityPrincipal principal) {
+        return String.join("|",principal.subjectId(),principal.workUnitCode(),
+                principal.accountStatus(),principal.employmentStatus(),
+                principal.roleCodes().stream().sorted().collect(Collectors.joining(",")),
+                principal.permissionCodes().stream().sorted().collect(Collectors.joining(",")),
+                principal.regionCodes().stream().sorted().collect(Collectors.joining(",")));
     }
 
     private static java.util.Optional<SecurityPrincipal> findEnabledOidc(
@@ -385,17 +403,23 @@ public class ProductionSecurityConfiguration {
 
     private static final class StableSubjectOAuth2AuthenticationToken extends OAuth2AuthenticationToken {
         private final String stableSubjectId;
+        private final String authorizationFingerprint;
 
         private StableSubjectOAuth2AuthenticationToken(
-                OAuth2AuthenticationToken source,String stableSubjectId) {
+                OAuth2AuthenticationToken source,String stableSubjectId,String authorizationFingerprint) {
             super(source.getPrincipal(),source.getAuthorities(),source.getAuthorizedClientRegistrationId());
             this.stableSubjectId=stableSubjectId;
+            this.authorizationFingerprint=authorizationFingerprint;
             setDetails(source.getDetails());
         }
 
         @Override
         public String getName() {
             return stableSubjectId;
+        }
+
+        private String authorizationFingerprint() {
+            return authorizationFingerprint;
         }
     }
 }
