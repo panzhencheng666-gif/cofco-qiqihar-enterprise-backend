@@ -27,7 +27,6 @@ import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -115,14 +114,13 @@ public class SampleIdentityReviewService {
             throw new ConflictException("SAMPLE_IDENTITY_SELF_REVIEW_FORBIDDEN",
                     "身份判定必须由另一名审核人完成；平台唯一所有者可按特权规则自审");
         }
-        SubjectInput input = input(draft);
-        SampleIdentityAssessment assessment = identities.assess(input);
         if (decision == Decision.LINK_EXISTING) {
-            Candidate target = assessment.candidates().stream()
-                    .filter(candidate -> candidate.samplePointId().equals(targetSamplePointId))
-                    .findFirst().orElseThrow(() -> new ConflictException(
-                            "SAMPLE_IDENTITY_TARGET_INVALID", "所选规范样本点已失效或不再属于当前候选范围"));
-            requireCompatibleTarget(draft, input, target);
+            if ((!submission.candidateSamplePointIds().isEmpty()
+                    && !submission.candidateSamplePointIds().contains(targetSamplePointId))
+                    || !identities.isActiveSamplePoint(targetSamplePointId)) {
+                throw new ConflictException(
+                        "SAMPLE_IDENTITY_TARGET_INVALID", "所选规范样本点已失效或不属于导入时的候选范围");
+            }
         }
         boolean privilegedSelfReview = principal.subjectId().equals(submission.submittedBy());
         Instant now = clock.instant();
@@ -133,8 +131,9 @@ public class SampleIdentityReviewService {
         detail.put("reason", reason.trim());
         detail.put("submittedBy", submission.submittedBy());
         detail.put("privilegedSelfReview", privilegedSelfReview);
+        SubjectInput input = decision == Decision.CONFIRM_DISTINCT ? input(draft) : null;
         List<UUID> coordinateSharedSamplePointIds = decision == Decision.CONFIRM_DISTINCT
-                ? assessment.candidates().stream()
+                ? identities.assess(input).candidates().stream()
                         .filter(candidate -> candidate.regionCode().equals(input.regionCode())
                                 && candidate.longitude().compareTo(input.longitude()) == 0
                                 && candidate.latitude().compareTo(input.latitude()) == 0)
@@ -187,24 +186,6 @@ public class SampleIdentityReviewService {
         return new DecisionView(draft.id(), decision.decision(), decision.targetSamplePointId(),
                 decision.reason(), decision.decidedBy(), decision.decidedAt(), draft.stateCode(),
                 draft.canonicalRecordId(), draft.version(), decision.privilegedSelfReview());
-    }
-
-    private static void requireCompatibleTarget(
-            ImportDraft draft, SubjectInput input, Candidate target) {
-        if (!target.regionCode().equals(draft.regionCode())
-                || target.longitude().compareTo(input.longitude()) != 0
-                || target.latitude().compareTo(input.latitude()) != 0
-                || target.effectiveFrom().isAfter(effectiveOn(draft))) {
-            throw new ConflictException("SAMPLE_IDENTITY_TARGET_INVALID",
-                    "所选规范样本点的地区、坐标或生效时间与本行不一致");
-        }
-    }
-
-    private static LocalDate effectiveOn(ImportDraft draft) {
-        int year = Integer.parseInt(draft.values().get("surveyYear"));
-        String monthValue = draft.values().get("surveyMonth");
-        int month = monthValue == null || monthValue.isBlank() ? 1 : Integer.parseInt(monthValue);
-        return LocalDate.of(year, month, 1);
     }
 
     private static SubjectInput input(ImportDraft draft) {

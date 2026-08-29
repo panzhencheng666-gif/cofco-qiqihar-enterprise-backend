@@ -4,6 +4,7 @@ import com.cofco.qiqihar.graintrade.samplepoint.network.application.AnnualSample
 import com.cofco.qiqihar.graintrade.samplepoint.network.application.AnnualSampleNetworkView;
 import com.cofco.qiqihar.graintrade.samplepoint.network.application.DesignSamplePointView;
 import com.cofco.qiqihar.graintrade.samplepoint.network.application.SampleNetworkComparisonView;
+import com.cofco.qiqihar.graintrade.samplepoint.network.application.SampleNetworkDesignComparisonView;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import java.util.List;
 import java.util.UUID;
@@ -43,6 +44,13 @@ public class AnnualSampleNetworkController {
             @RequestParam(required = false) String regionCode,
             @RequestParam(required = false) String productCode) {
         return new ApiResponse<>(service.comparison(year, regionCode, productCode));
+    }
+
+    @GetMapping("/{year}/design-comparison")
+    ApiResponse<SampleNetworkDesignComparisonView> designComparison(
+            @PathVariable int year,
+            @RequestParam(required = false) String regionCode) {
+        return new ApiResponse<>(service.designComparison(year, regionCode));
     }
 
     @PostMapping("/{year}")

@@ -69,6 +69,13 @@ public class AnnualSampleNetworkService {
                 year, regionCode, normalizedProduct, principal.regionCodes());
     }
 
+    @Transactional(readOnly = true)
+    public SampleNetworkDesignComparisonView designComparison(int year, String regionCode) {
+        validateYear(year);
+        SecurityPrincipal principal = access.require("BUSINESS_READ", regionCode);
+        return repository.designComparison(year, regionCode, principal.regionCodes());
+    }
+
     @Transactional
     public AnnualSampleNetworkView create(int year, Integer carriedFromYear) {
         validateYear(year);

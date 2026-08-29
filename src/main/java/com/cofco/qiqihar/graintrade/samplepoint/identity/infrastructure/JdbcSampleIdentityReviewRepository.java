@@ -7,6 +7,7 @@ import static com.cofco.qiqihar.graintrade.samplepoint.identity.application.Samp
 import static com.cofco.qiqihar.graintrade.samplepoint.identity.application.SampleIdentityReviewEvents.SUBMITTED;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -24,7 +25,11 @@ public class JdbcSampleIdentityReviewRepository {
         return jdbc.sql("""
                 SELECT actor_subject_id,work_unit_code,
                        detail->>'reasonCode' reason_code,
-                       detail->>'reasonMessage' reason_message
+                       detail->>'reasonMessage' reason_message,
+                       coalesce((SELECT string_agg(item.value,',')
+                         FROM jsonb_array_elements_text(coalesce(
+                           detail->'candidateSamplePointIds','[]'::jsonb)) item(value)),'')
+                         candidate_sample_point_ids
                 FROM platform.business_audit_event
                 WHERE aggregate_type=:type AND aggregate_id=:id AND action_code=:action
                 ORDER BY occurred_at DESC,event_id DESC LIMIT 1
@@ -32,7 +37,8 @@ public class JdbcSampleIdentityReviewRepository {
                 .param("action", SUBMITTED)
                 .query((row, ignored) -> new SubmissionSnapshot(
                         row.getString("actor_subject_id"), row.getString("work_unit_code"),
-                        row.getString("reason_code"), row.getString("reason_message")))
+                        row.getString("reason_code"), row.getString("reason_message"),
+                        uuidList(row.getString("candidate_sample_point_ids"))))
                 .optional();
     }
 
@@ -71,8 +77,14 @@ public class JdbcSampleIdentityReviewRepository {
         return value == null || value.isBlank() ? null : UUID.fromString(value);
     }
 
+    private static List<UUID> uuidList(String value) {
+        if (value == null || value.isBlank()) return List.of();
+        return java.util.Arrays.stream(value.split(",")).map(UUID::fromString).distinct().toList();
+    }
+
     public record SubmissionSnapshot(
-            String submittedBy, String workUnitCode, String reasonCode, String reasonMessage) {}
+            String submittedBy, String workUnitCode, String reasonCode, String reasonMessage,
+            List<UUID> candidateSamplePointIds) {}
 
     public record DecisionSnapshot(
             String decision, UUID targetSamplePointId, String reason, String decidedBy,

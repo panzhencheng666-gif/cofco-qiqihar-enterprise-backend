@@ -9,6 +9,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
+import com.cofco.qiqihar.graintrade.testsupport.AdministrativeBoundarySnapshot;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -42,24 +43,44 @@ class ProductionRecordRestIntegrationTest {
 
     @Autowired
     private DataSource dataSource;
+    private AdministrativeBoundarySnapshot boundarySnapshot;
 
     @BeforeEach
     void stageEvidencePhoto() {
-        JdbcClient.create(dataSource).sql("""
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        boundarySnapshot = AdministrativeBoundarySnapshot.capture(jdbc, "230202");
+        jdbc.sql("""
                 INSERT INTO evidence.evidence_photo(photo_id,state_code,original_filename,media_type,
                   original_bytes,watermarked_bytes,byte_length,sha256,captured_at,capture_latitude,
                   capture_longitude,watermark_text,uploaded_by,uploaded_at)
                 VALUES(CAST(:id AS uuid),'STAGED','fixture.png','image/png',decode('00','hex'),decode('01','hex'),
                   1,encode(sha256(decode('00','hex')),'hex'),now(),47.3543,123.9182,'测试水印','production-tester',now())
                 """).param("id", EVIDENCE_PHOTO_ID).update();
+        jdbc.sql("""
+                INSERT INTO overview.administrative_boundary(
+                  region_code,geometry,source_name,source_url,source_revision,source_license,geometry_sha256)
+                VALUES('230202',ST_Multi(ST_MakeEnvelope(122,46,125,49,4326)),
+                  'production entry validation fixture','urn:test:production-sample-point','test-v1',
+                  'Test fixture',repeat('7',64))
+                ON CONFLICT(region_code) DO UPDATE SET geometry=excluded.geometry,source_url=excluded.source_url
+                """).update();
     }
 
     @AfterEach
     void removeTestRecords() {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         List<UUID> publicContractPoints = jdbc.sql("""
-                SELECT DISTINCT sample_point_id FROM production.production_record
-                WHERE sample_point_id IS NOT NULL AND last_modified_by='production-tester'
+                SELECT DISTINCT record.sample_point_id
+                FROM production.production_record record
+                WHERE record.sample_point_id IS NOT NULL
+                  AND (
+                    record.last_modified_by='production-tester'
+                    OR record.record_id::text IN (
+                      SELECT aggregate_id FROM platform.business_audit_event
+                      WHERE aggregate_type='PRODUCTION_RECORD'
+                        AND actor_subject_id IN ('production-tester','market-tester')
+                    )
+                  )
                 """).query(UUID.class).list();
         jdbc.sql("""
                 DELETE FROM production.production_record
@@ -99,6 +120,7 @@ class ProductionRecordRestIntegrationTest {
         jdbc.sql("DELETE FROM overview.administrative_boundary "
                         + "WHERE source_url='urn:test:production-sample-point'")
                 .update();
+        boundarySnapshot.restore(jdbc);
     }
 
     @Test
@@ -127,10 +149,10 @@ class ProductionRecordRestIntegrationTest {
                 .andExpect(jsonPath("$.data.groups[0].fields[*].code").value(hasItem("PROD_SAMPLE_NAME")))
                 .andExpect(jsonPath("$.data.groups[0].fields[*].code").value(hasItem("PROD_ENDING_INVENTORY")));
 
-        String body = fullDraftBody("CORN", "FARMER", "MOISTURE", null)
+        String body = withSampleName(fullDraftBody("CORN", "FARMER", "MOISTURE", null),
+                        "龙江县第一调查户")
                 .replace("\"PROD_SAMPLE_LONGITUDE\":\"123.9182\"",
                         "\"PROD_SAMPLE_LONGITUDE\":\"123.9182\","
-                                + "\"PROD_SAMPLE_NAME\":\"龙江县第一调查户\","
                                 + "\"PROD_HARVEST_AREA_MU\":\"96.5\","
                                 + "\"PROD_GROWTH_STATUS\":\"长势良好\","
                                 + "\"PROD_GROWTH_STAGE\":\"灌浆期\","
@@ -149,6 +171,14 @@ class ProductionRecordRestIntegrationTest {
                 .andExpect(jsonPath("$.data.submissionMetadata.PROD_SAMPLE_SUBJECT_CODE").doesNotExist())
                 .andExpect(jsonPath("$.data.submissionMetadata.PROD_SURPLUS_SUBJECT_CODE").doesNotExist())
                 .andExpect(jsonPath("$.data.submissionMetadata.PROD_SURPLUS_CUTOFF_DATE").doesNotExist());
+        mockMvc.perform(post("/api/v1/production-records/{id}/submit", id)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0}"))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/v1/production-records/{id}/approve", id)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk());
         mockMvc.perform(get("/api/v1/production-records")
                         .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
                         .queryParam("pageNumber", "0").queryParam("pageSize", "100"))
@@ -199,14 +229,15 @@ class ProductionRecordRestIntegrationTest {
         jdbc.sql("""
                 INSERT INTO overview.administrative_boundary(
                   region_code,geometry,source_name,source_url,source_revision,source_license,geometry_sha256)
-                VALUES('230202',ST_Multi(ST_Buffer(ST_SetSRID(ST_MakePoint(123.9182,47.3543),4326),0.01)),
+                VALUES('230202',ST_Multi(ST_Buffer(ST_SetSRID(ST_MakePoint(122.345678,46.456789),4326),0.01)),
                   'production public inventory fixture','urn:test:production-sample-point','test-v1',
                   'Test fixture',repeat('7',64))
                 ON CONFLICT(region_code) DO UPDATE SET geometry=excluded.geometry,source_url=excluded.source_url
                 """).update();
         String body = fullDraftBody("CORN", "FARMER", "MOISTURE", null)
+                .replace("\"47.3543\"", "\"46.456789\"")
                 .replace("\"PROD_SAMPLE_LONGITUDE\":\"123.9182\"",
-                        "\"PROD_SAMPLE_LONGITUDE\":\"123.9182\","
+                        "\"PROD_SAMPLE_LONGITUDE\":\"122.345678\","
                                 + "\"PROD_SAMPLE_NAME\":\"DEF-155系统治理样本点\","
                                 + "\"PROD_OPENING_INVENTORY\":\"12\","
                                 + "\"PROD_ENDING_INVENTORY\":\"8\"");
@@ -221,6 +252,30 @@ class ProductionRecordRestIntegrationTest {
                 WHERE record_id=:id AND field_code IN (
                   'PROD_SAMPLE_SUBJECT_CODE','PROD_SURPLUS_SUBJECT_CODE','PROD_SURPLUS_CUTOFF_DATE')
                 """).param("id", id).query(Long.class).single()).isZero();
+    }
+
+    @Test
+    void rejectsAProductionDraftWhoseCoordinatesFallOutsideTheDeclaredRegion() throws Exception {
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        jdbc.sql("""
+                INSERT INTO overview.administrative_boundary(
+                  region_code,geometry,source_name,source_url,source_revision,source_license,geometry_sha256)
+                VALUES('230200',ST_Multi(ST_MakeEnvelope(124,48,125,49,4326)),
+                  'coordinate governed region fixture','urn:test:production-sample-point','test-v1',
+                  'Test fixture',repeat('9',64))
+                ON CONFLICT(region_code) DO UPDATE SET geometry=excluded.geometry,source_url=excluded.source_url
+                """).update();
+        String body = withSampleName(validDraftBody(), "坐标权威地区新样本点")
+                .replace("\"PROD_SAMPLE_CONTACT\":\"13900000000\"",
+                        "\"PROD_SAMPLE_CONTACT\":\"13600000000\"")
+                .replace("\"47.3543\"", "\"60\"")
+                .replace("\"123.9182\"", "\"150\"");
+        mockMvc.perform(post("/api/v1/production-records")
+                        .principal(() -> "production-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("SAMPLE_COORDINATE_REGION_MISMATCH"));
     }
 
     @Test
@@ -381,11 +436,176 @@ class ProductionRecordRestIntegrationTest {
                         .content("{\"version\":1}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("APPROVED"));
+
+    }
+
+    @Test
+    void approvalDoesNotRepeatRegionValidationAfterSubmissionAcceptedTheRecord() throws Exception {
+        JdbcClient.create(dataSource).sql("""
+                INSERT INTO overview.administrative_boundary(
+                  region_code,geometry,source_name,source_url,source_revision,source_license,geometry_sha256)
+                VALUES('230202',ST_Multi(ST_Buffer(ST_SetSRID(ST_MakePoint(123.9182,47.3543),4326),0.01)),
+                  'cross-period approval fixture','urn:test:production-sample-point','test-v1',
+                  'Test fixture',repeat('8',64))
+                ON CONFLICT(region_code) DO UPDATE SET geometry=excluded.geometry,source_url=excluded.source_url
+                """).update();
+        String firstBody = withSampleName(validDraftBody(), "跨期审核决定样本点");
+        String firstId = create(firstBody);
+        mockMvc.perform(post("/api/v1/production-records/{id}/submit", firstId)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0}"))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/v1/production-records/{id}/approve", firstId)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk());
+
+        UUID secondPhotoId = UUID.randomUUID();
+        JdbcClient.create(dataSource).sql("""
+                INSERT INTO evidence.evidence_photo(photo_id,state_code,original_filename,media_type,
+                  original_bytes,watermarked_bytes,byte_length,sha256,captured_at,capture_latitude,
+                  capture_longitude,watermark_text,uploaded_by,uploaded_at)
+                VALUES(:id,'STAGED','production-period-fixture.png','image/png',decode('00','hex'),
+                  decode('01','hex'),1,encode(sha256(decode('00','hex')),'hex'),now(),47.3543,
+                  123.9182,'产情跨期测试水印','production-tester',now())
+                """).param("id", secondPhotoId).update();
+        String body = firstBody
+                .replace("2026-08-01", "2026-07-01")
+                .replace(EVIDENCE_PHOTO_ID.toString(), secondPhotoId.toString());
+        String id = create(body);
+
+        mockMvc.perform(post("/api/v1/production-records/{id}/submit", id)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0}"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/v1/production-records/{id}/approve", id)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("APPROVED"));
+
+        mockMvc.perform(get("/api/v1/production-records")
+                        .principal(() -> "production-tester")
+                        .queryParam("productCode", "SOYBEAN")
+                        .queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0")
+                        .queryParam("pageSize", "20")
+                        .queryParam("filter.surveyYear", "2026")
+                        .queryParam("filter.status", "APPROVED"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items[0].id").value(firstId));
+
+        UUID samplePointId = JdbcClient.create(dataSource).sql("""
+                SELECT sample_point_id FROM production.production_record WHERE record_id=:id
+                """).param("id", firstId).query(UUID.class).single();
+        JdbcClient.create(dataSource).sql("""
+                DELETE FROM production.production_record WHERE record_id IN (:ids)
+                """).param("ids", List.of(firstId, id)).update();
+        JdbcClient.create(dataSource).sql("""
+                DELETE FROM registry.sample_point WHERE sample_point_id=:samplePointId
+                """).param("samplePointId", samplePointId).update();
+    }
+
+    @Test
+    void rejectsCoordinateChangeForAnExistingStableIdentityAtEntry() throws Exception {
+        String firstBody = withSampleName(validDraftBody(), "稳定位置样本点");
+        String firstId = create(firstBody);
+        mockMvc.perform(post("/api/v1/production-records/{id}/submit", firstId)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0}"))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/v1/production-records/{id}/approve", firstId)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk());
+
+        UUID secondPhotoId = UUID.randomUUID();
+        JdbcClient.create(dataSource).sql("""
+                INSERT INTO evidence.evidence_photo(photo_id,state_code,original_filename,media_type,
+                  original_bytes,watermarked_bytes,byte_length,sha256,captured_at,capture_latitude,
+                  capture_longitude,watermark_text,uploaded_by,uploaded_at)
+                VALUES(:id,'STAGED','production-coordinate-change.png','image/png',decode('00','hex'),
+                  decode('01','hex'),1,encode(sha256(decode('00','hex')),'hex'),now(),47.3544,
+                  123.9183,'产情坐标变更测试水印','production-tester',now())
+                """).param("id", secondPhotoId).update();
+        String changedCoordinateBody = firstBody
+                .replace("2026-08-01", "2026-07-01")
+                .replace("\"PROD_SAMPLE_LATITUDE\":\"47.3543\"",
+                        "\"PROD_SAMPLE_LATITUDE\":\"47.3544\"")
+                .replace("\"PROD_SAMPLE_LONGITUDE\":\"123.9182\"",
+                        "\"PROD_SAMPLE_LONGITUDE\":\"123.9183\"")
+                .replace(EVIDENCE_PHOTO_ID.toString(), secondPhotoId.toString());
+
+        mockMvc.perform(post("/api/v1/production-records")
+                        .principal(() -> "production-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(changedCoordinateBody))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("SAMPLE_IDENTITY_COORDINATE_MISMATCH"));
+    }
+
+    @Test
+    void removesAnInvalidatedSampleFromTheCurrentCollectionListButKeepsItsHistory() throws Exception {
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        jdbc.sql("""
+                INSERT INTO overview.administrative_boundary(
+                  region_code,geometry,source_name,source_url,source_revision,source_license,geometry_sha256)
+                VALUES('230202',ST_Multi(ST_Buffer(ST_SetSRID(ST_MakePoint(123.9182,47.3543),4326),0.01)),
+                  'current collection fixture','urn:test:production-sample-point','test-v1',
+                  'Test fixture',repeat('7',64))
+                ON CONFLICT(region_code) DO UPDATE SET geometry=excluded.geometry,
+                  source_name=excluded.source_name,source_url=excluded.source_url
+                """).update();
+        String id = create(withSampleName(validDraftBody(), "当前列表有效样本点"));
+        mockMvc.perform(post("/api/v1/production-records/{id}/submit", id)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0}"))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/v1/production-records/{id}/approve", id)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk());
+        UUID samplePointId = jdbc.sql(
+                        "SELECT sample_point_id FROM production.production_record WHERE record_id=:id")
+                .param("id", id).query(UUID.class).single();
+
+        mockMvc.perform(get("/api/v1/production-records")
+                        .queryParam("productCode", "SOYBEAN").queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(1));
+
+        jdbc.sql("""
+                UPDATE overview.administrative_boundary
+                SET source_revision='test-v2' WHERE region_code='230202'
+                """).update();
+        mockMvc.perform(get("/api/v1/production-records")
+                        .queryParam("productCode", "SOYBEAN").queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(1));
+        jdbc.sql("""
+                UPDATE overview.administrative_boundary
+                SET source_revision='test-v1' WHERE region_code='230202'
+                """).update();
+
+        jdbc.sql("""
+                UPDATE registry.sample_point
+                SET location_state='OUTSIDE_REGION',governed_point=NULL,
+                    containment_boundary_sha256=NULL,containment_boundary_revision=NULL
+                WHERE sample_point_id=:id
+                """).param("id", samplePointId).update();
+
+        mockMvc.perform(get("/api/v1/production-records")
+                        .queryParam("productCode", "SOYBEAN").queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(0));
+        mockMvc.perform(get("/api/v1/production-records/{id}", id))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.id").value(id));
     }
 
     @Test
     void voidsADraftThroughHttpAndPersistsATerminalAuditedState() throws Exception {
-        String id = create(validDraftBody());
+        String id = create(withSampleName(validDraftBody(), "正式筛选样本点"));
 
         mockMvc.perform(post("/api/v1/production-records/{id}/void", id)
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
@@ -437,9 +657,8 @@ class ProductionRecordRestIntegrationTest {
                         .queryParam("pageNumber", "0").queryParam("pageSize", "100")
                         .queryParam("filter.objectTypeCode", objectType))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items.length()").value(1))
-                .andExpect(jsonPath("$.data.items[0].values." + qualityCode).value("3.0000"))
-                .andExpect(jsonPath("$.data.items[0].values.LAND_RENT").doesNotExist());
+                .andExpect(jsonPath("$.data.items").isEmpty())
+                .andExpect(jsonPath("$.data.totalElements").value(0));
     }
 
     @ParameterizedTest(name = "{0} tech station rejects {2}")
@@ -536,30 +755,37 @@ class ProductionRecordRestIntegrationTest {
 
     @Test
     void listsDatabaseLabelsAndApplicationComputedActions() throws Exception {
-        create(fullDraftBody("SOYBEAN", "FARMER", "PROTEIN", null));
+        String id = create(fullDraftBody("SOYBEAN", "FARMER", "PROTEIN", null));
+        mockMvc.perform(post("/api/v1/production-records/{id}/submit", id)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0}"))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/v1/production-records/{id}/approve", id)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk());
         mockMvc.perform(get("/api/v1/production-records")
                         .queryParam("productCode", "SOYBEAN").queryParam("pageKind", "MONITORING")
                         .queryParam("pageNumber", "0").queryParam("pageSize", "100"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items[0].values.PROD_REGION").value("龙沙区"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_OBJECT_TYPE").value("农户"))
-                .andExpect(jsonPath("$.data.items[0].values.PROD_STATUS").value("草稿"))
+                .andExpect(jsonPath("$.data.items[0].values.PROD_STATUS").value("已审核"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_REPORTER_NAME").value("产情测试员"))
                 .andExpect(jsonPath("$.data.items[0].values.PROD_SAMPLE_LONGITUDE").value("123.9182"))
                 .andExpect(jsonPath("$.data.items[0].values.LAND_RENT").value("4.0000"))
-                .andExpect(jsonPath("$.data.items[0].allowedActions.length()").value(3))
+                .andExpect(jsonPath("$.data.items[0].allowedActions.length()").value(1))
                 .andExpect(jsonPath("$.data.items[0].allowedActions[0]").value("VIEW"))
-                .andExpect(jsonPath("$.data.items[0].allowedActions[1]").value("SUBMIT"))
-                .andExpect(jsonPath("$.data.items[0].allowedActions[2]").value("VOID"));
+                ;
     }
 
     @Test
-    void acceptsCoordinateBoundariesAndRejectsValuesOutsideThemWithoutWriting() throws Exception {
+    void acceptsUsefulCoordinatePrecisionAndRejectsValuesOutsideGlobalBoundsWithoutWriting() throws Exception {
         String valid = validDraftBody();
         mockMvc.perform(post("/api/v1/production-records")
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content(valid.replace("\"47.3543\"", "\"-90\"")
-                                .replace("\"123.9182\"", "\"180\"")))
+                        .content(valid.replace("\"47.3543\"", "\"47.3543000000001\"")
+                                .replace("\"123.9182\"", "\"123.9182000000001\"")))
                 .andExpect(status().isCreated());
 
         long before = actorBusinessRowCount();
@@ -577,7 +803,7 @@ class ProductionRecordRestIntegrationTest {
 
     @Test
     void filtersByExplicitSurveyPeriodAndRealDraftOrSubmissionTime() throws Exception {
-        String id = create(validDraftBody());
+        String id = create(withSampleName(validDraftBody(), "填报时间筛选正式样本点"));
         JdbcClient jdbc = JdbcClient.create(dataSource);
         jdbc.sql("""
                 UPDATE production.production_record
@@ -593,15 +819,12 @@ class ProductionRecordRestIntegrationTest {
                         .queryParam("filter.fillingDateFrom", "2026-08-05")
                         .queryParam("filter.fillingDateTo", "2026-08-05"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.totalElements").value(1))
-                .andExpect(jsonPath("$.data.items[0].values.PROD_SURVEY_YEAR").value("2026"))
-                .andExpect(jsonPath("$.data.items[0].values.PROD_SURVEY_MONTH").value("8"))
-                .andExpect(jsonPath("$.data.items[0].values.PROD_SURVEY_PERIOD_PRECISION").value("YEAR_MONTH"))
-                .andExpect(jsonPath("$.data.items[0].values.PROD_FILLING_TIME_BASIS").value("DRAFT_CREATED_AT"));
+                .andExpect(jsonPath("$.data.totalElements").value(0));
 
         jdbc.sql("""
                 UPDATE production.production_record
-                SET survey_month=NULL,survey_period_precision='YEAR'
+                SET survey_month=NULL,survey_period_precision='YEAR',
+                    survey_period_governance_state='CONFIRMED'
                 WHERE record_id=:id
                 """).param("id", id).update();
         mockMvc.perform(get("/api/v1/production-records")
@@ -613,7 +836,7 @@ class ProductionRecordRestIntegrationTest {
                         .queryParam("productCode", "SOYBEAN").queryParam("pageKind", "MONITORING")
                         .queryParam("pageNumber", "0").queryParam("pageSize", "20")
                         .queryParam("filter.surveyYear", "2026"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(1));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(0));
 
         mockMvc.perform(post("/api/v1/production-records/{id}/submit", id)
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
@@ -626,6 +849,10 @@ class ProductionRecordRestIntegrationTest {
                 SET submitted_at=TIMESTAMPTZ '2026-08-06 10:30:00+08'
                 WHERE record_id=:id
                 """).param("id", id).update();
+        mockMvc.perform(post("/api/v1/production-records/{id}/approve", id)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk());
         mockMvc.perform(get("/api/v1/production-records")
                         .queryParam("productCode", "SOYBEAN").queryParam("pageKind", "MONITORING")
                         .queryParam("pageNumber", "0").queryParam("pageSize", "20")
@@ -748,13 +975,8 @@ class ProductionRecordRestIntegrationTest {
                         .queryParam("pageNumber", "0").queryParam("pageSize", "100")
                         .queryParam("filter.objectTypeCode", objectType))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items.length()").value(1))
-                .andExpect(jsonPath("$.data.items[0].values." + qualityCode).value("3.0000"))
-                .andExpect(jsonPath("$.data.items[0].values.LAND_RENT").value("4.0000"))
-                .andExpect(jsonPath("$.data.items[0].values.INSURANCE_AMOUNT").value("5.0000"))
-                .andExpect(jsonPath("$.data.items[0].values.SUBSIDY_AMOUNT").value("6.0000"))
-                .andExpect(jsonPath("$.data.items[0].values.PROD_SAMPLE_CONTACT").value("13900000000"))
-                .andExpect(jsonPath("$.data.items[0].values.PROD_SAMPLE_LATITUDE").value("47.3543"));
+                .andExpect(jsonPath("$.data.items").isEmpty())
+                .andExpect(jsonPath("$.data.totalElements").value(0));
     }
 
     private void expectApprovedFullFactDetail(
@@ -823,7 +1045,9 @@ class ProductionRecordRestIntegrationTest {
                  "surveyDate":"2026-08-01","cultivatedAreaMu":"1.2345","yieldPerMuKilograms":"2.3456",
                  "quality":{"%s":"3"},"costs":{"LAND_RENT":"4"},
                  "insurance":{"INSURANCE_AMOUNT":"5"},"subsidies":{"SUBSIDY_AMOUNT":"6"},%s%s}
-                """.formatted(product, objectType, qualityCode, submissionMetadataProperty(), versionProperty);
+                """.formatted(product, objectType, qualityCode,
+                        withSampleName(submissionMetadataProperty(), product + "-" + objectType + "正式样本点"),
+                        versionProperty);
     }
 
     private static String qualityOnlyDraftBody(String product, String objectType, String qualityCode) {
@@ -853,6 +1077,15 @@ class ProductionRecordRestIntegrationTest {
                  "PROD_SAMPLE_CONTACT":"13900000000","PROD_SAMPLE_LATITUDE":"47.3543",
                  "PROD_SAMPLE_LONGITUDE":"123.9182"},"evidencePhotoIds":["%s"]
                 """.formatted(EVIDENCE_PHOTO_ID).strip();
+    }
+
+    private static String withSampleName(String body, String sampleName) {
+        if (body.contains("\"PROD_SAMPLE_NAME\"")) {
+            return body.replaceFirst("\"PROD_SAMPLE_NAME\":\"[^\"]*\"",
+                    "\"PROD_SAMPLE_NAME\":\"" + sampleName + "\"");
+        }
+        return body.replace("\"PROD_SAMPLE_CONTACT\"",
+                "\"PROD_SAMPLE_NAME\":\"" + sampleName + "\",\"PROD_SAMPLE_CONTACT\"");
     }
 
     private static List<Arguments> farmerAndVillageContexts() {

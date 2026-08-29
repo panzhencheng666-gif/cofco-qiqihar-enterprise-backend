@@ -20,6 +20,16 @@ class LogisticsPublicContractMigrationTest {
 
     @AfterEach
     void restoreLatestSchema() {
+        try (Connection connection = DATABASE.openConnection(); Statement statement = connection.createStatement()) {
+            if (tableExists(statement, "logistics", "route_event")) {
+                statement.execute("""
+                        DELETE FROM logistics.route_event
+                        WHERE event_id='21000000-0000-0000-0000-000000000001'
+                        """);
+            }
+        } catch (Exception failure) {
+            throw new IllegalStateException("Failed to clean logistics migration fixture", failure);
+        }
         DATABASE.flyway().migrate();
         ProtectedTestDatabaseConfiguration.provisionSecurityTestSubjects(
                 JdbcClient.create(DATABASE.dataSource()));
@@ -121,6 +131,15 @@ class LogisticsPublicContractMigrationTest {
         try (Connection connection = DATABASE.openConnection(); Statement statement = connection.createStatement()) {
             for (String schema : BUSINESS_SCHEMAS) statement.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
             statement.execute("DROP TABLE IF EXISTS public.flyway_schema_history");
+        }
+    }
+
+    private boolean tableExists(Statement statement, String schema, String table) throws Exception {
+        try (ResultSet result = statement.executeQuery("""
+                SELECT to_regclass('%s.%s') IS NOT NULL
+                """.formatted(schema, table))) {
+            result.next();
+            return result.getBoolean(1);
         }
     }
 

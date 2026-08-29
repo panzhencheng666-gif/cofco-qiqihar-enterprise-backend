@@ -4,6 +4,8 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import static org.hamcrest.Matchers.empty;
+
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabaseConfiguration;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
@@ -59,7 +61,7 @@ class OverviewObservableSupplyConsistencyIntegrationTest {
     }
 
     @Test
-    void overviewUsesTheSameApprovedAutomaticSupplyCalculationWithoutAPublishedRun()
+    void sampleOverviewDoesNotExposeTheLegacySampleDerivedSupplyBalance()
             throws Exception {
         mvc.perform(get("/api/v1/observable-analysis/snapshots").principal(() -> ACTOR)
                         .queryParam("productCode", "CORN").queryParam("regionCode", REGION)
@@ -75,17 +77,9 @@ class OverviewObservableSupplyConsistencyIntegrationTest {
                         .queryParam("productCode", "CORN").queryParam("regionCode", REGION)
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'SUPPLY_TOTAL_SUPPLY')].value")
-                        .value(org.hamcrest.Matchers.hasItem("0.00182")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'SUPPLY_TOTAL_USE')].value")
-                        .value(org.hamcrest.Matchers.hasItem("0.00032")))
-                .andExpect(jsonPath(
-                        "$.data.metrics[?(@.code == 'SUPPLY_ADOPTED_ENDING_INVENTORY')].value")
-                        .value(org.hamcrest.Matchers.hasItem("0.0015")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'SUPPLY_TOTAL_SUPPLY')].coverageStatus")
-                        .value(org.hamcrest.Matchers.hasItem("AVAILABLE")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'SUPPLY_TOTAL_SUPPLY')].sourcePath")
-                        .value(org.hamcrest.Matchers.hasItem("/api/v1/observable-analysis/snapshots")));
+                .andExpect(jsonPath("$.data.metrics[?(@.code =~ /SUPPLY_.*/)]").value(empty()))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')]").value(empty()))
+                .andExpect(jsonPath("$.data.businessTables[?(@.domain == 'SUPPLY')]").value(empty()));
     }
 
     private void insertProduction() {

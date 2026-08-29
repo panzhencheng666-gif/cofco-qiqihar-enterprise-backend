@@ -147,7 +147,6 @@ class MarketImportRestIntegrationTest {
         fields.put("MKT_REGION", "230200");
         fields.put("MKT_TRADE_DATE", "2026-08-01");
         fields.put("MKT_PURCHASE_BASE_PRICE", "2300");
-        fields.put("MKT_SALE_BASE_PRICE", "2380");
         fields.put("MKT_CARRIAGE_BOARD_AMOUNT", "36");
         fields.put("MKT_PACKAGING_AMOUNT", "12");
         fields.put("MKT_FREIGHT_AMOUNT", "72");
@@ -222,7 +221,6 @@ class MarketImportRestIntegrationTest {
         fields.put("MKT_REGION", "230200");
         fields.put("MKT_TRADE_DATE", "2026-08-01");
         fields.put("MKT_PURCHASE_BASE_PRICE", "2300");
-        fields.put("MKT_SALE_BASE_PRICE", "2380");
         fields.put("MKT_CARRIAGE_BOARD_AMOUNT", "36");
         fields.put("MKT_PACKAGING_AMOUNT", "12");
         fields.put("MKT_FREIGHT_AMOUNT", "72");
@@ -409,7 +407,7 @@ class MarketImportRestIntegrationTest {
     }
 
     private static String row(String photoId, String moisture) {
-        return String.join(",", "CORN", "FEED_MILL", "230200", "2026-08-01", "2300", "2380", "36", "12", "72", "BULK",
+        return String.join(",", "CORN", "FEED_MILL", "230200", "2026-08-01", "2300", "", "36", "12", "72", "BULK",
                 "客户端伪造姓名", "13800000000", "齐齐哈尔第一粮店", "13900000000", "47.3543", "123.9182",
                 "12", moisture, photoId) + "\n";
     }

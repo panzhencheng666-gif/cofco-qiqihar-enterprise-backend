@@ -2,6 +2,7 @@ package com.cofco.qiqihar.graintrade.importing.infrastructure;
 
 import java.io.ByteArrayOutputStream;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -31,6 +32,10 @@ public final class BusinessImportWorkbook {
     private static final List<String> CONTRACT_METADATA_NAMES = List.of(
             DOMAIN_METADATA_NAME, PRODUCT_METADATA_NAME, OBJECT_METADATA_NAME,
             VERSION_METADATA_NAME, DIGEST_METADATA_NAME);
+    private static final Set<String> COORDINATE_CODES = Set.of(
+            "PROD_SAMPLE_LATITUDE", "PROD_SAMPLE_LONGITUDE",
+            "MKT_SAMPLE_LATITUDE", "MKT_SAMPLE_LONGITUDE",
+            "LOG_SAMPLE_LATITUDE", "LOG_SAMPLE_LONGITUDE");
     private static final Map<String, String> PUBLIC_CONTEXT_VALUES = Map.ofEntries(
             Map.entry("PRODUCTION", "产情"), Map.entry("MARKET", "市场"), Map.entry("LOGISTICS", "物流"),
             Map.entry("CORN", "玉米"), Map.entry("SOYBEAN", "大豆"), Map.entry("RICE", "稻谷"),
@@ -186,7 +191,20 @@ public final class BusinessImportWorkbook {
         }
     }
 
-    public record ImportSheet(String productCode, String objectTypeCode, List<List<String>> rows) {}
+    public record ImportSheet(String productCode, String objectTypeCode,
+            List<List<String>> rows, List<List<String>> submittedRows) {
+        public ImportSheet(String productCode, String objectTypeCode, List<List<String>> rows) {
+            this(productCode, objectTypeCode, rows, rows);
+        }
+
+        public ImportSheet {
+            rows = List.copyOf(rows);
+            submittedRows = List.copyOf(submittedRows);
+            if (rows.size() != submittedRows.size()) {
+                throw new IllegalArgumentException("INVALID_IMPORT_ROW_PROVENANCE");
+            }
+        }
+    }
 
     public record Context(String productCode, String objectTypeCode, String contractVersion, String contractDigest) {}
 
@@ -295,9 +313,9 @@ public final class BusinessImportWorkbook {
             throw new IllegalArgumentException("INVALID_XLSX_TEMPLATE");
         }
         int firstDataRow = legacyInternalHeaderRow(sheet, template.headers()) ? 2 : 1;
-        List<List<String>> rows = normalizeRows(
-                boundedDataRows(sheet, firstDataRow, maxDataRows), template.rules());
-        return new ImportSheet(context.productCode(), context.objectTypeCode(), rows);
+        List<List<String>> submittedRows = boundedDataRows(sheet, firstDataRow, maxDataRows);
+        List<List<String>> rows = normalizeRows(submittedRows, template.rules());
+        return new ImportSheet(context.productCode(), context.objectTypeCode(), rows, submittedRows);
     }
 
     private static boolean legacyInternalHeaderRow(List<List<String>> sheet, List<String> headers) {
@@ -332,12 +350,49 @@ public final class BusinessImportWorkbook {
         String normalized = value.trim();
         if ("DATE".equals(rule.valueType())) return normalizeExcelDate(normalized);
         if (!"DECIMAL".equals(rule.valueType())) return normalized;
-        return Normalizer.normalize(normalized, Normalizer.Form.NFKC)
+        String decimalText = normalizeSubmittedDecimal(normalized);
+        if (isCoordinateRule(rule)) {
+            return normalizeCoordinate(decimalText, rule.scale());
+        }
+        return normalizeSpreadsheetFloatingPointResidue(decimalText, rule.scale());
+    }
+
+    /** Preserves submitted precision while accepting the same human spreadsheet notation as validation. */
+    public static String normalizeSubmittedDecimal(String value) {
+        if (value == null) return null;
+        return Normalizer.normalize(value.trim(), Normalizer.Form.NFKC)
                 .replace(",", "")
                 .replace(" ", "")
                 .replace("\t", "")
                 .replace("\u00a0", "")
                 .replace("\u202f", "");
+    }
+
+    private static String normalizeCoordinate(String value, int storageScale) {
+        try {
+            BigDecimal coordinate = new BigDecimal(value);
+            if (storageScale >= 0 && coordinate.scale() > storageScale) {
+                coordinate = coordinate.setScale(storageScale, RoundingMode.HALF_UP);
+            }
+            return coordinate.stripTrailingZeros().toPlainString();
+        } catch (NumberFormatException | ArithmeticException ignored) {
+            return value;
+        }
+    }
+
+    private static String normalizeSpreadsheetFloatingPointResidue(String value, int allowedScale) {
+        if (allowedScale < 0) return value;
+        try {
+            BigDecimal decimal = new BigDecimal(value);
+            int excessScale = decimal.scale() - allowedScale;
+            if (excessScale < 8 || decimal.precision() < 15) return value;
+            BigDecimal rounded = decimal.setScale(allowedScale, RoundingMode.HALF_UP);
+            BigDecimal tolerance = BigDecimal.ONE.scaleByPowerOfTen(-(allowedScale + 8));
+            if (decimal.subtract(rounded).abs().compareTo(tolerance) > 0) return value;
+            return rounded.stripTrailingZeros().toPlainString();
+        } catch (NumberFormatException ignored) {
+            return value;
+        }
     }
 
     private static String normalizeExcelDate(String value) {
@@ -641,6 +696,11 @@ public final class BusinessImportWorkbook {
 
     /** Returns the same business-facing rule used by XLSX prompts and server-side row errors. */
     public static String validationHint(ColumnRule rule) {
+        if (isCoordinateRule(rule)) {
+            return isLatitudeRule(rule)
+                    ? "数字，范围 -90 至 90；超出存储精度时自动规范化"
+                    : "数字，范围 -180 至 180；超出存储精度时自动规范化";
+        }
         String base = switch (rule.valueType()) {
             case "DECIMAL" -> "数字，精度 " + rule.precision() + "，小数位不超过 " + rule.scale();
             case "DATE" -> "日期格式 YYYY-MM-DD";
@@ -649,6 +709,15 @@ public final class BusinessImportWorkbook {
         };
         return rule.description() == null || rule.description().isBlank()
                 ? base : base + "；" + rule.description();
+    }
+
+    private static boolean isCoordinateRule(ColumnRule rule) {
+        return COORDINATE_CODES.contains(rule.code())
+                || rule.code().contains("纬度") || rule.code().contains("经度");
+    }
+
+    private static boolean isLatitudeRule(ColumnRule rule) {
+        return rule.code().endsWith("LATITUDE") || rule.code().contains("纬度");
     }
 
     private static int style(ColumnRule rule) {

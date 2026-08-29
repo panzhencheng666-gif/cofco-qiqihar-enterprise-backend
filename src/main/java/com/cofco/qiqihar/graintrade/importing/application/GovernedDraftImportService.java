@@ -4,6 +4,7 @@ import com.cofco.qiqihar.graintrade.importing.application.BusinessImportPhotoPac
 import com.cofco.qiqihar.graintrade.importing.domain.ImportDraft;
 import com.cofco.qiqihar.graintrade.importing.domain.ImportJob;
 import com.cofco.qiqihar.graintrade.importing.domain.ImportRowOutcome;
+import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
 import com.cofco.qiqihar.graintrade.samplepoint.identity.application.SampleIdentityAssessment;
 import com.cofco.qiqihar.graintrade.samplepoint.identity.application.SampleIdentityAssessment.SubjectInput;
 import com.cofco.qiqihar.graintrade.samplepoint.identity.infrastructure.JdbcSampleIdentityGovernanceRepository;
@@ -193,31 +194,20 @@ public class GovernedDraftImportService {
                             row.values());
                 }
                 if (seen != null) {
-                    var pending = rows.createPendingIdentityReview(draft, evidenceIds,
-                            "SAMPLE_IDENTITY_RECORD_CONFLICT",
-                            "本行与同一文件第" + seen.rowNumber() + "行属于相同样本身份和月份，但业务数据不一致，需核验",
-                            principal, json(Map.of(
-                                    "draftId", draft.id(), "reasonCode", "SAMPLE_IDENTITY_RECORD_CONFLICT",
-                                    "reasonMessage", "同一文件内相同身份和月份的业务数据不一致",
-                                    "conflictingRowNumber", seen.rowNumber())));
-                    return ImportRowOutcome.draftImported(row.rowNumber(), pending.draft().id(),
-                            pending.warningCode(), pending.warningMessage(), row.values());
+                    return ImportRowOutcome.error(row.rowNumber(), "SAMPLE_IDENTITY_RECORD_CONFLICT",
+                            "本行与同一文件第" + seen.rowNumber()
+                                    + "行属于相同样本身份和月份，但业务数据不一致；请在导入文件中确认唯一正确行后重新导入",
+                            row.values());
                 }
             }
-            SampleIdentityAssessment identity = assessIdentity(source.domainCode(), draft, storedValues);
+            SampleIdentityAssessment identity = assessIdentity(
+                    source.domainCode(), draft, storedValues, row.values());
             if (identity != null && identity.outcome() == SampleIdentityAssessment.Outcome.REVIEW_REQUIRED) {
-                var pending = rows.createPendingIdentityReview(draft, evidenceIds,
-                        "SAMPLE_IDENTITY_REVIEW_REQUIRED",
-                        identity.reasonMessage() + "（" + identity.reasonCode() + "）",
-                        principal, json(Map.of(
-                                "draftId", draft.id(), "reasonCode", identity.reasonCode(),
-                                "reasonMessage", identity.reasonMessage(),
-                                "candidateSamplePointIds", identity.candidates().stream()
-                                        .map(candidate -> candidate.samplePointId().toString()).toList())));
-                return ImportRowOutcome.draftImported(row.rowNumber(), pending.draft().id(),
-                        pending.warningCode(), pending.warningMessage(), row.values());
+                return ImportRowOutcome.error(row.rowNumber(), identity.reasonCode(),
+                        identity.reasonMessage() + "；该行未写入正式业务表，请修正可唯一识别的样本信息后重新导入",
+                        row.values());
             }
-            var submitted = rows.createAndSubmit(draft, evidenceIds);
+            var submitted = rows.createAndSubmit(draft, evidenceIds, principal, identity);
             if (submitted.warningCode() != null) {
                 warningCode = warningCode == null ? submitted.warningCode() : "IMPORT_PHOTO_WARNING";
                 warningMessage = warningMessage == null ? submitted.warningMessage()
@@ -242,7 +232,7 @@ public class GovernedDraftImportService {
     }
 
     private SampleIdentityAssessment assessIdentity(String domainCode, ImportDraft draft,
-            Map<String, String> storedValues) {
+            Map<String, String> storedValues, Map<String, String> submittedValues) {
         String contactCode;
         String longitudeCode;
         String latitudeCode;
@@ -254,15 +244,30 @@ public class GovernedDraftImportService {
             contactCode = "MKT_SAMPLE_CONTACT";
             longitudeCode = "MKT_SAMPLE_LONGITUDE";
             latitudeCode = "MKT_SAMPLE_LATITUDE";
+        } else if ("LOGISTICS".equals(domainCode)) {
+            contactCode = "LOG_SAMPLE_CONTACT";
+            longitudeCode = "LOG_SAMPLE_LONGITUDE";
+            latitudeCode = "LOG_SAMPLE_LATITUDE";
         } else {
             return null;
         }
         String longitude = storedValues.get(longitudeCode);
         String latitude = storedValues.get(latitudeCode);
         if (blank(longitude) || blank(latitude)) return null;
-        return identities.assess(new SubjectInput(domainCode, draft.sampleName(),
+        SubjectInput input = new SubjectInput(domainCode, draft.sampleName(),
                 storedValues.get(contactCode), draft.regionCode(),
-                new BigDecimal(longitude), new BigDecimal(latitude)));
+                new BigDecimal(longitude), new BigDecimal(latitude));
+        String submittedLongitude = submittedValues.getOrDefault(longitudeCode, longitude);
+        String submittedLatitude = submittedValues.getOrDefault(latitudeCode, latitude);
+        SubjectInput submittedInput = new SubjectInput(domainCode, draft.sampleName(),
+                storedValues.get(contactCode), draft.regionCode(),
+                new BigDecimal(BusinessImportWorkbook.normalizeSubmittedDecimal(submittedLongitude)),
+                new BigDecimal(BusinessImportWorkbook.normalizeSubmittedDecimal(submittedLatitude)));
+        if (!identities.areCoordinateRepresentationsWithinDeclaredRegion(submittedInput, input)) {
+            throw new ClientRequestException("SAMPLE_COORDINATE_REGION_MISMATCH",
+                    "样本点经纬度不在所填地区范围内，请核对地区或真实坐标后重新导入");
+        }
+        return identities.assess(input);
     }
 
     private static BatchIdentityKey batchIdentityKey(String domainCode, ImportDraft draft,
@@ -272,6 +277,8 @@ public class GovernedDraftImportService {
             contactCode = "PROD_SAMPLE_CONTACT";
         } else if ("MARKET".equals(domainCode)) {
             contactCode = "MKT_SAMPLE_CONTACT";
+        } else if ("LOGISTICS".equals(domainCode)) {
+            contactCode = "LOG_SAMPLE_CONTACT";
         } else {
             return null;
         }
@@ -279,7 +286,7 @@ public class GovernedDraftImportService {
         if (contact.isEmpty() || blank(draft.surveyPeriod())) return null;
         return new BatchIdentityKey(domainCode, draft.productCode(), draft.objectTypeCode(),
                 SampleIdentityAssessment.normalizedName(draft.sampleName()), contact,
-                draft.regionCode(), draft.surveyPeriod().strip());
+                draft.surveyPeriod().strip());
     }
 
     private static boolean retryable(ImportRowOutcome row) {
@@ -373,7 +380,7 @@ public class GovernedDraftImportService {
     }
 
     private record BatchIdentityKey(String domainCode, String productCode, String objectTypeCode,
-            String sampleName, String sampleContact, String regionCode, String surveyPeriod) {}
+            String sampleName, String sampleContact, String surveyPeriod) {}
 
     private record SeenBatchIdentity(int rowNumber, BatchFacts facts) {}
 

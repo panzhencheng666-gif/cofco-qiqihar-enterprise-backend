@@ -7,9 +7,11 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
+import com.cofco.qiqihar.graintrade.identity.application.AccessReviewRepository;
 import com.cofco.qiqihar.graintrade.testsupport.GovernedMasterDataFixtures;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import javax.sql.DataSource;
+import java.time.Instant;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -25,10 +27,11 @@ import java.util.UUID;
 @AutoConfigureMockMvc
 @UsesProtectedTestDatabase
 class IdentityGovernanceRestIntegrationTest {
-    private static final String WORK_UNIT="IDENTITY_GOV_TEST";
+    private static final String WORK_UNIT="QIQIHAR_BUSINESS";
     private static final String FUTURE_PERMISSION="IDENTITY_GOV_FUTURE_PERMISSION";
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
+    @Autowired AccessReviewRepository accessReviewRepository;
     private JdbcClient jdbc;
     private String employee;
     private UUID reviewId;
@@ -56,7 +59,7 @@ class IdentityGovernanceRestIntegrationTest {
                 .param("subject",UNIT_ACCOUNT_OWNER).update();
         jdbc.sql("""
                 INSERT INTO platform.work_unit(code,name,sort_order)
-                VALUES('IDENTITY_GOV_TEST','身份治理自动化测试单位',9981)
+                VALUES('QIQIHAR_BUSINESS','身份治理自动化测试单位',9981)
                 ON CONFLICT(code) DO NOTHING
                 """).update();
         jdbc.sql("""
@@ -78,9 +81,9 @@ class IdentityGovernanceRestIntegrationTest {
                 jdbc, VILLAGE, "身份治理测试行政村", TOWNSHIP, "VILLAGE", 9998);
         jdbc.sql("""
                 INSERT INTO platform.work_unit_region_scope(work_unit_code,region_code)
-                VALUES('IDENTITY_GOV_TEST','230202'),
-                      ('IDENTITY_GOV_TEST',:township),
-                      ('IDENTITY_GOV_TEST',:village)
+                VALUES('QIQIHAR_BUSINESS','230202'),
+                      ('QIQIHAR_BUSINESS',:township),
+                      ('QIQIHAR_BUSINESS',:village)
                 ON CONFLICT DO NOTHING
                 """).param("township",TOWNSHIP).param("village",VILLAGE).update();
         jdbc.sql("""
@@ -124,7 +127,7 @@ class IdentityGovernanceRestIntegrationTest {
     void employeeAdministrationCannotRemoveTheBootstrapOnlyAccountOwnerRole() throws Exception {
         jdbc.sql("""
                 INSERT INTO platform.security_user(subject_id,display_name,work_unit_code,enabled)
-                VALUES(:subject,'受控平台所有者','IDENTITY_GOV_TEST',true)
+                VALUES(:subject,'受控平台所有者','QIQIHAR_BUSINESS',true)
                 """).param("subject",UNIT_ACCOUNT_OWNER).update();
         jdbc.sql("""
                 INSERT INTO platform.security_user_role(subject_id,role_code)
@@ -132,7 +135,7 @@ class IdentityGovernanceRestIntegrationTest {
                 """).param("subject",UNIT_ACCOUNT_OWNER).update();
         jdbc.sql("""
                 INSERT INTO platform.security_user(subject_id,display_name,work_unit_code,enabled)
-                VALUES(:subject,'单位权限管理员','IDENTITY_GOV_TEST',true)
+                VALUES(:subject,'单位权限管理员','QIQIHAR_BUSINESS',true)
                 ON CONFLICT(subject_id) DO UPDATE SET display_name=EXCLUDED.display_name,
                     work_unit_code=EXCLUDED.work_unit_code,enabled=EXCLUDED.enabled
                 """).param("subject",UNIT_ADMIN).update();
@@ -145,7 +148,7 @@ class IdentityGovernanceRestIntegrationTest {
                         .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"version":0,"displayName":"受控平台所有者",
-                                 "workUnitCode":"IDENTITY_GOV_TEST","accountStatus":"ACTIVE",
+                                 "workUnitCode":"QIQIHAR_BUSINESS","accountStatus":"ACTIVE",
                                  "employmentStatus":"ACTIVE","positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
                                 """.formatted(TOWNSHIP)))
@@ -164,7 +167,7 @@ class IdentityGovernanceRestIntegrationTest {
     void unitAdministratorsCannotReadOtherUnitsOrGrantSystemAdministrator() throws Exception {
         jdbc.sql("""
                 INSERT INTO platform.security_user(subject_id,display_name,work_unit_code,enabled)
-                VALUES(:subject,'单位权限管理员','IDENTITY_GOV_TEST',true)
+                VALUES(:subject,'单位权限管理员','QIQIHAR_BUSINESS',true)
                 ON CONFLICT(subject_id) DO UPDATE SET display_name=EXCLUDED.display_name,
                     work_unit_code=EXCLUDED.work_unit_code,enabled=EXCLUDED.enabled
                 """).param("subject",UNIT_ADMIN).update();
@@ -174,7 +177,7 @@ class IdentityGovernanceRestIntegrationTest {
                 """).param("subject",UNIT_ADMIN).update();
         jdbc.sql("""
                 INSERT INTO platform.security_user(subject_id,display_name,work_unit_code,enabled)
-                VALUES(:subject,'同单位系统管理员','IDENTITY_GOV_TEST',true)
+                VALUES(:subject,'同单位系统管理员','QIQIHAR_BUSINESS',true)
                 """).param("subject",UNIT_SYSTEM_ADMIN).update();
         jdbc.sql("""
                 INSERT INTO platform.security_user_role(subject_id,role_code)
@@ -186,7 +189,7 @@ class IdentityGovernanceRestIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"无权邀请探测",
-                                 "workUnitCode":"IDENTITY_GOV_TEST","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "workUnitCode":"QIQIHAR_BUSINESS","positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["230202"]}
                                 """.formatted(employee)))
                 .andExpect(status().isForbidden())
@@ -211,7 +214,7 @@ class IdentityGovernanceRestIntegrationTest {
                 .andExpect(jsonPath("$.data.roles[?(@.code == 'SYSTEM_ADMIN')]").doesNotExist());
 
         mvc.perform(get("/api/v1/identity/employees/assignment-options")
-                        .param("workUnitCode","IDENTITY_GOV_OUTSIDE").principal(() -> UNIT_ADMIN))
+                        .param("workUnitCode","NEHE_DEPOT").principal(() -> UNIT_ADMIN))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error.code").value("ACCESS_WORK_UNIT_DENIED"));
 
@@ -219,7 +222,7 @@ class IdentityGovernanceRestIntegrationTest {
                         .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"越权测试员工",
-                                 "workUnitCode":"IDENTITY_GOV_TEST","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "workUnitCode":"QIQIHAR_BUSINESS","positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["SYSTEM_ADMIN"],"regionCodes":["230202"]}
                                 """.formatted(employee)))
                 .andExpect(status().isForbidden())
@@ -229,7 +232,7 @@ class IdentityGovernanceRestIntegrationTest {
                         .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"跨单位测试员工",
-                                 "workUnitCode":"IDENTITY_GOV_OUTSIDE","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "workUnitCode":"NEHE_DEPOT","positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["230202"]}
                                 """.formatted(employee)))
                 .andExpect(status().isForbidden())
@@ -240,7 +243,7 @@ class IdentityGovernanceRestIntegrationTest {
                         .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"identity-governance-outside-reviewer","displayName":"越权探测",
-                                 "workUnitCode":"IDENTITY_GOV_OUTSIDE","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "workUnitCode":"NEHE_DEPOT","positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["230202"]}
                                 """))
                 .andExpect(status().isForbidden())
@@ -249,7 +252,7 @@ class IdentityGovernanceRestIntegrationTest {
 
         String invalidAssignment = """
                 {"subjectId":"%s","displayName":"无效授权探测",
-                 "workUnitCode":"IDENTITY_GOV_TEST","positionCodes":["GOVERNANCE_REPORTER"],
+                 "workUnitCode":"QIQIHAR_BUSINESS","positionCodes":["GOVERNANCE_REPORTER"],
                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["INVALID_REGION"]}
                 """;
         mvc.perform(post("/api/v1/identity/employees")
@@ -263,12 +266,12 @@ class IdentityGovernanceRestIntegrationTest {
                         .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"本单位受邀员工",
-                                 "workUnitCode":"IDENTITY_GOV_TEST","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "workUnitCode":"QIQIHAR_BUSINESS","positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
                                 """.formatted(employee,TOWNSHIP)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.accountStatus").value("INVITED"))
-                .andExpect(jsonPath("$.data.workUnitCode").value("IDENTITY_GOV_TEST"));
+                .andExpect(jsonPath("$.data.workUnitCode").value("QIQIHAR_BUSINESS"));
         mvc.perform(post("/api/v1/identity/employees")
                         .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content(invalidAssignment.formatted(employee)))
@@ -280,7 +283,7 @@ class IdentityGovernanceRestIntegrationTest {
                         .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"version":0,"displayName":"外单位复核员",
-                                 "workUnitCode":"IDENTITY_GOV_OUTSIDE","accountStatus":"ACTIVE",
+                                 "workUnitCode":"NEHE_DEPOT","accountStatus":"ACTIVE",
                                  "employmentStatus":"ACTIVE","positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["ACCESS_REVIEWER"],"regionCodes":["230202"]}
                                 """))
@@ -292,7 +295,7 @@ class IdentityGovernanceRestIntegrationTest {
                         .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"version":0,"displayName":"单位权限管理员",
-                                 "workUnitCode":"IDENTITY_GOV_TEST","accountStatus":"ACTIVE",
+                                 "workUnitCode":"QIQIHAR_BUSINESS","accountStatus":"ACTIVE",
                                  "employmentStatus":"ACTIVE","positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["SYSTEM_ADMIN"],"regionCodes":["230202"]}
                                 """))
@@ -304,7 +307,7 @@ class IdentityGovernanceRestIntegrationTest {
                         .principal(() -> UNIT_ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"version":0,"displayName":"同单位系统管理员",
-                                 "workUnitCode":"IDENTITY_GOV_TEST","accountStatus":"ACTIVE",
+                                 "workUnitCode":"QIQIHAR_BUSINESS","accountStatus":"ACTIVE",
                                  "employmentStatus":"ACTIVE","positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["230202"]}
                                 """))
@@ -381,7 +384,7 @@ class IdentityGovernanceRestIntegrationTest {
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"所有者角色越权探测",
-                                 "workUnitCode":"IDENTITY_GOV_TEST","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "workUnitCode":"QIQIHAR_BUSINESS","positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["ACCOUNT_OWNER"],"regionCodes":["230202"]}
                                 """.formatted(employee)))
                 .andExpect(status().isForbidden())
@@ -391,7 +394,7 @@ class IdentityGovernanceRestIntegrationTest {
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"系统管理员角色越权探测",
-                                 "workUnitCode":"IDENTITY_GOV_TEST","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "workUnitCode":"QIQIHAR_BUSINESS","positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["SYSTEM_ADMIN"],"regionCodes":["230202"]}
                                 """.formatted(employee)))
                 .andExpect(status().isForbidden())
@@ -403,14 +406,14 @@ class IdentityGovernanceRestIntegrationTest {
         mvc.perform(get("/api/v1/identity/employees/assignment-options")
                         .param("workUnitCode",WORK_UNIT).principal(() -> "production-tester"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.workUnits[?(@.code == 'IDENTITY_GOV_TEST')]").exists())
+                .andExpect(jsonPath("$.data.workUnits[?(@.code == 'QIQIHAR_BUSINESS')]").exists())
                 .andExpect(jsonPath("$.data.roles[?(@.code == 'BUSINESS_OPERATOR')]").exists())
-                .andExpect(jsonPath("$.data.positions[?(@.code == 'GOVERNANCE_REPORTER')]").exists())
-                .andExpect(jsonPath("$.data.regionCodes[0]").value("230202"));
+                .andExpect(jsonPath("$.data.positions").isEmpty())
+                .andExpect(jsonPath("$.data.regionCodes[0]").value(TOWNSHIP));
 
         String invitation="""
                 {"subjectId":"%s","displayName":"张敏",
-                 "workUnitCode":"IDENTITY_GOV_TEST","positionCodes":["GOVERNANCE_REPORTER"],
+                 "workUnitCode":"QIQIHAR_BUSINESS","positionCodes":["GOVERNANCE_REPORTER"],
                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
                 """.formatted(employee,TOWNSHIP);
         mvc.perform(post("/api/v1/identity/employees")
@@ -427,7 +430,7 @@ class IdentityGovernanceRestIntegrationTest {
                 .andExpect(status().isForbidden());
 
         String activation="""
-                {"version":0,"displayName":"张敏","workUnitCode":"IDENTITY_GOV_TEST",
+                {"version":0,"displayName":"张敏","workUnitCode":"QIQIHAR_BUSINESS",
                  "accountStatus":"ACTIVE","employmentStatus":"ACTIVE",
                  "positionCodes":["GOVERNANCE_REPORTER"],
                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
@@ -482,7 +485,7 @@ class IdentityGovernanceRestIntegrationTest {
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"业务管理员",
-                                 "workUnitCode":"IDENTITY_GOV_TEST","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "workUnitCode":"QIQIHAR_BUSINESS","positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["BUSINESS_REVIEWER"],"regionCodes":["%s"]}
                                 """.formatted(employee,TOWNSHIP)))
                 .andExpect(status().isCreated())
@@ -491,7 +494,7 @@ class IdentityGovernanceRestIntegrationTest {
         mvc.perform(put("/api/v1/identity/employees/{subjectId}",employee)
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"version":0,"displayName":"业务管理员","workUnitCode":"IDENTITY_GOV_TEST",
+                                {"version":0,"displayName":"业务管理员","workUnitCode":"QIQIHAR_BUSINESS",
                                  "accountStatus":"ACTIVE","employmentStatus":"ACTIVE",
                                  "positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["BUSINESS_REVIEWER"],"regionCodes":["%s"]}
@@ -509,7 +512,7 @@ class IdentityGovernanceRestIntegrationTest {
         mvc.perform(put("/api/v1/identity/employees/{subjectId}",employee)
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"version":1,"displayName":"业务管理员","workUnitCode":"IDENTITY_GOV_TEST",
+                                {"version":1,"displayName":"业务管理员","workUnitCode":"QIQIHAR_BUSINESS",
                                  "accountStatus":"ACTIVE","employmentStatus":"ACTIVE",
                                  "positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["BUSINESS_OPERATOR","BUSINESS_REVIEWER"],"regionCodes":["%s"]}
@@ -524,7 +527,7 @@ class IdentityGovernanceRestIntegrationTest {
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"张敏",
-                                 "workUnitCode":"IDENTITY_GOV_TEST","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "workUnitCode":"QIQIHAR_BUSINESS","positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["not-a-region"]}
                                 """.formatted(employee)))
                 .andExpect(status().isBadRequest())
@@ -538,7 +541,7 @@ class IdentityGovernanceRestIntegrationTest {
                             .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                             .content("""
                                     {"subjectId":"%s-%s","displayName":"层级越权探测",
-                                     "workUnitCode":"IDENTITY_GOV_TEST","positionCodes":["GOVERNANCE_REPORTER"],
+                                     "workUnitCode":"QIQIHAR_BUSINESS","positionCodes":["GOVERNANCE_REPORTER"],
                                      "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
                                     """.formatted(employee,forbiddenRegion,forbiddenRegion)))
                     .andExpect(status().isBadRequest())
@@ -547,19 +550,62 @@ class IdentityGovernanceRestIntegrationTest {
     }
 
     @Test
+    void assignmentOptionsExpandWorkUnitRootsToAssignableTownshipAnchors() throws Exception {
+        jdbc.sql("DELETE FROM platform.work_unit_region_scope WHERE work_unit_code=:unit")
+                .param("unit",WORK_UNIT).update();
+        jdbc.sql("""
+                INSERT INTO platform.work_unit_region_scope(work_unit_code,region_code)
+                VALUES(:unit,'230202')
+                """).param("unit",WORK_UNIT).update();
+
+        mvc.perform(get("/api/v1/identity/employees/assignment-options")
+                        .param("workUnitCode",WORK_UNIT).principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.regionCodes.length()").value(1))
+                .andExpect(jsonPath("$.data.regionCodes[0]").value(TOWNSHIP));
+
+        mvc.perform(post("/api/v1/identity/employees")
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"subjectId":"%s","displayName":"乡镇责任员工",
+                                 "workUnitCode":"QIQIHAR_BUSINESS","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
+                                """.formatted(employee,TOWNSHIP)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.regionCodes[0]").value(TOWNSHIP));
+
+        mvc.perform(put("/api/v1/identity/employees/{subjectId}",employee)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"version":0,"displayName":"乡镇责任员工","workUnitCode":"QIQIHAR_BUSINESS",
+                                 "accountStatus":"ACTIVE","employmentStatus":"ACTIVE",
+                                 "positionCodes":["GOVERNANCE_REPORTER"],
+                                 "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
+                                """.formatted(TOWNSHIP)))
+                .andExpect(status().isOk());
+
+        mvc.perform(get("/api/v1/session/me").principal(() -> employee))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.regionScopes.length()").value(1))
+                .andExpect(jsonPath("$.data.regionScopes[0].code").value(TOWNSHIP))
+                .andExpect(jsonPath("$.data.regionCodes[?(@ == '%s')]".formatted(TOWNSHIP)).exists())
+                .andExpect(jsonPath("$.data.regionCodes[?(@ == '%s')]".formatted(VILLAGE)).exists());
+    }
+
+    @Test
     void townshipAssignmentAutomaticallyCoversVillagesAndReturnsBusinessNamePath() throws Exception {
         mvc.perform(post("/api/v1/identity/employees")
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"乡镇填报员",
-                                 "workUnitCode":"IDENTITY_GOV_TEST","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "workUnitCode":"QIQIHAR_BUSINESS","positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
                                 """.formatted(employee,TOWNSHIP)))
                 .andExpect(status().isCreated());
         mvc.perform(put("/api/v1/identity/employees/{subjectId}",employee)
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"version":0,"displayName":"乡镇填报员","workUnitCode":"IDENTITY_GOV_TEST",
+                                {"version":0,"displayName":"乡镇填报员","workUnitCode":"QIQIHAR_BUSINESS",
                                  "accountStatus":"ACTIVE","employmentStatus":"ACTIVE",
                                  "positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
@@ -584,14 +630,14 @@ class IdentityGovernanceRestIntegrationTest {
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"审计权限测试员工",
-                                 "workUnitCode":"IDENTITY_GOV_TEST","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "workUnitCode":"QIQIHAR_BUSINESS","positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
                                 """.formatted(employee,TOWNSHIP)))
                 .andExpect(status().isCreated());
         mvc.perform(put("/api/v1/identity/employees/{subjectId}",employee)
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"version":0,"displayName":"审计权限测试员工","workUnitCode":"IDENTITY_GOV_TEST",
+                                {"version":0,"displayName":"审计权限测试员工","workUnitCode":"QIQIHAR_BUSINESS",
                                  "accountStatus":"ACTIVE","employmentStatus":"ACTIVE",
                                  "positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
@@ -632,7 +678,7 @@ class IdentityGovernanceRestIntegrationTest {
         mvc.perform(post("/api/v1/identity/employees")
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"subjectId":"%s","displayName":"张敏","workUnitCode":"IDENTITY_GOV_TEST",
+                                {"subjectId":"%s","displayName":"张敏","workUnitCode":"QIQIHAR_BUSINESS",
                                  "positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
                                 """.formatted(employee,TOWNSHIP)))
@@ -641,7 +687,7 @@ class IdentityGovernanceRestIntegrationTest {
         String created=mvc.perform(post("/api/v1/identity/access-reviews")
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"name":"区域权限季度复核","workUnitCode":"IDENTITY_GOV_TEST",
+                                {"name":"区域权限季度复核","workUnitCode":"QIQIHAR_BUSINESS",
                                  "dueAt":"2026-12-31T16:00:00Z"}
                                 """))
                 .andExpect(status().isCreated())
@@ -694,19 +740,62 @@ class IdentityGovernanceRestIntegrationTest {
     }
 
     @Test
+    void accessReviewSnapshotExcludesTheReviewersOwnAssignments() throws Exception {
+        mvc.perform(post("/api/v1/identity/employees")
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"subjectId":"%s","displayName":"待复核员工",
+                                 "workUnitCode":"QIQIHAR_BUSINESS","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
+                                """.formatted(employee,TOWNSHIP)))
+                .andExpect(status().isCreated());
+        jdbc.sql("""
+                INSERT INTO platform.security_user(subject_id,display_name,work_unit_code,enabled)
+                VALUES(:subject,'单位复核负责人',:unit,true)
+                ON CONFLICT(subject_id) DO UPDATE SET display_name=EXCLUDED.display_name,
+                    work_unit_code=EXCLUDED.work_unit_code,enabled=EXCLUDED.enabled
+                """).param("subject",UNIT_ADMIN).param("unit",WORK_UNIT).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_role(
+                    subject_id,role_code,valid_from,granted_by,granted_at,review_due_at)
+                VALUES(:subject,'ACCESS_REVIEWER',now(),'production-tester',now(),now()+interval '1 year')
+                """).param("subject",UNIT_ADMIN).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_position(
+                    subject_id,position_code,valid_from,primary_position,assigned_by,assigned_at)
+                VALUES(:subject,'GOVERNANCE_REPORTER',now(),true,'production-tester',now())
+                """).param("subject",UNIT_ADMIN).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_region_scope(
+                    subject_id,region_code,valid_from,granted_by,granted_at,review_due_at)
+                VALUES(:subject,:region,now(),'production-tester',now(),now()+interval '1 year')
+                """).param("subject",UNIT_ADMIN).param("region",TOWNSHIP).update();
+
+        reviewId=UUID.randomUUID();
+        Instant snapshotAt=Instant.now().plusSeconds(5);
+        var campaign=accessReviewRepository.create(
+                reviewId,"单位权限复核",WORK_UNIT,snapshotAt.plusSeconds(3600),
+                UNIT_ADMIN,snapshotAt);
+
+        org.assertj.core.api.Assertions.assertThat(campaign.items())
+                .isNotEmpty()
+                .allMatch(item -> item.subjectId().equals(employee));
+    }
+
+    @Test
     void overdueRoleAndRegionGrantsFailClosedUntilTheyAreReviewed() throws Exception {
         mvc.perform(post("/api/v1/identity/employees")
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"%s","displayName":"过期授权员工",
-                                 "workUnitCode":"IDENTITY_GOV_TEST","positionCodes":["GOVERNANCE_REPORTER"],
+                                 "workUnitCode":"QIQIHAR_BUSINESS","positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
                                 """.formatted(employee,TOWNSHIP)))
                 .andExpect(status().isCreated());
         mvc.perform(put("/api/v1/identity/employees/{subjectId}",employee)
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"version":0,"displayName":"过期授权员工","workUnitCode":"IDENTITY_GOV_TEST",
+                                {"version":0,"displayName":"过期授权员工","workUnitCode":"QIQIHAR_BUSINESS",
                                  "accountStatus":"ACTIVE","employmentStatus":"ACTIVE",
                                  "positionCodes":["GOVERNANCE_REPORTER"],
                                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}

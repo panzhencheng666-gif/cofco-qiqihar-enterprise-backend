@@ -8,6 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
+import com.cofco.qiqihar.graintrade.overview.api.CurrentOverviewSamplePointReader;
 import com.cofco.qiqihar.graintrade.samplepoint.network.application.AnnualSampleNetworkRepository;
 import com.cofco.qiqihar.graintrade.samplepoint.network.infrastructure.JdbcAnnualSampleNetworkRepository;
 import com.cofco.qiqihar.graintrade.testsupport.GovernedMasterDataFixtures;
@@ -71,6 +72,14 @@ class AnnualSampleNetworkRestIntegrationTest {
             "13300000-0000-0000-0000-000000000006";
     private static final String MISSING_SAMPLE_POINT =
             "13300000-0000-0000-0000-000000000099";
+    private static final String APPROVED_PRODUCTION_RECORD =
+            "13300000-0000-0000-0000-000000000101";
+    private static final String APPROVED_MARKET_RECORD =
+            "13300000-0000-0000-0000-000000000102";
+    private static final String LOGISTICS_SAMPLE_POINT =
+            "13300000-0000-0000-0000-000000000007";
+    private static final String APPROVED_LOGISTICS_RECORD =
+            "13300000-0000-0000-0000-000000000103";
 
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
@@ -97,6 +106,30 @@ class AnnualSampleNetworkRestIntegrationTest {
         GovernedMasterDataFixtures.insertRegion(
                 jdbc, OUTSIDE_VILLAGE, "年度网络接口测试外辖村", OUTSIDE_TOWNSHIP,
                 "VILLAGE", 1);
+        jdbc.sql("""
+                INSERT INTO overview.administrative_boundary(
+                  region_code,geometry,source_name,source_url,source_revision,source_license,
+                  source_feature_id,source_effective_on,geometry_sha256)
+                VALUES
+                  (:township,ST_Multi(ST_MakeEnvelope(123.7,47.1,123.9,47.3,4326)),
+                    '年度网络测试边界','urn:test:annual-network','test-1','测试',:township,
+                    DATE '2026-01-01',repeat('a',64)),
+                  (:one,ST_Multi(ST_MakeEnvelope(123.75,47.15,123.805,47.205,4326)),
+                    '年度网络测试边界','urn:test:annual-network','test-1','测试',:one,
+                    DATE '2026-01-01',repeat('b',64)),
+                  (:two,ST_Multi(ST_MakeEnvelope(123.805,47.205,123.86,47.26,4326)),
+                    '年度网络测试边界','urn:test:annual-network','test-1','测试',:two,
+                    DATE '2026-01-01',repeat('c',64))
+                ON CONFLICT(region_code) DO UPDATE SET geometry=EXCLUDED.geometry,
+                  source_name=EXCLUDED.source_name,source_url=EXCLUDED.source_url,
+                  source_revision=EXCLUDED.source_revision,source_license=EXCLUDED.source_license,
+                  source_feature_id=EXCLUDED.source_feature_id,
+                  source_effective_on=EXCLUDED.source_effective_on,
+                  geometry_sha256=EXCLUDED.geometry_sha256
+                """).param("township", TOWNSHIP).param("one", VILLAGE_ONE)
+                .param("two", VILLAGE_TWO).update();
+        jdbc.sql("SELECT overview.refresh_administrative_boundary_render()")
+                .query(Object.class).single();
         jdbc.sql("""
                 INSERT INTO platform.geography_import_batch(
                   dataset_sha256,source_workbook_sha256,source_revision,
@@ -168,6 +201,19 @@ class AnnualSampleNetworkRestIntegrationTest {
                 .param("township", TOWNSHIP)
                 .param("prefecture", PREFECTURE)
                 .param("operator", OPERATOR).update();
+        jdbc.sql("""
+                UPDATE registry.sample_point point
+                SET location_state='VALID',governed_point=ST_PointOnSurface(boundary.geometry)
+                FROM overview.administrative_boundary boundary
+                WHERE boundary.region_code=point.region_code
+                  AND point.sample_point_id IN (
+                    CAST(:villageId AS uuid),CAST(:townshipId AS uuid),CAST(:countyId AS uuid),
+                    CAST(:prefectureId AS uuid),CAST(:outsideId AS uuid))
+                """).param("villageId", VILLAGE_SAMPLE_POINT)
+                .param("townshipId", TOWNSHIP_SAMPLE_POINT)
+                .param("countyId", COUNTY_SAMPLE_POINT)
+                .param("prefectureId", PREFECTURE_SAMPLE_POINT)
+                .param("outsideId", OUTSIDE_SAMPLE_POINT).update();
     }
 
     @AfterEach
@@ -186,10 +232,158 @@ class AnnualSampleNetworkRestIntegrationTest {
                     .param("subjects", List.of(OPERATOR, REVIEWER, NO_PERMISSION)).update();
             jdbc.sql("DELETE FROM platform.work_unit_region_scope WHERE work_unit_code=:unit")
                     .param("unit", WORK_UNIT).update();
+            jdbc.sql("DELETE FROM overview.administrative_boundary WHERE region_code IN (:codes)")
+                    .param("codes", List.of(VILLAGE_ONE, VILLAGE_TWO, TOWNSHIP)).update();
+            jdbc.sql("SELECT overview.refresh_administrative_boundary_render()")
+                    .query(Object.class).single();
             GovernedMasterDataFixtures.deleteRegions(
                     jdbc, List.of(VILLAGE_ONE, VILLAGE_TWO, TOWNSHIP,
                             OUTSIDE_VILLAGE, OUTSIDE_TOWNSHIP, OUTSIDE_COUNTY));
         });
+    }
+
+    @Test
+    void reportsEffectiveApprovedBusinessPointsWithoutAFormalAnnualNetwork() throws Exception {
+        jdbc.sql("""
+                INSERT INTO production.production_record(
+                  record_id,product_code,object_type_code,region_code,survey_date,reported_at,
+                  cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,sample_point_id,
+                  survey_year,survey_month,survey_period_precision,survey_period_governance_state)
+                VALUES(:id,'CORN','FARMER',:region,DATE '2026-08-20',CURRENT_TIMESTAMP,
+                  10,20,'APPROVED',:actor,CAST(:point AS uuid),2026,8,'YEAR_MONTH','CONFIRMED')
+                """).param("id", APPROVED_PRODUCTION_RECORD).param("region", VILLAGE_ONE)
+                .param("actor", OPERATOR).param("point", VILLAGE_SAMPLE_POINT).update();
+        jdbc.sql("""
+                INSERT INTO market.market_record(
+                  record_id,product_code,object_type_code,region_code,trade_date,reported_at,
+                  purchase_base_price,sale_base_price,trade_direction,carriage_board_amount,
+                  packaging_amount,freight_amount,packaging_form,status_code,last_modified_by,
+                  sample_point_id,survey_year,survey_month,survey_period_precision,
+                  survey_period_governance_state)
+                VALUES(:id,'CORN','TRADER',:region,DATE '2026-08-20',CURRENT_TIMESTAMP,
+                  2200,2250,'BOTH',0,0,0,'BULK','APPROVED',:actor,CAST(:point AS uuid),
+                  2026,8,'YEAR_MONTH','CONFIRMED')
+                """).param("id", APPROVED_MARKET_RECORD).param("region", VILLAGE_ONE)
+                .param("actor", OPERATOR).param("point", VILLAGE_SAMPLE_POINT).update();
+
+        mvc.perform(get("/api/v1/sample-networks/{year}/comparison", 2026)
+                        .principal(() -> OPERATOR).queryParam("productCode", "CORN"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.networkStatus").value("NOT_CREATED"))
+                .andExpect(jsonPath("$.data.activeSamplePointCount").value(1))
+                .andExpect(jsonPath("$.data.approvedSubmissionSamplePointCount").value(1))
+                .andExpect(jsonPath("$.data.actualPoints.length()").value(1))
+                .andExpect(jsonPath("$.data.actualPoints[0].samplePointId")
+                        .value(VILLAGE_SAMPLE_POINT))
+                .andExpect(jsonPath("$.data.actualPoints[0].membershipStatusCode").value("ACTIVE"));
+
+        mvc.perform(get("/api/v1/sample-networks/{year}/design-comparison", 2026)
+                        .principal(() -> OPERATOR))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.networkStatus").value("NOT_CREATED"))
+                .andExpect(jsonPath("$.data.designPointCount").isNumber())
+                .andExpect(jsonPath("$.data.designPoints").isArray())
+                .andExpect(jsonPath("$.data.relations").isArray())
+                .andExpect(jsonPath("$.data.actualPoints").doesNotExist());
+
+        mvc.perform(get("/api/v1/sample-networks/{year}/comparison", 2026)
+                        .principal(() -> OPERATOR).queryParam("productCode", "RICE"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.activeSamplePointCount").value(0))
+                .andExpect(jsonPath("$.data.approvedSubmissionSamplePointCount").value(0))
+                .andExpect(jsonPath("$.data.actualPoints.length()").value(0));
+
+        jdbc.sql("""
+                INSERT INTO production.production_record_submission_metadata(
+                  record_id,field_code,value)
+                VALUES(:id,'PROD_SAMPLE_LONGITUDE','130.0000000'),
+                      (:id,'PROD_SAMPLE_LATITUDE','50.0000000')
+                """).param("id", APPROVED_PRODUCTION_RECORD).update();
+
+        mvc.perform(get("/api/v1/sample-networks/{year}/comparison", 2026)
+                        .principal(() -> OPERATOR).queryParam("productCode", "CORN"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.activeSamplePointCount").value(1))
+                .andExpect(jsonPath("$.data.approvedSubmissionSamplePointCount").value(1))
+                .andExpect(jsonPath("$.data.actualPoints.length()").value(1));
+    }
+
+    @Test
+    void removesAnInvalidatedCoordinateFromTheCurrentAnnualSampleCount() throws Exception {
+        jdbc.sql("""
+                INSERT INTO production.production_record(
+                  record_id,product_code,object_type_code,region_code,survey_date,reported_at,
+                  cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,sample_point_id,
+                  survey_year,survey_month,survey_period_precision,survey_period_governance_state)
+                VALUES(:id,'CORN','FARMER',:region,DATE '2026-08-20',CURRENT_TIMESTAMP,
+                  10,20,'APPROVED',:actor,CAST(:point AS uuid),2026,8,'YEAR_MONTH','CONFIRMED')
+                """).param("id", APPROVED_PRODUCTION_RECORD).param("region", VILLAGE_ONE)
+                .param("actor", OPERATOR).param("point", VILLAGE_SAMPLE_POINT).update();
+
+        mvc.perform(get("/api/v1/sample-networks/{year}/comparison", 2026)
+                        .principal(() -> OPERATOR).queryParam("productCode", "CORN"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.activeSamplePointCount").value(1));
+
+        jdbc.sql("""
+                UPDATE registry.sample_point
+                SET location_state='OUTSIDE_REGION',governed_point=NULL,
+                    containment_boundary_sha256=NULL,containment_boundary_revision=NULL
+                WHERE sample_point_id=CAST(:point AS uuid)
+                """).param("point", VILLAGE_SAMPLE_POINT).update();
+
+        mvc.perform(get("/api/v1/sample-networks/{year}/comparison", 2026)
+                        .principal(() -> OPERATOR).queryParam("productCode", "CORN"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.activeSamplePointCount").value(0))
+                .andExpect(jsonPath("$.data.approvedSubmissionSamplePointCount").value(0))
+                .andExpect(jsonPath("$.data.actualPoints.length()").value(0));
+    }
+
+    @Test
+    void includesApprovedConfirmedLogisticsInTheCurrentAnnualSampleCount() throws Exception {
+        jdbc.sql("""
+                INSERT INTO registry.sample_point(
+                  sample_point_id,kind_code,canonical_name,region_code,approval_state,
+                  location_state,governed_point,effective_from,created_by,updated_by)
+                SELECT CAST(:point AS uuid),'LOGISTICS_NODE','年度网络物流样本点',:region,
+                       'APPROVED','VALID',ST_PointOnSurface(boundary.geometry),
+                       DATE '2026-01-01',:actor,:actor
+                FROM overview.administrative_boundary boundary
+                WHERE boundary.region_code=:region
+                """).param("point", LOGISTICS_SAMPLE_POINT).param("region", VILLAGE_ONE)
+                .param("actor", OPERATOR).update();
+        jdbc.sql("""
+                INSERT INTO logistics.route_event(
+                  event_id,product_code,collection_date,reported_at,
+                  origin_region_code,destination_region_code,transport_mode_code,
+                  direction_code,source_organization,reporter,status_code,version,
+                  created_by,last_modified_by,created_at,updated_at,business_region_code,
+                  survey_year,survey_month,survey_period_precision,
+                  survey_period_governance_state,sample_point_id,
+                  sample_longitude,sample_latitude)
+                SELECT CAST(:id AS uuid),'CORN',DATE '2026-08-20',CURRENT_TIMESTAMP,
+                       :region,:region,'ROAD','INFLOW','年度网络物流来源','年度网络物流调研员',
+                       'APPROVED',0,:actor,:actor,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,:region,
+                       2026,8,'YEAR_MONTH','CONFIRMED',CAST(:point AS uuid),
+                       ST_X(point.governed_point),ST_Y(point.governed_point)
+                FROM registry.sample_point point
+                WHERE point.sample_point_id=CAST(:point AS uuid)
+                """).param("id", APPROVED_LOGISTICS_RECORD)
+                .param("point", LOGISTICS_SAMPLE_POINT).param("region", VILLAGE_ONE)
+                .param("actor", OPERATOR).update();
+
+        mvc.perform(get("/api/v1/sample-networks/{year}/comparison", 2026)
+                        .principal(() -> OPERATOR).queryParam("productCode", "CORN")
+                        .queryParam("regionCode", VILLAGE_ONE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.activeSamplePointCount").value(1))
+                .andExpect(jsonPath("$.data.approvedSubmissionSamplePointCount").value(1))
+                .andExpect(jsonPath("$.data.actualPoints.length()").value(1))
+                .andExpect(jsonPath("$.data.actualPoints[0].samplePointId")
+                        .value(LOGISTICS_SAMPLE_POINT))
+                .andExpect(jsonPath("$.data.actualPoints[0].samplePointKindCode")
+                        .value("LOGISTICS_NODE"));
     }
 
     @Test
@@ -520,10 +714,6 @@ class AnnualSampleNetworkRestIntegrationTest {
                 .andExpect(jsonPath("$.data.designPoints[0].coordinateReviewStatus")
                         .value("REVIEWED"))
                 .andExpect(jsonPath("$.data.actualPoints.length()").value(4))
-                .andExpect(jsonPath("$.data.actualPoints[?(@.locatedRegionLevel=='PREFECTURE')]")
-                        .exists())
-                .andExpect(jsonPath("$.data.actualPoints[?(@.locatedRegionLevel=='COUNTY')]")
-                        .exists())
                 .andExpect(jsonPath("$.data.actualPoints[?(@.locatedRegionLevel=='TOWNSHIP')]")
                         .exists())
                 .andExpect(jsonPath("$.data.actualPoints[?(@.locatedRegionLevel=='VILLAGE')]")
@@ -952,6 +1142,12 @@ class AnnualSampleNetworkRestIntegrationTest {
     }
 
     private void cleanOperationalRows() {
+        jdbc.sql("DELETE FROM logistics.route_event WHERE event_id=CAST(:id AS uuid)")
+                .param("id", APPROVED_LOGISTICS_RECORD).update();
+        jdbc.sql("DELETE FROM market.market_record WHERE record_id=:id")
+                .param("id", APPROVED_MARKET_RECORD).update();
+        jdbc.sql("DELETE FROM production.production_record WHERE record_id=:id")
+                .param("id", APPROVED_PRODUCTION_RECORD).update();
         jdbc.sql("DELETE FROM registry.sample_network_design_relation "
                 + "WHERE network_year IN (2025,2026,2027,2028)").update();
         jdbc.sql("DELETE FROM registry.sample_network_membership "
@@ -965,7 +1161,8 @@ class AnnualSampleNetworkRestIntegrationTest {
                         UUID.fromString(TOWNSHIP_SAMPLE_POINT),
                         UUID.fromString(COUNTY_SAMPLE_POINT),
                         UUID.fromString(PREFECTURE_SAMPLE_POINT),
-                        UUID.fromString(OUTSIDE_SAMPLE_POINT)))
+                        UUID.fromString(OUTSIDE_SAMPLE_POINT),
+                        UUID.fromString(LOGISTICS_SAMPLE_POINT)))
                 .update();
         jdbc.sql("DELETE FROM platform.region_location WHERE region_code IN (:regions)")
                 .param("regions", List.of(VILLAGE_ONE, VILLAGE_TWO)).update();
@@ -978,9 +1175,9 @@ class AnnualSampleNetworkRestIntegrationTest {
         @Bean
         @Primary
         CoordinatedAnnualSampleNetworkRepository coordinatedAnnualSampleNetworkRepository(
-                DataSource dataSource) {
+                DataSource dataSource, CurrentOverviewSamplePointReader overviewSamplePoints) {
             return new CoordinatedAnnualSampleNetworkRepository(
-                    JdbcClient.create(dataSource));
+                    JdbcClient.create(dataSource), overviewSamplePoints);
         }
     }
 
@@ -991,8 +1188,9 @@ class AnnualSampleNetworkRestIntegrationTest {
         private volatile CountDownLatch membershipWriteRelease;
         private volatile CountDownLatch submitReached;
 
-        CoordinatedAnnualSampleNetworkRepository(JdbcClient jdbc) {
-            super(jdbc);
+        CoordinatedAnnualSampleNetworkRepository(
+                JdbcClient jdbc, CurrentOverviewSamplePointReader overviewSamplePoints) {
+            super(jdbc, overviewSamplePoints);
             this.jdbc = jdbc;
         }
 

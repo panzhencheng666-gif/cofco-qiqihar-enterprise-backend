@@ -35,10 +35,10 @@ class JdbcMasterDataRepositoryTest {
                 .containsExactly("黑农84", "东生22");
 
         List<Region> regions = repository.findRegions();
-        assertThat(regions).hasSize(29);
+        assertThat(regions).hasSize(37);
         assertThat(regions).filteredOn(region -> region.parentCode() == null)
                 .extracting(Region::name)
-                .containsExactly("齐齐哈尔市", "黑河市", "呼伦贝尔市");
+                .containsExactly("齐齐哈尔市", "黑河市", "呼伦贝尔市", "大兴安岭地区");
         assertThat(regions).filteredOn(region -> "150700".equals(region.parentCode()))
                 .extracting(Region::name)
                 .containsExactly("阿荣旗", "莫力达瓦达斡尔族自治旗", "鄂伦春自治旗", "扎兰屯市");
@@ -54,7 +54,7 @@ class JdbcMasterDataRepositoryTest {
     @Test
     void loadsOnlyRootsOrTheDirectChildrenOfOneRegion() {
         assertThat(repository.findRegionChildren(null)).extracting(Region::name)
-                .containsExactly("齐齐哈尔市", "黑河市", "呼伦贝尔市");
+                .containsExactly("齐齐哈尔市", "黑河市", "呼伦贝尔市", "大兴安岭地区");
         assertThat(repository.findRegionChildren("230200")).extracting(Region::name)
                 .containsExactly(
                         "龙沙区", "建华区", "铁锋区", "昂昂溪区", "富拉尔基区", "碾子山区",

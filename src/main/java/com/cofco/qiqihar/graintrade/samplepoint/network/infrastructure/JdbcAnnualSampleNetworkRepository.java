@@ -1,9 +1,12 @@
 package com.cofco.qiqihar.graintrade.samplepoint.network.infrastructure;
 
+import com.cofco.qiqihar.graintrade.overview.api.CurrentOverviewSamplePoint;
+import com.cofco.qiqihar.graintrade.overview.api.CurrentOverviewSamplePointReader;
 import com.cofco.qiqihar.graintrade.samplepoint.network.application.AnnualSampleNetworkRepository;
 import com.cofco.qiqihar.graintrade.samplepoint.network.application.AnnualSampleNetworkView;
 import com.cofco.qiqihar.graintrade.samplepoint.network.application.DesignSamplePointView;
 import com.cofco.qiqihar.graintrade.samplepoint.network.application.SampleNetworkComparisonView;
+import com.cofco.qiqihar.graintrade.samplepoint.network.application.SampleNetworkDesignComparisonView;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.HashSet;
@@ -17,9 +20,12 @@ import org.springframework.stereotype.Repository;
 @Repository
 public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRepository {
     private final JdbcClient jdbc;
+    private final CurrentOverviewSamplePointReader overviewSamplePoints;
 
-    public JdbcAnnualSampleNetworkRepository(JdbcClient jdbc) {
+    public JdbcAnnualSampleNetworkRepository(
+            JdbcClient jdbc, CurrentOverviewSamplePointReader overviewSamplePoints) {
         this.jdbc = jdbc;
+        this.overviewSamplePoints = overviewSamplePoints;
     }
 
     @Override
@@ -73,6 +79,7 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
     @Override
     public SampleNetworkComparisonView comparison(
             int year, String regionCode, String productCode, Set<String> authorizedRegions) {
+        jdbc.sql("SET LOCAL enable_nestloop=off").update();
         String status = header(year).map(NetworkHeader::status).orElse("NOT_CREATED");
         if (authorizedRegions.isEmpty()) {
             return new SampleNetworkComparisonView(
@@ -102,15 +109,12 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
         boolean formalNetwork = Set.of("PUBLISHED", "RETIRED").contains(status);
         List<SampleNetworkComparisonView.Relation> relations =
                 relations(year, regionCode, authorizedRegions, formalNetwork);
-        if (!formalNetwork) {
-            return new SampleNetworkComparisonView(
-                    year, status, designPoints.size(), designCoordinateCount,
-                    0, 0, pendingVerificationDesignPointCount, 0, 0, 0, 0, 0,
-                    designPoints.size(),
-                    new SampleNetworkComparisonView.LevelCounts(0, 0, 0, 0),
-                    designPoints, List.of(), relations);
-        }
-        List<SampleNetworkComparisonView.ActualPoint> actualPoints = jdbc.sql("""
+        List<SampleNetworkComparisonView.ActualPoint> actualPoints;
+        if (productCode != null) {
+            actualPoints = currentOverviewActualPoints(
+                    year, regionCode, productCode, authorizedRegions);
+        } else {
+            actualPoints = jdbc.sql("""
                 WITH RECURSIVE selected_region(code) AS (
                   SELECT code FROM platform.region WHERE code=CAST(:region AS varchar)
                   UNION ALL
@@ -139,37 +143,230 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                   JOIN scoped_design design
                     ON design.design_village_region_code=relation.design_village_region_code
                   WHERE relation.network_year=:year
+                ),
+                governed_business_row AS MATERIALIZED (
+                  SELECT COALESCE(
+                           resolution.target_sample_point_id,source.sample_point_id) sample_point_id,
+                         source.product_code,source.occurrence_date,
+                         observed.longitude observed_longitude,
+                         observed.latitude observed_latitude
+                  FROM overview.sample_point_query_source source
+                  JOIN platform.object_type visible_type
+                    ON visible_type.business_domain=source.category_code
+                   AND visible_type.code=source.type_code
+                   AND visible_type.overview_enabled
+                  LEFT JOIN registry.current_sample_subject_resolution resolution
+                    ON resolution.source_domain=source.category_code
+                   AND resolution.source_record_id=source.source_record_id
+                  JOIN registry.sample_point business_point
+                    ON business_point.sample_point_id=COALESCE(
+                      resolution.target_sample_point_id,source.sample_point_id)
+                  LEFT JOIN LATERAL (
+                    SELECT CASE source.category_code
+                        WHEN 'PRODUCTION' THEN (
+                          SELECT CASE WHEN btrim(metadata.value) ~
+                            '^[+-]?[0-9]+([.][0-9]+)?$'
+                            THEN metadata.value::double precision END
+                          FROM production.production_record_submission_metadata metadata
+                          WHERE metadata.record_id=source.source_record_id
+                            AND metadata.field_code='PROD_SAMPLE_LONGITUDE')
+                        WHEN 'MARKET' THEN (
+                          SELECT CASE WHEN btrim(value.value) ~
+                            '^[+-]?[0-9]+([.][0-9]+)?$'
+                            THEN value.value::double precision END
+                          FROM market.market_record_core_value value
+                          WHERE value.record_id=source.source_record_id
+                            AND value.field_code='MKT_SAMPLE_LONGITUDE')
+                        WHEN 'LOGISTICS' THEN (
+                          SELECT event.sample_longitude::double precision
+                          FROM logistics.route_event event
+                          WHERE event.event_id::text=source.source_record_id)
+                      END longitude,
+                      CASE source.category_code
+                        WHEN 'PRODUCTION' THEN (
+                          SELECT CASE WHEN btrim(metadata.value) ~
+                            '^[+-]?[0-9]+([.][0-9]+)?$'
+                            THEN metadata.value::double precision END
+                          FROM production.production_record_submission_metadata metadata
+                          WHERE metadata.record_id=source.source_record_id
+                            AND metadata.field_code='PROD_SAMPLE_LATITUDE')
+                        WHEN 'MARKET' THEN (
+                          SELECT CASE WHEN btrim(value.value) ~
+                            '^[+-]?[0-9]+([.][0-9]+)?$'
+                            THEN value.value::double precision END
+                          FROM market.market_record_core_value value
+                          WHERE value.record_id=source.source_record_id
+                            AND value.field_code='MKT_SAMPLE_LATITUDE')
+                        WHEN 'LOGISTICS' THEN (
+                          SELECT event.sample_latitude::double precision
+                          FROM logistics.route_event event
+                          WHERE event.event_id::text=source.source_record_id)
+                      END latitude
+                  ) observed ON true
+                  WHERE resolution.resolution_action IS DISTINCT FROM 'VOID'
+                    AND COALESCE(
+                          resolution.target_sample_point_id,source.sample_point_id) IS NOT NULL
+                    AND source.occurrence_date>=make_date(:year,1,1)
+                    AND source.occurrence_date<make_date(:year+1,1,1)
+                    AND business_point.region_code IN (:authorizedRegions)
+                    AND (CAST(:region AS varchar) IS NULL
+                      OR business_point.region_code IN (SELECT code FROM selected_region)
+                      OR business_point.sample_point_id IN (
+                        SELECT sample_point_id FROM explicitly_related_actual)
+                      OR business_point.region_code IN (
+                        SELECT ancestor_region_code FROM design_ancestor))
+                    AND (
+                      source.category_code='PRODUCTION' AND EXISTS(
+                        SELECT 1
+                        FROM production.effective_approved_production_record effective
+                        WHERE effective.record_id=source.source_record_id)
+                      OR source.category_code='MARKET' AND EXISTS(
+                        SELECT 1
+                        FROM market.effective_approved_market_record effective
+                        WHERE effective.record_id=source.source_record_id)
+                      OR source.category_code='LOGISTICS')
+                ),
+                selected_business_identity(sample_point_id) AS (
+                  SELECT DISTINCT sample_point_id
+                  FROM governed_business_row
+                  WHERE CAST(:product AS varchar) IS NULL
+                    OR product_code=CAST(:product AS varchar)
+                ),
+                latest_business_date(sample_point_id,occurrence_date) AS (
+                  SELECT sample_point_id,max(occurrence_date)
+                  FROM governed_business_row
+                  GROUP BY sample_point_id
+                ),
+                latest_business_location AS (
+                  SELECT row.sample_point_id,
+                         count(DISTINCT (row.observed_longitude,row.observed_latitude))
+                           FILTER (WHERE row.observed_longitude IS NOT NULL
+                             AND row.observed_latitude IS NOT NULL) observed_coordinate_count,
+                         min(row.observed_longitude)
+                           FILTER (WHERE row.observed_longitude IS NOT NULL
+                             AND row.observed_latitude IS NOT NULL) observed_longitude,
+                         min(row.observed_latitude)
+                           FILTER (WHERE row.observed_longitude IS NOT NULL
+                             AND row.observed_latitude IS NOT NULL) observed_latitude
+                  FROM governed_business_row row
+                  JOIN latest_business_date latest
+                    ON latest.sample_point_id=row.sample_point_id
+                   AND latest.occurrence_date=row.occurrence_date
+                  GROUP BY row.sample_point_id
+                ),
+                governed_business_candidate AS (
+                  SELECT location.sample_point_id,point.coordinate_shared_verified,
+                         CASE WHEN location.observed_coordinate_count=1
+                           THEN location.observed_longitude
+                           ELSE ST_X(point.governed_point) END actual_longitude,
+                         CASE WHEN location.observed_coordinate_count=1
+                           THEN location.observed_latitude
+                           ELSE ST_Y(point.governed_point) END actual_latitude,
+                         location.observed_coordinate_count
+                  FROM latest_business_location location
+                  JOIN selected_business_identity selected
+                    ON selected.sample_point_id=location.sample_point_id
+                  JOIN registry.sample_point point
+                    ON point.sample_point_id=location.sample_point_id
+                  WHERE point.approval_state='APPROVED'
+                    AND point.location_state='VALID'
+                    AND point.governed_point IS NOT NULL
+                    AND location.observed_coordinate_count<=1
+                ),
+                governed_business_valid AS (
+                  SELECT candidate.*
+                  FROM governed_business_candidate candidate
+                  JOIN registry.sample_point point
+                    ON point.sample_point_id=candidate.sample_point_id
+                  JOIN overview.administrative_boundary boundary
+                    ON boundary.region_code=point.region_code
+                   AND boundary.geometry_sha256=point.containment_boundary_sha256
+                   AND boundary.source_revision=point.containment_boundary_revision
+                  WHERE candidate.actual_longitude BETWEEN -180 AND 180
+                    AND candidate.actual_latitude BETWEEN -90 AND 90
+                    AND ST_Covers(boundary.geometry,ST_SetSRID(ST_MakePoint(
+                      candidate.actual_longitude,candidate.actual_latitude),4326))
+                ),
+                unverified_shared_coordinate(actual_longitude,actual_latitude) AS (
+                  SELECT actual_longitude,actual_latitude
+                  FROM governed_business_valid
+                  GROUP BY actual_longitude,actual_latitude
+                  HAVING count(DISTINCT sample_point_id)>1
+                     AND NOT bool_and(coordinate_shared_verified)
+                ),
+                governed_business_actual AS (
+                  SELECT valid.sample_point_id,valid.actual_longitude,valid.actual_latitude
+                  FROM governed_business_valid valid
+                  WHERE NOT EXISTS(
+                    SELECT 1 FROM unverified_shared_coordinate occupied
+                    WHERE occupied.actual_longitude=valid.actual_longitude
+                      AND occupied.actual_latitude=valid.actual_latitude)
+                ),
+                actual_candidate(
+                    sample_point_id,status_code,source_priority,
+                    actual_longitude,actual_latitude) AS (
+                  SELECT business.sample_point_id,'ACTIVE',1,
+                         business.actual_longitude,business.actual_latitude
+                  FROM governed_business_actual business
+                  UNION ALL
+                  SELECT membership.sample_point_id,membership.status_code,2,
+                         NULL::double precision,NULL::double precision
+                  FROM registry.sample_network_membership membership
+                  WHERE membership.network_year=:year AND :formalNetwork
+                    AND (CAST(:product AS varchar) IS NULL OR membership.sample_point_id IN (
+                      SELECT sample_point_id FROM governed_business_actual))
+                ),
+                actual(sample_point_id,status_code,actual_longitude,actual_latitude) AS (
+                  SELECT DISTINCT ON (candidate.sample_point_id)
+                         candidate.sample_point_id,candidate.status_code,
+                         candidate.actual_longitude,candidate.actual_latitude
+                  FROM actual_candidate candidate
+                  ORDER BY candidate.sample_point_id,candidate.source_priority
                 )
-                SELECT membership.sample_point_id,sample.canonical_name,sample.kind_code,
-                       membership.status_code,sample.region_code,located.name region_name,
+                SELECT actual.sample_point_id,sample.canonical_name,sample.kind_code,
+                       actual.status_code,sample.region_code,located.name region_name,
                        located.administrative_level,
-                       CASE WHEN sample.governed_point IS NULL THEN NULL
-                            ELSE ST_X(sample.governed_point)::numeric(10,7) END actual_longitude,
-                       CASE WHEN sample.governed_point IS NULL THEN NULL
-                            ELSE ST_Y(sample.governed_point)::numeric(10,7) END actual_latitude,
+                       COALESCE(actual.actual_longitude,
+                         ST_X(sample.governed_point))::numeric(10,7) actual_longitude,
+                       COALESCE(actual.actual_latitude,
+                         ST_Y(sample.governed_point))::numeric(10,7) actual_latitude,
                        sample.location_state
-                FROM registry.sample_network_membership membership
+                FROM actual
                 JOIN registry.sample_point sample
-                  ON sample.sample_point_id=membership.sample_point_id
+                  ON sample.sample_point_id=actual.sample_point_id
+                JOIN overview.administrative_boundary boundary
+                  ON boundary.region_code=sample.region_code
+                 AND boundary.geometry_sha256=sample.containment_boundary_sha256
+                 AND boundary.source_revision=sample.containment_boundary_revision
                 JOIN platform.region located ON located.code=sample.region_code
-                WHERE membership.network_year=:year
+                WHERE sample.approval_state='APPROVED'
+                  AND sample.location_state='VALID'
+                  AND sample.governed_point IS NOT NULL
+                  AND ST_Covers(boundary.geometry,ST_SetSRID(ST_MakePoint(
+                    COALESCE(actual.actual_longitude,ST_X(sample.governed_point)),
+                    COALESCE(actual.actual_latitude,ST_Y(sample.governed_point))),4326))
                   AND sample.region_code IN (:authorizedRegions)
+                  AND sample.effective_from<=make_date(:year,12,31)
+                  AND (sample.effective_to IS NULL
+                       OR sample.effective_to>=make_date(:year,1,1))
                   AND (CAST(:region AS varchar) IS NULL
                        OR sample.region_code IN (SELECT code FROM selected_region)
-                       OR membership.sample_point_id IN (
+                       OR actual.sample_point_id IN (
                             SELECT sample_point_id FROM explicitly_related_actual)
                        OR (located.administrative_level IN (
                               'PREFECTURE','COUNTY','TOWNSHIP')
                            AND sample.region_code IN (
                               SELECT ancestor_region_code FROM design_ancestor)))
-                ORDER BY CASE membership.status_code
+                ORDER BY CASE actual.status_code
                            WHEN 'ACTIVE' THEN 1 WHEN 'CANDIDATE' THEN 2
                            WHEN 'PAUSED' THEN 3 ELSE 4 END,
                          CASE located.administrative_level
                            WHEN 'PREFECTURE' THEN 1 WHEN 'COUNTY' THEN 2
                            WHEN 'TOWNSHIP' THEN 3 ELSE 4 END,
-                         sample.canonical_name,membership.sample_point_id
+                         sample.canonical_name,actual.sample_point_id
                 """).param("year", year).param("region", regionCode)
+                .param("product", productCode)
+                .param("formalNetwork", formalNetwork)
                 .param("authorizedRegions", authorizedRegions)
                 .query((row, index) -> new SampleNetworkComparisonView.ActualPoint(
                         row.getObject("sample_point_id", UUID.class), row.getString("canonical_name"),
@@ -179,6 +376,7 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                         row.getBigDecimal("actual_longitude"), row.getBigDecimal("actual_latitude"),
                         row.getString("location_state")))
                 .list();
+        }
         Set<UUID> activeIds = new HashSet<>();
         int prefectures = 0;
         int counties = 0;
@@ -220,8 +418,9 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                 .filter(code -> !exact.contains(code) && !represented.contains(code))
                 .forEach(regional::add);
         int associated = exact.size() + represented.size() + regional.size();
-        int approvedSubmissionSamplePointCount = approvedSubmissionSamplePointCount(
-                year, productCode, activeIds);
+        int approvedSubmissionSamplePointCount = productCode == null
+                ? approvedSubmissionSamplePointCount(year, null, activeIds)
+                : activeIds.size();
         int multipleActualPerDesignPointCount = (int) relations.stream()
                 .filter(relation -> activeIds.contains(relation.samplePointId()))
                 .filter(relation -> "APPROVED".equals(relation.reviewStatus()))
@@ -252,19 +451,103 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                 designPoints, actualPoints, relations);
     }
 
+    @Override
+    public SampleNetworkDesignComparisonView designComparison(
+            int year, String regionCode, Set<String> authorizedRegions) {
+        String status = header(year).map(NetworkHeader::status).orElse("NOT_CREATED");
+        if (authorizedRegions.isEmpty()) {
+            return new SampleNetworkDesignComparisonView(
+                    year, status, 0, 0, 0, List.of(), List.of());
+        }
+        List<SampleNetworkComparisonView.DesignPoint> designPoints =
+                designPoints(regionCode, authorizedRegions).stream()
+                        .map(point -> new SampleNetworkComparisonView.DesignPoint(
+                                point.villageRegionCode(), point.villageName(),
+                                point.townshipRegionCode(), point.townshipName(),
+                                point.countyRegionCode(), point.countyName(),
+                                point.longitude(), point.latitude(), point.coordinateSourceName(),
+                                point.coordinateSourceRevision(), point.coordinateMatchConfidence(),
+                                point.coordinateReviewStatus()))
+                        .toList();
+        int designCoordinateCount = (int) designPoints.stream()
+                .filter(point -> point.designLongitude() != null && point.designLatitude() != null)
+                .count();
+        int pendingVerificationDesignPointCount = (int) designPoints.stream()
+                .filter(point -> !"AUTHORITY_APPROVED".equals(point.coordinateReviewStatus()))
+                .count();
+        boolean formalNetwork = Set.of("PUBLISHED", "RETIRED").contains(status);
+        return new SampleNetworkDesignComparisonView(
+                year, status, designPoints.size(), designCoordinateCount,
+                pendingVerificationDesignPointCount, designPoints,
+                relations(year, regionCode, authorizedRegions, formalNetwork));
+    }
+
     private int approvedSubmissionSamplePointCount(
             int year, String productCode, Set<UUID> activeIds) {
         if (activeIds.isEmpty()) {
             return 0;
         }
         return jdbc.sql("""
-                SELECT count(DISTINCT source.sample_point_id)
-                FROM overview.sample_point_query_source source
-                WHERE source.sample_point_id IN (:activeIds)
-                  AND EXTRACT(YEAR FROM source.occurrence_date)=:year
+                SELECT count(DISTINCT COALESCE(
+                         resolution.target_sample_point_id,source.sample_point_id))
+                FROM overview.approved_sample_point_source source
+                LEFT JOIN registry.current_sample_subject_resolution resolution
+                  ON resolution.source_domain=source.source_domain
+                 AND resolution.source_record_id=source.source_record_id
+                WHERE resolution.resolution_action IS DISTINCT FROM 'VOID'
+                  AND COALESCE(
+                        resolution.target_sample_point_id,source.sample_point_id) IN (:activeIds)
+                  AND source.occurrence_date>=make_date(:year,1,1)
+                  AND source.occurrence_date<make_date(:year+1,1,1)
                   AND (CAST(:product AS varchar) IS NULL OR source.product_code=:product)
+                  AND (
+                    source.source_domain='PRODUCTION' AND EXISTS(
+                      SELECT 1
+                      FROM production.effective_approved_production_record effective
+                      WHERE effective.record_id=source.source_record_id)
+                    OR source.source_domain='MARKET' AND EXISTS(
+                      SELECT 1
+                      FROM market.effective_approved_market_record effective
+                      WHERE effective.record_id=source.source_record_id))
                 """).param("activeIds", activeIds).param("year", year)
                 .param("product", productCode).query(Integer.class).single();
+    }
+
+    private List<SampleNetworkComparisonView.ActualPoint> currentOverviewActualPoints(
+            int year, String regionCode, String productCode, Set<String> authorizedRegions) {
+        List<CurrentOverviewSamplePoint> icons = overviewSamplePoints.read(
+                year, productCode, regionCode, authorizedRegions);
+        if (icons.isEmpty()) {
+            return List.of();
+        }
+        java.util.Map<UUID, CurrentOverviewSamplePoint> iconById = icons.stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        CurrentOverviewSamplePoint::samplePointId,
+                        icon -> icon,
+                        (left, right) -> left));
+        return jdbc.sql("""
+                SELECT point.sample_point_id,point.canonical_name,point.kind_code,
+                       point.region_code,region.name region_name,region.administrative_level,
+                       point.location_state
+                FROM registry.sample_point point
+                JOIN platform.region region ON region.code=point.region_code
+                WHERE point.sample_point_id IN (:ids)
+                ORDER BY CASE region.administrative_level
+                           WHEN 'PREFECTURE' THEN 1 WHEN 'COUNTY' THEN 2
+                           WHEN 'TOWNSHIP' THEN 3 ELSE 4 END,
+                         point.canonical_name,point.sample_point_id
+                """).param("ids", iconById.keySet())
+                .query((row, index) -> {
+                    UUID id = row.getObject("sample_point_id", UUID.class);
+                    CurrentOverviewSamplePoint icon = iconById.get(id);
+                    return new SampleNetworkComparisonView.ActualPoint(
+                            id, row.getString("canonical_name"), row.getString("kind_code"),
+                            "ACTIVE", row.getString("region_code"), row.getString("region_name"),
+                            row.getString("administrative_level"),
+                            java.math.BigDecimal.valueOf(icon.longitude()),
+                            java.math.BigDecimal.valueOf(icon.latitude()),
+                            row.getString("location_state"));
+                }).list();
     }
 
     @Override

@@ -65,6 +65,19 @@ public class OverviewService {
     @Transactional(readOnly = true)
     public OverviewDashboard dashboard(
             String productCode, Integer year, String periodCode, String regionCode) {
+        DashboardRequest request = dashboardRequest(productCode, year, periodCode, regionCode);
+        return repository.dashboard(productCode, request.year(), regionCode, request.regionCodes());
+    }
+
+    @Transactional(readOnly = true)
+    public OverviewDashboardSummary dashboardSummary(
+            String productCode, Integer year, String periodCode, String regionCode) {
+        DashboardRequest request = dashboardRequest(productCode, year, periodCode, regionCode);
+        return repository.dashboardSummary(productCode, request.year(), regionCode, request.regionCodes());
+    }
+
+    private DashboardRequest dashboardRequest(
+            String productCode, Integer year, String periodCode, String regionCode) {
         if (blank(productCode) || !repository.knownProduct(productCode)
                 || (!blank(periodCode) && !repository.knownPeriod(periodCode))
                 || (!blank(regionCode) && !repository.knownRegion(regionCode))) throw invalid();
@@ -74,8 +87,10 @@ public class OverviewService {
         if (!blank(regionCode) && !repository.canNavigateRegion(regionCode, scope.regionCodes())) {
             scope.requireRegion(regionCode);
         }
-        return repository.dashboard(productCode, effectiveYear, regionCode, scope.regionCodes());
+        return new DashboardRequest(effectiveYear, scope.regionCodes());
     }
+
+    private record DashboardRequest(int year, java.util.Set<String> regionCodes) {}
 
     @Transactional(readOnly = true)
     public List<AnnualComparisonDefinition> annualComparisonDefinitions(String sourceDomain, String productCode) {

@@ -21,6 +21,8 @@ public interface OverviewRepository {
             Set<String> authorizedRegionCodes);
     OverviewDashboard dashboard(String productCode, int year, String regionCode,
             Set<String> authorizedRegionCodes);
+    OverviewDashboardSummary dashboardSummary(String productCode, int year, String regionCode,
+            Set<String> authorizedRegionCodes);
     List<AnnualComparisonPoint> annualComparison(String productCode, String cultivarCode, String regionCode,
             int surveyYear, AnnualComparisonDefinition definition, Set<String> authorizedRegionCodes);
 }

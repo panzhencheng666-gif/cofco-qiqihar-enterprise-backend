@@ -82,7 +82,7 @@ class JdbcSampleIdentityGovernanceRepositoryIntegrationTest {
         assertThat(repository.assess(input("13900000002", "122.50", "48.08")).outcome())
                 .isEqualTo(DISTINCT);
         assertThat(repository.assess(input("13800000001", "123.00", "47.00")).outcome())
-                .isEqualTo(REVIEW_REQUIRED);
+                .isEqualTo(MATCHED);
     }
 
     @Test

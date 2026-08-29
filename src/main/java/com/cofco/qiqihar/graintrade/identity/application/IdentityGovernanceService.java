@@ -21,6 +21,9 @@ public class IdentityGovernanceService {
     private static final String REPORTER_ROLE="BUSINESS_OPERATOR";
     private static final String ADMINISTRATOR_ROLE="BUSINESS_REVIEWER";
     private static final Set<String> ASSIGNABLE_BUSINESS_ROLES=Set.of(REPORTER_ROLE,ADMINISTRATOR_ROLE);
+    private static final Set<String> ASSIGNABLE_WORK_UNITS=Set.of(
+            "QIQIHAR_BUSINESS","NEHE_DEPOT","KESHAN_DEPOT",
+            "KEDONG_DEPOT","LONGZHEN_DEPOT","CHENGJISIHAN_DEPOT");
     private static final Set<String> ACCOUNT_STATUSES=Set.of("INVITED","ACTIVE","LOCKED","SUSPENDED","REVOKED");
     private static final Set<String> EMPLOYMENT_STATUSES=Set.of("ACTIVE","LEAVE","TERMINATED");
     private final IdentityGovernanceRepository repository;
@@ -50,10 +53,12 @@ public class IdentityGovernanceService {
     public AssignmentOptions assignmentOptions(String workUnitCode) {
         SecurityPrincipal actor=access.require("IDENTITY_READ",null);
         if(blank(workUnitCode))throw invalid();
+        requireAssignableWorkUnit(workUnitCode);
         requireWorkUnit(actor,workUnitCode);
         AssignmentOptions available=repository.assignmentOptions(workUnitCode);
         AssignmentOptions options=new AssignmentOptions(
-                available.workUnits(),
+                available.workUnits().stream()
+                        .filter(unit->ASSIGNABLE_WORK_UNITS.contains(unit.code())).toList(),
                 available.roles().stream().filter(role->ASSIGNABLE_BUSINESS_ROLES.contains(role.code())).toList(),
                 available.positions(),available.regionCodes());
         if(systemAdministrator(actor))return options;
@@ -70,6 +75,7 @@ public class IdentityGovernanceService {
         if(requested==null)throw invalid();
         EmployeeAssignment assignment=new EmployeeAssignment(requested.displayName(),requested.workUnitCode(),
                 "INVITED","ACTIVE",requested.roleCodes(),requested.positionCodes(),requested.regionCodes());
+        requireAssignableWorkUnit(assignment.workUnitCode());
         requireWorkUnit(actor,assignment.workUnitCode());
         requireRoleAssignment(assignment.roleCodes());
         validate(assignment);
@@ -93,6 +99,7 @@ public class IdentityGovernanceService {
                     "ACCOUNT_OWNER_ADMINISTRATION_DENIED","平台唯一所有者只能由系统管理员维护");
         if(!systemAdministrator(actor)&&current.roles().stream().anyMatch(role->role.code().equals("SYSTEM_ADMIN")))
             throw roleDenied();
+        requireAssignableWorkUnit(assignment.workUnitCode());
         requireWorkUnit(actor,assignment.workUnitCode());
         requireRoleAssignment(assignment.roleCodes());
         validate(assignment);
@@ -148,6 +155,9 @@ public class IdentityGovernanceService {
     private static void requireWorkUnit(SecurityPrincipal actor,String workUnitCode){
         if(!systemAdministrator(actor)&&!actor.workUnitCode().equals(workUnitCode))throw new AccessDeniedException(
                 "ACCESS_WORK_UNIT_DENIED","无权访问其他工作单位");
+    }
+    private static void requireAssignableWorkUnit(String workUnitCode){
+        if(!ASSIGNABLE_WORK_UNITS.contains(workUnitCode))throw invalid();
     }
     private static void requireRoleAssignment(List<String> roleCodes){
         if(roleCodes.contains(ACCOUNT_OWNER_ROLE))throw new AccessDeniedException(

@@ -12,8 +12,14 @@ public record OverviewSamplePointDetail(
         String regionName,
         String locationState,
         String dataQualityReason,
+        List<RoleRef> roles,
         List<Association> associations) {
-    public OverviewSamplePointDetail { associations = List.copyOf(associations); }
+    public OverviewSamplePointDetail {
+        roles = List.copyOf(roles);
+        associations = List.copyOf(associations);
+    }
+
+    public record RoleRef(String code, String name, String iconKey) {}
 
     public record Association(
             String categoryCode,

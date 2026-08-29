@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.logistics.application;
 
 import com.cofco.qiqihar.graintrade.logistics.domain.LogisticsStatus;
+import com.cofco.qiqihar.graintrade.shared.application.FormalSampleIdentity;
 import com.cofco.qiqihar.graintrade.shared.application.AuthenticationRequiredException;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
@@ -13,6 +14,8 @@ import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadSc
 import com.cofco.qiqihar.graintrade.shared.security.application.SeparationOfDutiesPolicy;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
 import java.time.Clock;
+import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.util.Map;
 import java.util.Set;
@@ -71,6 +74,26 @@ public class LogisticsService {
         if(!repository.actionAllowed(securedDraft.productCode(),LogisticsStatus.DRAFT,"NEW"))throw invalid();
         LogisticsRecordView created=repository.insert(UUID.randomUUID().toString(),securedDraft,principal.subjectId(),clock.instant()); audit(principal,created,"LOGISTICS_RECORD_CREATED"); return authorizedView(created);
     }
+    @Transactional public LogisticsRecordView saveOfficialObservation(
+            FormalSampleIdentity identity, OffsetDateTime observedAt,
+            LogisticsDraft incoming, Instant officialSavedAt) {
+        SecurityPrincipal principal=authorize("BUSINESS_CREATE",Set.of(identity.regionCode()));
+        if(observedAt.toInstant().isAfter(officialSavedAt))throw invalid();
+        java.time.LocalDate observedOn=observedAt.atZoneSameInstant(ZoneId.of("Asia/Shanghai")).toLocalDate();
+        Map<String,String> values=new java.util.LinkedHashMap<>(incoming.values());
+        values.put("surveyYear",Integer.toString(observedOn.getYear()));
+        values.put("surveyMonth",Integer.toString(observedOn.getMonthValue()));
+        values.put("LOG_REGION",identity.regionCode());
+        values.put("LOG_REPORTER",principal.displayName());
+        values.put("LOG_SAMPLE_NAME",identity.sampleName());
+        values.put("LOG_SAMPLE_CONTACT",requiredLockedValue(identity,"LOG_SAMPLE_CONTACT"));
+        values.put("LOG_SAMPLE_LATITUDE",coordinate(identity.latitude(),6));
+        values.put("LOG_SAMPLE_LONGITUDE",coordinate(identity.longitude(),6));
+        LogisticsDraft secured=new LogisticsDraft(identity.productCode(),values);
+        validate(secured);
+        return repository.insertOfficialObservation(UUID.randomUUID().toString(),secured,
+                identity.samplePointId(),principal.subjectId(),observedAt.toInstant(),officialSavedAt);
+    }
     public void validateImportDraft(LogisticsDraft draft) {
         securedImportDraft(draft);
     }
@@ -117,7 +140,13 @@ public class LogisticsService {
             separationOfDuties.requireIndependentReturner(
                     "LOGISTICS_RECORD",id,"LOGISTICS_RECORD_SUBMITTED",principal);
         }
-        LogisticsRecordView updated=repository.transition(id,version,target,reason,principal.subjectId(),clock.instant()); audit(principal,updated,auditAction); return authorizedView(updated);
+        java.time.Instant transitionedAt=clock.instant();
+        LogisticsRecordView updated=repository.transition(id,version,target,reason,principal.subjectId(),transitionedAt);
+        if(target==LogisticsStatus.APPROVED){
+            repository.linkApprovedSamplePoint(id,principal.subjectId(),transitionedAt);
+            updated=required(id);
+        }
+        audit(principal,updated,auditAction); return authorizedView(updated);
     }
     private void validate(LogisticsDraft draft) {
         if (draft==null || blank(draft.productCode())
@@ -184,5 +213,13 @@ public class LogisticsService {
                 record.status(),record.returnReason(),actions,record.version());
     }
     private static boolean blank(String value){return value==null||value.isBlank();}
+    private static String requiredLockedValue(FormalSampleIdentity identity,String code){
+        String value=identity.lockedValues().path(code).asText(null);
+        if(blank(value))throw invalid();
+        return value;
+    }
+    private static String coordinate(String value,int scale){
+        return new java.math.BigDecimal(value).setScale(scale,java.math.RoundingMode.HALF_UP).toPlainString();
+    }
     private static ClientRequestException invalid(){return new ClientRequestException("INVALID_LOGISTICS_RECORD","Logistics record or query is invalid");}
 }

@@ -9,9 +9,13 @@ import org.springframework.stereotype.Repository;
 @Repository
 public class JdbcBusinessPeriodRecordGuard implements BusinessPeriodRecordGuard {
     private static final String NORMALIZED_NAME =
-            "lower(regexp_replace(normalize(%s,NFKC),'[[:space:]　]+','','g'))";
+            "regexp_replace(regexp_replace(normalize(lower(normalize(%s,NFKC)),NFKD),"
+                    + "'[' || chr(768) || '-' || chr(879) || ']+','','g'),"
+                    + "'[[:space:]]+','','g')";
     private static final String NORMALIZED_CONTACT =
-            "lower(regexp_replace(normalize(%s,NFKC),'[[:space:]　()（）-]+','','g'))";
+            "regexp_replace(regexp_replace(normalize(lower(normalize(%s,NFKC)),NFKD),"
+                    + "'[' || chr(768) || '-' || chr(879) || ']+','','g'),"
+                    + "'[[:space:]()（）-]+','','g')";
     private final JdbcClient jdbc;
 
     public JdbcBusinessPeriodRecordGuard(JdbcClient jdbc) {
@@ -43,20 +47,24 @@ public class JdbcBusinessPeriodRecordGuard implements BusinessPeriodRecordGuard 
         return jdbc.sql("""
                 WITH normalized AS (
                   SELECT
-                    lower(regexp_replace(normalize(CAST(:sampleName AS text),NFKC),
-                      '[[:space:]　]+','','g')) AS sample_name,
-                    lower(regexp_replace(normalize(CAST(:sampleContact AS text),NFKC),
-                      '[[:space:]　()（）-]+','','g')) AS sample_contact
+                    regexp_replace(regexp_replace(
+                      normalize(lower(normalize(CAST(:sampleName AS text),NFKC)),NFKD),
+                      '[' || chr(768) || '-' || chr(879) || ']+','','g'),
+                      '[[:space:]]+','','g') AS sample_name,
+                    regexp_replace(regexp_replace(
+                      normalize(lower(normalize(CAST(:sampleContact AS text),NFKC)),NFKD),
+                      '[' || chr(768) || '-' || chr(879) || ']+','','g'),
+                      '[[:space:]()（）-]+','','g') AS sample_contact
                 )
                 SELECT sample_name,sample_contact,
                   encode(sha256(convert_to(jsonb_build_array(
                     CAST(:domain AS text),CAST(:product AS text),CAST(:objectType AS text),
-                    CAST(:region AS text),CAST(:year AS integer),CAST(:month AS integer),
+                    CAST(:year AS integer),CAST(:month AS integer),
                     sample_name,sample_contact)::text,'UTF8')),'hex') AS business_fingerprint
                 FROM normalized
                 """).param("sampleName", raw.sampleName()).param("sampleContact", raw.sampleContact())
                 .param("domain", raw.domainCode()).param("product", raw.productCode())
-                .param("objectType", raw.objectTypeCode()).param("region", raw.regionCode())
+                .param("objectType", raw.objectTypeCode())
                 .param("year", raw.surveyYear())
                 .param("month", raw.surveyMonth(), java.sql.Types.INTEGER)
                 .query((row, ignored) -> new PeriodKey(raw.domainCode(), raw.productCode(),
@@ -70,7 +78,7 @@ public class JdbcBusinessPeriodRecordGuard implements BusinessPeriodRecordGuard 
                 SELECT record.record_id
                 FROM production.production_record record
                 WHERE record.product_code=:product AND record.object_type_code=:objectType
-                  AND record.region_code=:region AND record.survey_year=:year
+                  AND record.survey_year=:year
                   AND record.survey_month IS NOT DISTINCT FROM :month
                   AND record.status_code IN ('DRAFT','PENDING_REVIEW','APPROVED','RETURNED')
                   AND EXISTS(SELECT 1 FROM production.production_record_submission_metadata metadata
@@ -89,7 +97,7 @@ public class JdbcBusinessPeriodRecordGuard implements BusinessPeriodRecordGuard 
                 SELECT record.record_id
                 FROM market.market_record record
                 WHERE record.product_code=:product AND record.object_type_code=:objectType
-                  AND record.region_code=:region AND record.survey_year=:year
+                  AND record.survey_year=:year
                   AND record.survey_month IS NOT DISTINCT FROM :month
                   AND record.status_code IN ('DRAFT','PENDING_REVIEW','APPROVED','RETURNED')
                   AND EXISTS(SELECT 1 FROM market.market_record_core_value value
@@ -107,7 +115,7 @@ public class JdbcBusinessPeriodRecordGuard implements BusinessPeriodRecordGuard 
         return first("""
                 SELECT event.event_id::text
                 FROM logistics.route_event event
-                WHERE event.product_code=:product AND event.business_region_code=:region
+                WHERE event.product_code=:product
                   AND event.survey_year=:year AND event.survey_month IS NOT DISTINCT FROM :month
                   AND event.status_code IN ('DRAFT','PENDING_REVIEW','APPROVED','RETURNED')
                   AND %s=:sampleName AND %s=:sampleContact
@@ -118,7 +126,7 @@ public class JdbcBusinessPeriodRecordGuard implements BusinessPeriodRecordGuard 
 
     private String first(String sql, PeriodKey key) {
         return jdbc.sql(sql).param("product", key.productCode()).param("objectType", key.objectTypeCode())
-                .param("region", key.regionCode()).param("year", key.surveyYear())
+                .param("year", key.surveyYear())
                 .param("month", key.surveyMonth(), java.sql.Types.INTEGER)
                 .param("sampleName", key.sampleName()).param("sampleContact", key.sampleContact())
                 .query(String.class).optional().orElse(null);

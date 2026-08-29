@@ -5,6 +5,8 @@ import com.cofco.qiqihar.graintrade.logistics.application.LogisticsDraft;
 import com.cofco.qiqihar.graintrade.logistics.application.LogisticsRecordView;
 import com.cofco.qiqihar.graintrade.logistics.application.LogisticsRepository;
 import com.cofco.qiqihar.graintrade.logistics.domain.LogisticsStatus;
+import com.cofco.qiqihar.graintrade.samplepoint.coordinate.application.SamplePointCoordinateGuard;
+import com.cofco.qiqihar.graintrade.samplepoint.identity.application.SampleIdentityAssessment;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import com.cofco.qiqihar.graintrade.shared.application.PlainDecimal;
@@ -20,12 +22,24 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.regex.Pattern;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
 @Repository
 public class JdbcLogisticsRepository implements LogisticsRepository {
+    private static final String CURRENT_SAMPLE_FILTER = """
+             AND (e.sample_point_id IS NULL OR EXISTS (
+               SELECT 1 FROM registry.sample_point point
+               JOIN overview.administrative_boundary boundary
+                 ON boundary.region_code=point.region_code
+               WHERE point.sample_point_id=e.sample_point_id
+                 AND point.approval_state='APPROVED'
+                 AND point.location_state='VALID'
+                 AND point.governed_point IS NOT NULL
+                 AND ST_Covers(boundary.geometry,point.governed_point)))
+            """;
     private static final Pattern STORAGE_KEY = Pattern.compile("^[A-Za-z_][A-Za-z0-9_]*$");
     private static final List<String> PUBLIC_FIELD_CODES = List.of(
             "surveyYear", "surveyMonth", "fillingDate", "LOG_SAMPLE_NAME", "LOG_REGION",
@@ -33,9 +47,11 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
             "LOG_SAMPLE_LONGITUDE", "LOG_TRANSPORT_MODE", "LOG_DIRECTION", "LOG_ROUTE_VOLUME",
             "LOG_FREIGHT_RATE", "LOG_BOARD_PRICE", "LOG_STATUS");
     private final JdbcClient jdbc;
+    private final SamplePointCoordinateGuard coordinateGuard;
 
-    public JdbcLogisticsRepository(JdbcClient jdbc) {
+    public JdbcLogisticsRepository(JdbcClient jdbc, SamplePointCoordinateGuard coordinateGuard) {
         this.jdbc = jdbc;
+        this.coordinateGuard = coordinateGuard;
     }
 
     @Override
@@ -174,12 +190,13 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
     public PagedResult<LogisticsRecordView> findPage(
             String product, int page, int size, Map<String, String> filters, Set<String> authorizedRegionCodes) {
         SqlFilter filter = filter(product, filters, authorizedRegionCodes);
-        long total = jdbc.sql("SELECT count(*) FROM logistics.route_event e " + filter.sql)
+        long total = jdbc.sql("SELECT count(*) FROM logistics.route_event e "
+                        + filter.sql + CURRENT_SAMPLE_FILTER)
                 .params(filter.params).query(Long.class).single();
         List<String> ids = jdbc.sql("""
                 SELECT e.event_id::text FROM logistics.route_event e %s
                 ORDER BY e.collection_date DESC,e.event_id LIMIT :limit OFFSET :offset
-                """.formatted(filter.sql)).params(filter.params).param("limit", size)
+                """.formatted(filter.sql + CURRENT_SAMPLE_FILTER)).params(filter.params).param("limit", size)
                 .param("offset", Math.multiplyExact((long) page, size)).query(String.class).list();
         return new PagedResult<>(findAll(ids), page, size, total);
     }
@@ -194,6 +211,26 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
     public LogisticsRecordView insert(String id, LogisticsDraft draft, String actor, Instant now) {
         writeEvent(id, null, draft, null, null, actor, now);
         writeDynamicValues(id, draft);
+        return find(id);
+    }
+
+    @Override
+    public LogisticsRecordView insertOfficialObservation(
+            String id, LogisticsDraft draft, UUID samplePointId,
+            String actor, Instant observedAt, Instant officialSavedAt) {
+        writeEvent(id, null, draft, null, null, actor, officialSavedAt);
+        writeDynamicValues(id, draft);
+        int linked = jdbc.sql("""
+                UPDATE logistics.route_event
+                SET sample_point_id=:samplePointId,status_code='APPROVED',submitted_at=:savedAt,
+                    reported_at=:observedAt,updated_at=:savedAt,
+                    survey_period_governance_state='CONFIRMED'
+                WHERE event_id::text=:id AND status_code='DRAFT' AND sample_point_id IS NULL
+                """).param("samplePointId", samplePointId)
+                .param("savedAt", OffsetDateTime.ofInstant(officialSavedAt, ZoneOffset.UTC))
+                .param("observedAt", OffsetDateTime.ofInstant(observedAt, ZoneOffset.UTC))
+                .param("id", id).update();
+        require(linked);
         return find(id);
     }
 
@@ -218,6 +255,118 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
                 .param("version", version).update();
         require(count);
         return find(id);
+    }
+
+    @Override
+    public void linkApprovedSamplePoint(String id, String approvingActorId, Instant approvedAt) {
+        ApprovedLogisticsSample sample = jdbc.sql("""
+                SELECT event.source_organization,event.sample_contact,event.business_region_code,
+                       event.sample_longitude,event.sample_latitude,event.collection_date,event.sample_point_id
+                FROM logistics.route_event event
+                WHERE event.event_id::text=:id AND event.status_code='APPROVED'
+                """).param("id", id).query((row, ignored) -> new ApprovedLogisticsSample(
+                        row.getString("source_organization"), row.getString("sample_contact"),
+                        row.getString("business_region_code"), row.getBigDecimal("sample_longitude"),
+                        row.getBigDecimal("sample_latitude"), row.getObject("collection_date", LocalDate.class),
+                        row.getObject("sample_point_id", UUID.class))).optional().orElse(null);
+        if (sample == null || sample.samplePointId() != null || blank(sample.name()) || blank(sample.contact())
+                || sample.longitude() == null || sample.latitude() == null) return;
+
+        String nameKey = SampleIdentityAssessment.normalizedName(sample.name());
+        String contactKey = SampleIdentityAssessment.normalizedContact(sample.contact());
+        String businessIdentity = "VISIBLE|" + nameKey + "|" + contactKey;
+        jdbc.sql("SELECT pg_advisory_xact_lock(hashtextextended(:identity,0))")
+                .param("identity", "VISIBLE_LOGISTICS_SAMPLE|" + nameKey + "|" + contactKey)
+                .query((row, ignored) -> Boolean.TRUE).single();
+        UUID reviewedTarget = jdbc.sql("""
+                SELECT NULLIF(detail->>'targetSamplePointId','')::uuid
+                FROM platform.business_audit_event
+                WHERE aggregate_type='LOGISTICS_RECORD' AND aggregate_id=:id
+                  AND action_code='SAMPLE_IDENTITY_LINK_EXISTING'
+                ORDER BY occurred_at DESC LIMIT 1
+                """).param("id", id).query(UUID.class).optional().orElse(null);
+        List<UUID> existing = reviewedTarget == null ? jdbc.sql("""
+                WITH candidate AS (
+                  SELECT record.sample_point_id
+                  FROM production.production_record record
+                  JOIN production.production_record_business_identity identity USING(record_id)
+                  WHERE identity.business_identity=:businessIdentity
+                    AND record.status_code='APPROVED'
+                    AND record.survey_period_governance_state='CONFIRMED'
+                    AND record.sample_point_id IS NOT NULL
+                  UNION
+                  SELECT record.sample_point_id
+                  FROM market.market_record record
+                  JOIN market.market_record_business_identity identity USING(record_id)
+                  WHERE identity.business_identity=:businessIdentity
+                    AND record.status_code='APPROVED'
+                    AND record.survey_period_governance_state='CONFIRMED'
+                    AND record.sample_point_id IS NOT NULL
+                  UNION
+                  SELECT previous.sample_point_id
+                  FROM logistics.route_event previous
+                  WHERE previous.status_code='APPROVED' AND previous.sample_point_id IS NOT NULL
+                    AND lower(regexp_replace(normalize(btrim(previous.source_organization),NFKC),
+                          '[[:space:]]+','','g'))=:nameKey
+                    AND lower(regexp_replace(normalize(btrim(previous.sample_contact),NFKC),
+                          '[[:space:]()（）-]+','','g'))=:contactKey
+                )
+                SELECT DISTINCT point.sample_point_id
+                FROM candidate
+                JOIN registry.sample_point point USING(sample_point_id)
+                WHERE point.approval_state='APPROVED' AND point.location_state='VALID'
+                """).param("businessIdentity", businessIdentity)
+                .param("nameKey", nameKey).param("contactKey", contactKey)
+                .query(UUID.class).list() : List.of(reviewedTarget);
+        if (existing.size() > 1) {
+            throw new ConflictException("LOGISTICS_SAMPLE_IDENTITY_CONFLICT",
+                    "同一名称和联系方式已关联多个物流样本点，请核对后再审核");
+        }
+
+        UUID samplePointId;
+        OffsetDateTime approvedTime = OffsetDateTime.ofInstant(approvedAt, ZoneOffset.UTC);
+        if (existing.size() == 1) {
+            samplePointId = existing.getFirst();
+            int validTarget = jdbc.sql("""
+                    SELECT count(*) FROM registry.sample_point
+                    WHERE sample_point_id=:samplePointId
+                      AND approval_state='APPROVED' AND location_state='VALID'
+                    """).param("samplePointId", samplePointId).query(Integer.class).single();
+            if (validTarget != 1) throw new ConflictException(
+                    "LOGISTICS_SAMPLE_IDENTITY_CONFLICT", "物流样本身份已失效，请重新核对");
+            jdbc.sql("""
+                    UPDATE registry.sample_point
+                    SET effective_from=least(effective_from,:effectiveFrom),updated_by=:actor,updated_at=:updatedAt
+                    WHERE sample_point_id=:samplePointId
+                    """).param("effectiveFrom", sample.collectionDate()).param("actor", approvingActorId)
+                    .param("updatedAt", approvedTime).param("samplePointId", samplePointId).update();
+        } else {
+            coordinateGuard.lockAndRequireAvailable(null, sample.longitude(), sample.latitude());
+            String submittingActorId = jdbc.sql("""
+                    SELECT actor_subject_id FROM platform.business_event_outbox
+                    WHERE aggregate_type='LOGISTICS_RECORD' AND aggregate_id=:id
+                      AND action_code='LOGISTICS_RECORD_SUBMITTED'
+                    ORDER BY event_sequence DESC LIMIT 1
+                    """).param("id", id).query(String.class).single();
+            samplePointId = UUID.randomUUID();
+            jdbc.sql("""
+                    INSERT INTO registry.sample_point(
+                      sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
+                      governed_point,effective_from,version,created_by,created_at,updated_by,updated_at)
+                    VALUES(:samplePointId,'LOGISTICS_NODE',:name,:regionCode,'APPROVED','VALID',
+                      ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326),:effectiveFrom,0,
+                      :submittingActor,:approvedAt,:approvingActor,:approvedAt)
+                    """).param("samplePointId", samplePointId).param("name", sample.name().strip())
+                    .param("regionCode", sample.regionCode()).param("longitude", sample.longitude())
+                    .param("latitude", sample.latitude()).param("effectiveFrom", sample.collectionDate())
+                    .param("submittingActor", submittingActorId).param("approvedAt", approvedTime)
+                    .param("approvingActor", approvingActorId).update();
+        }
+        int linked = jdbc.sql("""
+                UPDATE logistics.route_event SET sample_point_id=:samplePointId
+                WHERE event_id::text=:id AND status_code='APPROVED' AND sample_point_id IS NULL
+                """).param("samplePointId", samplePointId).param("id", id).update();
+        require(linked);
     }
 
     private List<LogisticsRecordView> findAll(List<String> ids) {
@@ -557,5 +706,8 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
                           int surveyYear, Integer surveyMonth, String surveyPeriodPrecision,
                           String surveyPeriodGovernanceState, OffsetDateTime createdAt,
                           OffsetDateTime submittedAt) {}
+    private record ApprovedLogisticsSample(String name, String contact, String regionCode,
+                                           BigDecimal longitude, BigDecimal latitude,
+                                           LocalDate collectionDate, UUID samplePointId) {}
     private record SqlFilter(String sql, Map<String, Object> params) {}
 }

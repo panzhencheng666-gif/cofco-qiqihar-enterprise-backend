@@ -25,7 +25,7 @@ class MarketReturnedCorrectionWorkbookTest {
         List<String> firstValues = List.of(
                 "贸易商", "2026", "样本点甲", "齐齐哈尔市 / 龙沙区", "47.3543", "123.9182");
         List<String> secondValues = List.of(
-                "批发市场", "2026", "样本点乙", "齐齐哈尔市 / 建华区", "47.3620", "123.9550");
+                "批发市场", "2026", "样本点乙", "齐齐哈尔市 / 建华区", "47.362", "123.955");
 
         byte[] workbook = MarketReturnedCorrectionWorkbook.create(ordinaryTemplate, List.of(
                 new MarketReturnedCorrectionWorkbook.Row("market-001", 4, firstValues),

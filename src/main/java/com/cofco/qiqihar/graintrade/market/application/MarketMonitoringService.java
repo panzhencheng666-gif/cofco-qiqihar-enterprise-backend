@@ -7,6 +7,8 @@ import com.cofco.qiqihar.graintrade.market.domain.MarketPricing;
 import com.cofco.qiqihar.graintrade.market.domain.MarketRecordQuery;
 import com.cofco.qiqihar.graintrade.market.domain.MarketTradeDirection;
 import com.cofco.qiqihar.graintrade.market.domain.MarketValidationException;
+import com.cofco.qiqihar.graintrade.samplepoint.identity.application.StableSampleIdentityCoordinateGuard;
+import com.cofco.qiqihar.graintrade.shared.application.FormalSampleIdentity;
 import com.cofco.qiqihar.graintrade.shared.application.AuthenticationRequiredException;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.BoundedInput;
@@ -25,6 +27,7 @@ import com.cofco.qiqihar.graintrade.shared.domain.BusinessPageKey;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
+import java.time.Instant;
 import java.time.DateTimeException;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
@@ -50,7 +53,7 @@ public class MarketMonitoringService {
     private static final ZoneId REPORTING_ZONE = ZoneId.of("Asia/Shanghai");
     private static final Set<String> REQUIRED_TYPED_BINDINGS = Set.of(
             "OBJECT_TYPE", "REGION", "TRADE_DATE", "REPORTED_AT",
-            "PURCHASE_BASE_PRICE", "SALE_BASE_PRICE", "CARRIAGE_BOARD_AMOUNT",
+            "PURCHASE_BASE_PRICE", "CARRIAGE_BOARD_AMOUNT",
             "PACKAGING_FORM", "PACKAGING_AMOUNT", "FREIGHT_AMOUNT");
     private static final Set<String> SYSTEM_MANAGED_OR_RETIRED_INPUT_CODES = Set.of(
             "MKT_CULTIVAR_NAME", "MKT_SAMPLE_SUBJECT_CODE", "MKT_STORAGE_REGION_CODE",
@@ -63,22 +66,24 @@ public class MarketMonitoringService {
     private final BusinessAuditRecorder audit;
     private final EvidencePhotoService evidencePhotos;
     private final SeparationOfDutiesPolicy separationOfDuties;
+    private final StableSampleIdentityCoordinateGuard stableIdentityCoordinates;
     private final Clock clock;
 
     public MarketMonitoringService(MarketMonitoringRepository repository, PageDefinitionQuery pageDefinitions,
             CurrentActor currentActor, Clock clock) {
-        this(repository, pageDefinitions, currentActor, null, null, null, null, clock);
+        this(repository, pageDefinitions, currentActor, null, null, null, null, null, clock);
     }
 
     public MarketMonitoringService(MarketMonitoringRepository repository, PageDefinitionQuery pageDefinitions,
             CurrentActor currentActor, AccessControl accessControl, BusinessAuditRecorder audit, Clock clock) {
-        this(repository, pageDefinitions, currentActor, accessControl, audit, null, null, clock);
+        this(repository, pageDefinitions, currentActor, accessControl, audit, null, null, null, clock);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public MarketMonitoringService(MarketMonitoringRepository repository, PageDefinitionQuery pageDefinitions,
             CurrentActor currentActor, AccessControl accessControl, BusinessAuditRecorder audit,
-            EvidencePhotoService evidencePhotos, SeparationOfDutiesPolicy separationOfDuties, Clock clock) {
+            EvidencePhotoService evidencePhotos, SeparationOfDutiesPolicy separationOfDuties,
+            StableSampleIdentityCoordinateGuard stableIdentityCoordinates, Clock clock) {
         this.repository = repository;
         this.pageDefinitions = pageDefinitions;
         this.currentActor = currentActor;
@@ -86,11 +91,22 @@ public class MarketMonitoringService {
         this.audit = audit;
         this.evidencePhotos = evidencePhotos;
         this.separationOfDuties = separationOfDuties;
+        this.stableIdentityCoordinates = stableIdentityCoordinates;
         this.clock = clock;
     }
 
     @Transactional(readOnly = true)
     public PagedResult<MarketListItem> list(MarketRecordQuery query) {
+        return list(query, true);
+    }
+
+    @Transactional(readOnly = true)
+    public PagedResult<MarketListItem> listLifecycle(MarketRecordQuery query) {
+        return list(query, false);
+    }
+
+    private PagedResult<MarketListItem> list(
+            MarketRecordQuery query, boolean currentFormalOnly) {
         try {
             Math.multiplyExact((long) query.pageNumber(), query.pageSize());
         } catch (ArithmeticException exception) {
@@ -104,7 +120,10 @@ public class MarketMonitoringService {
         if (regionCode != null && !repository.isKnownRegion(regionCode)) throw invalidQuery();
         AuthorizedReadScope scope = readScope();
         if (regionCode != null) scope.requireRegion(regionCode);
-        PagedResult<MarketListRow> page = repository.findPage(query.authorizedFor(scope.regionCodes()));
+        MarketRecordQuery authorized = query.authorizedFor(scope.regionCodes());
+        PagedResult<MarketListRow> page = currentFormalOnly
+                ? repository.findPage(authorized)
+                : repository.findLifecyclePage(authorized);
         List<MarketListItem> items = page.items().stream().map(row -> new MarketListItem(
                 row.id(), publicValues(row.values()), MarketActionPolicy.allowedActions(row.status()).stream()
                         .filter(row.configuredActions()::contains)
@@ -117,7 +136,7 @@ public class MarketMonitoringService {
     public MarketRecordView detail(String id) {
         MarketMonitoringRecord record = required(id);
         readScope().requireRegion(record.regionCode());
-        return view(record, coreFields(record.productCode()),
+        return view(record, coreFields(record.productCode(), record.objectTypeCode()),
                 repository.findExtensionCoreValues(id));
     }
 
@@ -153,7 +172,7 @@ public class MarketMonitoringService {
                         .sorted(Comparator.comparingInt(MarketFactDefinition::sortOrder)
                                 .thenComparing(MarketFactDefinition::code)).toList())).toList();
         return new MarketFormDefinition(
-                productCode, objectTypeCode, publicCoreFields(coreFields(productCode)), groups);
+                productCode, objectTypeCode, publicCoreFields(coreFields(productCode, objectTypeCode)), groups);
     }
 
     private static MarketFactDefinition governedInputPrecision(MarketFactDefinition field) {
@@ -175,6 +194,46 @@ public class MarketMonitoringService {
     }
 
     @Transactional
+    public String saveOfficialObservation(
+            FormalSampleIdentity identity, OffsetDateTime observedAt,
+            MarketMonitoringDraft incoming, Instant officialSavedAt) {
+        SecurityPrincipal principal = authorize("BUSINESS_CREATE", identity.regionCode());
+        if (observedAt.toInstant().isAfter(officialSavedAt)) throw invalid("Observed at cannot be in the future");
+        if (!incoming.evidencePhotoIds().isEmpty()) {
+            throw invalid("Existing sample observation does not accept evidence uploads");
+        }
+        LocalDate observedOn = observedAt.atZoneSameInstant(REPORTING_ZONE).toLocalDate();
+        Map<String, String> core = new LinkedHashMap<>(incoming.coreValues());
+        core.put("MKT_OBJECT_TYPE", requiredLockedValue(identity, "MKT_OBJECT_TYPE"));
+        core.put("MKT_REGION", identity.regionCode());
+        core.put("MKT_TRADE_DATE", observedOn.toString());
+        core.put("MKT_REPORTER_NAME", principal.displayName());
+        core.put("MKT_SAMPLE_NAME", identity.sampleName());
+        core.put("MKT_SAMPLE_CONTACT", requiredLockedValue(identity, "MKT_SAMPLE_CONTACT"));
+        core.put("MKT_SAMPLE_LATITUDE", identity.latitude());
+        core.put("MKT_SAMPLE_LONGITUDE", identity.longitude());
+        MarketMonitoringDraft secured = new MarketMonitoringDraft(
+                identity.productCode(), core, incoming.facts(), List.of());
+        List<MarketCoreFieldDefinition> definitions = coreDefinitions(secured);
+        ParsedDraft parsed = parseDraft(secured, definitions);
+        validate(parsed);
+        validateEntryCoordinates(parsed);
+        try {
+            MarketMonitoringRecord official = MarketMonitoringRecord.draft(
+                    UUID.randomUUID().toString(), parsed.productCode(), parsed.objectTypeCode(),
+                    parsed.regionCode(), parsed.tradeDate(), observedAt, parsed.direction(),
+                    parsed.purchaseBasePrice(), parsed.saleBasePrice(), parsed.carriageBoardAmount(),
+                    parsed.packagingAmount(), parsed.freightAmount(), parsed.packagingForm(), parsed.facts())
+                    .submit().approve();
+            MarketMonitoringRecord persisted = repository.insertOfficialObservation(
+                    official, parsed.extensions(), identity.samplePointId(), principal.subjectId(), officialSavedAt);
+            return persisted.id();
+        } catch (MarketValidationException exception) {
+            throw invalid(exception.getMessage());
+        }
+    }
+
+    @Transactional
     public MarketRecordView createAndSubmit(MarketMonitoringDraft draft) {
         MarketRecordView created = create(draft, true);
         return submit(created.record().id(), created.record().version());
@@ -186,6 +245,7 @@ public class MarketMonitoringService {
         List<MarketCoreFieldDefinition> definitions = coreDefinitions(securedDraft);
         ParsedDraft parsed = parseDraft(securedDraft, definitions);
         validate(parsed);
+        validateEntryCoordinates(parsed);
         principal = authorize("BUSINESS_CREATE", parsed.regionCode());
         if (requireEvidence || !securedDraft.evidencePhotoIds().isEmpty()) validateEvidence(securedDraft, principal);
         try {
@@ -216,6 +276,7 @@ public class MarketMonitoringService {
         List<MarketCoreFieldDefinition> definitions = coreDefinitions(securedDraft);
         ParsedDraft parsed = parseDraft(securedDraft, definitions);
         validate(parsed);
+        validateEntryCoordinates(parsed);
         principal = authorize("BUSINESS_IMPORT", parsed.regionCode());
         if (!securedDraft.evidencePhotoIds().isEmpty()) validateEvidence(securedDraft, principal);
     }
@@ -280,6 +341,7 @@ public class MarketMonitoringService {
             throw invalid("Record product cannot change");
         }
         validate(parsed);
+        validateEntryCoordinates(parsed);
         authorize("BUSINESS_UPDATE", parsed.regionCode());
         try {
             MarketMonitoringRecord revised = existing.revise(
@@ -354,7 +416,7 @@ public class MarketMonitoringService {
                     transitioned, expectedVersion, principal.subjectId(), clock.instant());
             afterStateUpdate.accept(updated, principal);
             audit(principal, updated, auditAction);
-            return view(updated, coreFields(updated.productCode()),
+            return view(updated, coreFields(updated.productCode(), updated.objectTypeCode()),
                     repository.findExtensionCoreValues(updated.id()));
         } catch (MarketValidationException exception) {
             throw invalid(exception.getMessage());
@@ -379,17 +441,36 @@ public class MarketMonitoringService {
         }
     }
 
+    private void validateEntryCoordinates(ParsedDraft draft) {
+        BigDecimal latitude = requiredCorrectionCoordinate(draft, "MKT_SAMPLE_LATITUDE");
+        BigDecimal longitude = requiredCorrectionCoordinate(draft, "MKT_SAMPLE_LONGITUDE");
+        if (!repository.isPointWithinRegion(draft.regionCode(), latitude, longitude)) {
+            throw new ClientRequestException(
+                    "SAMPLE_COORDINATE_REGION_MISMATCH",
+                    "样本点经纬度不在所选地区范围内，请核对后重新填报");
+        }
+        if (stableIdentityCoordinates != null) {
+            stableIdentityCoordinates.requireCompatible(
+                    draft.extensions().get("MKT_SAMPLE_NAME"),
+                    draft.extensions().get("MKT_SAMPLE_CONTACT"), longitude, latitude);
+        }
+    }
+
     private List<MarketCoreFieldDefinition> coreDefinitions(MarketMonitoringDraft draft) {
         if (draft == null || draft.productCode() == null || draft.productCode().isBlank()) {
             throw invalid("Product code is required");
         }
-        List<MarketCoreFieldDefinition> definitions = coreFields(draft.productCode());
+        String objectTypeCode = draft.coreValues().get("MKT_OBJECT_TYPE");
+        if (objectTypeCode == null || objectTypeCode.isBlank()) {
+            throw invalid("对象类型不能为空");
+        }
+        List<MarketCoreFieldDefinition> definitions = coreFields(draft.productCode(), objectTypeCode);
         if (definitions.isEmpty()) throw invalid("Market core field definition is missing");
         return definitions;
     }
 
-    private List<MarketCoreFieldDefinition> coreFields(String productCode) {
-        List<MarketCoreFieldDefinition> definitions = repository.findCoreFields(productCode).stream()
+    private List<MarketCoreFieldDefinition> coreFields(String productCode, String objectTypeCode) {
+        List<MarketCoreFieldDefinition> definitions = repository.findCoreFields(productCode, objectTypeCode).stream()
                 .sorted(Comparator.comparingInt(MarketCoreFieldDefinition::sortOrder)
                         .thenComparing(MarketCoreFieldDefinition::code))
                 .toList();
@@ -435,7 +516,11 @@ public class MarketMonitoringService {
                 throw invalidDefinition();
             }
         }
-        if (!typedBindings.equals(REQUIRED_TYPED_BINDINGS)) throw invalidDefinition();
+        if (!typedBindings.containsAll(REQUIRED_TYPED_BINDINGS)
+                || typedBindings.stream().anyMatch(binding ->
+                        !REQUIRED_TYPED_BINDINGS.contains(binding) && !"SALE_BASE_PRICE".equals(binding))) {
+            throw invalidDefinition();
+        }
     }
 
     private static boolean matches(
@@ -508,9 +593,10 @@ public class MarketMonitoringService {
                     draft.productCode(), requiredBinding(byBinding, "OBJECT_TYPE"),
                     requiredBinding(byBinding, "REGION"),
                     LocalDate.parse(requiredBinding(byBinding, "TRADE_DATE")),
-                    MarketTradeDirection.BOTH,
+                    byBinding.containsKey("SALE_BASE_PRICE")
+                            ? MarketTradeDirection.BOTH : MarketTradeDirection.PURCHASE,
                     requiredDecimal(byBinding, "PURCHASE_BASE_PRICE"),
-                    requiredDecimal(byBinding, "SALE_BASE_PRICE"),
+                    optionalDecimal(byBinding.get("SALE_BASE_PRICE")),
                     requiredDecimal(byBinding, "CARRIAGE_BOARD_AMOUNT"),
                     requiredDecimal(byBinding, "PACKAGING_AMOUNT"),
                     requiredDecimal(byBinding, "FREIGHT_AMOUNT"),
@@ -543,10 +629,13 @@ public class MarketMonitoringService {
                         throw new IllegalStateException(
                                 "Decimal market core metadata is incomplete: " + definition.code());
                     }
-                    BigDecimal parsed = PlainDecimal.parse(value,
-                            definition.precision() - definition.scale(), definition.scale(),
-                            "INVALID_MARKET_RECORD");
                     BigDecimal coordinateLimit = coordinateLimit(definition.code());
+                    int acceptedFractionDigits = coordinateLimit == null
+                            ? definition.scale() : Math.max(definition.scale(), 15);
+                    int acceptedIntegerDigits = coordinateLimit == null
+                            ? definition.precision() - definition.scale() : 3;
+                    BigDecimal parsed = PlainDecimal.parse(value,
+                            acceptedIntegerDigits, acceptedFractionDigits, "INVALID_MARKET_RECORD");
                     if ((coordinateLimit == null && parsed.signum() < 0)
                             || (coordinateLimit != null && parsed.abs().compareTo(coordinateLimit) > 0)) {
                         throw invalid("Decimal is outside range for market core field: " + definition.code());
@@ -596,6 +685,12 @@ public class MarketMonitoringService {
 
     private static BigDecimal optionalDecimal(String value) {
         return value == null ? null : new BigDecimal(value);
+    }
+
+    private static String requiredLockedValue(FormalSampleIdentity identity, String fieldCode) {
+        String value = identity.lockedValues().path(fieldCode).asText(null);
+        if (value == null || value.isBlank()) throw invalid("Formal sample identity is incomplete");
+        return value;
     }
 
     private MarketRecordView view(

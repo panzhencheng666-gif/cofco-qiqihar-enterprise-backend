@@ -76,7 +76,27 @@ class GovernedProductWorkbookImportIntegrationTest {
                   '受控验收边界','urn:qiqihar:acceptance-boundary','acceptance-1','内部验收数据',
                   '230208',DATE '2026-08-18',
                   encode(sha256(ST_AsEWKB(ST_Multi(ST_MakeEnvelope(123.5,47.4,124.2,47.9,4326)))),'hex'))
-                ON CONFLICT(region_code) DO NOTHING
+                ON CONFLICT(region_code) DO UPDATE SET
+                  geometry=EXCLUDED.geometry,source_name=EXCLUDED.source_name,
+                  source_url=EXCLUDED.source_url,source_revision=EXCLUDED.source_revision,
+                  source_license=EXCLUDED.source_license,source_feature_id=EXCLUDED.source_feature_id,
+                  source_effective_on=EXCLUDED.source_effective_on,
+                  geometry_sha256=EXCLUDED.geometry_sha256
+                """).update();
+        jdbc.sql("""
+                INSERT INTO overview.administrative_boundary(
+                  region_code,geometry,source_name,source_url,source_revision,source_license,
+                  source_feature_id,source_effective_on,geometry_sha256)
+                VALUES('230207',ST_Multi(ST_MakeEnvelope(122.0,45.0,122.5,45.5,4326)),
+                  '受控验收边界','urn:qiqihar:acceptance-boundary','acceptance-1','内部验收数据',
+                  '230207',DATE '2026-08-18',
+                  encode(sha256(ST_AsEWKB(ST_Multi(ST_MakeEnvelope(122.0,45.0,122.5,45.5,4326)))),'hex'))
+                ON CONFLICT(region_code) DO UPDATE SET
+                  geometry=EXCLUDED.geometry,source_name=EXCLUDED.source_name,
+                  source_url=EXCLUDED.source_url,source_revision=EXCLUDED.source_revision,
+                  source_license=EXCLUDED.source_license,source_feature_id=EXCLUDED.source_feature_id,
+                  source_effective_on=EXCLUDED.source_effective_on,
+                  geometry_sha256=EXCLUDED.geometry_sha256
                 """).update();
     }
 
@@ -86,16 +106,31 @@ class GovernedProductWorkbookImportIntegrationTest {
                 DELETE FROM production.production_record
                 WHERE sample_point_id IN (
                   SELECT sample_point_id FROM registry.sample_point
-                  WHERE canonical_name LIKE '期间守卫%')
+                  WHERE canonical_name LIKE '期间守卫%'
+                     OR sample_point_id::text LIKE '95200000-%'
+                     OR sample_point_id::text LIKE '95300000-%')
                 """).update();
         jdbc.sql("""
                 DELETE FROM market.market_record
                 WHERE sample_point_id IN (
                   SELECT sample_point_id FROM registry.sample_point
-                  WHERE canonical_name LIKE '期间守卫%')
+                  WHERE canonical_name LIKE '期间守卫%'
+                     OR sample_point_id::text LIKE '95200000-%'
+                     OR sample_point_id::text LIKE '95300000-%')
                 """).update();
         jdbc.sql("""
-                DELETE FROM registry.sample_point WHERE canonical_name LIKE '期间守卫%'
+                DELETE FROM logistics.route_event
+                WHERE sample_point_id IN (
+                  SELECT sample_point_id FROM registry.sample_point
+                  WHERE canonical_name LIKE '期间守卫%'
+                     OR sample_point_id::text LIKE '95200000-%'
+                     OR sample_point_id::text LIKE '95300000-%')
+                """).update();
+        jdbc.sql("""
+                DELETE FROM registry.sample_point
+                WHERE canonical_name LIKE '期间守卫%'
+                   OR sample_point_id::text LIKE '95200000-%'
+                   OR sample_point_id::text LIKE '95300000-%'
                 """).update();
     }
 
@@ -117,6 +152,130 @@ class GovernedProductWorkbookImportIntegrationTest {
         assertThat(jdbc.sql("SELECT count(*) FROM market.market_record")
                 .query(Long.class).single()).isZero();
         assertThat(jdbc.sql("SELECT count(*) FROM logistics.route_event")
+                .query(Long.class).single()).isZero();
+    }
+
+    @Test
+    void validatesDeclaredRegionAgainstCoordinatesOnceAtImportForAllThreeDomains() throws Exception {
+        Map<String, String> outsideProduction = new LinkedHashMap<>(completeProductionValues());
+        outsideProduction.put("纬度（度）", "47.000000");
+        outsideProduction.put("经度（度）", "123.000000");
+        Map<String, String> outsideMarket = new LinkedHashMap<>(completeMarketValues());
+        outsideMarket.put("纬度（度）", "47.000000");
+        outsideMarket.put("经度（度）", "123.000000");
+        Map<String, String> outsideLogistics = new LinkedHashMap<>(completeLogisticsValues());
+        outsideLogistics.put("纬度（度）", "47.000000");
+        outsideLogistics.put("经度（度）", "123.000000");
+
+        importWorkbook("production", "production-tester", "production-coordinate-region-mismatch",
+                workbook(workbookFixture("production", "PRODUCTION", "产情",
+                        "production-tester", "样本点名称"), "越界产情样本", outsideProduction), 0, 1);
+        importWorkbook("market", "market-tester", "market-coordinate-region-mismatch",
+                workbook(workbookFixture("market", "MARKET", "市场",
+                        "market-tester", "样本点名称"), "越界市场样本", outsideMarket), 0, 1);
+        importWorkbook("logistics", "logistics-tester", "logistics-coordinate-region-mismatch",
+                workbook(workbookFixture("logistics", "LOGISTICS", "物流",
+                        "logistics-tester", "物流样本点名称"), "越界物流样本", outsideLogistics), 0, 1);
+
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.import_row_result result
+                JOIN platform.import_job job ON job.import_job_id=result.import_job_id
+                WHERE job.idempotency_key LIKE '%-coordinate-region-mismatch'
+                  AND result.error_code='SAMPLE_COORDINATE_REGION_MISMATCH'
+                """).query(Long.class).single()).isEqualTo(3);
+        assertThat(jdbc.sql("""
+                SELECT (SELECT count(*) FROM production.production_record)
+                     + (SELECT count(*) FROM market.market_record)
+                     + (SELECT count(*) FROM logistics.route_event)
+                """).query(Long.class).single()).isZero();
+    }
+
+    @Test
+    void validatesTheSubmittedCoordinateBeforeStorageRoundingForAllThreeDomains() throws Exception {
+        Map<String, String> production = new LinkedHashMap<>(completeProductionValues());
+        production.put("纬度（度）", "47.55000012345");
+        production.put("经度（度）", "124.2000004");
+        Map<String, String> market = new LinkedHashMap<>(completeMarketValues());
+        market.put("纬度（度）", "47.55000012345");
+        market.put("经度（度）", "124.2000004");
+        Map<String, String> logistics = new LinkedHashMap<>(completeLogisticsValues());
+        logistics.put("纬度（度）", "47.55000012345");
+        logistics.put("经度（度）", "124.2000004");
+
+        importWorkbook("production", "production-tester", "production-rounding-boundary-mismatch",
+                workbook(workbookFixture("production", "PRODUCTION", "产情",
+                        "production-tester", "样本点名称"), "边界外产情样本", production), 0, 1);
+        importWorkbook("market", "market-tester", "market-rounding-boundary-mismatch",
+                workbook(workbookFixture("market", "MARKET", "市场",
+                        "market-tester", "样本点名称"), "边界外市场样本", market), 0, 1);
+        importWorkbook("logistics", "logistics-tester", "logistics-rounding-boundary-mismatch",
+                workbook(workbookFixture("logistics", "LOGISTICS", "物流",
+                        "logistics-tester", "物流样本点名称"), "边界外物流样本", logistics), 0, 1);
+
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.import_row_result result
+                JOIN platform.import_job job ON job.import_job_id=result.import_job_id
+                WHERE job.idempotency_key LIKE '%-rounding-boundary-mismatch'
+                  AND result.error_code='SAMPLE_COORDINATE_REGION_MISMATCH'
+                """).query(Long.class).single()).isEqualTo(3);
+        assertThat(jdbc.sql("""
+                SELECT (SELECT count(*) FROM production.production_record)
+                     + (SELECT count(*) FROM market.market_record)
+                     + (SELECT count(*) FROM logistics.route_event)
+                """).query(Long.class).single()).isZero();
+    }
+
+    @Test
+    void acceptsHighPrecisionCoordinatesByNormalizingToEachGovernedStorageResolution()
+            throws Exception {
+        Map<String, String> production = new LinkedHashMap<>(completeProductionValues());
+        production.put("纬度（度）", "47.55000012345");
+        production.put("经度（度）", "１２３．８０００００１２３４５");
+        Map<String, String> market = new LinkedHashMap<>(completeMarketValues());
+        market.put("纬度（度）", "47.55000012345");
+        market.put("经度（度）", "123\u00a0.80000012345");
+        Map<String, String> logistics = new LinkedHashMap<>(completeLogisticsValues());
+        logistics.put("纬度（度）", "47.55000012345");
+        logistics.put("经度（度）", "123.80000012345");
+
+        importWorkbook("production", "production-tester", "production-high-precision-coordinate",
+                workbook(workbookFixture("production", "PRODUCTION", "产情",
+                        "production-tester", "样本点名称"), "高精度产情样本", production), 1, 0);
+        importWorkbook("market", "market-tester", "market-high-precision-coordinate",
+                workbook(workbookFixture("market", "MARKET", "市场",
+                        "market-tester", "样本点名称"), "高精度市场样本", market), 1, 0);
+        importWorkbook("logistics", "logistics-tester", "logistics-high-precision-coordinate",
+                workbook(workbookFixture("logistics", "LOGISTICS", "物流",
+                        "logistics-tester", "物流样本点名称"), "高精度物流样本", logistics), 1, 0);
+
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_import_draft
+                WHERE sample_name LIKE '高精度%样本' AND state_code='PROMOTED'
+                """).query(Long.class).single()).isEqualTo(3);
+    }
+
+    @Test
+    void rejectsWhenStorageRoundingWouldMoveTheFormalCoordinateOutsideTheRegion() throws Exception {
+        jdbc.sql("""
+                UPDATE overview.administrative_boundary
+                SET geometry=ST_Multi(ST_MakeEnvelope(123.5,47.4,124.2000007,47.9,4326))
+                WHERE region_code='230208'
+                """).update();
+        Map<String, String> production = new LinkedHashMap<>(completeProductionValues());
+        production.put("纬度（度）", "47.55000012345");
+        production.put("经度（度）", "124.2000006");
+
+        importWorkbook("production", "production-tester", "production-rounded-coordinate-outside",
+                workbook(workbookFixture("production", "PRODUCTION", "产情",
+                        "production-tester", "样本点名称"), "舍入后越界产情样本", production), 0, 1);
+
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.import_row_result result
+                JOIN platform.import_job job ON job.import_job_id=result.import_job_id
+                WHERE job.idempotency_key='production-rounded-coordinate-outside'
+                  AND result.error_code='SAMPLE_COORDINATE_REGION_MISMATCH'
+                """).query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
                 .query(Long.class).single()).isZero();
     }
 
@@ -519,7 +678,7 @@ class GovernedProductWorkbookImportIntegrationTest {
     }
 
     @Test
-    void keepsAConflictingVisibleIdentityAsAReviewableDraftWithoutSubmittingIt() throws Exception {
+    void rejectsOneStableIdentityAtANewPeriodLocationWithoutCreatingADraftOrFormalRecord() throws Exception {
         String point = "95200000-0000-0000-0000-000000000001";
         String record = "95200000-0000-0000-0000-000000000101";
         jdbc.sql("""
@@ -564,24 +723,75 @@ class GovernedProductWorkbookImportIntegrationTest {
                                 BusinessImportWorkbook.create(template, List.of(row))))
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", "production-identity-review-required")
-                        .principal(() -> "production-tester"))
+                .principal(() -> "production-tester"))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.importedRows").value(1))
-                .andExpect(jsonPath("$.data.failedRows").value(0))
-                .andExpect(jsonPath("$.data.warningRows").value(1));
+                .andExpect(jsonPath("$.data.importedRows").value(0))
+                .andExpect(jsonPath("$.data.failedRows").value(1))
+                .andExpect(jsonPath("$.data.warningRows").value(0));
 
         assertThat(jdbc.sql("""
-                SELECT state_code FROM platform.business_import_draft
-                WHERE sample_name='待核验重名样本' ORDER BY created_at DESC LIMIT 1
-                """).query(String.class).single()).isEqualTo("DRAFT");
-        assertThat(jdbc.sql("""
-                SELECT warning_code FROM platform.import_row_result
-                WHERE warning_code='SAMPLE_IDENTITY_REVIEW_REQUIRED'
-                """).query(String.class).single()).isEqualTo("SAMPLE_IDENTITY_REVIEW_REQUIRED");
+                SELECT count(*) FROM platform.business_import_draft
+                WHERE sample_name='待核验重名样本' AND state_code='DRAFT'
+                """).query(Long.class).single()).isZero();
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM production.production_record
                 WHERE status_code='PENDING_REVIEW' AND record_id<>:record
                 """).param("record", record).query(Long.class).single()).isZero();
+    }
+
+    @Test
+    void rejectsATrulyAmbiguousIdentityWithoutCreatingADraftOrFormalRecord() throws Exception {
+        jdbc.sql("""
+                INSERT INTO registry.sample_point(
+                  sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
+                  governed_point,effective_from,version,created_by,updated_by)
+                VALUES
+                  ('95300000-0000-0000-0000-000000000001','SURVEY_SITE','真正歧义样本','230208',
+                   'APPROVED','VALID',ST_SetSRID(ST_MakePoint(123.600000,47.500000),4326),
+                   DATE '2024-01-01',0,'production-tester','production-tester'),
+                  ('95300000-0000-0000-0000-000000000002','SURVEY_SITE','真正歧义样本','230208',
+                   'APPROVED','VALID',ST_SetSRID(ST_MakePoint(123.650000,47.550000),4326),
+                   DATE '2024-01-01',0,'production-tester','production-tester')
+                """).update();
+        jdbc.sql("""
+                INSERT INTO production.production_record(
+                  record_id,product_code,object_type_code,region_code,survey_date,reported_at,
+                  cultivated_area_mu,yield_per_mu_kg,status_code,sample_point_id,last_modified_by)
+                VALUES
+                  ('95300000-0000-0000-0000-000000000101','CORN','FARMER','230208',DATE '2024-07-01',
+                   now(),10,20,'APPROVED','95300000-0000-0000-0000-000000000001','production-tester'),
+                  ('95300000-0000-0000-0000-000000000102','CORN','FARMER','230208',DATE '2024-08-01',
+                   now(),10,20,'APPROVED','95300000-0000-0000-0000-000000000002','production-tester')
+                """).update();
+        jdbc.sql("""
+                INSERT INTO production.production_record_submission_metadata(record_id,field_code,value)
+                VALUES
+                  ('95300000-0000-0000-0000-000000000101','PROD_SAMPLE_NAME','真正歧义样本'),
+                  ('95300000-0000-0000-0000-000000000101','PROD_SAMPLE_CONTACT','13900000000'),
+                  ('95300000-0000-0000-0000-000000000102','PROD_SAMPLE_NAME','真正歧义样本'),
+                  ('95300000-0000-0000-0000-000000000102','PROD_SAMPLE_CONTACT','13900000000')
+                """).update();
+
+        WorkbookFixture fixture = workbookFixture("production", "PRODUCTION", "产情",
+                "production-tester", "样本点名称");
+        importWorkbook("production", "production-tester", "production-truly-ambiguous-identity",
+                workbook(fixture, "真正歧义样本", completeProductionValues()), 0, 1);
+
+        assertThat(jdbc.sql("""
+                SELECT error_code FROM platform.import_row_result result
+                JOIN platform.import_job job ON job.import_job_id=result.import_job_id
+                WHERE job.idempotency_key='production-truly-ambiguous-identity'
+                """).query(String.class).single()).isEqualTo("SAMPLE_IDENTITY_MULTIPLE_MATCHES");
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_import_draft WHERE sample_name='真正歧义样本'
+                """).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM production.production_record record
+                JOIN production.production_record_submission_metadata metadata
+                  ON metadata.record_id=record.record_id
+                WHERE metadata.field_code='PROD_SAMPLE_NAME' AND metadata.value='真正歧义样本'
+                  AND record.status_code='PENDING_REVIEW'
+                """).query(Long.class).single()).isZero();
     }
 
     @Test
@@ -618,6 +828,48 @@ class GovernedProductWorkbookImportIntegrationTest {
                 SELECT error_code FROM platform.import_row_result
                 WHERE error_code='IMPORT_DUPLICATE_ROW'
                 """).query(String.class).single()).isEqualTo("IMPORT_DUPLICATE_ROW");
+    }
+
+    @Test
+    void rejectsOneIdentityAndPeriodSplitAcrossTwoDeclaredRegionsInTheSameWorkbook() throws Exception {
+        byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
+                        .param("format", "xlsx").param("productCode", "CORN")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        List<String> labels = withoutTrailingBlanks(XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
+        BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, "PRODUCTION");
+        BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
+                "PRODUCTION", "产情", "CORN", null, context.contractVersion(), context.contractDigest(),
+                labels, labels, List.of());
+        List<String> first = sparse(labels, "样本点名称", "地区", "批内跨地区身份样本", "梅里斯达斡尔族区");
+        List<String> second = sparse(labels, "样本点名称", "地区", "批内跨地区身份样本", "碾子山区");
+        for (Map.Entry<String, String> value : completeProductionValues().entrySet()) {
+            first = withValue(first, labels, value.getKey(), value.getValue());
+            second = withValue(second, labels, value.getKey(), value.getValue());
+        }
+        Map<String, Object> secondPoint = jdbc.sql("""
+                SELECT ST_X(ST_PointOnSurface(geometry)) longitude,
+                       ST_Y(ST_PointOnSurface(geometry)) latitude
+                FROM overview.administrative_boundary WHERE region_code='230207'
+                """).query().singleRow();
+        second = withValue(second, labels, "经度（度）", secondPoint.get("longitude").toString());
+        second = withValue(second, labels, "纬度（度）", secondPoint.get("latitude").toString());
+
+        mvc.perform(multipart("/api/v1/imports/production")
+                        .file(new MockMultipartFile("file", "产情-批内跨地区身份.xlsx", XLSX,
+                                BusinessImportWorkbook.create(template, List.of(first, second))))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", "production-batch-cross-region-identity")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(1))
+                .andExpect(jsonPath("$.data.failedRows").value(1));
+
+        assertThat(jdbc.sql("""
+                SELECT error_code FROM platform.import_row_result
+                WHERE error_code IN ('IMPORT_DUPLICATE_ROW','SAMPLE_IDENTITY_RECORD_CONFLICT')
+                """).query(String.class).single())
+                .isIn("IMPORT_DUPLICATE_ROW", "SAMPLE_IDENTITY_RECORD_CONFLICT");
     }
 
     @Test
@@ -713,7 +965,7 @@ class GovernedProductWorkbookImportIntegrationTest {
     }
 
     @Test
-    void preservesTheLogisticsSampleBusinessKeyAcrossMonthsWithoutInventingASurveySite()
+    void linksTheApprovedLogisticsSampleToOneStableFormalLogisticsIdentityAcrossMonths()
             throws Exception {
         WorkbookFixture fixture = workbookFixture("logistics", "LOGISTICS", "物流",
                 "logistics-tester", "物流样本点名称");
@@ -738,6 +990,18 @@ class GovernedProductWorkbookImportIntegrationTest {
                 """).param("sample", sampleName).query(Long.class).single()).isEqualTo(2);
         assertThat(jdbc.sql("SELECT count(DISTINCT survey_month) FROM logistics.route_event")
                 .query(Long.class).single()).isEqualTo(2);
+        assertThat(jdbc.sql("SELECT count(DISTINCT sample_point_id) FROM logistics.route_event")
+                .query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM registry.sample_point
+                WHERE kind_code='LOGISTICS_NODE' AND approval_state='APPROVED'
+                  AND canonical_name=:sample
+                """).param("sample", sampleName).query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM overview.sample_point_query_source
+                WHERE category_code='LOGISTICS' AND source_role='SURVEY'
+                  AND canonical_name=:sample
+                """).param("sample", sampleName).query(Long.class).single()).isEqualTo(2);
         assertSameKeyReplayKeepsOriginalJobAndDraft("logistics", "logistics-tester",
                 "logistics-period-2026-08", augustWorkbook);
 
@@ -752,11 +1016,11 @@ class GovernedProductWorkbookImportIntegrationTest {
     }
 
     @Test
-    void treatsPostgresUnicodeIdentityVariantsAsOneSequentialPeriodKey() throws Exception {
+    void treatsPostgresCompatibilityAndAccentVariantsAsOneSequentialPeriodKey() throws Exception {
         WorkbookFixture fixture = workbookFixture("production", "PRODUCTION", "产情",
                 "production-tester", "样本点名称");
-        String canonicalName = "期间守卫Ai样本";
-        String unicodeVariant = "期间守卫Ａİ\u2003样本";
+        String canonicalName = "期间守卫CaféAi样本";
+        String unicodeVariant = "期间守卫CafeＡİ\u2003样本";
         Map<String, String> canonicalValues = new LinkedHashMap<>(completeProductionValues());
         canonicalValues.put("数据月份", "8");
         byte[] canonical = workbook(fixture, canonicalName, canonicalValues);
@@ -766,7 +1030,7 @@ class GovernedProductWorkbookImportIntegrationTest {
                 "/api/v1/production-records/{id}/approve", "market-tester");
 
         Map<String, String> changedVariantValues = new LinkedHashMap<>(canonicalValues);
-        changedVariantValues.put("样本点联系方式", "（１３９）\u2003００００-００００");
+        changedVariantValues.put("样本点联系方式", "13900000000");
         changedVariantValues.put("预计单产（公斤/亩）", "510");
         importWorkbook("production", "market-tester", "production-unicode-variant",
                 workbook(fixture, unicodeVariant, changedVariantValues), 0, 1);
@@ -1173,33 +1437,6 @@ class GovernedProductWorkbookImportIntegrationTest {
     }
 
     @Test
-    void visibleEndingInventoryFeedsRegionSurplusWithoutHiddenGovernance() throws Exception {
-        Map<String, String> production = new LinkedHashMap<>(completeProductionValues());
-        production.put("期末余粮（吨）", "5");
-        importSubmitAndApprove("CORN", "production", "PRODUCTION", "产情",
-                "production-tester", "market-tester", "production-records", "余粮产情样本",
-                "样本点名称", production);
-
-        Map<String, String> market = new LinkedHashMap<>(completeMarketValues());
-        market.put("样本点联系方式", "13900000001");
-        market.put("纬度（度）", "47.600000");
-        market.put("经度（度）", "123.900000");
-        market.put("现有库存（吨）", "20");
-        importSubmitAndApprove("CORN", "market", "MARKET", "市场",
-                "market-tester", "production-tester", "market-records", "余粮市场样本",
-                "样本点名称", market);
-
-        mvc.perform(get("/api/v1/overview/dashboard")
-                        .param("productCode", "CORN").param("regionCode", "230208")
-                        .param("year", "2026").principal(() -> "production-tester"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].value")
-                        .value(org.hamcrest.Matchers.hasItem("25")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].coverageStatus")
-                        .value(org.hamcrest.Matchers.hasItem("AVAILABLE")));
-    }
-
-    @Test
     void submitsCompleteWorkbookRowsAndIndependentApprovalPublishesAllThreeDomains() throws Exception {
         String productionRecord = importSubmitAndApprove("production", "PRODUCTION", "产情",
                 "production-tester", "market-tester", "production-records", "正式产情样本",
@@ -1270,8 +1507,10 @@ class GovernedProductWorkbookImportIntegrationTest {
                         .value(org.hamcrest.Matchers.hasItem("100")))
                 .andExpect(jsonPath("$.data.metrics[?(@.code == 'MARKET_AVERAGE_PURCHASE_PRICE')].value")
                         .value(org.hamcrest.Matchers.hasItem("2300")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'LOGISTICS_INFLOW_VOLUME')].value")
-                        .value(org.hamcrest.Matchers.hasItem("12.5")));
+                .andExpect(jsonPath(
+                        "$.data.businessTables[?(@.code == 'LOGISTICS')].rows[?(@.regionCode == '230208')].values.LOG_ROUTE_VOLUME.value")
+                        .value(org.hamcrest.Matchers.hasItem("12.5")))
+                .andExpect(jsonPath("$.data.metrics[?(@.code =~ /SUPPLY_.*/)]").isEmpty());
     }
 
     @Test
@@ -1310,8 +1549,10 @@ class GovernedProductWorkbookImportIntegrationTest {
                             .value(org.hamcrest.Matchers.hasItem("100")))
                     .andExpect(jsonPath("$.data.metrics[?(@.code == 'MARKET_AVERAGE_PURCHASE_PRICE')].value")
                             .value(org.hamcrest.Matchers.hasItem("2300")))
-                    .andExpect(jsonPath("$.data.metrics[?(@.code == 'LOGISTICS_INFLOW_VOLUME')].value")
-                            .value(org.hamcrest.Matchers.hasItem("12.5")));
+                    .andExpect(jsonPath(
+                            "$.data.businessTables[?(@.code == 'LOGISTICS')].rows[?(@.regionCode == '230208')].values.LOG_ROUTE_VOLUME.value")
+                            .value(org.hamcrest.Matchers.hasItem("12.5")))
+                    .andExpect(jsonPath("$.data.metrics[?(@.code =~ /SUPPLY_.*/)]").isEmpty());
         }
 
         assertThat(jdbc.sql("SELECT count(*) FROM production.production_record WHERE status_code='APPROVED'")

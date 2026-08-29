@@ -57,8 +57,10 @@ public class JdbcAccessReviewRepository implements AccessReviewRepository {
                       AND (assignment.valid_until IS NULL OR :now<assignment.valid_until)
                 ) entitlement ON true
                 WHERE security_user.work_unit_code=:unit
+                  AND security_user.subject_id<>:actor
                 ORDER BY security_user.subject_id,entitlement.grant_type,entitlement.grant_key
-                """).param("id",id).param("now",dbTime(now)).param("unit",workUnitCode).update();
+                """).param("id",id).param("now",dbTime(now)).param("unit",workUnitCode)
+                .param("actor",actor).update();
         return find(id).orElseThrow();
     }
 

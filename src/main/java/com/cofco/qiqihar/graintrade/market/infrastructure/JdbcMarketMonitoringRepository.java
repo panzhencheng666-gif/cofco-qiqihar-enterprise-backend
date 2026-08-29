@@ -37,6 +37,22 @@ import org.springframework.stereotype.Repository;
 
 @Repository
 public class JdbcMarketMonitoringRepository implements MarketMonitoringRepository {
+    private static final String CURRENT_SAMPLE_FILTER = """
+             AND r.status_code='APPROVED'
+             AND r.survey_period_governance_state='CONFIRMED'
+             AND r.sample_point_id IS NOT NULL
+             AND EXISTS (
+               SELECT 1 FROM registry.sample_point point
+               WHERE point.sample_point_id=r.sample_point_id
+                 AND point.approval_state='APPROVED'
+                 AND point.kind_code='SURVEY_SITE'
+                 AND point.location_state='VALID'
+                 AND point.governed_point IS NOT NULL
+                 AND point.effective_from<=CURRENT_DATE
+                 AND (point.effective_to IS NULL OR point.effective_to>=CURRENT_DATE)
+                 AND r.trade_date>=point.effective_from
+                 AND (point.effective_to IS NULL OR r.trade_date<=point.effective_to))
+            """;
     private final JdbcClient jdbc;
     private final SamplePointCoordinateGuard coordinateGuard;
 
@@ -48,11 +64,33 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
 
     @Override
     public PagedResult<MarketListRow> findPage(MarketRecordQuery query) {
+        return findPage(query, true);
+    }
+
+    @Override
+    public PagedResult<MarketListRow> findLifecyclePage(MarketRecordQuery query) {
+        return findPage(query, false);
+    }
+
+    private PagedResult<MarketListRow> findPage(
+            MarketRecordQuery query, boolean currentFormalOnly) {
         SqlFilter filter = filter(query.productCode(), query.filters(), query.authorizedRegionCodes());
-        long total = jdbc.sql("SELECT count(*) FROM market.market_record r " + filter.sql())
+        String selectedRecords = currentFormalOnly ? """
+                WITH current_formal_record AS (
+                  SELECT r.record_id,row_number() OVER (
+                    PARTITION BY r.sample_point_id
+                    ORDER BY r.trade_date DESC,r.version DESC,r.record_id DESC) sample_rank
+                  FROM market.market_record r
+                """ + filter.sql() + CURRENT_SAMPLE_FILTER + ") " : """
+                WITH current_formal_record AS (
+                  SELECT r.record_id,1 sample_rank
+                  FROM market.market_record r
+                """ + filter.sql() + ") ";
+        long total = jdbc.sql(selectedRecords
+                        + "SELECT count(*) FROM current_formal_record WHERE sample_rank=1")
                 .params(filter.parameters()).query(Long.class).single();
         long offset = Math.multiplyExact((long) query.pageNumber(), query.pageSize());
-        List<ListHeader> headers = jdbc.sql("""
+        List<ListHeader> headers = jdbc.sql(selectedRecords + """
                         SELECT r.record_id, region.name region_name, object_type.name object_type_name,
                                r.trade_date, r.reported_at, r.survey_year, r.survey_month,
                                r.survey_period_precision, r.survey_period_governance_state,
@@ -60,7 +98,8 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                                r.purchase_base_price, r.sale_base_price, r.carriage_board_amount,
                                packaging.label packaging_label, r.packaging_amount, r.freight_amount,
                                r.status_code, status.label status_label, r.version
-                        FROM market.market_record r
+                        FROM current_formal_record current
+                        JOIN market.market_record r ON r.record_id=current.record_id
                         JOIN platform.region region ON region.code = r.region_code
                         JOIN platform.object_type object_type ON object_type.code = r.object_type_code
                         LEFT JOIN platform.market_core_field_option packaging
@@ -69,7 +108,10 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                           ON status.product_code = r.product_code AND status.business_domain = 'MARKET'
                          AND status.page_kind = 'MONITORING' AND status.filter_code = 'status'
                          AND status.value = r.status_code
-                        """ + filter.sql() + " ORDER BY r.trade_date DESC, r.record_id LIMIT :limit OFFSET :offset")
+                        WHERE current.sample_rank=1
+                        ORDER BY r.trade_date DESC,r.record_id
+                        LIMIT :limit OFFSET :offset
+                        """)
                 .params(filter.parameters()).param("limit", query.pageSize()).param("offset", offset)
                 .query((row, ignored) -> new ListHeader(
                         row.getString("record_id"), row.getString("region_name"),
@@ -144,9 +186,12 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                 FROM selected_region_scope scope
                 JOIN overview.administrative_boundary boundary
                   ON boundary.region_code=scope.code
+                LEFT JOIN platform.monitoring_scope_region formal
+                  ON formal.scope_code='FORMAL_BUSINESS'
+                 AND formal.region_code=scope.code
                 WHERE ST_Covers(boundary.geometry,
                   ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326))
-                ORDER BY scope.depth DESC, scope.code
+                ORDER BY COALESCE(formal.included,false) DESC, scope.depth DESC, scope.code
                 LIMIT 1
                 """).param("regionCode", regionCode).param("longitude", longitude)
                 .param("latitude", latitude).query(String.class).optional();
@@ -224,7 +269,7 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
     }
 
     @Override
-    public List<MarketCoreFieldDefinition> findCoreFields(String productCode) {
+    public List<MarketCoreFieldDefinition> findCoreFields(String productCode, String objectTypeCode) {
         List<CoreRow> fields = jdbc.sql("""
                         WITH mounted AS (
                             SELECT page_field.field_code
@@ -254,8 +299,17 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                         FULL OUTER JOIN mapped ON mapped.field_code = mounted.field_code
                         JOIN platform.market_core_field_definition definition
                           ON definition.code = coalesce(mounted.field_code, mapped.field_code)
+                        WHERE NOT EXISTS (
+                            SELECT 1
+                            FROM platform.market_core_field_object_exclusion exclusion
+                            WHERE exclusion.product_code=:productCode
+                              AND exclusion.object_type_code=:objectTypeCode
+                              AND exclusion.field_code=definition.code
+                        )
                         ORDER BY definition.sort_order, definition.code
-                        """).param("productCode", productCode).query((row, ignored) -> new CoreRow(
+                        """).param("productCode", productCode)
+                .param("objectTypeCode", objectTypeCode, java.sql.Types.VARCHAR)
+                .query((row, ignored) -> new CoreRow(
                         row.getString("code"), row.getString("label"), row.getString("control_type"),
                         row.getString("unit"), row.getString("description"),
                         row.getString("domain_binding"), row.getString("capability"),
@@ -297,6 +351,25 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
         replaceFacts(record);
         replaceExtensionCoreValues(record, extensionCoreValues);
         return record;
+    }
+
+    @Override
+    public MarketMonitoringRecord insertOfficialObservation(
+            MarketMonitoringRecord record, Map<String, String> extensionCoreValues,
+            UUID samplePointId, String actorId, Instant officialSavedAt) {
+        MarketMonitoringRecord persisted = insert(record, actorId, extensionCoreValues);
+        int linked = jdbc.sql("""
+                UPDATE market.market_record
+                SET sample_point_id=:samplePointId,submitted_at=:savedAt,updated_at=:savedAt,
+                    survey_year=extract(year from trade_date)::integer,
+                    survey_month=extract(month from trade_date)::integer,
+                    survey_period_precision='YEAR_MONTH',survey_period_governance_state='CONFIRMED'
+                WHERE record_id=:recordId AND status_code='APPROVED' AND sample_point_id IS NULL
+                """).param("samplePointId", samplePointId)
+                .param("savedAt", OffsetDateTime.ofInstant(officialSavedAt, ZoneOffset.UTC))
+                .param("recordId", record.id()).update();
+        requireUpdated(linked);
+        return persisted;
     }
 
     @Override
@@ -347,7 +420,9 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
         boolean confirmedDistinct = reviewedIdentity != null
                 && "SAMPLE_IDENTITY_CONFIRM_DISTINCT".equals(reviewedIdentity.actionCode());
         List<ResolvedSamplePoint> resolved = confirmedDistinct ? List.of() : jdbc.sql("""
-                        SELECT point.sample_point_id,point.owner_party_id,resolution.actor
+                        SELECT point.sample_point_id,point.owner_party_id,resolution.actor,
+                               ST_X(point.governed_point) longitude,
+                               ST_Y(point.governed_point) latitude
                         FROM registry.current_sample_subject_resolution resolution
                         JOIN registry.sample_point point
                           ON point.sample_point_id=resolution.target_sample_point_id
@@ -356,16 +431,14 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                           AND resolution.resolution_action='LINK'
                           AND resolution.source_version=:sourceVersion
                           AND point.owner_party_id IS NOT NULL
-                          AND point.region_code=:regionCode
                           AND point.approval_state='APPROVED'
                           AND point.location_state='VALID'
-                          AND point.effective_from<=:tradeDate
                         """).param("recordId", record.id())
                 .param("sourceVersion", Math.max(0, record.version() - 1))
-                .param("regionCode", record.regionCode()).param("tradeDate", record.tradeDate())
                 .query((row, ignored) -> new ResolvedSamplePoint(
                         row.getObject("sample_point_id", UUID.class),
-                        row.getObject("owner_party_id", UUID.class), row.getString("actor")))
+                        row.getObject("owner_party_id", UUID.class), row.getString("actor"),
+                        row.getBigDecimal("longitude"), row.getBigDecimal("latitude")))
                 .list();
         if (resolved.size() > 1) {
             throw new ConflictException("MARKET_SAMPLE_POINT_RESOLUTION_CONFLICT",
@@ -373,6 +446,9 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
         }
         if (resolved.size() == 1) {
             ResolvedSamplePoint point = resolved.getFirst();
+            requireMatchingCoordinate(point.longitude(), point.latitude(),
+                    new BigDecimal(extensionCoreValues.get("MKT_SAMPLE_LONGITUDE")),
+                    new BigDecimal(extensionCoreValues.get("MKT_SAMPLE_LATITUDE")));
             int linked = jdbc.sql("""
                             UPDATE market.market_record
                             SET party_id=:partyId,sample_point_id=:samplePointId
@@ -403,10 +479,9 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                 || longitudeValue == null || longitudeValue.isBlank()) return;
         BigDecimal latitude = new BigDecimal(latitudeValue);
         BigDecimal longitude = new BigDecimal(longitudeValue);
-        boolean boundaryAvailable = hasBoundaryInRegionScope(record.regionCode());
-        if (!boundaryAvailable) return;
         String governedRegionCode = containingRegionCode(record.regionCode(), latitude, longitude)
-                .orElseThrow(() -> new ConflictException("MARKET_SAMPLE_POINT_OUTSIDE_REGION",
+                .orElseThrow(() -> new ConflictException(
+                        "MARKET_SAMPLE_POINT_OUTSIDE_REGION",
                         "样本点经纬度不在所选地区范围内，请核对后再审核"));
 
         String nameKey = normalizedName(canonicalName);
@@ -415,7 +490,9 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                 .param("identity", "VISIBLE_MARKET_SAMPLE|" + nameKey + "|" + contactKey)
                 .query((row, index) -> Boolean.TRUE).single();
         List<ExistingSamplePoint> existing = confirmedDistinct ? List.of() : jdbc.sql("""
-                SELECT DISTINCT point.sample_point_id
+                SELECT DISTINCT point.sample_point_id,
+                       ST_X(point.governed_point) longitude,
+                       ST_Y(point.governed_point) latitude
                 FROM market.market_record previous
                 JOIN market.market_record_core_value sample_name
                   ON sample_name.record_id=previous.record_id AND sample_name.field_code='MKT_SAMPLE_NAME'
@@ -429,7 +506,8 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                   AND point.location_state='VALID'
                 """).param("nameKey", nameKey).param("contactKey", contactKey)
                 .query((row, index) -> new ExistingSamplePoint(
-                        row.getObject("sample_point_id", UUID.class))).list();
+                        row.getObject("sample_point_id", UUID.class),
+                        row.getBigDecimal("longitude"), row.getBigDecimal("latitude"))).list();
         if (existing.size() > 1) {
             throw new ConflictException("MARKET_SAMPLE_IDENTITY_CONFLICT",
                     "同一姓名和联系方式已关联多个样本点，请核对后再审核");
@@ -438,6 +516,7 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
         UUID samplePointId;
         if (existing.size() == 1) {
             ExistingSamplePoint point = existing.getFirst();
+            requireMatchingCoordinate(point.longitude(), point.latitude(), longitude, latitude);
             samplePointId = point.samplePointId();
             jdbc.sql("""
                     UPDATE registry.sample_point
@@ -537,18 +616,9 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
     private void linkReviewedSamplePoint(
             MarketMonitoringRecord record, Map<String, String> extensionCoreValues,
             UUID targetSamplePointId, String approvingActorId, Instant approvedAt) {
-        String latitudeValue = extensionCoreValues.get("MKT_SAMPLE_LATITUDE");
-        String longitudeValue = extensionCoreValues.get("MKT_SAMPLE_LONGITUDE");
-        if (targetSamplePointId == null || latitudeValue == null || longitudeValue == null) {
+        if (targetSamplePointId == null) {
             throw new ConflictException("MARKET_SAMPLE_IDENTITY_DECISION_INVALID",
-                    "身份核验结论缺少规范样本点或位置证据");
-        }
-        BigDecimal latitude = new BigDecimal(latitudeValue);
-        BigDecimal longitude = new BigDecimal(longitudeValue);
-        if (!hasBoundaryInRegionScope(record.regionCode())
-                || containingRegionCode(record.regionCode(), latitude, longitude).isEmpty()) {
-            throw new ConflictException("MARKET_SAMPLE_POINT_OUTSIDE_REGION",
-                    "样本点经纬度不在所选地区范围内，请核对后再审核");
+                    "身份核验结论缺少规范样本点");
         }
         ReviewedTarget target = jdbc.sql("""
                 SELECT sample_point_id,owner_party_id,region_code,
@@ -566,13 +636,10 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                 .optional().orElseThrow(() -> new ConflictException(
                         "MARKET_SAMPLE_IDENTITY_TARGET_INVALID",
                         "身份核验选择的规范样本点已失效"));
-        if (!target.regionCode().equals(record.regionCode())
-                || target.longitude().compareTo(longitude) != 0
-                || target.latitude().compareTo(latitude) != 0
-                || target.effectiveFrom().isAfter(record.tradeDate())) {
-            throw new ConflictException("MARKET_SAMPLE_IDENTITY_TARGET_INVALID",
-                    "身份核验选择的规范样本点与记录地区、坐标或生效时间不一致");
-        }
+        requireMatchingCoordinate(
+                target.longitude(), target.latitude(),
+                new BigDecimal(extensionCoreValues.get("MKT_SAMPLE_LONGITUDE")),
+                new BigDecimal(extensionCoreValues.get("MKT_SAMPLE_LATITUDE")));
         jdbc.sql("SELECT pg_advisory_xact_lock(hashtextextended(:identity,0))")
                 .param("identity", "REVIEWED_SAMPLE_IDENTITY:" + targetSamplePointId)
                 .query((row, ignored) -> Boolean.TRUE).single();
@@ -604,8 +671,22 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                 .toLowerCase(Locale.ROOT).replaceAll("[\\s\\u3000()（）-]+", "");
     }
 
-    private record ResolvedSamplePoint(UUID samplePointId, UUID partyId, String resolutionActor) {}
-    private record ExistingSamplePoint(UUID samplePointId) {}
+    private static void requireMatchingCoordinate(
+            BigDecimal existingLongitude, BigDecimal existingLatitude,
+            BigDecimal submittedLongitude, BigDecimal submittedLatitude) {
+        if (existingLongitude == null || existingLatitude == null
+                || existingLongitude.compareTo(submittedLongitude) != 0
+                || existingLatitude.compareTo(submittedLatitude) != 0) {
+            throw new ConflictException("SAMPLE_IDENTITY_COORDINATE_MISMATCH",
+                    "同一样本身份的经纬度与已有正式样本点不一致，请按位置变更流程处理");
+        }
+    }
+
+    private record ResolvedSamplePoint(
+            UUID samplePointId, UUID partyId, String resolutionActor,
+            BigDecimal longitude, BigDecimal latitude) {}
+    private record ExistingSamplePoint(
+            UUID samplePointId, BigDecimal longitude, BigDecimal latitude) {}
     private record ReviewedIdentityDecision(
             String actionCode, UUID targetSamplePointId,
             boolean coordinateShared, Set<UUID> reviewedOccupantIds) {}

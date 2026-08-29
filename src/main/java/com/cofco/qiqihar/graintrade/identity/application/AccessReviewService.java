@@ -40,6 +40,8 @@ public class AccessReviewService {
                 ||!mayReview(actor,workUnitCode))throw invalid();
         UUID id=UUID.randomUUID();
         AccessReviewCampaign campaign=repository.create(id,name.strip(),workUnitCode,dueAt,actor.subjectId(),now);
+        if(campaign.items().isEmpty())throw new ClientRequestException(
+                "ACCESS_REVIEW_EMPTY","当前单位没有可由本人复核的员工授权");
         audit.record(actor,workUnitCode,"ACCESS_REVIEW",id.toString(),"ACCESS_REVIEW_OPENED",now,
                 "{\"workUnitCode\":\""+workUnitCode+"\"}");
         return campaign;

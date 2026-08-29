@@ -7,6 +7,9 @@ import com.cofco.qiqihar.graintrade.analysis.application.MarketAnalysisView;
 import com.cofco.qiqihar.graintrade.analysis.application.ObservableAnalysisRepository;
 import com.cofco.qiqihar.graintrade.analysis.application.ObservableAnalysisScope;
 import com.cofco.qiqihar.graintrade.analysis.application.ObservableAnalysisSnapshot;
+import com.cofco.qiqihar.graintrade.analysis.application.ObservableEndingInventorySource;
+import com.cofco.qiqihar.graintrade.analysis.application.ObservableHeadlineMetric;
+import com.cofco.qiqihar.graintrade.analysis.application.ObservableSupplySummary;
 import com.cofco.qiqihar.graintrade.analysis.application.ObservableInventoryBreakdown;
 import com.cofco.qiqihar.graintrade.analysis.application.ObservableMetric;
 import com.cofco.qiqihar.graintrade.analysis.application.ObservableSupplyView;
@@ -36,11 +39,15 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.Function;
+import java.util.function.Supplier;
 import javax.sql.DataSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 @Repository
 public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepository {
@@ -66,39 +73,123 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
             new FactMetricDefinition("LABOR_COST", "人工费用", "元/亩"),
             new FactMetricDefinition("MACHINERY_COST", "机耕费用", "元/亩"),
             new FactMetricDefinition("OTHER_COST", "其他成本", "元/亩"));
-    private static final String SCOPE = """
+    static final String SCOPE = """
             WITH RECURSIVE requested_scope(code) AS (
               SELECT code FROM platform.region
-              WHERE :region=:allAuthorizedRegions OR code=:region
+              WHERE :region<>:allAuthorizedRegions AND code=:region
               UNION
               SELECT child.code FROM platform.region child
               JOIN requested_scope parent ON child.parent_code=parent.code
             ), authorized_scope(code) AS (
               SELECT code FROM platform.region
-              WHERE :unrestricted OR code IN (:authorizedRegions)
+              WHERE NOT :unrestricted
+                AND code IN (SELECT unnest(string_to_array(:authorizedRegionList,',')))
               UNION
               SELECT child.code FROM platform.region child
               JOIN authorized_scope parent ON child.parent_code=parent.code
-            ), scope(code) AS (
+            ), requested_ancestors(code) AS (
+              SELECT parent_code FROM platform.region
+              WHERE code=:region AND parent_code IS NOT NULL
+              UNION
+              SELECT parent.parent_code FROM platform.region parent
+              JOIN requested_ancestors child ON parent.code=child.code
+              WHERE parent.parent_code IS NOT NULL
+            ), scope(code) AS MATERIALIZED (
               SELECT member.region_code
               FROM platform.monitoring_scope_region member
-              JOIN requested_scope requested ON requested.code=member.region_code
-              JOIN authorized_scope authorized ON authorized.code=member.region_code
+              LEFT JOIN requested_scope requested ON requested.code=member.region_code
+              LEFT JOIN authorized_scope authorized ON authorized.code=member.region_code
               WHERE member.scope_code='FORMAL_BUSINESS' AND member.included
+                AND (:region=:allAuthorizedRegions OR requested.code IS NOT NULL)
+                AND (:unrestricted OR authorized.code IS NOT NULL)
+            ), current_valid_sample(sample_point_id) AS MATERIALIZED (
+              SELECT point.sample_point_id
+              FROM registry.sample_point point
+              JOIN scope ON scope.code=point.region_code
+              JOIN overview.administrative_boundary boundary
+                ON boundary.region_code=point.region_code
+               AND boundary.geometry_sha256=point.containment_boundary_sha256
+               AND boundary.source_revision=point.containment_boundary_revision
+              WHERE point.approval_state='APPROVED'
+                AND point.location_state='VALID'
+                AND point.governed_point IS NOT NULL
+                AND ST_Covers(boundary.geometry,point.governed_point)
+              UNION
+              SELECT point.sample_point_id
+              FROM registry.sample_point point
+              JOIN requested_ancestors ancestor ON ancestor.code=point.region_code
+              JOIN overview.administrative_boundary boundary
+                ON boundary.region_code=point.region_code
+               AND boundary.geometry_sha256=point.containment_boundary_sha256
+               AND boundary.source_revision=point.containment_boundary_revision
+              JOIN overview.administrative_boundary requested_boundary
+                ON requested_boundary.region_code=:region
+              WHERE point.approval_state='APPROVED'
+                AND point.location_state='VALID'
+                AND point.governed_point IS NOT NULL
+                AND ST_Covers(boundary.geometry,point.governed_point)
+                AND ST_Covers(requested_boundary.geometry,point.governed_point)
+              UNION ALL SELECT '00000000-0000-0000-0000-000000000000'::uuid
+            )
+            """;
+    static final String UNRESTRICTED_ALL_REGIONS_SCOPE = """
+            WITH scope(code) AS MATERIALIZED (
+              SELECT member.region_code
+              FROM platform.monitoring_scope_region member
+              WHERE member.scope_code='FORMAL_BUSINESS' AND member.included
+            ), current_valid_sample(sample_point_id) AS MATERIALIZED (
+              SELECT point.sample_point_id
+              FROM registry.sample_point point
+              JOIN scope ON scope.code=point.region_code
+              JOIN overview.administrative_boundary boundary
+                ON boundary.region_code=point.region_code
+               AND boundary.geometry_sha256=point.containment_boundary_sha256
+               AND boundary.source_revision=point.containment_boundary_revision
+              WHERE point.approval_state='APPROVED'
+                AND point.location_state='VALID'
+                AND point.governed_point IS NOT NULL
+              UNION ALL SELECT '00000000-0000-0000-0000-000000000000'::uuid
+            )
+            """;
+    static final String AUTHORIZED_ALL_REGIONS_SCOPE = """
+            WITH scope(code) AS MATERIALIZED (
+              SELECT member.region_code
+              FROM platform.monitoring_scope_region member
+              WHERE member.scope_code='FORMAL_BUSINESS' AND member.included
+                AND member.region_code IN(
+                  SELECT unnest(string_to_array(:authorizedRegionList,',')))
+            ), current_valid_sample(sample_point_id) AS MATERIALIZED (
+              SELECT point.sample_point_id
+              FROM registry.sample_point point
+              JOIN scope ON scope.code=point.region_code
+              JOIN overview.administrative_boundary boundary
+                ON boundary.region_code=point.region_code
+               AND boundary.geometry_sha256=point.containment_boundary_sha256
+               AND boundary.source_revision=point.containment_boundary_revision
+              WHERE point.approval_state='APPROVED'
+                AND point.location_state='VALID'
+                AND point.governed_point IS NOT NULL
+              UNION ALL SELECT '00000000-0000-0000-0000-000000000000'::uuid
             )
             """;
 
     private final JdbcClient jdbc;
     private final Clock clock;
+    private final ObjectMapper json;
 
     @Autowired
-    public JdbcObservableAnalysisRepository(DataSource dataSource) {
-        this(dataSource, Clock.systemUTC());
+    public JdbcObservableAnalysisRepository(DataSource dataSource, ObjectMapper json) {
+        this(dataSource, Clock.systemUTC(), json);
     }
 
-    JdbcObservableAnalysisRepository(DataSource dataSource, Clock clock) {
+    JdbcObservableAnalysisRepository(DataSource dataSource) {
+        this(dataSource, Clock.systemUTC(), new ObjectMapper());
+    }
+
+    JdbcObservableAnalysisRepository(DataSource dataSource, Clock clock, ObjectMapper json) {
         this.jdbc = JdbcClient.create(dataSource);
         this.clock = clock;
+        this.json = json;
     }
 
     @Override
@@ -134,12 +225,14 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
         if (authorizedRegionCodes.contains("*")) return knownRegion(regionCode);
         return Boolean.TRUE.equals(jdbc.sql("""
                         WITH RECURSIVE descendants(code,parent_code) AS (
-                          SELECT code,parent_code FROM platform.region WHERE code IN (:authorizedRegions)
+                          SELECT code,parent_code FROM platform.region
+                          WHERE code IN (SELECT unnest(string_to_array(:authorizedRegionList,',')))
                           UNION
                           SELECT child.code,child.parent_code FROM platform.region child
                           JOIN descendants parent ON child.parent_code=parent.code
                         ), ancestors(code,parent_code) AS (
-                          SELECT code,parent_code FROM platform.region WHERE code IN (:authorizedRegions)
+                          SELECT code,parent_code FROM platform.region
+                          WHERE code IN (SELECT unnest(string_to_array(:authorizedRegionList,',')))
                           UNION
                           SELECT parent.code,parent.parent_code FROM platform.region parent
                           JOIN ancestors child ON child.parent_code=parent.code
@@ -148,7 +241,8 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                           SELECT 1 FROM descendants WHERE code=:region
                           UNION ALL
                           SELECT 1 FROM ancestors WHERE code=:region)
-                        """).param("authorizedRegions", authorizedRegionCodes).param("region", regionCode)
+                        """).param("authorizedRegionList", String.join(",", authorizedRegionCodes))
+                .param("region", regionCode)
                 .query(Boolean.class).single());
     }
 
@@ -212,6 +306,515 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                 supply.view(), lineage);
     }
 
+    @Override
+    public ObservableSupplySummary loadSupplySummary(
+            ObservableAnalysisScope scope, Set<String> authorizedRegionCodes) {
+        return loadSupplySummary(scope, authorizedRegionCodes, (Set<UUID>) null);
+    }
+
+    @Override
+    public ObservableSupplySummary loadSupplySummary(
+            ObservableAnalysisScope scope, Set<String> authorizedRegionCodes,
+            Set<UUID> currentSamplePointIds) {
+        Set<String> effectiveAuthorization = normalizeAuthorization(authorizedRegionCodes);
+        SupplyProjectionRows rows = supplyProjectionRows(
+                scope, effectiveAuthorization, currentSamplePointIds);
+        return supplySummary(scope, rows);
+    }
+
+    @Override
+    public ObservableSupplySummary loadSupplySummary(
+            ObservableAnalysisScope scope, Set<String> authorizedRegionCodes,
+            Supplier<Set<UUID>> currentSamplePointIds) {
+        Set<String> effectiveAuthorization = normalizeAuthorization(authorizedRegionCodes);
+        Set<UUID> selectedIds = currentSamplePointIds.get();
+        return supplySummary(scope, supplyProjectionRows(
+                scope, effectiveAuthorization, selectedIds));
+    }
+
+    @Override
+    public List<ObservableHeadlineMetric> loadHeadlineMetrics(
+            ObservableAnalysisScope scope, Set<String> authorizedRegionCodes,
+            Supplier<Set<UUID>> currentSamplePointIds) {
+        Set<String> effectiveAuthorization = normalizeAuthorization(authorizedRegionCodes);
+        Set<UUID> selectedIds = currentSamplePointIds.get();
+        SupplyProjectionRows rows = supplyProjectionRows(
+                scope, effectiveAuthorization, selectedIds);
+        return headlineMetrics(
+                selectLatestProduction(rows.production(), scope.surveyMonth()),
+                selectLatestMarket(rows.currentMarket()),
+                selectLatestLogistics(rows.logistics()));
+    }
+
+    private ObservableSupplySummary supplySummary(
+            ObservableAnalysisScope scope, SupplyProjectionRows rows) {
+        List<ProductionRow> production = selectLatestProduction(
+                rows.production(), scope.surveyMonth());
+        List<MarketRow> currentMarket = rows.currentMarket();
+        List<MarketRow> selectedCurrentMarket = selectLatestMarket(currentMarket);
+        List<LogisticsRow> logistics = selectLatestLogistics(rows.logistics());
+        SupplyAssembly supply = supply(
+                production, currentMarket, rows.previousMarket(), logistics);
+
+        Map<String, OffsetDateTime> adopted = new LinkedHashMap<>();
+        production.forEach(row -> adopted.put("PRODUCTION|" + row.recordId(), row.approvedAt()));
+        selectedCurrentMarket.forEach(row -> adopted.put("MARKET|" + row.recordId(), row.approvedAt()));
+        logistics.forEach(row -> adopted.put("LOGISTICS|" + row.recordId(), row.approvedAt()));
+        selectMarketInventory(currentMarket, "ENDING_INVENTORY").rows()
+                .forEach(row -> adopted.put("MARKET|" + row.recordId(), row.approvedAt()));
+        selectMarketInventory(rows.previousMarket(), "ENDING_INVENTORY").rows()
+                .forEach(row -> adopted.put("MARKET|" + row.recordId(), row.approvedAt()));
+        OffsetDateTime cutoff = adopted.values().stream()
+                .max(Comparator.naturalOrder())
+                .orElse(null);
+        List<ObservableHeadlineMetric> headlineMetrics = headlineMetrics(
+                production, selectedCurrentMarket, logistics);
+        List<ObservableEndingInventorySource> endingInventorySources =
+                endingInventorySources(rows.production(), currentMarket);
+        return new ObservableSupplySummary(
+                supply.view(), adopted.size(), cutoff,
+                headlineMetrics, endingInventorySources);
+    }
+
+    private List<ObservableHeadlineMetric> headlineMetrics(
+            List<ProductionRow> production,
+            List<MarketRow> market,
+            List<LogisticsRow> logistics) {
+        List<LogisticsRow> inflow = logistics.stream()
+                .filter(row -> "INFLOW".equals(row.direction())).toList();
+        List<LogisticsRow> outflow = logistics.stream()
+                .filter(row -> "OUTFLOW".equals(row.direction())).toList();
+        return List.of(
+                headline("PRODUCTION_CULTIVATED_AREA", production,
+                        ProductionRow::areaMu,
+                        rows -> sum(rows, ProductionRow::areaMu),
+                        ProductionRow::approvedAt),
+                headline("PRODUCTION_ESTIMATED_OUTPUT", production,
+                        ProductionRow::outputKg,
+                        rows -> sum(rows, ProductionRow::outputKg),
+                        ProductionRow::approvedAt),
+                headline("MARKET_AVERAGE_PURCHASE_PRICE", market,
+                        MarketRow::purchaseBasePrice,
+                        rows -> average(rows, MarketRow::purchaseBasePrice),
+                        MarketRow::approvedAt),
+                headline("MARKET_AVERAGE_SALE_PRICE", market,
+                        MarketRow::saleBasePrice,
+                        rows -> average(rows, MarketRow::saleBasePrice),
+                        MarketRow::approvedAt),
+                headline("LOGISTICS_INFLOW_VOLUME", inflow,
+                        row -> row.fact("ROUTE_VOLUME"),
+                        rows -> sumLogisticsFact(rows, "ROUTE_VOLUME"),
+                        LogisticsRow::approvedAt),
+                headline("LOGISTICS_OUTFLOW_VOLUME", outflow,
+                        row -> row.fact("ROUTE_VOLUME"),
+                        rows -> sumLogisticsFact(rows, "ROUTE_VOLUME"),
+                        LogisticsRow::approvedAt),
+                headline("LOGISTICS_AVERAGE_FREIGHT_RATE", logistics,
+                        row -> row.fact("FREIGHT_RATE"),
+                        rows -> averageFact(rows, "FREIGHT_RATE"),
+                        LogisticsRow::approvedAt));
+    }
+
+    private static <T> ObservableHeadlineMetric headline(
+            String code,
+            List<T> rows,
+            Function<T, BigDecimal> value,
+            Function<List<T>, BigDecimal> aggregate,
+            Function<T, OffsetDateTime> approvedAt) {
+        List<T> sources = rows.stream().filter(row -> value.apply(row) != null).toList();
+        if (sources.isEmpty()) return new ObservableHeadlineMetric(code, null, 0, null);
+        OffsetDateTime cutoff = sources.stream().map(approvedAt)
+                .max(Comparator.naturalOrder()).orElseThrow();
+        return new ObservableHeadlineMetric(
+                code, aggregate.apply(sources), sources.size(), cutoff);
+    }
+
+    private static List<ObservableEndingInventorySource> endingInventorySources(
+            List<ProductionRow> production,
+            List<MarketRow> market) {
+        List<ObservableEndingInventorySource> sources = new ArrayList<>();
+        production.stream().filter(row -> row.decimal("PROD_ENDING_INVENTORY") != null)
+                .map(row -> new ObservableEndingInventorySource(
+                        "PRODUCTION", row.recordId(), row.version(), row.businessIdentity(),
+                        row.regionCode(), periodEnd(row.surveyYear(), row.surveyMonth()),
+                        row.decimal("PROD_ENDING_INVENTORY"), row.approvedAt()))
+                .forEach(sources::add);
+        market.stream().filter(row -> row.fact("ENDING_INVENTORY") != null)
+                .map(row -> new ObservableEndingInventorySource(
+                        "MARKET", row.recordId(), row.version(), row.businessIdentity(),
+                        row.regionCode(), periodEnd(row.surveyYear(), row.surveyMonth()),
+                        row.fact("ENDING_INVENTORY"), row.approvedAt()))
+                .forEach(sources::add);
+        sources.sort(Comparator.comparing(ObservableEndingInventorySource::sourceDomain)
+                .thenComparing(ObservableEndingInventorySource::sourceRecordId));
+        return List.copyOf(sources);
+    }
+
+    private static LocalDate periodEnd(int year, Integer month) {
+        return YearMonth.of(year, month == null ? 12 : month).atEndOfMonth();
+    }
+
+    private SupplyProjectionRows supplyProjectionRows(
+            ObservableAnalysisScope scope, Set<String> authorizedRegions,
+            Set<UUID> currentSamplePointIds) {
+        return assembleSupplyProjectionRows(supplyProjectionRowData(
+                scope, authorizedRegions, currentSamplePointIds));
+    }
+
+    private List<SupplyProjectionRow> supplyProjectionRowData(
+            ObservableAnalysisScope scope, Set<String> authorizedRegions,
+            Set<UUID> currentSamplePointIds) {
+        ObservableAnalysisScope previous = previousPeriod(scope);
+        String projection = """
+                SELECT COALESCE(jsonb_agg(jsonb_build_array(
+                  domain,period_bucket,record_id,version,region_code,business_identity,
+                  sample_point_id,sample_name,sample_contact,latitude,longitude,observed_on,survey_year,
+                  survey_month,survey_period_precision,direction_code,origin_node_code,
+                  destination_node_code,source_label,approved_at,area_mu,yield_kg,output_kg,
+                  opening_inventory,self_use,ending_inventory,market_ending_inventory,
+                  purchase_price,sale_price,fact_code,fact_value)
+                  ORDER BY domain,period_bucket,record_id,fact_code), '[]'::jsonb)::text
+                  projection_payload
+                FROM (
+                SELECT 'PRODUCTION'::varchar domain,'CURRENT'::varchar period_bucket,
+                  record.record_id,record.version,record.region_code,
+                  identity.business_identity,COALESCE(
+                    resolution.target_sample_point_id,record.sample_point_id) sample_point_id,
+                  NULL::varchar sample_name,NULL::varchar sample_contact,
+                  NULL::numeric latitude,NULL::numeric longitude,record.survey_date observed_on,
+                  record.survey_year,record.survey_month,record.survey_period_precision,
+                  NULL::varchar direction_code,NULL::varchar origin_node_code,
+                  NULL::varchar destination_node_code,NULL::varchar source_label,
+                  COALESCE(approval.approved_at,record.updated_at,record.reported_at) approved_at,
+                  record.cultivated_area_mu area_mu,record.yield_per_mu_kg yield_kg,
+                  record.estimated_output_kg output_kg,
+                  production_fact.opening_inventory,production_fact.self_use,
+                  production_fact.ending_inventory,NULL::numeric market_ending_inventory,
+                  NULL::numeric purchase_price,NULL::numeric sale_price,
+                  NULL::varchar fact_code,NULL::varchar fact_value
+                FROM production.production_record record
+                LEFT JOIN registry.current_sample_subject_resolution resolution
+                  ON resolution.source_domain='PRODUCTION'
+                 AND resolution.source_record_id=record.record_id
+                JOIN current_valid_sample sample ON sample.sample_point_id=COALESCE(
+                  resolution.target_sample_point_id,record.sample_point_id,
+                  '00000000-0000-0000-0000-000000000000'::uuid)
+                JOIN production.production_record_business_identity identity
+                  ON identity.record_id=record.record_id
+                LEFT JOIN LATERAL (
+                  SELECT
+                    (max(metadata.value) FILTER(
+                      WHERE metadata.field_code='PROD_OPENING_INVENTORY'))::numeric opening_inventory,
+                    (max(metadata.value) FILTER(
+                      WHERE metadata.field_code='PROD_SELF_USE'))::numeric self_use,
+                    (max(metadata.value) FILTER(
+                      WHERE metadata.field_code='PROD_ENDING_INVENTORY'))::numeric ending_inventory
+                  FROM production.production_record_submission_metadata metadata
+                  WHERE metadata.record_id=record.record_id
+                    AND metadata.field_code IN(
+                      'PROD_OPENING_INVENTORY','PROD_SELF_USE','PROD_ENDING_INVENTORY')
+                ) production_fact ON true
+                LEFT JOIN LATERAL (
+                  SELECT max(event.occurred_at) approved_at
+                  FROM platform.business_event_outbox event
+                  WHERE event.aggregate_type='PRODUCTION_RECORD'
+                    AND event.aggregate_id=record.record_id
+                    AND event.action_code='PRODUCTION_RECORD_APPROVED'
+                ) approval ON true
+                WHERE record.product_code=:product AND record.status_code='APPROVED'
+                  AND resolution.resolution_action IS DISTINCT FROM 'VOID'
+                  AND (COALESCE(resolution.target_sample_point_id,record.sample_point_id) IS NULL
+                    OR NOT :restrictCurrentSamples
+                    OR :hasCurrentSamples AND COALESCE(
+                      resolution.target_sample_point_id,record.sample_point_id)::text = ANY(
+                        string_to_array(:currentSamplePointList,',')))
+                  AND record.survey_period_governance_state='CONFIRMED'
+                  AND record.survey_year=:year
+                  AND (:month IS NULL OR record.survey_month=:month)
+                  AND (:cultivar IS NULL OR record.cultivar_code=:cultivar)
+                  AND (:subjectType IS NULL OR record.object_type_code=:subjectType)
+                  AND (record.sample_point_id IS NOT NULL
+                    OR record.region_code IN(SELECT code FROM scope))
+                UNION ALL
+                SELECT 'MARKET',
+                  CASE WHEN record.survey_year=:year
+                    AND (:month IS NULL OR record.survey_month=:month)
+                    THEN 'CURRENT' ELSE 'PREVIOUS' END,
+                  record.record_id,record.version,record.region_code,
+                  identity.business_identity,COALESCE(
+                    resolution.target_sample_point_id,record.sample_point_id),
+                  location.sample_name,location.sample_contact,
+                  location.latitude::numeric,location.longitude::numeric,record.trade_date,
+                  record.survey_year,record.survey_month,record.survey_period_precision,
+                  record.trade_direction,NULL::varchar,NULL::varchar,NULL::varchar,
+                  COALESCE(approval.approved_at,record.updated_at,record.reported_at),
+                  NULL::numeric,NULL::numeric,NULL::numeric,
+                  NULL::numeric,NULL::numeric,NULL::numeric,fact.value,
+                  record.purchase_base_price,record.sale_base_price,
+                  NULL::varchar,NULL::varchar
+                FROM market.market_record record
+                LEFT JOIN registry.current_sample_subject_resolution resolution
+                  ON resolution.source_domain='MARKET'
+                 AND resolution.source_record_id=record.record_id
+                JOIN current_valid_sample sample ON sample.sample_point_id=COALESCE(
+                  resolution.target_sample_point_id,record.sample_point_id,
+                  '00000000-0000-0000-0000-000000000000'::uuid)
+                JOIN market.market_record_business_identity identity
+                  ON identity.record_id=record.record_id
+                LEFT JOIN market.market_record_fact fact
+                  ON fact.record_id=record.record_id AND fact.fact_code='ENDING_INVENTORY'
+                LEFT JOIN LATERAL (
+                  SELECT
+                    max(value.value) FILTER(WHERE value.field_code='MKT_SAMPLE_NAME') sample_name,
+                    max(value.value) FILTER(WHERE value.field_code='MKT_SAMPLE_CONTACT') sample_contact,
+                    max(value.value) FILTER(WHERE value.field_code='MKT_SAMPLE_LATITUDE') latitude,
+                    max(value.value) FILTER(WHERE value.field_code='MKT_SAMPLE_LONGITUDE') longitude
+                  FROM market.market_record_core_value value
+                  WHERE value.record_id=record.record_id
+                ) location ON true
+                LEFT JOIN LATERAL (
+                  SELECT max(event.occurred_at) approved_at
+                  FROM platform.business_event_outbox event
+                  WHERE event.aggregate_type='MARKET_RECORD'
+                    AND event.aggregate_id=record.record_id
+                    AND event.action_code='MARKET_RECORD_APPROVED'
+                ) approval ON true
+                WHERE record.product_code=:product AND record.status_code='APPROVED'
+                  AND resolution.resolution_action IS DISTINCT FROM 'VOID'
+                  AND (COALESCE(resolution.target_sample_point_id,record.sample_point_id) IS NULL
+                    OR NOT :restrictCurrentSamples
+                    OR :hasCurrentSamples AND COALESCE(
+                      resolution.target_sample_point_id,record.sample_point_id)::text = ANY(
+                        string_to_array(:currentSamplePointList,',')))
+                  AND record.survey_period_governance_state='CONFIRMED'
+                  AND ((record.survey_year=:year
+                      AND (:month IS NULL OR record.survey_month=:month))
+                    OR (record.survey_year=:previousYear
+                      AND (:previousMonth IS NULL OR record.survey_month=:previousMonth)))
+                  AND (:subjectType IS NULL OR record.object_type_code=:subjectType)
+                  AND (record.sample_point_id IS NOT NULL
+                    OR record.region_code IN(SELECT code FROM scope))
+                UNION ALL
+                SELECT 'LOGISTICS','CURRENT',event.event_id::text,event.version,
+                  event.business_region_code,NULL::varchar,COALESCE(
+                    resolution.target_sample_point_id,event.sample_point_id),
+                  NULL::varchar,NULL::varchar,
+                  NULL::numeric,NULL::numeric,event.collection_date,event.survey_year,event.survey_month,
+                  event.survey_period_precision,event.direction_code,event.origin_node_code,
+                  event.destination_node_code,event.source_organization,
+                  COALESCE(approval.approved_at,event.updated_at,event.reported_at),
+                  NULL::numeric,NULL::numeric,NULL::numeric,
+                  NULL::numeric,NULL::numeric,NULL::numeric,NULL::numeric,
+                  NULL::numeric,NULL::numeric,fact.fact_code,fact.value::text
+                FROM logistics.route_event event
+                LEFT JOIN registry.current_sample_subject_resolution resolution
+                  ON resolution.source_domain='LOGISTICS'
+                 AND resolution.source_record_id=event.event_id::text
+                JOIN current_valid_sample sample ON sample.sample_point_id=COALESCE(
+                  resolution.target_sample_point_id,event.sample_point_id,
+                  '00000000-0000-0000-0000-000000000000'::uuid)
+                LEFT JOIN logistics.route_fact fact
+                  ON fact.event_id=event.event_id
+                 AND fact.fact_code IN('ROUTE_VOLUME','FREIGHT_RATE')
+                LEFT JOIN LATERAL (
+                  SELECT max(outbox.occurred_at) approved_at
+                  FROM platform.business_event_outbox outbox
+                  WHERE outbox.aggregate_type='LOGISTICS_RECORD'
+                    AND outbox.aggregate_id=event.event_id::text
+                    AND outbox.action_code='LOGISTICS_RECORD_APPROVED'
+                ) approval ON true
+                WHERE event.product_code=:product AND event.status_code='APPROVED'
+                  AND resolution.resolution_action IS DISTINCT FROM 'VOID'
+                  AND (COALESCE(resolution.target_sample_point_id,event.sample_point_id) IS NULL
+                    OR NOT :restrictCurrentSamples
+                    OR :hasCurrentSamples AND COALESCE(
+                      resolution.target_sample_point_id,event.sample_point_id)::text = ANY(
+                        string_to_array(:currentSamplePointList,',')))
+                  AND event.survey_period_governance_state='CONFIRMED'
+                  AND event.survey_year=:year
+                  AND (:month IS NULL OR event.survey_month=:month)
+                  AND event.direction_code IN('INFLOW','OUTFLOW')
+                  AND (event.sample_point_id IS NOT NULL
+                    OR event.business_region_code IN(SELECT code FROM scope))
+                ) projection
+                """;
+        boolean annual = scope.surveyMonth() == null
+                && scope.cultivarCode() == null
+                && scope.subjectTypeCode() == null;
+        if (annual) {
+            projection = annualProjection(projection);
+        }
+        if (currentSamplePointIds != null) {
+            projection = """
+                    , requested_current_sample(sample_point_id) AS MATERIALIZED (
+                      SELECT value::uuid
+                      FROM unnest(string_to_array(:currentSamplePointList,',')) value
+                      UNION ALL
+                      SELECT '00000000-0000-0000-0000-000000000000'::uuid
+                    )
+                    """ + projection.replace(
+                            "JOIN current_valid_sample sample",
+                            "JOIN requested_current_sample sample");
+        }
+        JdbcClient.StatementSpec statement;
+        if (annual && scope.isAllAuthorizedRegions()) {
+            String scopeSql = authorizedRegions.contains("*")
+                    ? UNRESTRICTED_ALL_REGIONS_SCOPE
+                    : AUTHORIZED_ALL_REGIONS_SCOPE;
+            statement = jdbc.sql(scopeSql + projection)
+                    .param("product", scope.productCode())
+                    .param("year", scope.surveyYear())
+                    .param("authorizedRegionList", String.join(",", authorizedRegions));
+        } else if (annual) {
+            statement = scopedAnnual(SCOPE + projection, scope, authorizedRegions);
+        } else {
+            statement = scoped(SCOPE + projection, scope, authorizedRegions);
+        }
+        statement = statement.param("previousYear", previous.surveyYear());
+        boolean restrictCurrentSamples = currentSamplePointIds != null;
+        String currentSamplePointList = currentSamplePointIds == null || currentSamplePointIds.isEmpty()
+                ? "00000000-0000-0000-0000-000000000000"
+                : currentSamplePointIds.stream().map(UUID::toString).sorted()
+                        .collect(java.util.stream.Collectors.joining(","));
+        statement = statement.param("restrictCurrentSamples", restrictCurrentSamples)
+                .param("hasCurrentSamples",
+                        currentSamplePointIds != null && !currentSamplePointIds.isEmpty())
+                .param("currentSamplePointList", currentSamplePointList);
+        if (!annual) {
+            statement = statement.param("previousMonth", previous.surveyMonth(), Types.INTEGER);
+        }
+        String payload = statement.query(String.class).single();
+        JsonNode packet = json.readTree(payload);
+        List<SupplyProjectionRow> result = new ArrayList<>(packet.size());
+        packet.forEach(row -> result.add(supplyProjectionRow(row)));
+        return List.copyOf(result);
+    }
+
+    private static String annualProjection(String projection) {
+        String annual = projection
+                .replaceAll("CASE WHEN record\\.survey_year=:year\\s+"
+                                + "AND \\(:month IS NULL OR record\\.survey_month=:month\\)\\s+"
+                                + "THEN 'CURRENT' ELSE 'PREVIOUS' END,",
+                        "CASE WHEN record.survey_year=:year THEN 'CURRENT' ELSE 'PREVIOUS' END,")
+                .replaceAll("(?m)^\\s*AND \\(:month IS NULL OR record\\.survey_month=:month\\)\\R", "")
+                .replaceAll("(?m)^\\s*AND \\(:month IS NULL OR event\\.survey_month=:month\\)\\R", "")
+                .replaceAll("(?m)^\\s*AND \\(:cultivar IS NULL OR record\\.cultivar_code=:cultivar\\)\\R", "")
+                .replaceAll("(?m)^\\s*AND \\(:subjectType IS NULL OR record\\.object_type_code=:subjectType\\)\\R", "")
+                .replaceAll("AND \\(\\(record\\.survey_year=:year\\s+"
+                                + "AND \\(:month IS NULL OR record\\.survey_month=:month\\)\\)\\s+"
+                                + "OR \\(record\\.survey_year=:previousYear\\s+"
+                                + "AND \\(:previousMonth IS NULL OR record\\.survey_month=:previousMonth\\)\\)\\)",
+                        "AND record.survey_year IN(:year,:previousYear)");
+        if (annual.contains(":month") || annual.contains(":previousMonth")
+                || annual.contains(":cultivar") || annual.contains(":subjectType")) {
+            throw new IllegalStateException("Annual overview projection still has nullable filters");
+        }
+        return annual;
+    }
+
+    private SupplyProjectionRow supplyProjectionRow(JsonNode row) {
+        return new SupplyProjectionRow(
+                text(row, 0), text(row, 1), text(row, 2), row.get(3).longValue(),
+                text(row, 4), text(row, 5), uuid(row, 6), text(row, 7), text(row, 8),
+                decimal(row, 9), decimal(row, 10), date(row, 11), row.get(12).intValue(),
+                integer(row, 13), text(row, 14), text(row, 15), text(row, 16),
+                text(row, 17), text(row, 18), dateTime(row, 19), decimal(row, 20),
+                decimal(row, 21), decimal(row, 22), decimal(row, 23), decimal(row, 24),
+                decimal(row, 25), decimal(row, 26), decimal(row, 27), decimal(row, 28),
+                text(row, 29), text(row, 30));
+    }
+
+    private static UUID uuid(JsonNode row, int index) {
+        String value = text(row, index);
+        return value == null ? null : UUID.fromString(value);
+    }
+
+    private static String text(JsonNode row, int index) {
+        JsonNode value = row.get(index);
+        return value == null || value.isNull() ? null : value.asText();
+    }
+
+    private static BigDecimal decimal(JsonNode row, int index) {
+        JsonNode value = row.get(index);
+        return value == null || value.isNull() ? null : value.decimalValue();
+    }
+
+    private static Integer integer(JsonNode row, int index) {
+        JsonNode value = row.get(index);
+        return value == null || value.isNull() ? null : value.intValue();
+    }
+
+    private static LocalDate date(JsonNode row, int index) {
+        String value = text(row, index);
+        return value == null ? null : LocalDate.parse(value);
+    }
+
+    private static OffsetDateTime dateTime(JsonNode row, int index) {
+        String value = text(row, index);
+        return value == null ? null : OffsetDateTime.parse(value);
+    }
+
+    private SupplyProjectionRows assembleSupplyProjectionRows(List<SupplyProjectionRow> rows) {
+        Map<String, ProductionRowBuilder> production = new LinkedHashMap<>();
+        Map<String, MarketRowBuilder> currentMarket = new LinkedHashMap<>();
+        Map<String, MarketRowBuilder> previousMarket = new LinkedHashMap<>();
+        Map<String, LogisticsRowBuilder> logistics = new LinkedHashMap<>();
+        for (SupplyProjectionRow row : rows) {
+            switch (row.domain()) {
+                case "PRODUCTION" -> {
+                    ProductionRowBuilder builder = production.computeIfAbsent(row.recordId(), ignored ->
+                            new ProductionRowBuilder(
+                                    row.recordId(), row.version(), row.regionCode(), row.regionCode(),
+                                    null, null, null, row.businessIdentity(), row.observedOn(),
+                                    row.surveyYear(), row.surveyMonth(), row.periodPrecision(), null,
+                                    row.areaMu(), row.yieldPerMuKg(), row.outputKg(), row.approvedAt()));
+                    if (row.openingInventory() != null) {
+                        builder.fact("PROD_OPENING_INVENTORY", row.openingInventory().toPlainString());
+                    }
+                    if (row.selfUse() != null) {
+                        builder.fact("PROD_SELF_USE", row.selfUse().toPlainString());
+                    }
+                    if (row.endingInventory() != null) {
+                        builder.fact("PROD_ENDING_INVENTORY", row.endingInventory().toPlainString());
+                    }
+                }
+                case "MARKET" -> {
+                    Map<String, MarketRowBuilder> target = "CURRENT".equals(row.periodBucket())
+                            ? currentMarket : previousMarket;
+                    MarketRowBuilder builder = target.computeIfAbsent(row.recordId(), ignored ->
+                            new MarketRowBuilder(
+                                    row.recordId(), row.version(), row.regionCode(), row.regionCode(),
+                                    null, "核定市场样本", null, null, null, row.businessIdentity(),
+                                    row.sampleName(), row.sampleContact(), row.latitude(), row.longitude(),
+                                    row.observedOn(), row.surveyYear(), row.surveyMonth(), row.periodPrecision(),
+                                    row.direction(), row.purchasePrice(), row.salePrice(),
+                                    null, null, null, null, null,
+                                    row.approvedAt()));
+                    if (row.marketEndingInventory() != null) {
+                        builder.fact("ENDING_INVENTORY", row.marketEndingInventory());
+                    }
+                }
+                case "LOGISTICS" -> {
+                    LogisticsRowBuilder builder = logistics.computeIfAbsent(row.recordId(), ignored ->
+                            new LogisticsRowBuilder(
+                                    row.recordId(), row.version(), row.regionCode(), row.regionCode(),
+                                    row.observedOn(), row.surveyYear(), row.surveyMonth(), row.periodPrecision(),
+                                    row.direction(), row.originNode(), row.destinationNode(), row.sourceLabel(),
+                                    row.approvedAt()));
+                    if (row.factCode() != null) {
+                        builder.fact(row.factCode(), new BigDecimal(row.factValue()));
+                    }
+                }
+                default -> throw new IllegalStateException("Unknown supply projection domain: " + row.domain());
+            }
+        }
+        return new SupplyProjectionRows(
+                production.values().stream().map(ProductionRowBuilder::build).toList(),
+                currentMarket.values().stream().map(MarketRowBuilder::build).toList(),
+                previousMarket.values().stream().map(MarketRowBuilder::build).toList(),
+                logistics.values().stream().map(LogisticsRowBuilder::build).toList());
+    }
+
     private static void addLineage(
             Map<String, AnalysisLineage> target, AnalysisLineage lineage) {
         String key = lineage.sourceDomain() + "|" + lineage.recordId();
@@ -236,11 +839,19 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                        record.object_type_code,object_type.name object_type_name,
                        record.cultivar_code,identity.business_identity,
                        record.survey_date,record.survey_year,record.survey_month,
-                       record.survey_period_precision,record.sample_point_id,
+                       record.survey_period_precision,COALESCE(
+                         resolution.target_sample_point_id,record.sample_point_id) sample_point_id,
                        record.cultivated_area_mu,record.yield_per_mu_kg,record.estimated_output_kg,
                        COALESCE(approval.approved_at,record.updated_at,record.reported_at) approved_at,
                        fact.fact_code,fact.fact_value
                 FROM production.production_record record
+                LEFT JOIN registry.current_sample_subject_resolution resolution
+                  ON resolution.source_domain='PRODUCTION'
+                 AND resolution.source_record_id=record.record_id
+                JOIN current_valid_sample sample
+                  ON sample.sample_point_id=COALESCE(
+                    resolution.target_sample_point_id,record.sample_point_id,
+                    '00000000-0000-0000-0000-000000000000'::uuid)
                 JOIN production.production_record_business_identity identity
                   ON identity.record_id=record.record_id
                 JOIN platform.region region ON region.code=record.region_code
@@ -274,12 +885,14 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                     AND event.action_code='PRODUCTION_RECORD_APPROVED'
                 ) approval ON true
                 WHERE record.product_code=:product AND record.status_code='APPROVED'
+                  AND resolution.resolution_action IS DISTINCT FROM 'VOID'
                   AND record.survey_period_governance_state='CONFIRMED'
                   AND record.survey_year=:year
                   AND (:month IS NULL OR record.survey_month=:month)
                   AND (:cultivar IS NULL OR record.cultivar_code=:cultivar)
                   AND (:subjectType IS NULL OR record.object_type_code=:subjectType)
-                  AND record.region_code IN(SELECT code FROM scope)
+                  AND (COALESCE(resolution.target_sample_point_id,record.sample_point_id) IS NOT NULL
+                    OR record.region_code IN(SELECT code FROM scope))
                 ORDER BY record.record_id,fact.fact_code
                 """, scope, authorizedRegions).query((result, ignored) -> {
                     String id = result.getString("record_id");
@@ -311,7 +924,8 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
         scoped(SCOPE + """
                 SELECT record.record_id,record.version,record.region_code,region.name region_name,
                        record.object_type_code,object_type.name object_type_name,
-                       record.party_id,party.current_name party_name,record.sample_point_id,
+                       record.party_id,party.current_name party_name,COALESCE(
+                         resolution.target_sample_point_id,record.sample_point_id) sample_point_id,
                        identity.business_identity,location.sample_name,location.sample_contact,
                        location.latitude,location.longitude,
                        record.trade_date,record.survey_year,record.survey_month,record.survey_period_precision,
@@ -321,6 +935,13 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                        COALESCE(approval.approved_at,record.updated_at,record.reported_at) approved_at,
                        fact.fact_code,fact.value fact_value
                 FROM market.market_record record
+                LEFT JOIN registry.current_sample_subject_resolution resolution
+                  ON resolution.source_domain='MARKET'
+                 AND resolution.source_record_id=record.record_id
+                JOIN current_valid_sample sample
+                  ON sample.sample_point_id=COALESCE(
+                    resolution.target_sample_point_id,record.sample_point_id,
+                    '00000000-0000-0000-0000-000000000000'::uuid)
                 JOIN market.market_record_business_identity identity
                   ON identity.record_id=record.record_id
                 JOIN platform.region region ON region.code=record.region_code
@@ -344,11 +965,13 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                     AND event.action_code='MARKET_RECORD_APPROVED'
                 ) approval ON true
                 WHERE record.product_code=:product AND record.status_code='APPROVED'
+                  AND resolution.resolution_action IS DISTINCT FROM 'VOID'
                   AND record.survey_period_governance_state='CONFIRMED'
                   AND record.survey_year=:year
                   AND (:month IS NULL OR record.survey_month=:month)
                   AND (:subjectType IS NULL OR record.object_type_code=:subjectType)
-                  AND record.region_code IN(SELECT code FROM scope)
+                  AND (COALESCE(resolution.target_sample_point_id,record.sample_point_id) IS NOT NULL
+                    OR record.region_code IN(SELECT code FROM scope))
                 ORDER BY record.record_id,fact.fact_code
                 """, scope, authorizedRegions).query((result, ignored) -> {
                     String id = result.getString("record_id");
@@ -390,6 +1013,13 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                        COALESCE(approval.approved_at,event.updated_at,event.reported_at) approved_at,
                        fact.fact_code,fact.value fact_value,fact.unit_code
                 FROM logistics.route_event event
+                LEFT JOIN registry.current_sample_subject_resolution resolution
+                  ON resolution.source_domain='LOGISTICS'
+                 AND resolution.source_record_id=event.event_id::text
+                JOIN current_valid_sample sample
+                  ON sample.sample_point_id=COALESCE(
+                    resolution.target_sample_point_id,event.sample_point_id,
+                    '00000000-0000-0000-0000-000000000000'::uuid)
                 JOIN platform.region region ON region.code=event.business_region_code
                 LEFT JOIN logistics.route_fact fact ON fact.event_id=event.event_id
                 LEFT JOIN LATERAL (
@@ -400,11 +1030,13 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                     AND outbox.action_code='LOGISTICS_RECORD_APPROVED'
                 ) approval ON true
                 WHERE event.product_code=:product AND event.status_code='APPROVED'
+                  AND resolution.resolution_action IS DISTINCT FROM 'VOID'
                   AND event.survey_period_governance_state='CONFIRMED'
                   AND event.survey_year=:year
                   AND (:month IS NULL OR event.survey_month=:month)
                   AND event.direction_code IN('INFLOW','OUTFLOW')
-                  AND event.business_region_code IN(SELECT code FROM scope)
+                  AND (COALESCE(resolution.target_sample_point_id,event.sample_point_id) IS NOT NULL
+                    OR event.business_region_code IN(SELECT code FROM scope))
                 ORDER BY event.event_id,fact.fact_code
                 """, scope, authorizedRegions).query((result, ignored) -> {
                     String id = result.getString("record_id");
@@ -424,7 +1056,10 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                     if (code != null) row.fact(code, result.getBigDecimal("fact_value"));
                     return id;
                 }).list();
-        return rows.values().stream().map(LogisticsRowBuilder::build).toList();
+        return rows.values().stream()
+                .map(LogisticsRowBuilder::build)
+                .filter(row -> !row.facts().isEmpty())
+                .toList();
     }
 
     private JdbcClient.StatementSpec scoped(
@@ -432,11 +1067,20 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
         return jdbc.sql(sql).param("region", scope.regionCode())
                 .param("allAuthorizedRegions", ObservableAnalysisScope.ALL_AUTHORIZED_REGIONS)
                 .param("unrestricted", authorizedRegions.contains("*"))
-                .param("authorizedRegions", authorizedRegions)
+                .param("authorizedRegionList", String.join(",", authorizedRegions))
                 .param("product", scope.productCode()).param("year", scope.surveyYear())
                 .param("month", scope.surveyMonth(), Types.INTEGER)
                 .param("cultivar", scope.cultivarCode(), Types.VARCHAR)
                 .param("subjectType", scope.subjectTypeCode(), Types.VARCHAR);
+    }
+
+    private JdbcClient.StatementSpec scopedAnnual(
+            String sql, ObservableAnalysisScope scope, Set<String> authorizedRegions) {
+        return jdbc.sql(sql).param("region", scope.regionCode())
+                .param("allAuthorizedRegions", ObservableAnalysisScope.ALL_AUTHORIZED_REGIONS)
+                .param("unrestricted", authorizedRegions.contains("*"))
+                .param("authorizedRegionList", String.join(",", authorizedRegions))
+                .param("product", scope.productCode()).param("year", scope.surveyYear());
     }
 
     private List<ProductionRow> selectLatestProduction(List<ProductionRow> rows, Integer month) {
@@ -450,18 +1094,24 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
         return Comparator.comparingInt((ProductionRow row) ->
                         month == null && "YEAR".equals(row.periodPrecision()) ? 1 : 0)
                 .thenComparing(ProductionRow::surveyDate)
+                .thenComparing(ProductionRow::approvedAt)
                 .thenComparingLong(ProductionRow::version)
                 .thenComparing(ProductionRow::recordId);
     }
 
     private List<MarketRow> selectLatestMarket(List<MarketRow> rows) {
         return latest(rows, MarketRow::businessKey,
-                Comparator.comparingLong(MarketRow::version).thenComparing(MarketRow::recordId));
+                Comparator.comparing(MarketRow::tradeDate)
+                        .thenComparing(MarketRow::approvedAt)
+                        .thenComparingLong(MarketRow::version)
+                        .thenComparing(MarketRow::recordId));
     }
 
     private List<LogisticsRow> selectLatestLogistics(List<LogisticsRow> rows) {
         return latest(rows, LogisticsRow::businessKey,
-                Comparator.comparingLong(LogisticsRow::version).thenComparing(LogisticsRow::recordId));
+                Comparator.comparing(LogisticsRow::approvedAt)
+                        .thenComparingLong(LogisticsRow::version)
+                        .thenComparing(LogisticsRow::recordId));
     }
 
     private static <T> List<T> latest(
@@ -579,10 +1229,17 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
             List<ProductionRow> production,
             List<MarketRow> market,
             List<LogisticsRow> logistics) {
+        return supply(production, market,
+                marketRows(previousPeriod(scope), authorizedRegions), logistics);
+    }
+
+    private SupplyAssembly supply(
+            List<ProductionRow> production,
+            List<MarketRow> market,
+            List<MarketRow> previousMarket,
+            List<LogisticsRow> logistics) {
         MarketInventorySelection enterpriseEnding = selectMarketInventory(
                 market, "ENDING_INVENTORY");
-        List<MarketRow> previousMarket = marketRows(
-                previousPeriod(scope), authorizedRegions);
         MarketInventorySelection enterpriseOpening = selectMarketInventory(
                 previousMarket, "ENDING_INVENTORY");
 
@@ -707,28 +1364,37 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                 SELECT count(*)::integer FROM (
                   SELECT record.record_id
                   FROM production.production_record record
+                  JOIN current_valid_sample sample
+                    ON sample.sample_point_id=COALESCE(record.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                   WHERE record.product_code=:product AND record.survey_year=:year
                     AND (:month IS NULL OR record.survey_month=:month)
                     AND (:cultivar IS NULL OR record.cultivar_code=:cultivar)
                     AND (:subjectType IS NULL OR record.object_type_code=:subjectType)
-                    AND record.region_code IN(SELECT code FROM scope)
+                    AND (record.sample_point_id IS NOT NULL
+                      OR record.region_code IN(SELECT code FROM scope))
                     AND (record.status_code<>'APPROVED'
                       OR record.survey_period_governance_state<>'CONFIRMED')
                   UNION ALL
                   SELECT record.record_id
                   FROM market.market_record record
+                  JOIN current_valid_sample sample
+                    ON sample.sample_point_id=COALESCE(record.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                   WHERE record.product_code=:product AND record.survey_year=:year
                     AND (:month IS NULL OR record.survey_month=:month)
                     AND (:subjectType IS NULL OR record.object_type_code=:subjectType)
-                    AND record.region_code IN(SELECT code FROM scope)
+                    AND (record.sample_point_id IS NOT NULL
+                      OR record.region_code IN(SELECT code FROM scope))
                     AND (record.status_code<>'APPROVED'
                       OR record.survey_period_governance_state<>'CONFIRMED')
                   UNION ALL
                   SELECT event.event_id::text
                   FROM logistics.route_event event
+                  JOIN current_valid_sample sample
+                    ON sample.sample_point_id=COALESCE(event.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                   WHERE event.product_code=:product AND event.survey_year=:year
                     AND (:month IS NULL OR event.survey_month=:month)
-                    AND event.business_region_code IN(SELECT code FROM scope)
+                    AND (event.sample_point_id IS NOT NULL
+                      OR event.business_region_code IN(SELECT code FROM scope))
                     AND (event.status_code<>'APPROVED'
                       OR event.survey_period_governance_state<>'CONFIRMED'
                       OR event.direction_code='TRANSIT')
@@ -743,26 +1409,35 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                 SELECT count(*)::integer FROM (
                   SELECT record.record_id
                   FROM production.production_record record
+                  JOIN current_valid_sample sample
+                    ON sample.sample_point_id=COALESCE(record.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                   WHERE record.product_code=:product AND record.survey_year=:year
                     AND (:month IS NULL OR record.survey_month=:month)
                     AND (:cultivar IS NULL OR record.cultivar_code=:cultivar)
                     AND (:subjectType IS NULL OR record.object_type_code=:subjectType)
-                    AND record.region_code IN(SELECT code FROM scope)
+                    AND (record.sample_point_id IS NOT NULL
+                      OR record.region_code IN(SELECT code FROM scope))
                     AND record.status_code='PENDING_REVIEW'
                   UNION ALL
                   SELECT record.record_id
                   FROM market.market_record record
+                  JOIN current_valid_sample sample
+                    ON sample.sample_point_id=COALESCE(record.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                   WHERE record.product_code=:product AND record.survey_year=:year
                     AND (:month IS NULL OR record.survey_month=:month)
                     AND (:subjectType IS NULL OR record.object_type_code=:subjectType)
-                    AND record.region_code IN(SELECT code FROM scope)
+                    AND (record.sample_point_id IS NOT NULL
+                      OR record.region_code IN(SELECT code FROM scope))
                     AND record.status_code='PENDING_REVIEW'
                   UNION ALL
                   SELECT event.event_id::text
                   FROM logistics.route_event event
+                  JOIN current_valid_sample sample
+                    ON sample.sample_point_id=COALESCE(event.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                   WHERE event.product_code=:product AND event.survey_year=:year
                     AND (:month IS NULL OR event.survey_month=:month)
-                    AND event.business_region_code IN(SELECT code FROM scope)
+                    AND (event.sample_point_id IS NOT NULL
+                      OR event.business_region_code IN(SELECT code FROM scope))
                     AND event.direction_code IN('INFLOW','OUTFLOW')
                     AND event.status_code='PENDING_REVIEW'
                 ) pending
@@ -1120,7 +1795,8 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
             return businessIdentity;
         }
         String businessKey() {
-            return String.join("|", regionCode, subjectKey(), tradeDate.toString(), direction);
+            return String.join("|", regionCode, subjectKey(), Integer.toString(surveyYear),
+                    surveyMonth == null ? "0" : surveyMonth.toString());
         }
         BigDecimal fact(String code) { return facts.get(code); }
         boolean has(String code) { return facts.containsKey(code); }
@@ -1246,6 +1922,25 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
     private record SupplyAssembly(
             ObservableSupplyView view,
             List<AnalysisLineage> inventoryLineage) { }
+
+    private record SupplyProjectionRow(
+            String domain, String periodBucket, String recordId, long version,
+            String regionCode, String businessIdentity, UUID samplePointId,
+            String sampleName, String sampleContact,
+            BigDecimal latitude, BigDecimal longitude, LocalDate observedOn,
+            int surveyYear, Integer surveyMonth, String periodPrecision, String direction,
+            String originNode, String destinationNode, String sourceLabel,
+            OffsetDateTime approvedAt, BigDecimal areaMu, BigDecimal yieldPerMuKg,
+            BigDecimal outputKg, BigDecimal openingInventory, BigDecimal selfUse,
+            BigDecimal endingInventory, BigDecimal marketEndingInventory,
+            BigDecimal purchasePrice, BigDecimal salePrice,
+            String factCode, String factValue) { }
+
+    private record SupplyProjectionRows(
+            List<ProductionRow> production,
+            List<MarketRow> currentMarket,
+            List<MarketRow> previousMarket,
+            List<LogisticsRow> logistics) { }
 
     private record LogisticsRow(
             String recordId, long version, String regionCode, String regionLabel,

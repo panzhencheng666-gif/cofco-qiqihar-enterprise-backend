@@ -14,6 +14,9 @@ public interface AnnualSampleNetworkRepository {
     SampleNetworkComparisonView comparison(
             int year, String regionCode, String productCode, Set<String> authorizedRegions);
 
+    SampleNetworkDesignComparisonView designComparison(
+            int year, String regionCode, Set<String> authorizedRegions);
+
     boolean exists(int year);
 
     boolean isPublished(int year);

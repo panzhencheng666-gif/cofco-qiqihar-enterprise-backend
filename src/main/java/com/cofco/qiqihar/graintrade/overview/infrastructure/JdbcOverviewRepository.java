@@ -2,21 +2,20 @@ package com.cofco.qiqihar.graintrade.overview.infrastructure;
 
 import com.cofco.qiqihar.graintrade.analysis.application.ObservableAnalysisRepository;
 import com.cofco.qiqihar.graintrade.analysis.application.ObservableAnalysisScope;
-import com.cofco.qiqihar.graintrade.analysis.application.ObservableAnalysisSnapshot;
+import com.cofco.qiqihar.graintrade.analysis.application.ObservableHeadlineMetric;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewIndicator;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewBusinessTable;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewDashboard;
+import com.cofco.qiqihar.graintrade.overview.application.OverviewDashboardSummary;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewMapScope;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewOption;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewOptions;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewPeriodOption;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewRegion;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewRepository;
-import com.cofco.qiqihar.graintrade.overview.application.RegionSurplusCalculation;
-import com.cofco.qiqihar.graintrade.overview.application.RegionSurplusCalculator;
-import com.cofco.qiqihar.graintrade.overview.application.RegionSurplusSource;
 import com.cofco.qiqihar.graintrade.overview.application.AnnualComparisonDefinition;
 import com.cofco.qiqihar.graintrade.overview.application.AnnualComparisonPoint;
+import com.cofco.qiqihar.graintrade.overview.api.CurrentOverviewSamplePointReader;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
@@ -30,25 +29,51 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 @Repository
 public class JdbcOverviewRepository implements OverviewRepository {
-    private static final BigDecimal TONNES_PER_TEN_THOUSAND = new BigDecimal("10000");
     private static final String AUTHORIZED_REQUEST_SCOPE = """
-            WITH RECURSIVE monitoring_scope(region_code) AS (
-              SELECT region_code FROM platform.monitoring_scope_region
+            WITH RECURSIVE monitoring_scope(region_code,business_parent_code,business_root) AS (
+              SELECT region_code,business_parent_code,business_root FROM platform.monitoring_scope_region
               WHERE scope_code='FORMAL_BUSINESS' AND included
-                AND (:unrestricted OR region_code IN (:authorizedRegions))
+                AND (:unrestricted OR region_code IN (SELECT unnest(string_to_array(:authorizedRegionList,','))))
             ), requested_scope(code) AS (
               SELECT code FROM platform.region
               WHERE CAST(:region AS varchar) IS NULL OR code=CAST(:region AS varchar)
               UNION
               SELECT child.code FROM platform.region child
               JOIN requested_scope parent ON child.parent_code=parent.code
+            ), requested_ancestors(code) AS (
+              SELECT parent_code FROM platform.region
+              WHERE code=CAST(:region AS varchar) AND parent_code IS NOT NULL
+              UNION
+              SELECT parent.parent_code FROM platform.region parent
+              JOIN requested_ancestors child ON parent.code=child.code
+              WHERE parent.parent_code IS NOT NULL
             ), scope(code) AS (
               SELECT monitoring_scope.region_code FROM monitoring_scope
               WHERE CAST(:region AS varchar) IS NULL
                  OR monitoring_scope.region_code IN (SELECT code FROM requested_scope)
+            ), current_valid_sample(sample_point_id) AS MATERIALIZED (
+              SELECT point.sample_point_id
+              FROM registry.sample_point point
+              JOIN overview.administrative_boundary boundary
+                ON boundary.region_code=point.region_code
+               AND boundary.geometry_sha256=point.containment_boundary_sha256
+               AND boundary.source_revision=point.containment_boundary_revision
+              WHERE point.approval_state='APPROVED'
+                AND point.location_state='VALID'
+                AND point.governed_point IS NOT NULL
+                AND ST_Covers(boundary.geometry,point.governed_point)
+                AND (
+                  point.region_code IN (SELECT code FROM scope)
+                  OR point.region_code IN (SELECT code FROM requested_ancestors)
+                    AND EXISTS(
+                      SELECT 1 FROM overview.administrative_boundary requested_boundary
+                      WHERE requested_boundary.region_code=CAST(:region AS varchar)
+                        AND ST_Covers(requested_boundary.geometry,point.governed_point)))
+              UNION ALL SELECT '00000000-0000-0000-0000-000000000000'::uuid
             )
             """;
 
@@ -57,7 +82,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
               SELECT region.code,region.name,region.sort_order
               FROM platform.region region
               JOIN monitoring_scope ON monitoring_scope.region_code=region.code
-              WHERE (CAST(:region AS varchar) IS NULL AND region.administrative_level='PREFECTURE')
+              WHERE (CAST(:region AS varchar) IS NULL AND monitoring_scope.business_root)
                  OR (CAST(:region AS varchar) IS NOT NULL
                      AND region.parent_code=CAST(:region AS varchar))
             ), table_region AS (
@@ -76,17 +101,32 @@ public class JdbcOverviewRepository implements OverviewRepository {
               FROM table_region_descendant descendant
               JOIN platform.region child ON child.parent_code=descendant.code
               JOIN monitoring_scope ON monitoring_scope.region_code=child.code
+            ), sample_table_region_candidate AS MATERIALIZED (
+              SELECT point.sample_point_id,region.code root_code,
+                row_number() OVER(PARTITION BY point.sample_point_id
+                  ORDER BY CASE WHEN ST_Contains(boundary.geometry,point.governed_point)
+                    THEN 0 ELSE 1 END,region.sort_order,region.code) spatial_rank
+              FROM current_valid_sample valid
+              JOIN registry.sample_point point ON point.sample_point_id=valid.sample_point_id
+              JOIN table_region region ON true
+              JOIN overview.administrative_boundary boundary ON boundary.region_code=region.code
+              WHERE ST_Covers(boundary.geometry,point.governed_point)
+            ), sample_table_region(sample_point_id,root_code) AS MATERIALIZED (
+              SELECT sample_point_id,root_code FROM sample_table_region_candidate WHERE spatial_rank=1
             )
             """;
 
     private final JdbcClient jdbc;
     private final ObservableAnalysisRepository observableAnalysisRepository;
+    private final CurrentOverviewSamplePointReader currentOverviewSamplePointReader;
 
     public JdbcOverviewRepository(
             JdbcClient jdbc,
-            ObservableAnalysisRepository observableAnalysisRepository) {
+            ObservableAnalysisRepository observableAnalysisRepository,
+            CurrentOverviewSamplePointReader currentOverviewSamplePointReader) {
         this.jdbc = jdbc;
         this.observableAnalysisRepository = observableAnalysisRepository;
+        this.currentOverviewSamplePointReader = currentOverviewSamplePointReader;
     }
 
     @Override
@@ -208,13 +248,15 @@ public class JdbcOverviewRepository implements OverviewRepository {
         if (authorizedRegionCodes.isEmpty()) return false;
         return Boolean.TRUE.equals(jdbc.sql("""
                 WITH RECURSIVE navigable(code,parent_code) AS (
-                  SELECT code,parent_code FROM platform.region WHERE code IN (:authorizedRegions)
+                  SELECT code,parent_code FROM platform.region
+                  WHERE code IN (SELECT unnest(string_to_array(:authorizedRegionList,',')))
                   UNION
                   SELECT parent.code,parent.parent_code FROM platform.region parent
                   JOIN navigable child ON child.parent_code=parent.code
                 )
                 SELECT EXISTS(SELECT 1 FROM navigable WHERE code=:region)
-                """).param("authorizedRegions", authorizedRegionCodes).param("region", regionCode)
+                """).param("authorizedRegionList", authorizedRegionList(authorizedRegionCodes))
+                .param("region", regionCode)
                 .query(Boolean.class).single());
     }
 
@@ -224,41 +266,74 @@ public class JdbcOverviewRepository implements OverviewRepository {
         return jdbc.sql("""
                 WITH RECURSIVE authorized_region(code,parent_code) AS (
                   SELECT code,parent_code FROM platform.region
-                  WHERE :unrestricted OR code IN (:authorizedRegions)
+                  WHERE :unrestricted OR code IN (SELECT unnest(string_to_array(:authorizedRegionList,',')))
                 ), navigable_region(code,parent_code) AS (
                   SELECT code,parent_code FROM authorized_region
                   UNION
                   SELECT parent.code,parent.parent_code FROM platform.region parent
                   JOIN navigable_region child ON child.parent_code=parent.code
+                ), current_valid_sample(sample_point_id) AS MATERIALIZED (
+                  SELECT point.sample_point_id FROM registry.sample_point point
+                  JOIN overview.administrative_boundary boundary
+                    ON boundary.region_code=point.region_code
+                   AND boundary.geometry_sha256=point.containment_boundary_sha256
+                   AND boundary.source_revision=point.containment_boundary_revision
+                  WHERE point.approval_state='APPROVED' AND point.location_state='VALID'
+                    AND point.governed_point IS NOT NULL
+                    AND ST_Covers(boundary.geometry,point.governed_point)
+                  UNION ALL SELECT '00000000-0000-0000-0000-000000000000'::uuid
                 ), approved AS (
                   SELECT record.region_code,record.record_id
                   FROM production.production_record record
+                  JOIN current_valid_sample sample ON sample.sample_point_id=COALESCE(record.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                   JOIN production.effective_approved_production_record effective
                     ON effective.record_id=record.record_id
                     WHERE record.product_code=:product AND record.status_code='APPROVED'
                       AND record.survey_year=:year
                       AND survey_period_governance_state='CONFIRMED'
-                      AND (:unrestricted OR record.region_code IN (:authorizedRegions))
+                      AND (:unrestricted OR record.region_code IN (SELECT unnest(string_to_array(:authorizedRegionList,','))))
                   UNION ALL
                   SELECT record.region_code,record.record_id
                   FROM market.market_record record
+                  JOIN current_valid_sample sample ON sample.sample_point_id=COALESCE(record.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                   JOIN market.effective_approved_market_record effective
                     ON effective.record_id=record.record_id
                     WHERE record.product_code=:product AND record.status_code='APPROVED'
                       AND record.survey_year=:year
                       AND survey_period_governance_state='CONFIRMED'
-                      AND (:unrestricted OR record.region_code IN (:authorizedRegions))
+                      AND (:unrestricted OR record.region_code IN (SELECT unnest(string_to_array(:authorizedRegionList,','))))
                   UNION ALL
-                  SELECT destination_region_code,event_id::text FROM logistics.route_event
+                  SELECT event.destination_region_code,event.event_id::text
+                  FROM logistics.route_event event
+                  JOIN current_valid_sample sample ON sample.sample_point_id=COALESCE(event.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                     WHERE product_code=:product AND status_code='APPROVED' AND survey_year=:year
                       AND survey_period_governance_state='CONFIRMED'
-                      AND (:unrestricted OR (origin_region_code IN (:authorizedRegions)
-                        AND destination_region_code IN (:authorizedRegions)))
+                      AND (:unrestricted OR (
+                        origin_region_code IN (SELECT unnest(string_to_array(:authorizedRegionList,',')))
+                        AND destination_region_code IN (SELECT unnest(string_to_array(:authorizedRegionList,',')))))
                 ), candidate_region AS (
-                  SELECT region.code,region.name,region.parent_code,region.administrative_level,region.sort_order,
+                  SELECT region.code,region.name,
+                         CASE WHEN formal_scope.region_code IS NULL THEN region.parent_code
+                              WHEN formal_scope.business_root THEN NULL
+                              ELSE formal_scope.business_parent_code END parent_code,
+                         region.administrative_level,region.sort_order,
                          NULL::text context_boundary_geo_json,false map_context_only
-                    FROM platform.region region JOIN navigable_region ON navigable_region.code=region.code
-                   WHERE region.parent_code IS NOT DISTINCT FROM CAST(:parent AS varchar)
+                    FROM platform.region region
+                    JOIN navigable_region ON navigable_region.code=region.code
+                    LEFT JOIN platform.monitoring_scope_region formal_scope
+                      ON formal_scope.scope_code='FORMAL_BUSINESS'
+                     AND formal_scope.included
+                     AND formal_scope.region_code=region.code
+                   WHERE (
+                       (
+                         formal_scope.region_code IS NOT NULL
+                         AND ((CAST(:parent AS varchar) IS NULL AND formal_scope.business_root)
+                           OR formal_scope.business_parent_code=CAST(:parent AS varchar))
+                       ) OR (
+                         formal_scope.region_code IS NULL
+                         AND region.parent_code IS NOT DISTINCT FROM CAST(:parent AS varchar)
+                       )
+                     )
                      AND EXISTS(
                        SELECT 1 FROM overview.administrative_boundary_render boundary
                         WHERE boundary.region_code=region.code
@@ -293,7 +368,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 ORDER BY region.sort_order,region.name
                 """).param("year", year).param("product", productCode).param("parent", parentCode)
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
-                .param("authorizedRegions", authorizedRegionCodes)
+                .param("authorizedRegionList", authorizedRegionList(authorizedRegionCodes))
                 .query((row, index) -> new OverviewRegion(row.getString("code"), row.getString("name"),
                         row.getString("parent_code"), row.getString("administrative_level"), row.getLong("approved_count"),
                         row.getString("boundary_geo_json"), row.getString("location_geo_json"),
@@ -307,15 +382,26 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 WITH RECURSIVE monitoring_scope AS (
                   SELECT region_code FROM platform.monitoring_scope_region
                   WHERE scope_code='FORMAL_BUSINESS' AND included
-                    AND (:unrestricted OR region_code IN (:authorizedRegions))
+                    AND (:unrestricted OR region_code IN (SELECT unnest(string_to_array(:authorizedRegionList,','))))
                 ), descendants(code) AS (
                   SELECT region.code FROM platform.region region
                   WHERE region.code=CAST(:ancestor AS varchar)
                   UNION ALL
                   SELECT child.code FROM platform.region child JOIN descendants parent ON child.parent_code=parent.code
+                ), current_valid_sample(sample_point_id) AS MATERIALIZED (
+                  SELECT point.sample_point_id FROM registry.sample_point point
+                  JOIN overview.administrative_boundary boundary
+                    ON boundary.region_code=point.region_code
+                   AND boundary.geometry_sha256=point.containment_boundary_sha256
+                   AND boundary.source_revision=point.containment_boundary_revision
+                  WHERE point.approval_state='APPROVED' AND point.location_state='VALID'
+                    AND point.governed_point IS NOT NULL
+                    AND ST_Covers(boundary.geometry,point.governed_point)
+                  UNION ALL SELECT '00000000-0000-0000-0000-000000000000'::uuid
                 ), approved AS (
                   SELECT record.region_code,record.record_id
                   FROM production.production_record record
+                  JOIN current_valid_sample sample ON sample.sample_point_id=COALESCE(record.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                   JOIN production.effective_approved_production_record effective
                     ON effective.record_id=record.record_id
                     WHERE record.product_code=:product AND record.status_code='APPROVED'
@@ -324,13 +410,16 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   UNION ALL
                   SELECT record.region_code,record.record_id
                   FROM market.market_record record
+                  JOIN current_valid_sample sample ON sample.sample_point_id=COALESCE(record.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                   JOIN market.effective_approved_market_record effective
                     ON effective.record_id=record.record_id
                     WHERE record.product_code=:product AND record.status_code='APPROVED'
                       AND record.survey_year=:year
                       AND survey_period_governance_state='CONFIRMED'
                   UNION ALL
-                  SELECT destination_region_code,event_id::text FROM logistics.route_event
+                  SELECT event.destination_region_code,event.event_id::text
+                  FROM logistics.route_event event
+                  JOIN current_valid_sample sample ON sample.sample_point_id=COALESCE(event.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                     WHERE product_code=:product AND status_code='APPROVED' AND survey_year=:year
                       AND survey_period_governance_state='CONFIRMED'
                 )
@@ -360,7 +449,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 """).param("ancestor", ancestorCode).param("level", level)
                 .param("year", year).param("product", productCode)
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
-                .param("authorizedRegions", authorizedRegionCodes)
+                .param("authorizedRegionList", authorizedRegionList(authorizedRegionCodes))
                 .query((row, index) -> new OverviewRegion(row.getString("code"), row.getString("name"),
                         row.getString("parent_code"), row.getString("administrative_level"), row.getLong("approved_count"),
                         row.getString("boundary_geo_json"), row.getString("location_geo_json"),
@@ -375,6 +464,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   SELECT record.*,
                     COALESCE(approval.approved_at,record.updated_at,record.reported_at) approved_at
                   FROM production.production_record record
+                  JOIN current_valid_sample sample ON sample.sample_point_id=COALESCE(record.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                   JOIN production.effective_approved_production_record effective
                     ON effective.record_id=record.record_id
                   LEFT JOIN LATERAL (
@@ -385,7 +475,8 @@ public class JdbcOverviewRepository implements OverviewRepository {
                       AND event.action_code='PRODUCTION_RECORD_APPROVED'
                   ) approval ON true
                   WHERE record.product_code=:product AND record.survey_year=:year
-                    AND record.region_code IN(SELECT code FROM scope)
+                    AND (record.sample_point_id IS NOT NULL
+                      OR record.region_code IN(SELECT code FROM scope))
                 ), effective_market_candidate AS (
                   SELECT record.*,
                     COALESCE(approval.approved_at,record.updated_at,record.reported_at) approved_at,
@@ -394,6 +485,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                       record.trade_date,record.trade_direction
                       ORDER BY record.version DESC,record.record_id DESC) effective_rank
                   FROM market.market_record record
+                  JOIN current_valid_sample sample ON sample.sample_point_id=COALESCE(record.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                   JOIN market.effective_approved_market_record effective
                     ON effective.record_id=record.record_id
                   LEFT JOIN LATERAL (
@@ -405,7 +497,9 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   ) approval ON true
                   WHERE record.product_code=:product AND record.status_code='APPROVED'
                     AND record.survey_period_governance_state='CONFIRMED'
-                    AND record.survey_year=:year AND record.region_code IN(SELECT code FROM scope)
+                    AND record.survey_year=:year
+                    AND (record.sample_point_id IS NOT NULL
+                      OR record.region_code IN(SELECT code FROM scope))
                 ), effective_market_record AS (
                   SELECT * FROM effective_market_candidate WHERE effective_rank=1
                 ), effective_logistics_candidate AS (
@@ -416,6 +510,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                       COALESCE(event.destination_node_code,'*'),event.source_organization
                       ORDER BY event.version DESC,event.event_id DESC) effective_rank
                   FROM logistics.route_event event
+                  JOIN current_valid_sample sample ON sample.sample_point_id=COALESCE(event.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                   LEFT JOIN LATERAL (
                     SELECT max(outbox.occurred_at) approved_at
                     FROM platform.business_event_outbox outbox
@@ -426,9 +521,10 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   WHERE event.product_code=:product AND event.status_code='APPROVED'
                     AND event.survey_period_governance_state='CONFIRMED'
                     AND event.survey_year=:year AND event.direction_code IN('INFLOW','OUTFLOW')
-                    AND COALESCE(event.business_region_code,CASE event.direction_code
-                      WHEN 'INFLOW' THEN event.destination_region_code ELSE event.origin_region_code END)
-                      IN(SELECT code FROM scope)
+                    AND (event.sample_point_id IS NOT NULL
+                      OR COALESCE(event.business_region_code,CASE event.direction_code
+                        WHEN 'INFLOW' THEN event.destination_region_code ELSE event.origin_region_code END)
+                        IN(SELECT code FROM scope))
                 ), effective_logistics_event AS (
                   SELECT * FROM effective_logistics_candidate WHERE effective_rank=1
                 ), governed_metric_fact AS (
@@ -442,7 +538,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   JOIN overview.indicator_definition definition ON definition.code=fact.metric_code
                   LEFT JOIN effective_production_record production ON production.record_id=fact.record_id
                   LEFT JOIN effective_market_record market ON market.record_id=fact.record_id
-                  WHERE fact.product_code=:product AND fact.region_code IN(SELECT code FROM scope)
+                  WHERE fact.product_code=:product
                     AND EXTRACT(YEAR FROM fact.occurred_on)=:year
                     AND (
                       definition.source_domain='PRODUCTION' AND EXISTS(
@@ -466,27 +562,27 @@ public class JdbcOverviewRepository implements OverviewRepository {
                     WHEN 'LOGISTICS_INFLOW_VOLUME' THEN (SELECT SUM(CASE fact.unit_code WHEN '吨' THEN fact.value WHEN '万吨' THEN fact.value*10000 END) FROM effective_logistics_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.direction_code='INFLOW' AND fact.fact_code='ROUTE_VOLUME')
                     WHEN 'LOGISTICS_OUTFLOW_VOLUME' THEN (SELECT SUM(CASE fact.unit_code WHEN '吨' THEN fact.value WHEN '万吨' THEN fact.value*10000 END) FROM effective_logistics_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.direction_code='OUTFLOW' AND fact.fact_code='ROUTE_VOLUME')
                     WHEN 'LOGISTICS_AVERAGE_FREIGHT_RATE' THEN (SELECT AVG(fact.value) FROM effective_logistics_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE fact.fact_code='FREIGHT_RATE')
-                    WHEN 'REGION_SURPLUS' THEN NULL
                     ELSE (SELECT value FROM aggregated_metric_fact metric WHERE metric.metric_code=definition.code)
                   END AS value,
                   CASE definition.code
                     WHEN 'LOGISTICS_INFLOW_VOLUME' THEN (SELECT COUNT(*) FROM effective_logistics_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.direction_code='INFLOW' AND fact.fact_code='ROUTE_VOLUME')
                     WHEN 'LOGISTICS_OUTFLOW_VOLUME' THEN (SELECT COUNT(*) FROM effective_logistics_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.direction_code='OUTFLOW' AND fact.fact_code='ROUTE_VOLUME')
                     WHEN 'LOGISTICS_AVERAGE_FREIGHT_RATE' THEN (SELECT COUNT(*) FROM effective_logistics_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE fact.fact_code='FREIGHT_RATE')
-                    WHEN 'REGION_SURPLUS' THEN 0
                     ELSE COALESCE((SELECT source_count FROM aggregated_metric_fact metric WHERE metric.metric_code=definition.code),0)
                   END AS source_count,
                   CASE definition.code
                     WHEN 'LOGISTICS_INFLOW_VOLUME' THEN (SELECT MAX(event.approved_at) FROM effective_logistics_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.direction_code='INFLOW' AND fact.fact_code='ROUTE_VOLUME')
                     WHEN 'LOGISTICS_OUTFLOW_VOLUME' THEN (SELECT MAX(event.approved_at) FROM effective_logistics_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE event.direction_code='OUTFLOW' AND fact.fact_code='ROUTE_VOLUME')
                     WHEN 'LOGISTICS_AVERAGE_FREIGHT_RATE' THEN (SELECT MAX(event.approved_at) FROM effective_logistics_event event JOIN logistics.route_fact fact ON fact.event_id=event.event_id WHERE fact.fact_code='FREIGHT_RATE')
-                    WHEN 'REGION_SURPLUS' THEN NULL
                     ELSE (SELECT data_cutoff FROM aggregated_metric_fact metric WHERE metric.metric_code=definition.code)
                   END AS data_cutoff
-                FROM overview.indicator_definition definition ORDER BY definition.sort_order
+                FROM overview.indicator_definition definition
+                WHERE definition.source_domain<>'SUPPLY'
+                  AND definition.code<>'REGION_SURPLUS'
+                ORDER BY definition.sort_order
                 """).param("region", regionCode).param("product", productCode).param("year", year)
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
-                .param("authorizedRegions", authorizedRegionCodes)
+                .param("authorizedRegionList", authorizedRegionList(authorizedRegionCodes))
                 .query((row, index) -> {
                     long sourceCount = row.getLong("source_count");
                     OffsetDateTime cutoff = row.getObject("data_cutoff", OffsetDateTime.class);
@@ -499,75 +595,15 @@ public class JdbcOverviewRepository implements OverviewRepository {
                             sourceCount > 0 ? "AVAILABLE" : "NO_APPROVED_SOURCES",
                             row.getString("calculation_version"));
                 }).list();
-        ObservableAnalysisSnapshot snapshot = observableAnalysisRepository.load(
-                new ObservableAnalysisScope(
-                        productCode,
-                        regionCode == null
-                                ? ObservableAnalysisScope.ALL_AUTHORIZED_REGIONS
-                                : regionCode,
-                        year,
-                        null,
-                        null,
-                        null),
-                authorizedRegionCodes);
-        return indicators.stream()
-                .map(indicator -> observableSupplyIndicator(indicator, snapshot))
-                .toList();
+        return indicators;
     }
 
-    private OverviewIndicator observableSupplyIndicator(
-            OverviewIndicator indicator,
-            ObservableAnalysisSnapshot snapshot) {
-        var calculation = snapshot.supply().calculation();
-        BigDecimal value;
-        long sourceCount;
-        String formula;
-        switch (indicator.code()) {
-            case "SUPPLY_TOTAL_SUPPLY" -> {
-                value = calculation.totalSupplyTonnes();
-                sourceCount = snapshot.coverage().recordCount();
-                formula = "核定期初库存、预计总产和物流流入自动合计";
-            }
-            case "SUPPLY_TOTAL_USE" -> {
-                value = calculation.totalUseTonnes();
-                sourceCount = snapshot.coverage().recordCount();
-                formula = "核定自用、物流流出和推算其他消耗自动合计";
-            }
-            case "SUPPLY_ADOPTED_ENDING_INVENTORY" -> {
-                value = calculation.endingObservableInventoryTonnes();
-                sourceCount = snapshot.supply().inventory().adoptedRecordCount();
-                formula = "核定生产端和企业端期末库存自动合计";
-            }
-            default -> {
-                return indicator;
-            }
-        }
-        String coverageStatus = switch (calculation.qualityState()) {
-            case AVAILABLE -> "AVAILABLE";
-            case NO_APPROVED_DATA -> "NO_APPROVED_SOURCES";
-            default -> "PARTIAL";
-        };
-        return new OverviewIndicator(
-                indicator.code(),
-                indicator.name(),
-                indicator.unitCode(),
-                decimal(toTenThousandTonnes(value)),
-                indicator.sourceDomain(),
-                sourceCount,
-                "/api/v1/observable-analysis/snapshots",
-                formula,
-                "审核通过的产情、市场和物流数据自动计算结果",
-                chineseTime(snapshot.dataCutoffAt()),
-                indicator.coverageScope(),
-                coverageStatus,
-                "审核数据自动供需口径第1版");
-    }
-
-    private static BigDecimal toTenThousandTonnes(BigDecimal tonnes) {
-        return tonnes == null ? null : tonnes.divide(TONNES_PER_TEN_THOUSAND);
+    private static String authorizedRegionList(Set<String> authorizedRegionCodes) {
+        return String.join(",", authorizedRegionCodes);
     }
 
     @Override
+    @Transactional(readOnly = true)
     public OverviewDashboard dashboard(
             String productCode, int year, String regionCode,
             Set<String> authorizedRegionCodes) {
@@ -587,6 +623,50 @@ public class JdbcOverviewRepository implements OverviewRepository {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public OverviewDashboardSummary dashboardSummary(
+            String productCode, int year, String regionCode,
+            Set<String> authorizedRegionCodes) {
+        return new OverviewDashboardSummary(
+                dashboardSummaryScope(regionCode, authorizedRegionCodes),
+                dashboardMetrics(productCode, year, regionCode, authorizedRegionCodes));
+    }
+
+    private OverviewDashboardSummary.Scope dashboardSummaryScope(
+            String regionCode, Set<String> authorizedRegionCodes) {
+        return jdbc.sql("""
+                WITH RECURSIVE monitoring_scope(region_code) AS (
+                  SELECT region_code FROM platform.monitoring_scope_region
+                  WHERE scope_code='FORMAL_BUSINESS' AND included
+                    AND (:unrestricted OR region_code IN (
+                      SELECT unnest(string_to_array(:authorizedRegionList,','))))
+                ), requested_scope(code) AS (
+                  SELECT code FROM platform.region
+                  WHERE CAST(:region AS varchar) IS NULL OR code=CAST(:region AS varchar)
+                  UNION ALL
+                  SELECT child.code FROM platform.region child
+                  JOIN requested_scope parent ON child.parent_code=parent.code
+                ), scope(code) AS (
+                  SELECT monitoring_scope.region_code FROM monitoring_scope
+                  WHERE CAST(:region AS varchar) IS NULL
+                     OR monitoring_scope.region_code IN (SELECT code FROM requested_scope)
+                )
+                SELECT
+                  COUNT(*) FILTER(WHERE region.administrative_level='PREFECTURE') prefecture_count,
+                  COUNT(*) FILTER(WHERE region.administrative_level='COUNTY') county_count,
+                  COUNT(*) FILTER(WHERE region.administrative_level='TOWNSHIP') township_count,
+                  COUNT(*) FILTER(WHERE region.administrative_level='VILLAGE') village_count
+                FROM scope JOIN platform.region region ON region.code=scope.code
+                """).param("region", regionCode)
+                .param("unrestricted", authorizedRegionCodes.contains("*"))
+                .param("authorizedRegionList", authorizedRegionList(authorizedRegionCodes))
+                .query((row, ignored) -> new OverviewDashboardSummary.Scope(
+                        row.getLong("prefecture_count"), row.getLong("county_count"),
+                        row.getLong("township_count"), row.getLong("village_count")))
+                .single();
+    }
+
+    @Override
     public List<AnnualComparisonPoint> annualComparison(String productCode, String cultivarCode, String regionCode,
             int surveyYear, AnnualComparisonDefinition definition, Set<String> authorizedRegionCodes) {
         String publication = "APPROVED_" + definition.sourceDomain() + "_RECORD:v";
@@ -594,7 +674,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 WITH RECURSIVE monitoring_scope AS (
                   SELECT region_code FROM platform.monitoring_scope_region
                   WHERE scope_code='FORMAL_BUSINESS' AND included
-                    AND (:unrestricted OR region_code IN (:authorizedRegions))
+                    AND (:unrestricted OR region_code IN (SELECT unnest(string_to_array(:authorizedRegionList,','))))
                 ), scope(code) AS (
                   SELECT region.code FROM platform.region region JOIN monitoring_scope ON monitoring_scope.region_code=region.code
                   WHERE region.code=:region
@@ -602,6 +682,32 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   SELECT child.code FROM platform.region child
                   JOIN scope parent ON child.parent_code=parent.code
                   JOIN monitoring_scope ON monitoring_scope.region_code=child.code
+                ), requested_ancestors(code) AS (
+                  SELECT parent_code FROM platform.region
+                  WHERE code=:region AND parent_code IS NOT NULL
+                  UNION
+                  SELECT parent.parent_code FROM platform.region parent
+                  JOIN requested_ancestors child ON parent.code=child.code
+                  WHERE parent.parent_code IS NOT NULL
+                ), current_valid_sample(sample_point_id) AS MATERIALIZED (
+                  SELECT point.sample_point_id
+                  FROM registry.sample_point point
+                  JOIN overview.administrative_boundary boundary
+                    ON boundary.region_code=point.region_code
+                   AND boundary.geometry_sha256=point.containment_boundary_sha256
+                   AND boundary.source_revision=point.containment_boundary_revision
+                  WHERE point.approval_state='APPROVED'
+                    AND point.location_state='VALID'
+                    AND point.governed_point IS NOT NULL
+                    AND ST_Covers(boundary.geometry,point.governed_point)
+                    AND (
+                      point.region_code IN (SELECT code FROM scope)
+                      OR point.region_code IN (SELECT code FROM requested_ancestors)
+                        AND EXISTS(
+                          SELECT 1 FROM overview.administrative_boundary requested_boundary
+                          WHERE requested_boundary.region_code=:region
+                            AND ST_Covers(requested_boundary.geometry,point.governed_point)))
+                  UNION ALL SELECT '00000000-0000-0000-0000-000000000000'::uuid
                 ), comparison_year AS (
                   SELECT (:surveyYear-year_offset)::text business_year,
                     make_date(:surveyYear-year_offset,1,1) starts_on,
@@ -627,22 +733,39 @@ public class JdbcOverviewRepository implements OverviewRepository {
                       AND route_fact.fact_code IN ('ROUTE_VOLUME','FREIGHT_RATE')
                   ) record
                   WHERE record.metric_code=:metric AND record.product_code=:product
-                    AND record.region_code IN (SELECT code FROM scope)
                     AND record.occurred_on BETWEEN make_date(:surveyYear-3,1,1) AND make_date(:surveyYear,12,31)
                     AND (CAST(:cultivar AS varchar) IS NULL
                       OR record.cultivar_code=CAST(:cultivar AS varchar))
                     AND (
                       :sourceDomain='PRODUCTION' AND EXISTS(
-                        SELECT 1 FROM production.effective_approved_production_record source
-                        WHERE source.record_id=record.record_id)
+                        SELECT 1
+                        FROM production.effective_approved_production_record effective
+                        JOIN production.production_record source ON source.record_id=effective.record_id
+                        JOIN current_valid_sample sample ON sample.sample_point_id=COALESCE(
+                          source.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
+                        WHERE source.record_id=record.record_id
+                          AND (source.sample_point_id IS NOT NULL
+                            OR source.region_code IN (SELECT code FROM scope)))
                       OR :sourceDomain='MARKET' AND EXISTS(
-                        SELECT 1 FROM market.effective_approved_market_record source
-                        WHERE source.record_id=record.record_id)
+                        SELECT 1
+                        FROM market.effective_approved_market_record effective
+                        JOIN market.market_record source ON source.record_id=effective.record_id
+                        JOIN current_valid_sample sample ON sample.sample_point_id=COALESCE(
+                          source.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
+                        WHERE source.record_id=record.record_id
+                          AND (source.sample_point_id IS NOT NULL
+                            OR source.region_code IN (SELECT code FROM scope)))
                       OR :sourceDomain='LOGISTICS' AND EXISTS(
                         SELECT 1 FROM logistics.route_event source
+                        JOIN current_valid_sample sample ON sample.sample_point_id=COALESCE(
+                          source.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                         WHERE source.event_id::text=record.record_id
                           AND source.status_code='APPROVED'
-                          AND source.survey_period_governance_state='CONFIRMED'))
+                          AND source.survey_period_governance_state='CONFIRMED'
+                          AND (source.sample_point_id IS NOT NULL
+                            OR COALESCE(source.business_region_code,CASE source.direction_code
+                              WHEN 'INFLOW' THEN source.destination_region_code
+                              ELSE source.origin_region_code END) IN (SELECT code FROM scope))))
                 )
                 SELECT comparison_year.business_year,
                   CASE WHEN :aggregation='AVERAGE' THEN AVG(record.value) ELSE SUM(record.value) END value,
@@ -657,7 +780,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 .param("metric", definition.code()).param("aggregation", definition.aggregationCode())
                 .param("cultivar", cultivarCode).param("sourceDomain", definition.sourceDomain())
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
-                .param("authorizedRegions", authorizedRegionCodes)
+                .param("authorizedRegionList", authorizedRegionList(authorizedRegionCodes))
                 .query((row, index) -> {
                     long count = row.getLong("source_count");
                     OffsetDateTime cutoff = row.getObject("data_cutoff", OffsetDateTime.class);
@@ -675,6 +798,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   SELECT record.record_id,record.region_code,record.last_modified_by,
                     COALESCE(approval.approved_at,record.updated_at,record.reported_at) approved_at
                   FROM production.production_record record
+                  JOIN current_valid_sample sample ON sample.sample_point_id=COALESCE(record.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                   JOIN production.effective_approved_production_record effective
                     ON effective.record_id=record.record_id
                   LEFT JOIN LATERAL (
@@ -684,7 +808,9 @@ public class JdbcOverviewRepository implements OverviewRepository {
                       AND event.aggregate_id=record.record_id
                       AND event.action_code='PRODUCTION_RECORD_APPROVED'
                   ) approval ON true
-                  WHERE record.product_code=:product AND record.region_code IN(SELECT code FROM scope)
+                  WHERE record.product_code=:product
+                    AND (record.sample_point_id IS NOT NULL
+                      OR record.region_code IN(SELECT code FROM scope))
                     AND record.survey_year=:year
                 ), effective_market_candidate AS (
                   SELECT record.record_id,record.region_code,record.last_modified_by,
@@ -694,6 +820,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                       record.trade_date,record.trade_direction
                       ORDER BY record.version DESC,record.record_id DESC) effective_rank
                   FROM market.market_record record
+                  JOIN current_valid_sample sample ON sample.sample_point_id=COALESCE(record.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                   JOIN market.effective_approved_market_record effective
                     ON effective.record_id=record.record_id
                   LEFT JOIN LATERAL (
@@ -703,7 +830,9 @@ public class JdbcOverviewRepository implements OverviewRepository {
                       AND event.aggregate_id=record.record_id
                       AND event.action_code='MARKET_RECORD_APPROVED'
                   ) approval ON true
-                  WHERE record.product_code=:product AND record.region_code IN(SELECT code FROM scope)
+                  WHERE record.product_code=:product
+                    AND (record.sample_point_id IS NOT NULL
+                      OR record.region_code IN(SELECT code FROM scope))
                     AND record.status_code='APPROVED' AND record.survey_year=:year
                     AND record.survey_period_governance_state='CONFIRMED'
                 ), effective_market_record AS (
@@ -718,6 +847,8 @@ public class JdbcOverviewRepository implements OverviewRepository {
                       COALESCE(event.destination_node_code,'*'),event.source_organization
                       ORDER BY event.version DESC,event.event_id DESC) effective_rank
                   FROM logistics.route_event event
+                  JOIN current_valid_sample sample
+                    ON sample.sample_point_id=COALESCE(event.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                   LEFT JOIN LATERAL (
                     SELECT max(outbox.occurred_at) approved_at
                     FROM platform.business_event_outbox outbox
@@ -726,7 +857,8 @@ public class JdbcOverviewRepository implements OverviewRepository {
                       AND outbox.action_code='LOGISTICS_RECORD_APPROVED'
                   ) approval ON true
                   WHERE event.product_code=:product AND event.status_code='APPROVED'
-                    AND event.business_region_code IN(SELECT code FROM scope)
+                    AND (event.sample_point_id IS NOT NULL
+                      OR event.business_region_code IN(SELECT code FROM scope))
                     AND event.survey_year=:year AND event.survey_period_governance_state='CONFIRMED'
                     AND event.direction_code IN('INFLOW','OUTFLOW')
                 ), effective_logistics_event AS (
@@ -738,6 +870,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   UNION ALL SELECT * FROM effective_logistics_event
                 )
                 SELECT
+                  COUNT(*) FILTER(WHERE region.administrative_level='PREFECTURE') prefecture_count,
                   COUNT(*) FILTER(WHERE region.administrative_level='COUNTY') county_count,
                   COUNT(*) FILTER(WHERE region.administrative_level='TOWNSHIP') township_count,
                   COUNT(*) FILTER(WHERE region.administrative_level='VILLAGE') village_count,
@@ -750,10 +883,11 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 FROM scope JOIN platform.region region ON region.code=scope.code
                 """).param("region", regionCode).param("year", year).param("product", productCode)
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
-                .param("authorizedRegions", authorizedRegionCodes)
+                .param("authorizedRegionList", authorizedRegionList(authorizedRegionCodes))
                 .query((row, index) -> {
                     OffsetDateTime updatedAt = row.getObject("latest_updated_at", OffsetDateTime.class);
                     return new OverviewDashboard.Scope(
+                            row.getLong("prefecture_count"),
                             row.getLong("county_count"), row.getLong("township_count"), row.getLong("village_count"),
                             row.getLong("reporting_unit_count"), row.getLong("approved_record_count"),
                             chineseTime(updatedAt));
@@ -763,157 +897,77 @@ public class JdbcOverviewRepository implements OverviewRepository {
     private List<OverviewDashboard.Metric> dashboardMetrics(
             String productCode, int year, String regionCode,
             Set<String> authorizedRegionCodes) {
-        List<OverviewDashboard.Metric> metrics = new java.util.ArrayList<>(indicators(
-                productCode, regionCode, year, authorizedRegionCodes).stream()
-                .filter(indicator -> switch (indicator.code()) {
-                    case "PRODUCTION_CULTIVATED_AREA", "PRODUCTION_ESTIMATED_OUTPUT",
-                            "MARKET_AVERAGE_PURCHASE_PRICE", "MARKET_AVERAGE_SALE_PRICE",
-                            "LOGISTICS_INFLOW_VOLUME",
-                            "LOGISTICS_OUTFLOW_VOLUME", "LOGISTICS_AVERAGE_FREIGHT_RATE", "SUPPLY_TOTAL_SUPPLY",
-                            "SUPPLY_TOTAL_USE", "SUPPLY_ADOPTED_ENDING_INVENTORY" -> true;
-                    default -> false;
-                })
+        ObservableAnalysisScope analysisScope = new ObservableAnalysisScope(
+                productCode,
+                regionCode == null
+                        ? ObservableAnalysisScope.ALL_AUTHORIZED_REGIONS
+                        : regionCode,
+                year,
+                null,
+                null,
+                null);
+        List<ObservableHeadlineMetric> headlineMetrics =
+                observableAnalysisRepository.loadHeadlineMetrics(
+                analysisScope,
+                authorizedRegionCodes,
+                () -> currentOverviewSamplePointIds(year, productCode, regionCode,
+                        authorizedRegionCodes));
+        return dashboardIndicators(productCode, regionCode, year, headlineMetrics).stream()
                 .map(indicator -> new OverviewDashboard.Metric(
                         indicator.code(), indicator.name(), indicator.unitCode(),
                         indicator.sourceCount() == 0 ? null : indicator.value(), indicator.sourceCount(),
                         indicator.dataCutoff(), indicator.coverageStatus(), indicator.formula(),
                         indicator.sourcePath(), indicator.sourceRelation(), indicator.coverageScope(),
-                        indicator.calculationVersion(), List.of()))
-                .toList());
-        RegionSurplusSourceSelection surplusSources = regionSurplusSources(
-                productCode, year, regionCode, authorizedRegionCodes);
-        RegionSurplusCalculation surplus = new RegionSurplusCalculator().calculate(
-                surplusSources.sources(), surplusSources.calculationVersion());
-        metrics.add(new OverviewDashboard.Metric(
-                "REGION_SURPLUS", "地区余粮", "吨",
-                surplus.valueTonnes() == null ? null : decimal(surplus.valueTonnes()),
-                surplus.sourceCount(),
-                chineseDate(surplus.dataCutoff()),
-                surplus.coverageStatus(),
-                "按公开样本身份采用最新产情期末余粮与市场现有库存后合计",
-                "/api/v1/overview/dashboard",
-                "产情与市场核定记录",
-                coverageScope(regionCode, productCode, year),
-                surplus.calculationVersion(), surplus.auditSources()));
-        return List.copyOf(metrics);
+                        indicator.calculationVersion()))
+                .toList();
     }
 
-    private RegionSurplusSourceSelection regionSurplusSources(
-            String productCode, int year, String regionCode,
+    private Set<java.util.UUID> currentOverviewSamplePointIds(
+            int year, String productCode, String regionCode,
             Set<String> authorizedRegionCodes) {
-        List<RegionSurplusContract> contracts = jdbc.sql("""
-                        SELECT version_code,name
-                        FROM overview.region_surplus_calculation_contract
-                        WHERE status_code='ACTIVE' AND effective_from<=CURRENT_TIMESTAMP
-                          AND (effective_to IS NULL OR CURRENT_TIMESTAMP<effective_to)
-                        ORDER BY version_code
-                        """).query((row, ignored) -> new RegionSurplusContract(
-                        row.getString("version_code"), row.getString("name"))).list();
-        if (contracts.size() != 1) return new RegionSurplusSourceSelection(List.of(), null);
-        RegionSurplusContract selected = contracts.getFirst();
-        List<RegionSurplusSource> sources = jdbc.sql(AUTHORIZED_REQUEST_SCOPE + """
-                , selected_contract AS (
-                  SELECT CAST(:contractVersion AS varchar) version_code,
-                         CAST(:contractName AS varchar) name
-                ), production_metadata AS (
-                  SELECT metadata.record_id,
-                    max(metadata.value) FILTER(WHERE metadata.field_code='PROD_ENDING_INVENTORY') ending_value
-                  FROM production.production_record_submission_metadata metadata
-                  WHERE metadata.field_code='PROD_ENDING_INVENTORY'
-                  GROUP BY metadata.record_id
-                ), sources AS (
-                  SELECT 'PRODUCTION'::varchar source_domain,record.record_id source_record_id,
-                    record.version source_version,identity.business_identity subject_key,
-                    NULL::varchar inventory_holder_key,
-                    identity.business_identity cargo_owner_key,
-                    'PRODUCTION_SURPLUS'::varchar ownership_type,record.region_code,
-                    (make_date(record.survey_year,coalesce(record.survey_month,12),1)
-                      + interval '1 month - 1 day')::date::text cutoff_date,
-                    metadata.ending_value,approval.occurred_at approved_at,
-                    NULL::varchar contract_issue,
-                    contract.name calculation_version,record.object_type_code sample_type_code
-                  FROM production.production_record record
-                  JOIN production.effective_approved_production_record effective
-                    ON effective.record_id=record.record_id
-                  JOIN production.production_record_business_identity identity
-                    ON identity.record_id=record.record_id
-                  JOIN production_metadata metadata ON metadata.record_id=record.record_id
-                  CROSS JOIN selected_contract contract
-                  LEFT JOIN LATERAL (
-                    SELECT event.occurred_at FROM platform.business_event_outbox event
-                    WHERE event.aggregate_type='PRODUCTION_RECORD'
-                      AND event.aggregate_id=record.record_id
-                      AND event.action_code='PRODUCTION_RECORD_APPROVED'
-                    ORDER BY event.event_sequence DESC LIMIT 1
-                  ) approval ON true
-                  WHERE record.product_code=:product AND record.status_code='APPROVED'
-                    AND record.survey_year=:year AND record.survey_period_governance_state='CONFIRMED'
-                    AND record.region_code IN(SELECT code FROM scope)
-                    AND metadata.ending_value IS NOT NULL
-                  UNION ALL
-                  SELECT 'MARKET',record.record_id,record.version,
-                    identity.business_identity,identity.business_identity,identity.business_identity,
-                    'OWNED',record.region_code,
-                    (make_date(record.survey_year,coalesce(record.survey_month,12),1)
-                      + interval '1 month - 1 day')::date::text,
-                    fact.value::text,approval.occurred_at,NULL::varchar,
-                    contract.name,record.object_type_code
-                  FROM market.market_record record
-                  JOIN market.effective_approved_market_record effective
-                    ON effective.record_id=record.record_id
-                  JOIN market.market_record_business_identity identity
-                    ON identity.record_id=record.record_id
-                  JOIN market.market_record_fact fact ON fact.record_id=record.record_id
-                    AND fact.fact_code='ENDING_INVENTORY'
-                  LEFT JOIN LATERAL (
-                    SELECT event.occurred_at FROM platform.business_event_outbox event
-                    WHERE event.aggregate_type='MARKET_RECORD'
-                      AND event.aggregate_id=record.record_id
-                      AND event.action_code='MARKET_RECORD_APPROVED'
-                    ORDER BY event.event_sequence DESC LIMIT 1
-                  ) approval ON true
-                  CROSS JOIN selected_contract contract
-                  WHERE record.product_code=:product AND record.status_code='APPROVED'
-                    AND record.survey_year=:year AND record.survey_period_governance_state='CONFIRMED'
-                    AND record.region_code IN(SELECT code FROM scope)
-                )
-                SELECT * FROM sources ORDER BY source_domain,source_record_id
-                """).param("region", regionCode).param("year", year).param("product", productCode)
-                .param("contractVersion", selected.versionCode()).param("contractName", selected.name())
-                .param("unrestricted", authorizedRegionCodes.contains("*"))
-                .param("authorizedRegions", authorizedRegionCodes)
-                .query(this::regionSurplusSource).list();
-        return new RegionSurplusSourceSelection(sources, selected.name());
+        return currentOverviewSamplePointReader.read(
+                        year, productCode, regionCode, authorizedRegionCodes).stream()
+                .map(point -> point.samplePointId())
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
 
-    private RegionSurplusSource regionSurplusSource(ResultSet row, int ignored) throws SQLException {
-        String issue = row.getString("contract_issue");
-        BigDecimal value = null;
-        LocalDate cutoff = null;
-        try {
-            String valueText = row.getString("ending_value");
-            if (valueText != null) value = new BigDecimal(valueText);
-        } catch (NumberFormatException exception) {
-            issue = "INVALID_VALUE";
-        }
-        try {
-            String cutoffText = row.getString("cutoff_date");
-            if (cutoffText != null) cutoff = LocalDate.parse(cutoffText);
-        } catch (java.time.DateTimeException exception) {
-            issue = "INVALID_CUTOFF_DATE";
-        }
-        return new RegionSurplusSource(
-                row.getString("source_domain"), row.getString("source_record_id"),
-                row.getLong("source_version"), row.getString("subject_key"),
-                row.getString("inventory_holder_key"), row.getString("cargo_owner_key"),
-                row.getString("ownership_type"), row.getString("region_code"), cutoff, value,
-                row.getObject("approved_at", OffsetDateTime.class), issue,
-                row.getString("calculation_version"), row.getString("sample_type_code"));
+    private List<OverviewIndicator> dashboardIndicators(
+            String productCode,
+            String regionCode,
+            int year,
+            List<ObservableHeadlineMetric> headlineMetrics) {
+        Map<String, ObservableHeadlineMetric> headline = headlineMetrics.stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        ObservableHeadlineMetric::code, metric -> metric));
+        return jdbc.sql("""
+                SELECT code,name,unit_code,source_domain,formula,source_relation,
+                       calculation_version
+                FROM overview.indicator_definition
+                WHERE code IN (
+                  'PRODUCTION_CULTIVATED_AREA','PRODUCTION_ESTIMATED_OUTPUT',
+                  'MARKET_AVERAGE_PURCHASE_PRICE','MARKET_AVERAGE_SALE_PRICE')
+                ORDER BY sort_order
+                """).query((row, ignored) -> {
+                    OverviewIndicator definition = new OverviewIndicator(
+                            row.getString("code"), row.getString("name"),
+                            row.getString("unit_code"), null,
+                            row.getString("source_domain"), 0,
+                            sourcePath(row.getString("source_domain")),
+                            row.getString("formula"), row.getString("source_relation"),
+                            null, coverageScope(regionCode, productCode, year),
+                            "NO_APPROVED_SOURCES", row.getString("calculation_version"));
+                    ObservableHeadlineMetric metric = headline.get(definition.code());
+                    if (metric == null) return definition;
+                    return new OverviewIndicator(
+                            definition.code(), definition.name(), definition.unitCode(),
+                            decimal(metric.value()), definition.sourceDomain(),
+                            metric.sourceCount(), definition.sourcePath(), definition.formula(),
+                            definition.sourceRelation(), chineseTime(metric.dataCutoffAt()),
+                            definition.coverageScope(),
+                            metric.sourceCount() > 0 ? "AVAILABLE" : "NO_APPROVED_SOURCES",
+                            definition.calculationVersion());
+                }).list();
     }
-
-    private record RegionSurplusContract(String versionCode, String name) {}
-    private record RegionSurplusSourceSelection(
-            List<RegionSurplusSource> sources, String calculationVersion) {}
 
     private List<OverviewBusinessTable> dashboardBusinessTables(
             String productCode, int year, String regionCode,
@@ -921,8 +975,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
         return List.of(
                 productionBusinessTable(productCode, year, regionCode, authorizedRegionCodes),
                 marketBusinessTable(productCode, year, regionCode, authorizedRegionCodes),
-                logisticsBusinessTable(productCode, year, regionCode, authorizedRegionCodes),
-                supplyBusinessTable(productCode, year, regionCode, authorizedRegionCodes));
+                logisticsBusinessTable(productCode, year, regionCode, authorizedRegionCodes));
     }
 
     private OverviewBusinessTable productionBusinessTable(
@@ -965,15 +1018,21 @@ public class JdbcOverviewRepository implements OverviewRepository {
                     'PROD_HARVEST_AREA_MU','PROD_AFFECTED_AREA_MU','PROD_ENDING_INVENTORY')
                   GROUP BY metadata.record_id
                 ), approved_record AS (
-                  SELECT descendant.root_code,record.record_id,identity.business_identity,
+                  SELECT bucket.code root_code,record.record_id,identity.business_identity,
                     record.reported_at,record.cultivated_area_mu,record.estimated_output_kg,
                     metadata.harvest_area,metadata.affected_area,metadata.ending_inventory
                   FROM production.production_record record
+                  JOIN current_valid_sample valid ON valid.sample_point_id=COALESCE(
+                    record.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                   JOIN production.effective_approved_production_record effective
                     ON effective.record_id=record.record_id
                   JOIN production.production_record_business_identity identity
                     ON identity.record_id=record.record_id
-                  JOIN table_region_descendant descendant ON descendant.code=record.region_code
+                  LEFT JOIN sample_table_region spatial
+                    ON spatial.sample_point_id=record.sample_point_id
+                  LEFT JOIN table_region_descendant directory
+                    ON record.sample_point_id IS NULL AND directory.code=record.region_code
+                  JOIN table_region bucket ON bucket.code=COALESCE(spatial.root_code,directory.root_code)
                   LEFT JOIN metadata ON metadata.record_id=record.record_id
                   WHERE record.product_code=:product AND record.survey_year=:year
                     AND record.status_code='APPROVED'
@@ -998,7 +1057,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 ORDER BY region.sort_order,region.name
                 """).param("region", regionCode).param("year", year).param("product", productCode)
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
-                .param("authorizedRegions", authorizedRegionCodes)
+                .param("authorizedRegionList", authorizedRegionList(authorizedRegionCodes))
                 .query((row, ignored) -> {
                     long sourceCount = row.getLong("source_count");
                     long areaCount = row.getLong("cultivated_area_count");
@@ -1048,14 +1107,20 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   WHERE fact.fact_code IN ('PURCHASE_VOLUME','SALES_VOLUME','ENDING_INVENTORY')
                   GROUP BY fact.record_id
                 ), approved_record AS (
-                  SELECT descendant.root_code,record.record_id,record.reported_at,
+                  SELECT bucket.code root_code,record.record_id,record.reported_at,
                     record.purchase_base_price,record.sale_base_price,
                     record.carriage_board_amount,record.freight_amount,
                     fact.purchase_volume,fact.sales_volume,fact.ending_inventory
                   FROM market.market_record record
+                  JOIN current_valid_sample valid ON valid.sample_point_id=COALESCE(
+                    record.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                   JOIN market.effective_approved_market_record effective
                     ON effective.record_id=record.record_id
-                  JOIN table_region_descendant descendant ON descendant.code=record.region_code
+                  LEFT JOIN sample_table_region spatial
+                    ON spatial.sample_point_id=record.sample_point_id
+                  LEFT JOIN table_region_descendant directory
+                    ON record.sample_point_id IS NULL AND directory.code=record.region_code
+                  JOIN table_region bucket ON bucket.code=COALESCE(spatial.root_code,directory.root_code)
                   LEFT JOIN fact ON fact.record_id=record.record_id
                   WHERE record.product_code=:product AND record.survey_year=:year
                     AND record.status_code='APPROVED'
@@ -1076,7 +1141,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 ORDER BY region.sort_order,region.name
                 """).param("region", regionCode).param("year", year).param("product", productCode)
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
-                .param("authorizedRegions", authorizedRegionCodes)
+                .param("authorizedRegionList", authorizedRegionList(authorizedRegionCodes))
                 .query((row, ignored) -> {
                     long sourceCount = row.getLong("source_count");
                     long purchasePriceCount = row.getLong("purchase_price_count");
@@ -1125,13 +1190,18 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   WHERE fact.fact_code IN ('ROUTE_VOLUME','FREIGHT_RATE','BOARD_PRICE')
                   GROUP BY fact.event_id
                 ), approved_event AS (
-                  SELECT descendant.root_code,event.event_id,event.reported_at,
+                  SELECT bucket.code root_code,event.event_id,event.reported_at,
                     mode.name transport_mode,direction.label direction_label,
                     fact.route_volume,fact.freight_rate,fact.board_price
                   FROM logistics.route_event event
-                  JOIN table_region_descendant descendant ON descendant.code=COALESCE(
-                    event.business_region_code,CASE event.direction_code
+                  JOIN current_valid_sample valid ON valid.sample_point_id=COALESCE(
+                    event.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
+                  LEFT JOIN sample_table_region spatial
+                    ON spatial.sample_point_id=event.sample_point_id
+                  LEFT JOIN table_region_descendant directory ON event.sample_point_id IS NULL
+                    AND directory.code=COALESCE(event.business_region_code,CASE event.direction_code
                       WHEN 'INFLOW' THEN event.destination_region_code ELSE event.origin_region_code END)
+                  JOIN table_region bucket ON bucket.code=COALESCE(spatial.root_code,directory.root_code)
                   JOIN platform.transport_mode mode ON mode.code=event.transport_mode_code
                   JOIN platform.logistics_core_field_option direction
                     ON direction.field_code='LOG_DIRECTION' AND direction.value=event.direction_code
@@ -1155,7 +1225,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 ORDER BY region.sort_order,region.name
                 """).param("region", regionCode).param("year", year).param("product", productCode)
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
-                .param("authorizedRegions", authorizedRegionCodes)
+                .param("authorizedRegionList", authorizedRegionList(authorizedRegionCodes))
                 .query((row, ignored) -> {
                     long sourceCount = row.getLong("source_count");
                     long modeCount = row.getLong("transport_mode_count");
@@ -1173,120 +1243,6 @@ public class JdbcOverviewRepository implements OverviewRepository {
                             modeCount, directionCount, volumeCount, freightCount, boardCount);
                 }).list();
         return businessTable("LOGISTICS", "物流监测表", columns, rows);
-    }
-
-    private OverviewBusinessTable supplyBusinessTable(
-            String productCode, int year, String regionCode,
-            Set<String> authorizedRegionCodes) {
-        List<OverviewBusinessTable.Column> columns = jdbc.sql("""
-                WITH requested(code,role_code,indicator_code,formula_code,field_code,sort_order,unit_code) AS (VALUES
-                  ('OPENING_INVENTORY','OPENING_INVENTORY',NULL,NULL,NULL,10,'吨'),
-                  ('LOCAL_PRODUCTION','LOCAL_PRODUCTION',NULL,NULL,NULL,20,'吨'),
-                  ('EXTERNAL_INFLOW','EXTERNAL_INFLOW',NULL,NULL,NULL,30,'吨'),
-                  ('EXTERNAL_OUTFLOW','EXTERNAL_OUTFLOW',NULL,NULL,NULL,40,'吨'),
-                  ('SUPPLY_TOTAL_SUPPLY',NULL,'SUPPLY_TOTAL_SUPPLY',NULL,NULL,50,'吨'),
-                  ('SUPPLY_TOTAL_USE',NULL,'SUPPLY_TOTAL_USE',NULL,NULL,60,'吨'),
-                  ('SUPPLY_ADOPTED_ENDING_INVENTORY',NULL,'SUPPLY_ADOPTED_ENDING_INVENTORY',NULL,NULL,70,'吨'),
-                  ('SUPPLY_INVENTORY_RECONCILIATION_DIFFERENCE',NULL,NULL,
-                    'INVENTORY_RECONCILIATION_DIFFERENCE',NULL,80,'吨'),
-                  ('SUPPLY_BALANCED',NULL,NULL,NULL,NULL,90,NULL),
-                  ('SUPPLY_RESULT_STATE',NULL,NULL,NULL,'SUP_RESULT_STATE',100,NULL)
-                )
-                SELECT requested.code,
-                  COALESCE(role.label,indicator.name,expression.label,field.name,
-                    CASE requested.code WHEN 'SUPPLY_BALANCED' THEN '平衡校验' END) label,
-                  requested.unit_code
-                FROM requested
-                LEFT JOIN supply.account_input_role role ON role.role_code=requested.role_code
-                LEFT JOIN overview.indicator_definition indicator ON indicator.code=requested.indicator_code
-                LEFT JOIN platform.field_definition field ON field.code=requested.field_code
-                LEFT JOIN LATERAL (
-                  SELECT expression.label FROM supply.formula_expression expression
-                  JOIN supply.formula_version version
-                    ON version.formula_version_id=expression.formula_version_id
-                  WHERE expression.result_code=requested.formula_code
-                  ORDER BY version.version_no DESC LIMIT 1
-                ) expression ON true
-                ORDER BY requested.sort_order
-                """).query((row, ignored) -> new OverviewBusinessTable.Column(
-                        row.getString("code"), row.getString("label"), row.getString("unit_code"))).list();
-        List<OverviewBusinessTable.Row> rows = jdbc.sql(BUSINESS_TABLE_SCOPE + """
-                , ranked_run AS (
-                  SELECT descendant.root_code,run.*,
-                    row_number() OVER(PARTITION BY descendant.root_code,run.region_code
-                      ORDER BY run.created_at DESC,run.version DESC,run.calculation_run_id DESC) row_rank
-                  FROM supply.calculation_run run
-                  JOIN table_region_descendant descendant ON descendant.code=run.region_code
-                  WHERE run.product_code=:product AND run.survey_year=:year
-                    AND run.result_state='PUBLISHED'
-                    AND run.temporal_governance_state='CONFIRMED'
-                ), latest_run AS (
-                  SELECT * FROM ranked_run WHERE row_rank=1
-                ), source_value AS (
-                  SELECT reference.calculation_run_id,
-                    max(reference.adopted_value) FILTER(WHERE reference.role_code='OPENING_INVENTORY') opening_inventory,
-                    max(reference.adopted_value) FILTER(WHERE reference.role_code='LOCAL_PRODUCTION') local_production,
-                    max(reference.adopted_value) FILTER(WHERE reference.role_code='EXTERNAL_INFLOW') external_inflow,
-                    max(reference.adopted_value) FILTER(WHERE reference.role_code='EXTERNAL_OUTFLOW') external_outflow
-                  FROM supply.calculation_source_reference reference
-                  JOIN latest_run run ON run.calculation_run_id=reference.calculation_run_id
-                  GROUP BY reference.calculation_run_id
-                )
-                SELECT region.code region_code,region.name region_name,
-                  count(run.calculation_run_id) source_count,max(run.created_at) latest_approved_at,
-                  sum(source.opening_inventory) opening_inventory,count(source.opening_inventory) opening_inventory_count,
-                  sum(source.local_production) local_production,count(source.local_production) local_production_count,
-                  sum(source.external_inflow) external_inflow,count(source.external_inflow) external_inflow_count,
-                  sum(source.external_outflow) external_outflow,count(source.external_outflow) external_outflow_count,
-                  sum(run.total_supply) total_supply,count(run.total_supply) total_supply_count,
-                  sum(run.total_use) total_use,count(run.total_use) total_use_count,
-                  sum(run.adopted_ending_inventory) adopted_ending_inventory,
-                  count(run.adopted_ending_inventory) adopted_ending_inventory_count,
-                  sum(run.inventory_reconciliation_difference) reconciliation_difference,
-                  count(run.inventory_reconciliation_difference) reconciliation_difference_count,
-                  bool_and(run.balanced) balanced,count(run.balanced) balanced_count,
-                  CASE WHEN count(run.calculation_run_id)>0 THEN '已发布' END result_state,
-                  count(run.calculation_run_id) result_state_count
-                FROM table_region region
-                LEFT JOIN latest_run run ON run.root_code=region.code
-                LEFT JOIN source_value source ON source.calculation_run_id=run.calculation_run_id
-                GROUP BY region.code,region.name,region.sort_order
-                ORDER BY region.sort_order,region.name
-                """).param("region", regionCode).param("year", year).param("product", productCode)
-                .param("unrestricted", authorizedRegionCodes.contains("*"))
-                .param("authorizedRegions", authorizedRegionCodes)
-                .query((row, ignored) -> {
-                    long sourceCount = row.getLong("source_count");
-                    long openingCount = row.getLong("opening_inventory_count");
-                    long productionCount = row.getLong("local_production_count");
-                    long inflowCount = row.getLong("external_inflow_count");
-                    long outflowCount = row.getLong("external_outflow_count");
-                    long supplyCount = row.getLong("total_supply_count");
-                    long useCount = row.getLong("total_use_count");
-                    long inventoryCount = row.getLong("adopted_ending_inventory_count");
-                    long differenceCount = row.getLong("reconciliation_difference_count");
-                    long balancedCount = row.getLong("balanced_count");
-                    long resultStateCount = row.getLong("result_state_count");
-                    Boolean balanced = row.getObject("balanced", Boolean.class);
-                    Map<String, OverviewBusinessTable.Cell> values = new LinkedHashMap<>();
-                    values.put("OPENING_INVENTORY", cell(row.getBigDecimal("opening_inventory"), openingCount));
-                    values.put("LOCAL_PRODUCTION", cell(row.getBigDecimal("local_production"), productionCount));
-                    values.put("EXTERNAL_INFLOW", cell(row.getBigDecimal("external_inflow"), inflowCount));
-                    values.put("EXTERNAL_OUTFLOW", cell(row.getBigDecimal("external_outflow"), outflowCount));
-                    values.put("SUPPLY_TOTAL_SUPPLY", cell(row.getBigDecimal("total_supply"), supplyCount));
-                    values.put("SUPPLY_TOTAL_USE", cell(row.getBigDecimal("total_use"), useCount));
-                    values.put("SUPPLY_ADOPTED_ENDING_INVENTORY",
-                            cell(row.getBigDecimal("adopted_ending_inventory"), inventoryCount));
-                    values.put("SUPPLY_INVENTORY_RECONCILIATION_DIFFERENCE",
-                            cell(row.getBigDecimal("reconciliation_difference"), differenceCount));
-                    values.put("SUPPLY_BALANCED", textCell(balanced == null ? null
-                            : balanced ? "已平衡" : "未平衡", balancedCount));
-                    values.put("SUPPLY_RESULT_STATE", textCell(row.getString("result_state"), resultStateCount));
-                    return businessRow(row, sourceCount, values, openingCount, productionCount,
-                            inflowCount, outflowCount, supplyCount, useCount, inventoryCount,
-                            differenceCount, balancedCount, resultStateCount);
-                }).list();
-        return businessTable("SUPPLY", "供需平衡表", columns, rows);
     }
 
     private static OverviewBusinessTable businessTable(
@@ -1345,16 +1301,18 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 SELECT to_char(date_trunc('month',record.trade_date),'YYYY-MM') period_label,
                        AVG(record.actual_trade_price) value,COUNT(*) source_count
                 FROM market.market_record record
+                JOIN current_valid_sample sample ON sample.sample_point_id=COALESCE(record.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                 JOIN market.effective_approved_market_record effective
                   ON effective.record_id=record.record_id
                 WHERE record.product_code=:product AND record.status_code='APPROVED'
-                  AND record.region_code IN(SELECT code FROM scope)
+                  AND (record.sample_point_id IS NOT NULL
+                    OR record.region_code IN(SELECT code FROM scope))
                   AND record.survey_year=:year AND record.survey_period_governance_state='CONFIRMED'
                 GROUP BY date_trunc('month',record.trade_date)
                 ORDER BY date_trunc('month',record.trade_date) DESC LIMIT 12
                 """).param("region", regionCode).param("year", year).param("product", productCode)
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
-                .param("authorizedRegions", authorizedRegionCodes)
+                .param("authorizedRegionList", authorizedRegionList(authorizedRegionCodes))
                 .query((row, index) -> new OverviewDashboard.PriceTrendPoint(
                         row.getString("period_label"), decimal(row.getBigDecimal("value")), row.getLong("source_count")))
                 .list().reversed();
@@ -1366,16 +1324,18 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 SELECT product.code product_code,product.name product_name,SUM(record.estimated_output_kg) value,
                        COUNT(*) source_count
                 FROM production.production_record record
+                JOIN current_valid_sample sample ON sample.sample_point_id=COALESCE(record.sample_point_id,'00000000-0000-0000-0000-000000000000'::uuid)
                 JOIN production.effective_approved_production_record effective
                   ON effective.record_id=record.record_id
                 JOIN platform.product product ON product.code=record.product_code
                 WHERE record.product_code=:product AND record.status_code='APPROVED'
-                  AND record.region_code IN(SELECT code FROM scope)
+                  AND (record.sample_point_id IS NOT NULL
+                    OR record.region_code IN(SELECT code FROM scope))
                   AND record.survey_year=:year AND record.survey_period_governance_state='CONFIRMED'
                 GROUP BY product.code,product.name,product.sort_order ORDER BY product.sort_order
                 """).param("region", regionCode).param("year", year).param("product", productCode)
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
-                .param("authorizedRegions", authorizedRegionCodes)
+                .param("authorizedRegionList", authorizedRegionList(authorizedRegionCodes))
                 .query((row, index) -> new OverviewDashboard.ProductShare(
                         row.getString("product_code"), row.getString("product_name"),
                         decimal(row.getBigDecimal("value")), "公斤", row.getLong("source_count"))).list();
@@ -1388,7 +1348,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 WITH RECURSIVE monitoring_scope AS (
                   SELECT region_code FROM platform.monitoring_scope_region
                   WHERE scope_code='FORMAL_BUSINESS' AND included
-                    AND (:unrestricted OR region_code IN (:authorizedRegions))
+                    AND (:unrestricted OR region_code IN (SELECT unnest(string_to_array(:authorizedRegionList,','))))
                 ), children AS (
                   SELECT region.code,region.name,region.sort_order FROM platform.region region
                   WHERE region.parent_code=:region
@@ -1426,7 +1386,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 HAVING COUNT(record.record_id)>0 ORDER BY children.sort_order
                 """).param("region", regionCode).param("year", year).param("product", productCode)
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
-                .param("authorizedRegions", authorizedRegionCodes)
+                .param("authorizedRegionList", authorizedRegionList(authorizedRegionCodes))
                 .query((row, index) -> new OverviewDashboard.RegionActivity(
                         row.getString("region_code"), row.getString("region_name"),
                         row.getLong("approved_count"), row.getLong("total_count"))).list();
@@ -1439,7 +1399,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 WITH RECURSIVE monitoring_scope AS (
                   SELECT region_code FROM platform.monitoring_scope_region
                   WHERE scope_code='FORMAL_BUSINESS' AND included
-                    AND (:unrestricted OR region_code IN (:authorizedRegions))
+                    AND (:unrestricted OR region_code IN (SELECT unnest(string_to_array(:authorizedRegionList,','))))
                 ), children AS (
                   SELECT region.code,region.name,region.sort_order FROM platform.region region
                   WHERE region.parent_code=:region
@@ -1476,7 +1436,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 """).param("region", regionCode).param("year", year).param("previousYear", year - 1)
                 .param("product", productCode)
                 .param("unrestricted", authorizedRegionCodes.contains("*"))
-                .param("authorizedRegions", authorizedRegionCodes)
+                .param("authorizedRegionList", authorizedRegionList(authorizedRegionCodes))
                 .query((row, index) -> new YoYRow(
                         row.getString("region_code"), row.getString("region_name"),
                         row.getBigDecimal("current_area"), row.getBigDecimal("previous_area"),
@@ -1525,9 +1485,5 @@ public class JdbcOverviewRepository implements OverviewRepository {
         if (value == null) return null;
         return value.atZoneSameInstant(java.time.ZoneId.of("Asia/Shanghai"))
                 .format(DateTimeFormatter.ofPattern("yyyy年MM月dd日 HH:mm:ss"));
-    }
-
-    private static String chineseDate(LocalDate value) {
-        return value == null ? null : value.format(DateTimeFormatter.ofPattern("yyyy年MM月dd日"));
     }
 }

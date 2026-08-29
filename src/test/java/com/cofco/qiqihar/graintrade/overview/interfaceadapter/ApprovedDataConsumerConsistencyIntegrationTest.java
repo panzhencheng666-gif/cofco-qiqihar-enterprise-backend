@@ -28,6 +28,8 @@ class ApprovedDataConsumerConsistencyIntegrationTest {
     private static final String ACTOR = "production-tester";
     private static final String APPROVED = "99000000-0000-0000-0000-000000000001";
     private static final String LATEST_APPROVED = "99000000-0000-0000-0000-000000000003";
+    private static final UUID FORMAL_SAMPLE_POINT =
+            UUID.fromString("99000000-0000-0000-0000-000000000004");
 
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
@@ -39,21 +41,40 @@ class ApprovedDataConsumerConsistencyIntegrationTest {
         clearSnapshot();
         ProtectedTestDatabaseConfiguration.provisionSecurityTestSubjects(jdbc);
         jdbc.sql("""
+                INSERT INTO overview.administrative_boundary(
+                  region_code,geometry,source_name,source_url,source_revision,source_license,
+                  source_feature_id,source_effective_on,geometry_sha256)
+                VALUES('230200',ST_Multi(ST_MakeEnvelope(123.5,47.0,124.3,48.0,4326)),
+                  'consumer consistency fixture','urn:test:consumer-consistency','test-v1',
+                  'Test fixture','230200',DATE '2026-08-19',
+                  encode(sha256(ST_AsEWKB(ST_Multi(ST_MakeEnvelope(123.5,47.0,124.3,48.0,4326)))),'hex'))
+                ON CONFLICT(region_code) DO NOTHING
+                """).update();
+        jdbc.sql("""
                 INSERT INTO platform.business_period(
                   code,name,starts_on,ends_on,sort_order,marketing_year_code)
                 VALUES('2026-Q3','2026年第三季度',DATE '2026-07-01',DATE '2026-09-30',202603,'2026/27')
                 ON CONFLICT(code) DO NOTHING
                 """).update();
         jdbc.sql("""
+                INSERT INTO registry.sample_point(
+                  sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
+                  governed_point,effective_from,created_by,updated_by)
+                SELECT :id,'SURVEY_SITE','消费者一致性正式样本点','230208','APPROVED','VALID',
+                  ST_PointOnSurface(boundary.geometry),DATE '2026-01-01',:actor,:actor
+                FROM overview.administrative_boundary boundary WHERE boundary.region_code='230208'
+                """).param("id", FORMAL_SAMPLE_POINT).param("actor", ACTOR).update();
+        jdbc.sql("""
                 INSERT INTO production.production_record(
                   record_id,product_code,object_type_code,region_code,survey_date,reported_at,
                   cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,
-                  survey_period_governance_state)
+                  survey_period_governance_state,sample_point_id)
                 VALUES(:approved,'CORN','FARMER','230208',DATE '2026-08-09',
-                    TIMESTAMPTZ '2026-08-09 12:34:56+08',10,20,'APPROVED',:actor,'CONFIRMED'),
+                    TIMESTAMPTZ '2026-08-09 12:34:56+08',10,20,'APPROVED',:actor,'CONFIRMED',:samplePointId),
                   ('99000000-0000-0000-0000-000000000002','CORN','FARMER','230208',
-                    DATE '2026-08-09',TIMESTAMPTZ '2026-08-09 13:00:00+08',999,999,'DRAFT',:actor,'CONFIRMED')
-                """).param("approved", APPROVED).param("actor", ACTOR).update();
+                    DATE '2026-08-09',TIMESTAMPTZ '2026-08-09 13:00:00+08',999,999,'DRAFT',:actor,'CONFIRMED',NULL)
+                """).param("approved", APPROVED).param("actor", ACTOR)
+                .param("samplePointId", FORMAL_SAMPLE_POINT).update();
         jdbc.sql("""
                 UPDATE production.production_record
                 SET updated_at=TIMESTAMPTZ '2026-08-09 12:34:56+08'
@@ -73,6 +94,8 @@ class ApprovedDataConsumerConsistencyIntegrationTest {
                   platform.business_audit_event,platform.business_event_outbox,
                   production.production_record RESTART IDENTITY CASCADE
                 """).update();
+        jdbc.sql("DELETE FROM registry.sample_point WHERE sample_point_id=:id")
+                .param("id", FORMAL_SAMPLE_POINT).update();
     }
 
     @Test
@@ -151,11 +174,13 @@ class ApprovedDataConsumerConsistencyIntegrationTest {
                 INSERT INTO production.production_record(
                   record_id,product_code,object_type_code,region_code,survey_date,reported_at,
                   cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,version,
-                  survey_year,survey_month,survey_period_precision,survey_period_governance_state)
+                  survey_year,survey_month,survey_period_precision,survey_period_governance_state,
+                  sample_point_id)
                 VALUES(:latest,'CORN','FARMER','230208',DATE '2026-08-10',
                   TIMESTAMPTZ '2026-08-10 12:34:56+08',30,40,'APPROVED',:actor,1,
-                  2026,NULL,'YEAR','CONFIRMED')
-                """).param("latest", LATEST_APPROVED).param("actor", ACTOR).update();
+                  2026,NULL,'YEAR','CONFIRMED',:samplePointId)
+                """).param("latest", LATEST_APPROVED).param("actor", ACTOR)
+                .param("samplePointId", FORMAL_SAMPLE_POINT).update();
         jdbc.sql("""
                 INSERT INTO production.production_record_submission_metadata(record_id,field_code,value)
                 VALUES(:latest,'PROD_SAMPLE_NAME','同一农户'),
@@ -178,7 +203,8 @@ class ApprovedDataConsumerConsistencyIntegrationTest {
                         .queryParam("pageNumber", "0").queryParam("pageSize", "20")
                         .queryParam("filter.status", "APPROVED").queryParam("filter.regionCode", "230208"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.totalElements").value(2));
+                .andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items[0].id").value(LATEST_APPROVED));
         mvc.perform(get("/api/v1/observable-analysis/snapshots").principal(() -> ACTOR)
                         .queryParam("productCode", "CORN").queryParam("regionCode", "230208")
                         .queryParam("surveyYear", "2026"))
@@ -225,7 +251,7 @@ class ApprovedDataConsumerConsistencyIntegrationTest {
                         .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.items[*].id").value(
-                        org.hamcrest.Matchers.hasItems(approved, pending)));
+                        org.hamcrest.Matchers.contains(approved)));
         mvc.perform(get("/api/v1/observable-analysis/snapshots").principal(() -> ACTOR)
                         .queryParam("productCode", "CORN").queryParam("regionCode", "230200")
                         .queryParam("surveyYear", "2026"))
@@ -234,7 +260,7 @@ class ApprovedDataConsumerConsistencyIntegrationTest {
                 .andExpect(jsonPath("$.data.supply.inventory.enterpriseEndingTonnes").value("20.0000"))
                 .andExpect(jsonPath("$.data.supply.inventory.adoptedRecordCount").value(1))
                 .andExpect(jsonPath("$.data.dataCutoffAt").value("2026-08-19T04:00:00Z"));
-        assertOverviewMarketInventory("20", 1, "2026年08月19日 12:00:00");
+        assertOverviewExcludesSampleSupply("2026年08月19日 12:00:00");
 
         mvc.perform(post("/api/v1/market-records/{id}/approve", pending)
                         .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
@@ -251,7 +277,7 @@ class ApprovedDataConsumerConsistencyIntegrationTest {
                 .andExpect(jsonPath("$.data.supply.inventory.enterpriseEndingTonnes").value("50.0000"))
                 .andExpect(jsonPath("$.data.supply.inventory.adoptedRecordCount").value(2))
                 .andExpect(jsonPath("$.data.dataCutoffAt").value("2026-08-19T05:00:00Z"));
-        assertOverviewMarketInventory("50", 2, "2026年08月19日 13:00:00");
+        assertOverviewExcludesSampleSupply("2026年08月19日 13:00:00");
     }
 
     private String createMarketInventory(
@@ -310,18 +336,13 @@ class ApprovedDataConsumerConsistencyIntegrationTest {
                 """).param("approvedAt", approvedAt).param("recordId", recordId).update();
     }
 
-    private void assertOverviewMarketInventory(
-            String expectedTonnes, int expectedSources, String expectedCutoff) throws Exception {
+    private void assertOverviewExcludesSampleSupply(String expectedCutoff) throws Exception {
         mvc.perform(get("/api/v1/overview/dashboard").principal(() -> ACTOR)
                         .queryParam("productCode", "CORN").queryParam("regionCode", "230200")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath(
-                        "$.data.metrics[?(@.code == 'REGION_SURPLUS')].value")
-                        .value(org.hamcrest.Matchers.hasItem(expectedTonnes)))
-                .andExpect(jsonPath(
-                        "$.data.metrics[?(@.code == 'REGION_SURPLUS')].sourceCount")
-                        .value(org.hamcrest.Matchers.hasItem(expectedSources)))
+                .andExpect(jsonPath("$.data.metrics[?(@.code =~ /SUPPLY_.*/)]").isEmpty())
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')]").isEmpty())
                 .andExpect(jsonPath("$.data.scope.latestUpdatedAt").value(expectedCutoff));
     }
 }

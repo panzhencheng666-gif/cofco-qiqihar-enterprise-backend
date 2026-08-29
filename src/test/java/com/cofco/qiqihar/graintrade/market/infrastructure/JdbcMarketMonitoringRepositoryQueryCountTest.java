@@ -35,7 +35,7 @@ class JdbcMarketMonitoringRepositoryQueryCountTest {
                 counting(DATABASE.dataSource(), queries),
                 new JdbcSamplePointCoordinateGuard(DATABASE.dataSource()));
 
-        assertThat(repository.findCoreFields("CORN")).hasSizeGreaterThan(10);
+        assertThat(repository.findCoreFields("CORN", "TRADER")).hasSizeGreaterThan(10);
         assertThat(queries).hasValue(2);
     }
 

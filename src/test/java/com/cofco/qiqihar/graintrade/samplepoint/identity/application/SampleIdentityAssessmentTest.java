@@ -58,13 +58,14 @@ class SampleIdentityAssessmentTest {
     }
 
     @Test
-    void sendsOneStrongIdentityWithAConflictingLocationToReview() {
+    void reusesOneStrongIdentityAcrossPeriodsWhenItsLocationChanges() {
         var result = SampleIdentityAssessment.assess(
                 input("王振锋", "13800000001", "230281", "123.00", "47.00"),
                 List.of(candidate(FIRST, "王振锋", "13800000001", "230281", "122.48", "48.07")));
 
-        assertThat(result.outcome()).isEqualTo(REVIEW_REQUIRED);
-        assertThat(result.reasonCode()).isEqualTo("SAMPLE_IDENTITY_LOCATION_CONFLICT");
+        assertThat(result.outcome()).isEqualTo(MATCHED);
+        assertThat(result.matchedSamplePointId()).isEqualTo(FIRST);
+        assertThat(result.reasonCode()).isEqualTo("SAMPLE_IDENTITY_MATCHED");
     }
 
     @Test

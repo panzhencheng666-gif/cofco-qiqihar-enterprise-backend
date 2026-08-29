@@ -163,6 +163,12 @@ class FlywayMigrationReplayTest {
                 SELECT COALESCE(SUM(ST_NRings(geometry)-ST_NumGeometries(geometry)),0)
                   FROM overview.monitoring_scope_boundary_render
                 """)).as("the overall map boundary must not contain unassigned holes").isZero();
+        assertThat(queryString("""
+                SELECT has_table_privilege('qiqihar_enterprise_runtime',
+                         'overview.sample_point_query_source','SELECT')::text
+                """))
+                .as("the recreated overview sample projection must remain readable by runtime")
+                .isEqualTo("true");
         provisionMigrationReplaySecuritySubject();
         exerciseVersionTwentyFixtureThroughFormalService();
 
@@ -178,7 +184,7 @@ class FlywayMigrationReplayTest {
         assertThat(secondResult.migrationsExecuted).isZero();
         assertThat(migrationChecksums()).hasSize(expectedVersionedMigrationCount);
         assertThat(masterDataCounts()).isEqualTo(firstCounts);
-        assertThat(firstCounts).containsEntry("region", 29L)
+        assertThat(firstCounts).containsEntry("region", 37L)
                 .containsEntry("product", 3L)
                 .containsEntry("cultivar", 2L)
                 .containsEntry("object_type", 12L)
@@ -857,6 +863,18 @@ class FlywayMigrationReplayTest {
     private void provisionMigrationReplaySecuritySubject() throws SQLException {
         try (Connection connection = DATABASE.openConnection(); Statement statement = connection.createStatement()) {
             statement.execute("""
+                    INSERT INTO overview.administrative_boundary(
+                        region_code,geometry,source_name,source_url,source_revision,
+                        source_license,geometry_sha256)
+                    VALUES ('230200',
+                      ST_Multi(ST_Buffer(ST_SetSRID(ST_MakePoint(123.9182,47.3543),4326),0.01)),
+                      '迁移回放测试边界','https://example.invalid/migration-replay-boundary',
+                      'migration-replay-v1','测试专用',
+                      encode(sha256(ST_AsBinary(ST_Multi(ST_Buffer(
+                        ST_SetSRID(ST_MakePoint(123.9182,47.3543),4326),0.01)))),'hex'))
+                    ON CONFLICT (region_code) DO NOTHING
+                    """);
+            statement.execute("""
                     INSERT INTO platform.work_unit(code,name,sort_order)
                     VALUES ('MIGRATION_TEST','迁移回放测试工作单位',9999)
                     """);
@@ -908,12 +926,10 @@ class FlywayMigrationReplayTest {
             assertThat(service.detail("v20-core-upgrade").coreValues())
                     .containsEntry("MKT_SOURCE_NOTE", null);
 
-            var listed = service.list(new MarketRecordQuery(
-                    "CORN", "MONITORING", 0, 20, Map.of())).items().stream()
-                    .filter(item -> item.id().equals("v20-core-upgrade"))
-                    .findFirst().orElseThrow();
-            assertThat(listed.version()).isEqualTo(2);
-            assertThat(listed.values().get("MKT_SOURCE_NOTE")).isNull();
+            assertThat(service.list(new MarketRecordQuery(
+                    "CORN", "MONITORING", 0, 20, Map.of())).items())
+                    .noneMatch(item -> item.id().equals("v20-core-upgrade"));
+            assertThat(service.detail("v20-core-upgrade").record().version()).isEqualTo(2);
         } finally {
             RequestContextHolder.resetRequestAttributes();
         }
@@ -925,7 +941,6 @@ class FlywayMigrationReplayTest {
         coreValues.put("MKT_REGION", "230200");
         coreValues.put("MKT_TRADE_DATE", "2026-08-01");
         coreValues.put("MKT_PURCHASE_BASE_PRICE", "2300");
-        coreValues.put("MKT_SALE_BASE_PRICE", "2380");
         coreValues.put("MKT_CARRIAGE_BOARD_AMOUNT", "36");
         coreValues.put("MKT_PACKAGING_FORM", "BULK");
         coreValues.put("MKT_PACKAGING_AMOUNT", "12");

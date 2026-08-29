@@ -59,7 +59,7 @@ public class ProductionReturnedCorrectionDomain
         List<String> codes = businessCodes(productCode, definitions.items());
         ArrayList<ReturnedRecord> result = new ArrayList<>();
         for (int page = 0;; page++) {
-            var records = production.read(new ProductionRecordQuery(
+            var records = production.readLifecycle(new ProductionRecordQuery(
                     productCode, "MONITORING", page, PAGE_SIZE,
                     Map.of("status", ProductionStatus.RETURNED.name())));
             for (var item : records.items()) {

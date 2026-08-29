@@ -268,6 +268,60 @@ class SampleIdentityReviewRestIntegrationTest {
     }
 
     @Test
+    void approvalRejectsALinkedStableIdentityWhenItsReportedCoordinateChangedAcrossPeriods() throws Exception {
+        jdbc.sql("""
+                UPDATE platform.business_import_draft
+                SET values_json=jsonb_set(
+                      jsonb_set(values_json,'{PROD_SAMPLE_LONGITUDE}','\"123.810000\"'::jsonb),
+                      '{PROD_SAMPLE_LATITUDE}','\"47.560000\"'::jsonb)
+                WHERE import_draft_id=:draft
+                """).param("draft", draftId).update();
+        jdbc.sql("""
+                UPDATE production.production_record_submission_metadata
+                SET value='后续修正名称'
+                WHERE field_code='PROD_SAMPLE_NAME'
+                """).update();
+        jdbc.sql("""
+                UPDATE registry.sample_point
+                SET governed_point=ST_SetSRID(ST_MakePoint(123.820000,47.570000),4326)
+                WHERE sample_point_id=:point
+                """).param("point", TARGET).update();
+
+        mvc.perform(post("/api/v1/sample-point-identities/reviews/{draftId}/decisions", draftId)
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"decision":"LINK_EXISTING","targetSamplePointId":"%s",
+                                 "expectedVersion":0,"reason":"跨月位置更新，审核人确认仍为同一经营主体"}
+                                """.formatted(TARGET)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.stateCode").value("PROMOTED"));
+        String recordId = jdbc.sql("""
+                SELECT canonical_record_id FROM platform.business_import_draft
+                WHERE import_draft_id=:id
+                """).param("id", draftId).query(String.class).single();
+
+        mvc.perform(post("/api/v1/production-records/{id}/approve", recordId)
+                        .principal(() -> "production-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("SAMPLE_IDENTITY_COORDINATE_MISMATCH"));
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM production.production_record
+                WHERE record_id=:record AND status_code='PENDING_REVIEW'
+                """).param("record", recordId).query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("""
+                SELECT detail->>'targetSamplePointId'
+                FROM platform.business_audit_event
+                WHERE aggregate_type='SAMPLE_IDENTITY_REVIEW'
+                  AND aggregate_id=:draft AND action_code='SAMPLE_IDENTITY_LINK_EXISTING'
+                ORDER BY occurred_at DESC,event_id DESC LIMIT 1
+                """).param("draft", draftId.toString()).query(String.class).single())
+                .isEqualTo(TARGET.toString());
+    }
+
+    @Test
     void reviewedDistinctIdentityMayShareTheBoundCoordinateAndMarksEveryOccupantVerified()
             throws Exception {
         UUID sharedDraft = seedPendingDraft("production-tester", "同址另一经营主体");
@@ -409,9 +463,13 @@ class SampleIdentityReviewRestIntegrationTest {
                   work_unit_code,occurred_at,detail)
                 VALUES(gen_random_uuid(),'SAMPLE_IDENTITY_REVIEW',CAST(:draft AS text),
                   'SAMPLE_IDENTITY_REVIEW_SUBMITTED',:creator,'TEST',now(),
-                  '{"reasonCode":"SAMPLE_IDENTITY_CONTACT_CONFLICT",
-                    "reasonMessage":"联系方式变化，需核验"}')
-                """).param("draft", pendingDraft).param("creator", creator).update();
+                  CAST(:detail AS jsonb))
+                """).param("draft", pendingDraft).param("creator", creator)
+                .param("detail", """
+                        {"reasonCode":"SAMPLE_IDENTITY_CONTACT_CONFLICT",
+                         "reasonMessage":"联系方式变化，需核验",
+                         "candidateSamplePointIds":["%s"]}
+                        """.formatted(TARGET)).update();
         return pendingDraft;
     }
 
@@ -452,9 +510,13 @@ class SampleIdentityReviewRestIntegrationTest {
                   work_unit_code,occurred_at,detail)
                 VALUES(gen_random_uuid(),'SAMPLE_IDENTITY_REVIEW',CAST(:draft AS text),
                   'SAMPLE_IDENTITY_REVIEW_SUBMITTED',:creator,'TEST',now(),
-                  '{"reasonCode":"SAMPLE_IDENTITY_CONTACT_CONFLICT",
-                    "reasonMessage":"联系方式变化，需核验"}')
-                """).param("draft", pendingDraft).param("creator", creator).update();
+                  CAST(:detail AS jsonb))
+                """).param("draft", pendingDraft).param("creator", creator)
+                .param("detail", """
+                        {"reasonCode":"SAMPLE_IDENTITY_CONTACT_CONFLICT",
+                         "reasonMessage":"联系方式变化，需核验",
+                         "candidateSamplePointIds":["%s"]}
+                        """.formatted(TARGET)).update();
         return pendingDraft;
     }
 

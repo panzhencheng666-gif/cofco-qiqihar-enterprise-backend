@@ -158,7 +158,7 @@ class OperationalReturnedCorrectionRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("APPROVED"));
         expectApprovedAnalysisMetric("logistics", "INFLOW_VOLUME", "12.5000");
-        expectOverviewMetric("LOGISTICS_INFLOW_VOLUME", "12.5");
+        expectOverviewLogisticsBusinessValue("12.5");
         assertCompletedWorkItem("LOGISTICS", "LOGISTICS", id, "logistics-tester");
     }
 
@@ -238,6 +238,19 @@ class OperationalReturnedCorrectionRestIntegrationTest {
                         .value(1));
     }
 
+    private void expectOverviewLogisticsBusinessValue(String value) throws Exception {
+        mvc.perform(get("/api/v1/overview/dashboard")
+                        .principal(() -> "production-tester")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", "230200")
+                        .queryParam("year", "2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'LOGISTICS_INFLOW_VOLUME')]").isEmpty())
+                .andExpect(jsonPath(
+                                "$.data.businessTables[?(@.code == 'LOGISTICS')].rows[*].values.LOG_ROUTE_VOLUME.value")
+                        .value(org.hamcrest.Matchers.hasItem(value)));
+    }
+
     private void assertSubmissionEvent(String aggregateType, String id) {
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM platform.business_event_outbox
@@ -311,6 +324,11 @@ class OperationalReturnedCorrectionRestIntegrationTest {
                   platform.business_audit_event,production.production_record,
                   logistics.route_event,evidence.evidence_photo
                 RESTART IDENTITY CASCADE
+                """).update();
+        jdbc.sql("""
+                DELETE FROM registry.sample_point
+                WHERE canonical_name IN ('产情退回修正样本','物流退回修正样本')
+                  AND created_by IN ('production-tester','logistics-tester')
                 """).update();
     }
 }
