@@ -51,19 +51,8 @@ if [[ ! -d "$backend_root" ]]; then
   exit 1
 fi
 
-# The backend requires JDK 21. Prefer the installed Homebrew runtime when the
-# caller did not provide a compatible JAVA_HOME, rather than silently running
-# Maven with the machine's legacy JDK.
-if [[ -x "${JAVA_HOME:-}/bin/java" ]] &&
-  "${JAVA_HOME}/bin/java" -version 2>&1 | grep -Eq 'version "2[1-9]|version "[3-9][0-9]'; then
-  export JAVA_HOME
-elif [[ -x /opt/homebrew/opt/openjdk@21/bin/java ]]; then
-  export JAVA_HOME=/opt/homebrew/opt/openjdk@21
-else
-  echo "JDK 21 is required; set JAVA_HOME to a JDK 21 installation." >&2
-  exit 1
-fi
-export PATH="$JAVA_HOME/bin:$PATH"
+# Build and runtime must use the same supported Java major version.
+source "${backend_root}/scripts/jdk21-env.sh"
 
 log() {
   echo "[$(date '+%F %T')] $*"
@@ -205,10 +194,12 @@ start_backend() {
 
   log "start: backend"
   cd "$backend_root"
+  # Test runners may pin Flyway through JAVA_TOOL_OPTIONS. The persistent
+  # local runtime must always follow the migrations shipped by this checkout.
   start_service_background \
     "$backend_stdout_log" \
     "$backend_stderr_log" \
-    env \
+    env -u JAVA_TOOL_OPTIONS \
     "QIQIHAR_SERVER_PORT=$backend_port" \
     "SERVER_ADDRESS=$local_access_host" \
     "QIQIHAR_DB_USERNAME=$runtime_database_user" \
