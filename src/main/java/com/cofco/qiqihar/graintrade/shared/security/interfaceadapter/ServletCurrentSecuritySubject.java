@@ -2,6 +2,7 @@ package com.cofco.qiqihar.graintrade.shared.security.interfaceadapter;
 
 import com.cofco.qiqihar.graintrade.shared.security.application.CurrentSecuritySubject;
 import com.cofco.qiqihar.graintrade.shared.security.application.InternalSecuritySubjectScope;
+import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
 import java.util.Optional;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -10,6 +11,8 @@ import org.springframework.web.context.request.ServletRequestAttributes;
 
 @Component
 public class ServletCurrentSecuritySubject implements CurrentSecuritySubject {
+    private static final String PRINCIPAL_ATTRIBUTE =
+            ServletCurrentSecuritySubject.class.getName() + ".principal";
     private final String trustedSubjectHeader;
     private final InternalSecuritySubjectScope internalSubject;
 
@@ -37,5 +40,25 @@ public class ServletCurrentSecuritySubject implements CurrentSecuritySubject {
                 .map(String::trim)
                 .filter(value -> !value.isBlank());
         return requestSubject.isPresent() ? requestSubject : internalSubject.subjectId();
+    }
+
+    @Override
+    public Optional<SecurityPrincipal> cachedPrincipal(String subjectId) {
+        return servletRequest().map(request -> request.getAttribute(PRINCIPAL_ATTRIBUTE))
+                .filter(SecurityPrincipal.class::isInstance)
+                .map(SecurityPrincipal.class::cast)
+                .filter(principal -> principal.subjectId().equals(subjectId));
+    }
+
+    @Override
+    public void cachePrincipal(SecurityPrincipal principal) {
+        servletRequest().ifPresent(request -> request.setAttribute(PRINCIPAL_ATTRIBUTE, principal));
+    }
+
+    private static Optional<jakarta.servlet.http.HttpServletRequest> servletRequest() {
+        return Optional.ofNullable(RequestContextHolder.getRequestAttributes())
+                .filter(ServletRequestAttributes.class::isInstance)
+                .map(ServletRequestAttributes.class::cast)
+                .map(ServletRequestAttributes::getRequest);
     }
 }

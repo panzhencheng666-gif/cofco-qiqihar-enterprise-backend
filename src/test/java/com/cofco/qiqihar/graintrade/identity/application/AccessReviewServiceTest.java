@@ -8,6 +8,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException;
+import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder;
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
@@ -21,6 +22,37 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 class AccessReviewServiceTest {
+    @Test
+    void reviewerCannotCreateAnEmptySelfOnlyCampaign() {
+        AccessReviewRepository repository=mock(AccessReviewRepository.class);
+        AccessControl access=mock(AccessControl.class);
+        BusinessAuditRecorder audit=mock(BusinessAuditRecorder.class);
+        Instant now=Instant.parse("2026-08-12T00:00:00Z");
+        AccessReviewService service=new AccessReviewService(repository,access,audit,
+                Clock.fixed(now,ZoneOffset.UTC));
+        SecurityPrincipal reviewer=new SecurityPrincipal("reviewer","复核员","UNIT-1","测试单位",
+                "ACTIVE","ACTIVE",Set.of("ACCESS_REVIEWER"),List.of(),
+                Set.of("ACCESS_REVIEW"),Set.of("230202997"));
+        when(access.require("ACCESS_REVIEW",null)).thenReturn(reviewer);
+        when(repository.workUnitExists("UNIT-1")).thenReturn(true);
+        when(repository.create(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.eq("年度复核"),
+                org.mockito.ArgumentMatchers.eq("UNIT-1"),
+                org.mockito.ArgumentMatchers.eq(now.plusSeconds(3600)),
+                org.mockito.ArgumentMatchers.eq("reviewer"),
+                org.mockito.ArgumentMatchers.eq(now)))
+                .thenAnswer(invocation -> new AccessReviewCampaign(
+                        invocation.getArgument(0),"年度复核","UNIT-1","OPEN",
+                        now.plusSeconds(3600),"reviewer",now,List.of()));
+
+        assertThatThrownBy(() -> service.create(
+                "年度复核","UNIT-1",now.plusSeconds(3600)))
+                .isInstanceOfSatisfying(ClientRequestException.class,error -> {
+                    assertThat(error.code()).isEqualTo("ACCESS_REVIEW_EMPTY");
+                    assertThat(error.getMessage()).isEqualTo("当前单位没有可由本人复核的员工授权");
+                });
+    }
+
     @Test
     void reviewerCannotDecideOwnGrant() {
         AccessReviewRepository repository=mock(AccessReviewRepository.class);

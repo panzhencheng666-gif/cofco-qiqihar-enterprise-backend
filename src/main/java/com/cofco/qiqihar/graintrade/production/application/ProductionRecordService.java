@@ -6,6 +6,8 @@ import com.cofco.qiqihar.graintrade.production.domain.ProductionRecordQuery;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionActionPolicy;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionSubmissionMetadata;
 import com.cofco.qiqihar.graintrade.production.domain.ProductionValidationException;
+import com.cofco.qiqihar.graintrade.shared.application.FormalSampleIdentity;
+import com.cofco.qiqihar.graintrade.samplepoint.identity.application.StableSampleIdentityCoordinateGuard;
 import com.cofco.qiqihar.graintrade.shared.application.AuthenticationRequiredException;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
@@ -18,6 +20,7 @@ import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadSc
 import com.cofco.qiqihar.graintrade.shared.security.application.SeparationOfDutiesPolicy;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
 import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneId;
@@ -42,17 +45,19 @@ public class ProductionRecordService implements ProductionImportPort {
     private final BusinessAuditRecorder audit;
     private final EvidencePhotoService evidencePhotos;
     private final SeparationOfDutiesPolicy separationOfDuties;
+    private final StableSampleIdentityCoordinateGuard stableIdentityCoordinates;
     private final Clock clock;
 
     public ProductionRecordService(ProductionRecordRepository repository, PageDefinitionQuery pageDefinitions,
             CurrentActor currentActor, Clock clock) {
-        this(repository, pageDefinitions, currentActor, null, null, null, null, clock);
+        this(repository, pageDefinitions, currentActor, null, null, null, null, null, clock);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public ProductionRecordService(ProductionRecordRepository repository, PageDefinitionQuery pageDefinitions,
             CurrentActor currentActor, AccessControl accessControl, BusinessAuditRecorder audit,
-            EvidencePhotoService evidencePhotos, SeparationOfDutiesPolicy separationOfDuties, Clock clock) {
+            EvidencePhotoService evidencePhotos, SeparationOfDutiesPolicy separationOfDuties,
+            StableSampleIdentityCoordinateGuard stableIdentityCoordinates, Clock clock) {
         this.repository = repository;
         this.pageDefinitions = pageDefinitions;
         this.currentActor = currentActor;
@@ -60,18 +65,32 @@ public class ProductionRecordService implements ProductionImportPort {
         this.audit = audit;
         this.evidencePhotos = evidencePhotos;
         this.separationOfDuties = separationOfDuties;
+        this.stableIdentityCoordinates = stableIdentityCoordinates;
         this.clock = clock;
     }
 
     @Transactional(readOnly = true)
     public PagedResult<ProductionListItem> read(ProductionRecordQuery query) {
+        return read(query, true);
+    }
+
+    @Transactional(readOnly = true)
+    public PagedResult<ProductionListItem> readLifecycle(ProductionRecordQuery query) {
+        return read(query, false);
+    }
+
+    private PagedResult<ProductionListItem> read(
+            ProductionRecordQuery query, boolean currentFormalOnly) {
         if (!pageDefinitions.allowsListQueryValues(DOMAIN, query.pageKind(), query.productCode(),
                 query.pageSize(), query.filters())) throw invalidQuery();
         String regionCode = query.filters().get("regionCode");
         if (regionCode != null && !repository.isKnownRegion(regionCode)) throw invalidQuery();
         AuthorizedReadScope scope = readScope();
         if (regionCode != null) scope.requireRegion(regionCode);
-        PagedResult<ProductionListRow> page = repository.findPage(query.authorizedFor(scope.regionCodes()));
+        ProductionRecordQuery authorized = query.authorizedFor(scope.regionCodes());
+        PagedResult<ProductionListRow> page = currentFormalOnly
+                ? repository.findPage(authorized)
+                : repository.findLifecyclePage(authorized);
         List<ProductionListItem> items = page.items().stream().map(row -> new ProductionListItem(
                 row.id(), row.values(), ProductionActionPolicy.allowedActions(row.status()).stream()
                         .filter(row.configuredActions()::contains)
@@ -136,6 +155,77 @@ public class ProductionRecordService implements ProductionImportPort {
     @Transactional
     public ProductionRecordView create(ProductionDraft draft) {
         return create(draft, true);
+    }
+
+    /**
+     * Persists a new official observation for an already-approved formal sample. This deliberately
+     * bypasses the draft/review workflow while retaining the production aggregate validation.
+     */
+    @Transactional
+    public ProductionRecordView saveOfficialObservation(
+            FormalSampleIdentity identity,
+            OffsetDateTime observedAt,
+            ProductionDraft incoming,
+            Instant officialSavedAt) {
+        if (identity == null) {
+            throw invalidDraft("Formal sample domain is invalid");
+        }
+        SecurityPrincipal principal = authorize("BUSINESS_CREATE", identity.regionCode());
+        LocalDate observedOn = observedAt.atZoneSameInstant(REPORTING_ZONE).toLocalDate();
+        if (observedAt.toInstant().isAfter(officialSavedAt)) {
+            throw invalidDraft("Observed at cannot be in the future");
+        }
+        if (incoming.evidencePhotoIds() != null && !incoming.evidencePhotoIds().isEmpty()) {
+            throw invalidDraft("Existing sample observation does not accept evidence uploads");
+        }
+        Map<String, String> metadata = new LinkedHashMap<>(incoming.submissionMetadata());
+        metadata.put("PROD_REPORTER_NAME", principal.displayName());
+        metadata.put("PROD_SAMPLE_NAME", identity.sampleName());
+        metadata.put("PROD_SAMPLE_CONTACT", requiredLockedValue(identity, "PROD_SAMPLE_CONTACT"));
+        metadata.put("PROD_SAMPLE_LATITUDE", identity.latitude());
+        metadata.put("PROD_SAMPLE_LONGITUDE", identity.longitude());
+        Integer lockedSurveyMonth = observationSurveyMonth(identity, observedOn);
+        ProductionDraft secured = new ProductionDraft(
+                identity.productCode(), requiredLockedValue(identity, "objectTypeCode"),
+                identity.regionCode(), incoming.cultivarCode(),
+                observedOn, incoming.cultivatedAreaMu(), incoming.yieldPerMuKilograms(), incoming.quality(),
+                incoming.costs(), incoming.insurance(), incoming.subsidies(), metadata, List.of(),
+                observedOn.getYear(), lockedSurveyMonth);
+        Map<String, String> canonicalMetadata = canonicalSubmissionMetadata(
+                secured.submissionMetadata(), principal.displayName());
+        validateDraft(secured, canonicalMetadata);
+        ProductionRecord official;
+        try {
+            official = ProductionRecord.draft(UUID.randomUUID().toString(), identity.productCode(),
+                    secured.objectTypeCode(), identity.regionCode(), secured.cultivarCode(),
+                    secured.surveyYear(), secured.surveyMonth(), secured.surveyDate(),
+                    observedAt, secured.cultivatedAreaMu(), secured.yieldPerMuKilograms(), secured.quality(),
+                    secured.costs(), secured.insurance(), secured.subsidies(), canonicalMetadata)
+                    .submit().approve();
+        } catch (ProductionValidationException exception) {
+            throw invalidDraft(exception.getMessage());
+        }
+        return view(repository.insertOfficialObservation(
+                official, identity.samplePointId(), principal.subjectId(), officialSavedAt));
+    }
+
+    private static Integer observationSurveyMonth(
+            FormalSampleIdentity identity, LocalDate observedOn) {
+        String value = identity.lockedValues().path("surveyMonth").asText("").strip();
+        if (value.isEmpty()) return null;
+        try {
+            int month = Integer.parseInt(value);
+            if (month >= 1 && month <= 12) return observedOn.getMonthValue();
+        } catch (NumberFormatException ignored) {
+            // The authoritative period is validated below through the standard draft contract.
+        }
+        throw invalidDraft("Formal sample survey month is invalid");
+    }
+
+    @Transactional
+    public ProductionRecordView createAndSubmit(ProductionDraft draft) {
+        ProductionRecordView created = create(draft, true);
+        return submit(created.record().id(), created.record().version());
     }
 
     private ProductionRecordView create(ProductionDraft draft, boolean requireEvidence) {
@@ -214,6 +304,12 @@ public class ProductionRecordService implements ProductionImportPort {
     }
 
     @Transactional
+    public ProductionRecordView saveAndSubmit(String id, long expectedVersion, ProductionDraft draft) {
+        ProductionRecordView saved = saveDraft(id, expectedVersion, draft);
+        return submit(saved.record().id(), saved.record().version());
+    }
+
+    @Transactional
     public ProductionRecordView submit(String id, long expectedVersion) {
         return transition(id, expectedVersion, "BUSINESS_SUBMIT", "PRODUCTION_RECORD_SUBMITTED", ProductionRecord::submit);
     }
@@ -272,8 +368,9 @@ public class ProductionRecordService implements ProductionImportPort {
         if (draft.surveyDate() == null || draft.surveyDate().isAfter(LocalDate.now(clock.withZone(REPORTING_ZONE)))) {
             throw invalidDraft("Survey date cannot be in the future");
         }
+        ProductionSubmissionMetadata metadata;
         try {
-            ProductionSubmissionMetadata.from(submissionMetadata);
+            metadata = ProductionSubmissionMetadata.from(submissionMetadata);
         } catch (IllegalArgumentException exception) {
             throw invalidDraft(exception.getMessage());
         }
@@ -295,6 +392,19 @@ public class ProductionRecordService implements ProductionImportPort {
             throw new ClientRequestException("INAPPLICABLE_PRODUCTION_FACT",
                     "One or more facts are not applicable to this production context");
         }
+        if (!repository.isPointWithinRegion(
+                draft.regionCode(), new java.math.BigDecimal(metadata.sampleLatitude()),
+                new java.math.BigDecimal(metadata.sampleLongitude()))) {
+            throw new ClientRequestException(
+                    "SAMPLE_COORDINATE_REGION_MISMATCH",
+                    "样本点经纬度不在所选地区范围内，请核对后重新填报");
+        }
+        if (stableIdentityCoordinates != null) {
+            stableIdentityCoordinates.requireCompatible(
+                    metadata.surveyDetails().get("PROD_SAMPLE_NAME"), metadata.sampleContact(),
+                    new java.math.BigDecimal(metadata.sampleLongitude()),
+                    new java.math.BigDecimal(metadata.sampleLatitude()));
+        }
     }
 
     private Map<String, String> canonicalSubmissionMetadata(
@@ -307,6 +417,14 @@ public class ProductionRecordService implements ProductionImportPort {
         } catch (IllegalArgumentException exception) {
             throw invalidDraft(exception.getMessage());
         }
+    }
+
+    private static String requiredLockedValue(FormalSampleIdentity identity, String fieldCode) {
+        String value = identity.lockedValues().path(fieldCode).asText(null);
+        if (value == null || value.isBlank()) {
+            throw invalidDraft("Formal sample identity is incomplete");
+        }
+        return value;
     }
 
     private ProductionRecord requiredRecord(String id) {

@@ -28,8 +28,13 @@ public class AccessControl {
     @Transactional(readOnly = true)
     public SecurityPrincipal requireAuthenticated() {
         String subjectId = currentSubject.subjectId().orElseThrow(AuthenticationRequiredException::new);
-        return principals.findEnabled(subjectId)
-                .orElseThrow(() -> new AccessDeniedException("ACCESS_SUBJECT_UNKNOWN", "Access subject is not authorized"));
+        return currentSubject.cachedPrincipal(subjectId).orElseGet(() -> {
+            SecurityPrincipal principal = principals.findEnabled(subjectId)
+                    .orElseThrow(() -> new AccessDeniedException(
+                            "ACCESS_SUBJECT_UNKNOWN", "Access subject is not authorized"));
+            currentSubject.cachePrincipal(principal);
+            return principal;
+        });
     }
 
     @Transactional(readOnly = true)

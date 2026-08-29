@@ -33,6 +33,22 @@ import org.springframework.stereotype.Repository;
 @Repository
 public class JdbcProductionRecordRepository implements ProductionRecordRepository {
     private static final String PAGE_KIND = "MONITORING";
+    private static final String CURRENT_SAMPLE_FILTER = """
+             AND r.status_code='APPROVED'
+             AND r.survey_period_governance_state='CONFIRMED'
+             AND r.sample_point_id IS NOT NULL
+             AND EXISTS (
+               SELECT 1 FROM registry.sample_point point
+               WHERE point.sample_point_id=r.sample_point_id
+                 AND point.approval_state='APPROVED'
+                 AND point.kind_code='SURVEY_SITE'
+                 AND point.location_state='VALID'
+                 AND point.governed_point IS NOT NULL
+                 AND point.effective_from<=CURRENT_DATE
+                 AND (point.effective_to IS NULL OR point.effective_to>=CURRENT_DATE)
+                 AND r.survey_date>=point.effective_from
+                 AND (point.effective_to IS NULL OR r.survey_date<=point.effective_to))
+            """;
     private final JdbcClient jdbc;
     private final SamplePointCoordinateGuard coordinateGuard;
 
@@ -44,18 +60,41 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
 
     @Override
     public PagedResult<ProductionListRow> findPage(ProductionRecordQuery query) {
+        return findPage(query, true);
+    }
+
+    @Override
+    public PagedResult<ProductionListRow> findLifecyclePage(ProductionRecordQuery query) {
+        return findPage(query, false);
+    }
+
+    private PagedResult<ProductionListRow> findPage(
+            ProductionRecordQuery query, boolean currentFormalOnly) {
         SqlFilter filter = filter(query.productCode(), query.filters(), query.authorizedRegionCodes());
-        long total = jdbc.sql("SELECT count(*) FROM production.production_record r " + filter.sql())
+        String selectedRecords = currentFormalOnly ? """
+                WITH current_formal_record AS (
+                  SELECT r.record_id,row_number() OVER (
+                    PARTITION BY r.sample_point_id
+                    ORDER BY r.survey_date DESC,r.version DESC,r.record_id DESC) sample_rank
+                  FROM production.production_record r
+                """ + filter.sql() + CURRENT_SAMPLE_FILTER + ") " : """
+                WITH current_formal_record AS (
+                  SELECT r.record_id,1 sample_rank
+                  FROM production.production_record r
+                """ + filter.sql() + ") ";
+        long total = jdbc.sql(selectedRecords
+                        + "SELECT count(*) FROM current_formal_record WHERE sample_rank=1")
                 .params(filter.parameters()).query(Long.class).single();
         long offset = Math.multiplyExact((long) query.pageNumber(), query.pageSize());
-        List<ListRow> rows = jdbc.sql("""
+        List<ListRow> rows = jdbc.sql(selectedRecords + """
                         SELECT r.record_id, r.product_code, r.object_type_code, object_type.name AS object_type_name,
                                r.region_code, region.name AS region_name, r.cultivar_code, cultivar.name AS cultivar_name,
                                r.survey_date, r.reported_at, r.survey_year, r.survey_month,
                                r.survey_period_precision, r.survey_period_governance_state,
                                r.created_at, r.submitted_at, r.cultivated_area_mu, r.yield_per_mu_kg,
                                r.estimated_output_kg, r.status_code, status_option.label AS status_label, r.version
-                        FROM production.production_record r
+                        FROM current_formal_record current
+                        JOIN production.production_record r ON r.record_id=current.record_id
                         JOIN platform.region region ON region.code = r.region_code
                         JOIN platform.object_type object_type ON object_type.code = r.object_type_code
                         LEFT JOIN platform.cultivar cultivar
@@ -66,7 +105,10 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
                          AND status_option.page_kind = :pageKind
                          AND status_option.filter_code = 'status'
                          AND status_option.value = r.status_code
-                        """ + filter.sql() + " ORDER BY r.survey_date DESC, r.record_id LIMIT :limit OFFSET :offset")
+                        WHERE current.sample_rank=1
+                        ORDER BY r.survey_date DESC,r.record_id
+                        LIMIT :limit OFFSET :offset
+                        """)
                 .params(filter.parameters()).param("pageKind", query.pageKind())
                 .param("limit", query.pageSize()).param("offset", offset)
                 .query((row, ignored) -> new ListRow(
@@ -151,6 +193,37 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
     }
 
     @Override
+    public boolean isPointWithinRegion(
+            String regionCode, BigDecimal latitude, BigDecimal longitude) {
+        return containingRegionCode(regionCode, latitude, longitude).isPresent();
+    }
+
+    private Optional<String> containingRegionCode(
+            String regionCode, BigDecimal latitude, BigDecimal longitude) {
+        return jdbc.sql("""
+                WITH RECURSIVE selected_region_scope(code,depth) AS (
+                  SELECT code,0 FROM platform.region WHERE code=:regionCode
+                  UNION ALL
+                  SELECT child.code,parent.depth + 1
+                  FROM platform.region child
+                  JOIN selected_region_scope parent ON child.parent_code=parent.code
+                )
+                SELECT scope.code
+                FROM selected_region_scope scope
+                JOIN overview.administrative_boundary boundary
+                  ON boundary.region_code=scope.code
+                LEFT JOIN platform.monitoring_scope_region formal
+                  ON formal.scope_code='FORMAL_BUSINESS'
+                 AND formal.region_code=scope.code
+                WHERE ST_Covers(boundary.geometry,
+                  ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326))
+                ORDER BY COALESCE(formal.included,false) DESC,scope.depth DESC,scope.code
+                LIMIT 1
+                """).param("regionCode", regionCode).param("longitude", longitude)
+                .param("latitude", latitude).query(String.class).optional();
+    }
+
+    @Override
     public boolean areApplicableFacts(String productCode, String objectTypeCode,
             Map<String, Set<String>> factCodes) {
         for (Map.Entry<String, Set<String>> category : factCodes.entrySet()) {
@@ -215,6 +288,22 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         replaceFacts(record);
         replaceSubmissionMetadata(record);
         return record;
+    }
+
+    @Override
+    public ProductionRecord insertOfficialObservation(
+            ProductionRecord record, UUID samplePointId, String actorId, Instant officialSavedAt) {
+        ProductionRecord persisted = insert(record, actorId);
+        int linked = jdbc.sql("""
+                UPDATE production.production_record
+                SET sample_point_id=:samplePointId,submitted_at=:savedAt,updated_at=:savedAt
+                WHERE record_id=:recordId AND status_code='APPROVED'
+                  AND survey_period_governance_state='CONFIRMED' AND sample_point_id IS NULL
+                """).param("samplePointId", samplePointId)
+                .param("savedAt", OffsetDateTime.ofInstant(officialSavedAt, ZoneOffset.UTC))
+                .param("recordId", record.id()).update();
+        requireUpdated(linked);
+        return persisted;
     }
 
     @Override
@@ -363,22 +452,10 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         subjectId = subjectId == null || subjectId.isBlank() ? null : subjectId.trim();
         BigDecimal latitude = new BigDecimal(latitudeValue);
         BigDecimal longitude = new BigDecimal(longitudeValue);
-        boolean boundaryAvailable = jdbc.sql("""
-                SELECT EXISTS(
-                  SELECT 1 FROM overview.administrative_boundary WHERE region_code=:regionCode)
-                """).param("regionCode", record.regionCode()).query(Boolean.class).single();
-        if (!boundaryAvailable) return;
-        boolean contained = jdbc.sql("""
-                SELECT EXISTS(
-                  SELECT 1 FROM overview.administrative_boundary
-                  WHERE region_code=:regionCode
-                    AND ST_Covers(geometry,ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326)))
-                """).param("regionCode", record.regionCode()).param("longitude", longitude)
-                .param("latitude", latitude).query(Boolean.class).single();
-        if (!contained) {
-            throw new ConflictException("PRODUCTION_SAMPLE_POINT_OUTSIDE_REGION",
-                    "样本点经纬度不在所选地区范围内，请核对后再审核");
-        }
+        String governedRegionCode = containingRegionCode(record.regionCode(), latitude, longitude)
+                .orElseThrow(() -> new ConflictException(
+                        "PRODUCTION_SAMPLE_POINT_OUTSIDE_REGION",
+                        "样本点经纬度不在所选地区范围内，请核对后再审核"));
 
         ReviewedIdentityDecision reviewedIdentity = reviewedIdentity(record.id()).orElse(null);
         if (reviewedIdentity != null && "SAMPLE_IDENTITY_LINK_EXISTING".equals(reviewedIdentity.actionCode())) {
@@ -408,12 +485,7 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         }
         if (existing.size() == 1) {
             ExistingSamplePoint point = existing.getFirst();
-            if (!point.regionCode().equals(record.regionCode())
-                    || point.longitude().compareTo(longitude) != 0
-                    || point.latitude().compareTo(latitude) != 0) {
-                throw new ConflictException("PRODUCTION_SAMPLE_LOCATION_CONFLICT",
-                        "同一姓名和联系方式的地区或经纬度与已审核记录不一致，请核对后再审核");
-            }
+            requireMatchingCoordinate(point.longitude(), point.latitude(), longitude, latitude);
             int linked = jdbc.sql("""
                     UPDATE production.production_record SET sample_point_id=:samplePointId
                     WHERE record_id=:recordId AND status_code='APPROVED' AND sample_point_id IS NULL
@@ -456,7 +528,7 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
                   ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326),:shared,:effectiveFrom,0,
                   :submittingActorId,:approvedAt,:approvingActorId,:approvedAt)
                 """).param("samplePointId", samplePointId).param("canonicalName", canonicalName)
-                .param("regionCode", record.regionCode()).param("longitude", longitude)
+                .param("regionCode", governedRegionCode).param("longitude", longitude)
                 .param("latitude", latitude).param("shared", reviewedSharing)
                 .param("effectiveFrom", record.surveyDate())
                 .param("submittingActorId", submittingActorId).param("approvedAt", approvedTime)
@@ -546,13 +618,7 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
                 .optional().orElseThrow(() -> new ConflictException(
                         "PRODUCTION_SAMPLE_IDENTITY_TARGET_INVALID",
                         "身份核验选择的规范样本点已失效"));
-        if (!target.regionCode().equals(record.regionCode())
-                || target.longitude().compareTo(longitude) != 0
-                || target.latitude().compareTo(latitude) != 0
-                || target.effectiveFrom().isAfter(record.surveyDate())) {
-            throw new ConflictException("PRODUCTION_SAMPLE_IDENTITY_TARGET_INVALID",
-                    "身份核验选择的规范样本点与记录地区、坐标或生效时间不一致");
-        }
+        requireMatchingCoordinate(target.longitude(), target.latitude(), longitude, latitude);
         jdbc.sql("SELECT pg_advisory_xact_lock(hashtextextended(:identity,0))")
                 .param("identity", "REVIEWED_SAMPLE_IDENTITY:" + targetSamplePointId)
                 .query((row, ignored) -> Boolean.TRUE).single();
@@ -723,6 +789,17 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
     private static String normalizedContact(String value) {
         return Normalizer.normalize(value, Normalizer.Form.NFKC).strip()
                 .toLowerCase(Locale.ROOT).replaceAll("[\\s\\u3000()（）-]+", "");
+    }
+
+    private static void requireMatchingCoordinate(
+            BigDecimal existingLongitude, BigDecimal existingLatitude,
+            BigDecimal submittedLongitude, BigDecimal submittedLatitude) {
+        if (existingLongitude == null || existingLatitude == null
+                || existingLongitude.compareTo(submittedLongitude) != 0
+                || existingLatitude.compareTo(submittedLatitude) != 0) {
+            throw new ConflictException("SAMPLE_IDENTITY_COORDINATE_MISMATCH",
+                    "同一样本身份的经纬度与已有正式样本点不一致，请按位置变更流程处理");
+        }
     }
 
     private static String decimal(BigDecimal value) { return value == null ? null : value.toPlainString(); }

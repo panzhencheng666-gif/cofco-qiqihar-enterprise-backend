@@ -57,6 +57,13 @@ class LocalLauncherSecurityContractTest {
     }
 
     @Test
+    void localBackendDoesNotInheritATestPinnedFlywayTarget() throws IOException {
+        String launcher = java.nio.file.Files.readString(START_SCRIPT);
+
+        assertThat(launcher).contains("env -u JAVA_TOOL_OPTIONS");
+    }
+
+    @Test
     void businessRuntimeUsesOnlyTheCanonicalRootEntry() throws IOException {
         String runtime = String.join("\n",
                 java.nio.file.Files.readString(START_SCRIPT),

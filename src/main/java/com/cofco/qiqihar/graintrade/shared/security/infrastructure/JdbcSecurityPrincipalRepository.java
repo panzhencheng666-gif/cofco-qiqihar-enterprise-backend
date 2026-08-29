@@ -72,12 +72,19 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
 
     private Set<String> regions(String subjectId, String workUnitCode) {
         return new LinkedHashSet<>(jdbc.sql("""
-                WITH RECURSIVE assigned(region_code) AS (
+                WITH RECURSIVE unit_authorized(region_code) AS (
+                    SELECT scope.region_code
+                    FROM platform.work_unit_region_scope scope
+                    WHERE scope.work_unit_code = :workUnitCode
+                    UNION
+                    SELECT child.code
+                    FROM platform.region child
+                    JOIN unit_authorized parent ON parent.region_code = child.parent_code
+                ), assigned(region_code) AS (
                     SELECT scope.region_code
                     FROM platform.security_user_region_scope scope
-                    JOIN platform.work_unit_region_scope unit_scope
-                      ON unit_scope.work_unit_code = :workUnitCode
-                     AND unit_scope.region_code = scope.region_code
+                    JOIN unit_authorized
+                      ON unit_authorized.region_code = scope.region_code
                     WHERE scope.subject_id = :subjectId
                       AND CURRENT_TIMESTAMP >= scope.valid_from
                       AND (scope.valid_until IS NULL OR CURRENT_TIMESTAMP < scope.valid_until)
@@ -95,12 +102,19 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
 
     private List<SecurityPrincipal.RegionScope> assignedRegions(String subjectId,String workUnitCode) {
         return jdbc.sql("""
-                WITH RECURSIVE assigned AS (
+                WITH RECURSIVE unit_authorized(region_code) AS (
+                    SELECT scope.region_code
+                    FROM platform.work_unit_region_scope scope
+                    WHERE scope.work_unit_code=:workUnitCode
+                    UNION
+                    SELECT child.code
+                    FROM platform.region child
+                    JOIN unit_authorized parent ON parent.region_code=child.parent_code
+                ), assigned AS (
                     SELECT scope.region_code
                     FROM platform.security_user_region_scope scope
-                    JOIN platform.work_unit_region_scope unit_scope
-                      ON unit_scope.work_unit_code=:workUnitCode
-                     AND unit_scope.region_code=scope.region_code
+                    JOIN unit_authorized
+                      ON unit_authorized.region_code=scope.region_code
                     WHERE scope.subject_id=:subjectId
                       AND CURRENT_TIMESTAMP>=scope.valid_from
                       AND (scope.valid_until IS NULL OR CURRENT_TIMESTAMP<scope.valid_until)

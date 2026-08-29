@@ -138,8 +138,8 @@ class ProductionImportRestIntegrationTest {
         put(row, template.headers(), "调研人", "王雷");
         put(row, template.headers(), "调研人联系方式", "13800000000");
         put(row, template.headers(), "样本点联系方式", "13900000000");
-        put(row, template.headers(), "纬度（度）", "47.3543");
-        put(row, template.headers(), "经度（度）", "123.9182");
+        put(row, template.headers(), "纬度（度）", "47.65");
+        put(row, template.headers(), "经度（度）", "123.85");
         put(row, template.headers(), "样本点名称", "龙江县第一调查户");
         put(row, template.headers(), "预计收获面积（亩）", "96.5");
         put(row, template.headers(), "生育阶段", "灌浆期");
@@ -163,13 +163,22 @@ class ProductionImportRestIntegrationTest {
                         .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
                         .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[0].values.PROD_CULTIVAR").doesNotExist())
-                .andExpect(jsonPath("$.data.items[0].values.PROD_SAMPLE_NAME").value("龙江县第一调查户"))
-                .andExpect(jsonPath("$.data.items[0].values.PROD_HARVEST_AREA_MU").value("96.5"))
-                .andExpect(jsonPath("$.data.items[0].values.PROD_GROWTH_STAGE").value("灌浆期"))
-                .andExpect(jsonPath("$.data.items[0].values.PROD_SALES_VOLUME").value("12"))
-                .andExpect(jsonPath("$.data.items[0].values.MOISTURE").value("14.2000"))
-                .andExpect(jsonPath("$.data.items[0].values.PROD_REPORTER_NAME").value("产情测试员"));
+                .andExpect(jsonPath("$.data.totalElements").value(0));
+        String importedId = jdbc.sql("SELECT record_id FROM production.production_record")
+                .query(String.class).single();
+        mvc.perform(get("/api/v1/production-records/{id}", importedId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.submissionMetadata.PROD_CULTIVAR").doesNotExist())
+                .andExpect(jsonPath("$.data.submissionMetadata.PROD_SAMPLE_NAME").value("龙江县第一调查户"))
+                .andExpect(jsonPath("$.data.submissionMetadata.PROD_HARVEST_AREA_MU").value("96.5"))
+                .andExpect(jsonPath("$.data.submissionMetadata.PROD_GROWTH_STAGE").value("灌浆期"))
+                .andExpect(jsonPath("$.data.submissionMetadata.PROD_SALES_VOLUME").value("12"))
+                .andExpect(jsonPath("$.data.submissionMetadata.PROD_REPORTER_NAME").value("产情测试员"));
+        assertThat(jdbc.sql("""
+                SELECT value FROM production.production_record_quality
+                WHERE record_id=:id AND quality_code='MOISTURE'
+                """).param("id", importedId).query(java.math.BigDecimal.class).single())
+                .isEqualByComparingTo("14.2");
 
         assertThat(jdbc.sql("SELECT region_code FROM production.production_record")
                 .query(String.class).single()).isEqualTo("230208");
@@ -195,8 +204,8 @@ class ProductionImportRestIntegrationTest {
         put(row, template.headers(), "调研人", "王雷");
         put(row, template.headers(), "调研人联系方式", "13800000000");
         put(row, template.headers(), "样本点联系方式", "13900000000");
-        put(row, template.headers(), "纬度（度）", "47.3543");
-        put(row, template.headers(), "经度（度）", "123.9182");
+        put(row, template.headers(), "纬度（度）", "47.65");
+        put(row, template.headers(), "经度（度）", "123.85");
         put(row, template.headers(), "期初库存（吨）", "20");
         put(row, template.headers(), "期末余粮（吨）", "12");
         byte[] workbook = BusinessImportWorkbook.create(template, java.util.List.of(row));
@@ -217,8 +226,13 @@ class ProductionImportRestIntegrationTest {
                         .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
                         .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[0].values.PROD_ENDING_INVENTORY").value("12"))
-                .andExpect(jsonPath("$.data.items[0].values.PROD_OPENING_INVENTORY").value("20"));
+                .andExpect(jsonPath("$.data.totalElements").value(0));
+        String importedId = jdbc.sql("SELECT record_id FROM production.production_record")
+                .query(String.class).single();
+        mvc.perform(get("/api/v1/production-records/{id}", importedId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.submissionMetadata.PROD_ENDING_INVENTORY").value("12"))
+                .andExpect(jsonPath("$.data.submissionMetadata.PROD_OPENING_INVENTORY").value("20"));
     }
 
     @Test

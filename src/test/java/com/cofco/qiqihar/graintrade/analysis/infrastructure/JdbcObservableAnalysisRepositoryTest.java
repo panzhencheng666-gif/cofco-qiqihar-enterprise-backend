@@ -4,12 +4,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.cofco.qiqihar.graintrade.analysis.application.ObservableAnalysisScope;
 import com.cofco.qiqihar.graintrade.analysis.domain.AnalysisQualityState;
+import com.cofco.qiqihar.graintrade.testsupport.GovernedMasterDataFixtures;
 import com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabase;
 import com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabaseConfiguration;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -18,10 +20,12 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 class JdbcObservableAnalysisRepositoryTest {
     private static final String REGION = "230221";
     private static final String OTHER_REGION = "231102";
+    private static final String VALID_SAMPLE_REGION = "230221997";
     private static final String PERIOD = "ANALYSIS-2026-08";
     private static final String PREFIX = "analysis-observable-";
     private static final UUID DUPLICATE_POINT_ONE = UUID.fromString("97000000-0000-0000-0000-000000000001");
     private static final UUID DUPLICATE_POINT_TWO = UUID.fromString("97000000-0000-0000-0000-000000000002");
+    private static final UUID VALID_SAMPLE_POINT = UUID.fromString("97000000-0000-0000-0000-000000000003");
     private static final ProtectedTestDatabase DATABASE = ProtectedTestDatabase.shared();
 
     private final JdbcClient jdbc = JdbcClient.create(DATABASE.dataSource());
@@ -33,6 +37,28 @@ class JdbcObservableAnalysisRepositoryTest {
         DATABASE.flyway().migrate();
         ProtectedTestDatabaseConfiguration.provisionSecurityTestSubjects(jdbc);
         deleteFixtures();
+        GovernedMasterDataFixtures.insertRegion(
+                jdbc, VALID_SAMPLE_REGION, "当前有效样本测试乡", REGION, "TOWNSHIP", 997);
+        jdbc.sql("""
+                INSERT INTO platform.monitoring_scope_region(scope_code,region_code,included)
+                VALUES('FORMAL_BUSINESS',:region,true)
+                """).param("region", VALID_SAMPLE_REGION).update();
+        jdbc.sql("""
+                INSERT INTO overview.administrative_boundary(
+                  region_code,geometry,source_name,source_url,source_revision,source_license,
+                  source_feature_id,source_effective_on,geometry_sha256)
+                VALUES(:region,ST_Multi(ST_MakeEnvelope(122.9,46.9,123.3,47.3,4326)),
+                  '当前有效样本测试县界','urn:test:observable-valid-sample-parent','test-1','测试',
+                  :region,DATE '2026-01-01',repeat('6',64))
+                """).param("region", REGION).update();
+        jdbc.sql("""
+                INSERT INTO overview.administrative_boundary(
+                  region_code,geometry,source_name,source_url,source_revision,source_license,
+                  source_feature_id,source_effective_on,geometry_sha256)
+                VALUES(:region,ST_Multi(ST_MakeEnvelope(123.0,47.0,123.2,47.2,4326)),
+                  '当前有效样本测试边界','urn:test:observable-valid-sample','test-1','测试',
+                  :region,DATE '2026-01-01',repeat('7',64))
+                """).param("region", VALID_SAMPLE_REGION).update();
         jdbc.sql("""
                 INSERT INTO platform.business_period(
                     code,name,starts_on,ends_on,sort_order,marketing_year_code)
@@ -78,9 +104,85 @@ class JdbcObservableAnalysisRepositoryTest {
         jdbc.sql("DELETE FROM production.production_record WHERE record_id LIKE :prefix")
                 .param("prefix", PREFIX + "%").update();
         jdbc.sql("DELETE FROM registry.sample_point WHERE sample_point_id IN (:points)")
-                .param("points", Set.of(DUPLICATE_POINT_ONE, DUPLICATE_POINT_TWO)).update();
+                .param("points", Set.of(
+                        DUPLICATE_POINT_ONE, DUPLICATE_POINT_TWO, VALID_SAMPLE_POINT)).update();
+        jdbc.sql("DELETE FROM overview.administrative_boundary WHERE region_code=:region")
+                .param("region", VALID_SAMPLE_REGION).update();
+        jdbc.sql("DELETE FROM overview.administrative_boundary WHERE region_code=:region")
+                .param("region", REGION).update();
+        jdbc.sql("DELETE FROM platform.monitoring_scope_region WHERE region_code=:region")
+                .param("region", VALID_SAMPLE_REGION).update();
+        GovernedMasterDataFixtures.deleteRegions(jdbc, java.util.List.of(VALID_SAMPLE_REGION));
         jdbc.sql("DELETE FROM platform.business_period WHERE code=:code")
                 .param("code", PERIOD).update();
+    }
+
+    @Test
+    void keepsApprovalEventLookupIndexedForRealtimeDashboardReads() {
+        boolean indexed = Boolean.TRUE.equals(jdbc.sql("""
+                SELECT EXISTS(
+                  SELECT 1
+                  FROM pg_indexes
+                  WHERE schemaname='platform'
+                    AND tablename='business_event_outbox'
+                    AND indexdef ILIKE '%(aggregate_type, aggregate_id, action_code, occurred_at%')
+                """).query(Boolean.class).single());
+
+        assertThat(indexed)
+                .as("dashboard approval timestamps must not rescan the outbox for every business fact")
+                .isTrue();
+    }
+
+    @Test
+    void unrestrictedOverallScopeDoesNotSeedEveryRegionIntoRecursiveTraversal() {
+        assertThat(JdbcObservableAnalysisRepository.SCOPE)
+                .contains("WHERE :region<>:allAuthorizedRegions AND code=:region")
+                .contains("WHERE NOT :unrestricted", "AND code IN")
+                .contains(":region=:allAuthorizedRegions OR requested.code IS NOT NULL")
+                .contains(":unrestricted OR authorized.code IS NOT NULL")
+                .contains("JOIN scope ON scope.code=point.region_code")
+                .contains("JOIN requested_ancestors ancestor ON ancestor.code=point.region_code")
+                .doesNotContain("WHERE :region=:allAuthorizedRegions OR code=:region");
+    }
+
+    @Test
+    void supplySummaryCarriesHeadlineMetricsAndEndingInventoryFromTheSameApprovedProjection() {
+        jdbc.sql("""
+                INSERT INTO market.market_record_fact(
+                    record_id,fact_code,value,product_code,object_type_code)
+                VALUES(:id,'ENDING_INVENTORY',80,'CORN','TRADER')
+                """).param("id", PREFIX + "market-approved").update();
+
+        var summary = repository.loadSupplySummary(
+                new ObservableAnalysisScope("CORN", "230200", 2026, 8, null, null),
+                Set.of("230200", REGION));
+
+        assertThat(summary.headlineMetrics())
+                .filteredOn(metric -> metric.code().equals("PRODUCTION_CULTIVATED_AREA"))
+                .singleElement().satisfies(metric -> {
+                    assertThat(metric.value()).isEqualByComparingTo("100");
+                    assertThat(metric.sourceCount()).isOne();
+                });
+        assertThat(summary.headlineMetrics())
+                .filteredOn(metric -> metric.code().equals("PRODUCTION_ESTIMATED_OUTPUT"))
+                .singleElement().satisfies(metric ->
+                        assertThat(metric.value()).isEqualByComparingTo("50000"));
+        assertThat(summary.headlineMetrics())
+                .filteredOn(metric -> metric.code().equals("MARKET_AVERAGE_PURCHASE_PRICE"))
+                .singleElement().satisfies(metric ->
+                        assertThat(metric.value()).isEqualByComparingTo("2500"));
+        assertThat(summary.headlineMetrics())
+                .filteredOn(metric -> metric.code().equals("LOGISTICS_OUTFLOW_VOLUME"))
+                .singleElement().satisfies(metric ->
+                        assertThat(metric.value()).isEqualByComparingTo("15"));
+        assertThat(summary.endingInventorySources())
+                .filteredOn(source -> source.sourceDomain().equals("PRODUCTION"))
+                .hasSize(2).allSatisfy(source ->
+                        assertThat(source.valueTonnes()).isEqualByComparingTo("35"));
+        assertThat(summary.endingInventorySources())
+                .filteredOn(source -> source.sourceDomain().equals("MARKET"))
+                .singleElement().satisfies(source ->
+                        assertThat(source.valueTonnes()).isEqualByComparingTo("80"));
     }
 
     @Test
@@ -117,6 +219,20 @@ class JdbcObservableAnalysisRepositoryTest {
                 .contains(PREFIX + "new", PREFIX + "market-approved")
                 .doesNotContain(PREFIX + "old", PREFIX + "draft", PREFIX + "market-pending");
         assertThat(snapshot.analysisVersion()).startsWith("sha256:");
+    }
+
+    @Test
+    void dashboardSupplySummaryMatchesTheAuthoritativeFullAnalysisSnapshot() {
+        ObservableAnalysisScope scope = new ObservableAnalysisScope(
+                "CORN", "230200", 2026, 8, null, null);
+        Set<String> authorization = Set.of("230200", REGION);
+
+        var snapshot = repository.load(scope, authorization);
+        var summary = repository.loadSupplySummary(scope, authorization);
+
+        assertThat(summary.supply()).isEqualTo(snapshot.supply());
+        assertThat(summary.sourceCount()).isEqualTo(snapshot.coverage().recordCount());
+        assertThat(summary.dataCutoffAt()).isEqualTo(snapshot.dataCutoffAt());
     }
 
     @Test
@@ -385,7 +501,7 @@ class JdbcObservableAnalysisRepositoryTest {
     }
 
     @Test
-    void treatsRepeatedImportsOfTheSameNamedContactAndCoordinatesAsOneEffectiveSample() {
+    void excludesRepeatedImportsWhileTheirCoordinatesRemainUnvalidated() {
         insertMissingSamplePoint(DUPLICATE_POINT_ONE, "重复导入样本一");
         insertMissingSamplePoint(DUPLICATE_POINT_TWO, "重复导入样本二");
         productionWithPoint("duplicate-one", 1, "300", DUPLICATE_POINT_ONE);
@@ -398,12 +514,230 @@ class JdbcObservableAnalysisRepositoryTest {
         assertThat(snapshot.production().metrics())
                 .filteredOn(metric -> metric.code().equals("EXPECTED_OUTPUT"))
                 .singleElement().satisfies(metric -> {
+                    assertThat(metric.value()).isEqualTo("50.0000");
+                    assertThat(metric.sourceCount()).isEqualTo(1);
+                });
+        assertThat(snapshot.lineage()).extracting("recordId")
+                .doesNotContain(PREFIX + "duplicate-one", PREFIX + "duplicate-two");
+    }
+
+    @Test
+    void removesAnInvalidatedSampleFromCurrentProductionAndSupplyProjections() {
+        jdbc.sql("""
+                INSERT INTO registry.sample_point(
+                  sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
+                  governed_point,effective_from,created_by,updated_by)
+                VALUES(:id,'SURVEY_SITE','当前有效样本点',:region,'APPROVED','VALID',
+                  ST_SetSRID(ST_MakePoint(123.1,47.1),4326),DATE '2026-01-01',
+                  'production-tester','production-tester')
+                """).param("id", VALID_SAMPLE_POINT).param("region", VALID_SAMPLE_REGION).update();
+        productionWithPoint("valid-linked", 1, "700", VALID_SAMPLE_POINT);
+        marketRecord("valid", "APPROVED", "2700", VALID_SAMPLE_REGION,
+                "当前有效市场样本", "13900000003", "47.1000000", "123.1000000",
+                2026, 8, "2026-08-10", 1);
+        jdbc.sql("UPDATE market.market_record SET sample_point_id=:point WHERE record_id=:id")
+                .param("point", VALID_SAMPLE_POINT)
+                .param("id", PREFIX + "market-valid").update();
+        route("valid-inflow", "INFLOW", "5", "APPROVED", VALID_SAMPLE_REGION);
+        jdbc.sql("UPDATE logistics.route_event SET sample_point_id=:point WHERE source_organization=:source")
+                .param("point", VALID_SAMPLE_POINT)
+                .param("source", PREFIX + "valid-inflow").update();
+        jdbc.sql("""
+                INSERT INTO production.production_record_submission_metadata(record_id,field_code,value)
+                VALUES(:id,'PROD_OPENING_INVENTORY','3'),
+                      (:id,'PROD_SELF_USE','2'),
+                      (:id,'PROD_ENDING_INVENTORY','7')
+                """).param("id", PREFIX + "valid-linked").update();
+
+        var before = repository.load(
+                new ObservableAnalysisScope("CORN", "230200", 2026, 8, null, null),
+                Set.of("230200", REGION, VALID_SAMPLE_REGION));
+        assertThat(before.production().metrics())
+                .filteredOn(metric -> metric.code().equals("EXPECTED_OUTPUT"))
+                .singleElement().satisfies(metric -> {
                     assertThat(metric.value()).isEqualTo("120.0000");
                     assertThat(metric.sourceCount()).isEqualTo(2);
                 });
+        assertThat(before.supply().inventory().productionEndingTonnes())
+                .isEqualByComparingTo("42.0000");
+        assertThat(before.market().metrics())
+                .filteredOn(metric -> metric.code().equals("AVERAGE_PURCHASE_PRICE"))
+                .singleElement().satisfies(metric -> {
+                    assertThat(metric.value()).isEqualTo("2600.0000");
+                    assertThat(metric.sourceCount()).isEqualTo(2);
+                });
+        assertThat(before.logistics().metrics())
+                .filteredOn(metric -> metric.code().equals("INFLOW_VOLUME"))
+                .singleElement().satisfies(metric -> {
+                    assertThat(metric.value()).isEqualTo("25.0000");
+                    assertThat(metric.sourceCount()).isEqualTo(2);
+                });
+
+        jdbc.sql("""
+                UPDATE registry.sample_point
+                SET location_state='OUTSIDE_REGION',governed_point=NULL,
+                    containment_boundary_sha256=NULL,containment_boundary_revision=NULL
+                WHERE sample_point_id=:id
+                """).param("id", VALID_SAMPLE_POINT).update();
+
+        var after = repository.load(
+                new ObservableAnalysisScope("CORN", "230200", 2026, 8, null, null),
+                Set.of("230200", REGION, VALID_SAMPLE_REGION));
+        assertThat(after.production().metrics())
+                .filteredOn(metric -> metric.code().equals("EXPECTED_OUTPUT"))
+                .singleElement().satisfies(metric -> {
+                    assertThat(metric.value()).isEqualTo("50.0000");
+                    assertThat(metric.sourceCount()).isEqualTo(1);
+                });
+        assertThat(after.supply().inventory().productionEndingTonnes())
+                .isEqualByComparingTo("35.0000");
+        assertThat(after.market().metrics())
+                .filteredOn(metric -> metric.code().equals("AVERAGE_PURCHASE_PRICE"))
+                .singleElement().satisfies(metric -> {
+                    assertThat(metric.value()).isEqualTo("2500.0000");
+                    assertThat(metric.sourceCount()).isEqualTo(1);
+                });
+        assertThat(after.logistics().metrics())
+                .filteredOn(metric -> metric.code().equals("INFLOW_VOLUME"))
+                .singleElement().satisfies(metric -> {
+                    assertThat(metric.value()).isEqualTo("20.0000");
+                    assertThat(metric.sourceCount()).isEqualTo(1);
+                });
+        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record WHERE record_id=:id")
+                .param("id", PREFIX + "valid-linked").query(Long.class).single()).isOne();
+    }
+
+    @Test
+    void dashboardSummaryUsesExactlyTheCurrentMapSampleIdentities() {
+        jdbc.sql("""
+                INSERT INTO registry.sample_point(
+                  sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
+                  governed_point,effective_from,created_by,updated_by)
+                VALUES(:id,'SURVEY_SITE','地图当前样本点',:region,'APPROVED','VALID',
+                  ST_SetSRID(ST_MakePoint(123.1,47.1),4326),DATE '2026-01-01',
+                  'production-tester','production-tester')
+                """).param("id", VALID_SAMPLE_POINT).param("region", VALID_SAMPLE_REGION).update();
+        productionWithPoint("map-current", 1, "700", VALID_SAMPLE_POINT);
+
+        ObservableAnalysisScope scope = new ObservableAnalysisScope(
+                "CORN", "230200", 2026, 8, null, null);
+        Set<String> authorization = Set.of("230200", REGION, VALID_SAMPLE_REGION);
+
+        var selected = repository.loadSupplySummary(
+                scope, authorization, Set.of(VALID_SAMPLE_POINT));
+        assertThat(selected.headlineMetrics())
+                .filteredOn(metric -> metric.code().equals("PRODUCTION_CULTIVATED_AREA"))
+                .singleElement().satisfies(metric -> {
+                    assertThat(metric.value()).isEqualByComparingTo("200");
+                    assertThat(metric.sourceCount()).isEqualTo(2);
+                });
+
+        var empty = repository.loadSupplySummary(scope, authorization, Set.of());
+        assertThat(empty.headlineMetrics())
+                .filteredOn(metric -> metric.code().equals("PRODUCTION_CULTIVATED_AREA"))
+                .singleElement().satisfies(metric -> {
+                    assertThat(metric.value()).isEqualByComparingTo("100");
+                    assertThat(metric.sourceCount()).isOne();
+                });
+    }
+
+    @Test
+    void dashboardHeadlineMetricsResolveTheCurrentSampleScopeWithoutNestedDatabaseConcurrency() {
+        ObservableAnalysisScope scope = new ObservableAnalysisScope(
+                "CORN", "230200", 2026, 8, null, null);
+        Thread requestThread = Thread.currentThread();
+        AtomicReference<Thread> scopeResolutionThread = new AtomicReference<>();
+
+        repository.loadHeadlineMetrics(scope, Set.of("230200", REGION), () -> {
+            scopeResolutionThread.set(Thread.currentThread());
+            return Set.of();
+        });
+
+        assertThat(scopeResolutionThread.get()).isSameAs(requestThread);
+    }
+
+    @Test
+    void scopesApprovedBusinessFactsByTheValidatedSampleCoordinateAtLowerAdministrativeLevels() {
+        jdbc.sql("""
+                INSERT INTO registry.sample_point(
+                  sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
+                  governed_point,containment_boundary_sha256,containment_boundary_revision,
+                  effective_from,created_by,updated_by)
+                SELECT :id,'SURVEY_SITE','坐标投影到乡镇的县级样本点',:region,'APPROVED','VALID',
+                  ST_PointOnSurface(township.geometry),formal.geometry_sha256,
+                  formal.source_revision,DATE '2026-01-01',
+                  'production-tester','production-tester'
+                FROM overview.administrative_boundary township
+                JOIN overview.administrative_boundary formal ON formal.region_code=:region
+                WHERE township.region_code=:township
+                """).param("id", VALID_SAMPLE_POINT).param("region", REGION)
+                .param("township", VALID_SAMPLE_REGION).update();
+        productionWithPoint("geo", 1, "700", VALID_SAMPLE_POINT);
+        marketRecord("geo", "APPROVED", "2700", REGION,
+                "坐标投影市场样本", "13900000004", "47.1000000", "123.1000000",
+                2026, 8, "2026-08-10", 1);
+        jdbc.sql("UPDATE market.market_record SET sample_point_id=:point WHERE record_id=:id")
+                .param("point", VALID_SAMPLE_POINT)
+                .param("id", PREFIX + "market-geo").update();
+        route("geo", "INFLOW", "5", "APPROVED", REGION);
+        jdbc.sql("UPDATE logistics.route_event SET sample_point_id=:point WHERE source_organization=:source")
+                .param("point", VALID_SAMPLE_POINT)
+                .param("source", PREFIX + "geo").update();
+
+        var snapshot = repository.load(
+                new ObservableAnalysisScope("CORN", VALID_SAMPLE_REGION, 2026, 8, null, null),
+                Set.of(REGION, VALID_SAMPLE_REGION));
+
+        assertThat(snapshot.production().metrics())
+                .filteredOn(metric -> metric.code().equals("EXPECTED_OUTPUT"))
+                .singleElement().satisfies(metric -> {
+                    assertThat(metric.value()).isEqualTo("70.0000");
+                    assertThat(metric.sourceCount()).isOne();
+                });
+        assertThat(snapshot.market().metrics())
+                .filteredOn(metric -> metric.code().equals("AVERAGE_PURCHASE_PRICE"))
+                .singleElement().satisfies(metric -> {
+                    assertThat(metric.value()).isEqualTo("2700.0000");
+                    assertThat(metric.sourceCount()).isOne();
+                });
+        assertThat(snapshot.logistics().metrics())
+                .filteredOn(metric -> metric.code().equals("INFLOW_VOLUME"))
+                .singleElement().satisfies(metric -> {
+                    assertThat(metric.value()).isEqualTo("5.0000");
+                    assertThat(metric.sourceCount()).isOne();
+                });
+    }
+
+    @Test
+    void excludesAValidatedSampleWhenItsRecordedBoundaryEvidenceIsNoLongerCurrent() {
+        jdbc.sql("""
+                INSERT INTO registry.sample_point(
+                  sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
+                  governed_point,effective_from,created_by,updated_by)
+                VALUES(:id,'SURVEY_SITE','边界证据已变更样本点',:region,'APPROVED','VALID',
+                  ST_SetSRID(ST_MakePoint(123.1,47.1),4326),DATE '2026-01-01',
+                  'production-tester','production-tester')
+                """).param("id", VALID_SAMPLE_POINT).param("region", VALID_SAMPLE_REGION).update();
+        productionWithPoint("stale-evidence", 1, "700", VALID_SAMPLE_POINT);
+
+        jdbc.sql("""
+                UPDATE overview.administrative_boundary
+                SET geometry_sha256=repeat('8',64),source_revision='test-2'
+                WHERE region_code=:region
+                """).param("region", VALID_SAMPLE_REGION).update();
+
+        var snapshot = repository.load(
+                new ObservableAnalysisScope("CORN", "230200", 2026, 8, null, null),
+                Set.of("230200", REGION, VALID_SAMPLE_REGION));
+
+        assertThat(snapshot.production().metrics())
+                .filteredOn(metric -> metric.code().equals("EXPECTED_OUTPUT"))
+                .singleElement().satisfies(metric -> {
+                    assertThat(metric.value()).isEqualTo("50.0000");
+                    assertThat(metric.sourceCount()).isEqualTo(1);
+                });
         assertThat(snapshot.lineage()).extracting("recordId")
-                .contains(PREFIX + "duplicate-two")
-                .doesNotContain(PREFIX + "duplicate-one");
+                .doesNotContain(PREFIX + "stale-evidence");
     }
 
     private void insertMissingSamplePoint(UUID id, String name) {

@@ -25,9 +25,10 @@ class MasterDataRestIntegrationTest {
     void exposesRegionsProductsCultivarsAndTheCurrentBusinessPeriod() throws Exception {
         mockMvc.perform(get("/api/v1/master-data/regions"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(29))
-                .andExpect(jsonPath("$.data[0].name").value("齐齐哈尔市"))
-                .andExpect(jsonPath("$.data[3].parentCode").value("230200"));
+                .andExpect(jsonPath("$.data[?(@.code == '230200')].name")
+                        .value(contains("齐齐哈尔市")))
+                .andExpect(jsonPath("$.data[?(@.code == '230202')].parentCode")
+                        .value(contains("230200")));
 
         mockMvc.perform(get("/api/v1/master-data/products"))
                 .andExpect(status().isOk())

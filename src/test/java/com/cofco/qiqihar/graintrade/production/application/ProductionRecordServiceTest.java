@@ -146,6 +146,8 @@ class ProductionRecordServiceTest {
         when(repository.areApplicableFacts("SOYBEAN", "FARMER", Map.of(
                 "QUALITY", java.util.Set.of(), "COST", java.util.Set.of(),
                 "INSURANCE", java.util.Set.of(), "SUBSIDY", java.util.Set.of()))).thenReturn(true);
+        when(repository.isPointWithinRegion(
+                "230202", new BigDecimal("47.3543"), new BigDecimal("123.9182"))).thenReturn(true);
         CurrentActor actor = () -> Optional.of(new AuthenticatedActor("tester"));
         ProductionRecordService service = new ProductionRecordService(repository, mock(PageDefinitionQuery.class),
                 actor, fixedClock());
@@ -165,6 +167,8 @@ class ProductionRecordServiceTest {
         when(repository.isKnownRegion("230202")).thenReturn(true);
         when(repository.isApplicableObjectType("SOYBEAN", "FARMER")).thenReturn(true);
         when(repository.areApplicableFacts(eq("SOYBEAN"), eq("FARMER"), any())).thenReturn(true);
+        when(repository.isPointWithinRegion(
+                "230202", new BigDecimal("47.3543"), new BigDecimal("123.9182"))).thenReturn(true);
         when(repository.insert(any(), eq("tester"))).thenAnswer(invocation -> invocation.getArgument(0));
         ProductionRecordService service = service(repository, mock(PageDefinitionQuery.class));
         ProductionDraft draft = new ProductionDraft("SOYBEAN", "FARMER", "230202", null,
@@ -192,6 +196,8 @@ class ProductionRecordServiceTest {
         when(repository.isKnownRegion("230202")).thenReturn(true);
         when(repository.isApplicableObjectType("SOYBEAN", "FARMER")).thenReturn(true);
         when(repository.areApplicableFacts(eq("SOYBEAN"), eq("FARMER"), any())).thenReturn(true);
+        when(repository.isPointWithinRegion(
+                "230202", new BigDecimal("47.3543"), new BigDecimal("123.9182"))).thenReturn(true);
         when(repository.updateFacts(any(), eq(0L), eq("tester"))).thenAnswer(invocation ->
                 ((ProductionRecord) invocation.getArgument(0)).savedAsVersion(1));
         ProductionRecordService service = service(repository, mock(PageDefinitionQuery.class));

@@ -48,6 +48,17 @@ class OverviewRestIntegrationTest {
                   WHERE version_code='REGION_SURPLUS_V1';
                 END $$
                 """).update();
+        jdbc.sql("""
+                TRUNCATE registry.sample_subject_resolution_audit,
+                  registry.sample_subject_resolution_revision,registry.sample_subject_resolution_item,
+                  registry.sample_subject_resolution_batch,production.production_record,market.market_record,
+                  logistics.route_event,logistics.logistics_node,supply.calculation_run RESTART IDENTITY CASCADE
+                """).update();
+        jdbc.sql("""
+                DELETE FROM registry.sample_point
+                WHERE region_code IN ('230281999001','230281999','230281998001','230281998002',
+                  '230281998','230202998001','230202998')
+                """).update();
         jdbc.sql("DELETE FROM overview.administrative_boundary_display_reference WHERE region_code='230208'").update();
         jdbc.sql("DELETE FROM overview.administrative_boundary_render WHERE region_code='230208'").update();
         jdbc.sql("DELETE FROM overview.administrative_boundary WHERE region_code='230208'").update();
@@ -60,12 +71,6 @@ class OverviewRestIntegrationTest {
         GovernedMasterDataFixtures.deleteRegions(jdbc, java.util.List.of(
                 "230281999001", "230281999", "230281998001", "230281998002",
                 "230281998", "230202998001", "230202998"));
-        jdbc.sql("""
-                TRUNCATE registry.sample_subject_resolution_audit,
-                  registry.sample_subject_resolution_revision,registry.sample_subject_resolution_item,
-                  registry.sample_subject_resolution_batch,production.production_record,market.market_record,
-                  logistics.route_event,logistics.logistics_node,supply.calculation_run RESTART IDENTITY CASCADE
-                """).update();
         jdbc.sql("DELETE FROM evidence.evidence_photo WHERE original_filename='overview-market-inventory.png'")
                 .update();
         jdbc.sql("""
@@ -164,6 +169,33 @@ class OverviewRestIntegrationTest {
                 .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].value")
                         .value(org.hamcrest.Matchers.hasItem("20")));
 
+        mvc.perform(get("/api/v1/overview/dashboard-summary")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", "230200")
+                        .queryParam("year", "2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.contractVersion").value("overview-audit-v2"))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].value")
+                        .value(org.hamcrest.Matchers.hasItem("20")))
+                .andExpect(jsonPath("$.data.scope.prefectureCount").value(1))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')]").isEmpty())
+                .andExpect(jsonPath("$.data.scope.approvedRecordCount").doesNotExist())
+                .andExpect(jsonPath("$.data.priceTrend").doesNotExist())
+                .andExpect(jsonPath("$.data.productStructure").doesNotExist())
+                .andExpect(jsonPath("$.data.regionActivity").doesNotExist())
+                .andExpect(jsonPath("$.data.cultivatedAreaYoY").doesNotExist())
+                .andExpect(jsonPath("$.data.outputYoY").doesNotExist())
+                .andExpect(jsonPath("$.data.businessTables").doesNotExist());
+
+        mvc.perform(get("/api/v1/overview/dashboard-summary")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("year", "2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].value")
+                        .value(org.hamcrest.Matchers.hasItem("20")))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].sourceCount")
+                        .value(org.hamcrest.Matchers.hasItem(1)));
+
         mvc.perform(get("/api/v1/overview/dashboard")
                         .queryParam("productCode", "RICE")
                         .queryParam("regionCode", "230200")
@@ -254,7 +286,8 @@ class OverviewRestIntegrationTest {
                 .andExpect(jsonPath("$.data[3].value").value("20000"))
                 .andExpect(jsonPath("$.data[3].sourceCount").value(1))
                 .andExpect(jsonPath("$.data[0].sourceCount").value(1))
-                .andExpect(jsonPath("$.data[5].value").value(org.hamcrest.Matchers.nullValue()));
+                .andExpect(jsonPath("$.data[?(@.sourceDomain == 'SUPPLY')]").isEmpty())
+                .andExpect(jsonPath("$.data[?(@.code == 'REGION_SURPLUS')]").isEmpty());
 
         mvc.perform(get("/api/v1/overview/dashboard").queryParam("productCode", "CORN")
                         .queryParam("regionCode", "230200").queryParam("year", "2026"))
@@ -276,210 +309,6 @@ class OverviewRestIntegrationTest {
                 .andExpect(jsonPath(
                         "$.data.businessTables[?(@.code == 'LOGISTICS')].rows[?(@.regionCode == '230208')].values.LOG_ROUTE_VOLUME.value")
                         .value(org.hamcrest.Matchers.hasItem("20000")));
-    }
-
-    @Test
-    void derivesReliableRegionSurplusFromLatestApprovedMutuallyExclusiveSources() throws Exception {
-        String productionId = UUID.randomUUID().toString();
-        String samplePointId = UUID.randomUUID().toString();
-        jdbc.sql("""
-                INSERT INTO registry.sample_point(
-                  sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
-                  effective_from,created_by,updated_by)
-                VALUES(CAST(:id AS uuid),'SURVEY_SITE','余粮主体样本点','230208','APPROVED','MISSING',
-                  DATE '2026-01-01','production-tester','production-tester')
-                """).param("id", samplePointId).update();
-        jdbc.sql("""
-                INSERT INTO production.production_record(record_id,product_code,object_type_code,region_code,
-                  survey_date,reported_at,cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,version,
-                  sample_point_id)
-                VALUES(:id,'CORN','FARMER','230208',DATE '2026-08-10',
-                  '2026-08-10T10:00:00+08:00',1,1,'APPROVED','test',2,CAST(:samplePointId AS uuid))
-                """).param("id", productionId).param("samplePointId", samplePointId).update();
-        jdbc.sql("""
-                INSERT INTO production.production_record_submission_metadata(record_id,field_code,value)
-                VALUES(:id,'PROD_SAMPLE_NAME','余粮主体样本点'),
-                      (:id,'PROD_SAMPLE_CONTACT','13800000001'),
-                      (:id,'PROD_ENDING_INVENTORY','12')
-                """).param("id", productionId).update();
-        approvalEvent("PRODUCTION_RECORD", productionId, "PRODUCTION_RECORD_APPROVED",
-                "2026-08-10T10:00:00+08:00");
-
-        String marketId = createAndApprovePublicMarketInventory();
-
-        mvc.perform(get("/api/v1/overview/dashboard")
-                        .queryParam("productCode", "CORN")
-                        .queryParam("regionCode", "230200")
-                        .queryParam("periodCode", "2026-Q3"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].value")
-                        .value(org.hamcrest.Matchers.hasItem("32")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].sourceCount")
-                        .value(org.hamcrest.Matchers.hasItem(2)))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].dataCutoff")
-                        .value(org.hamcrest.Matchers.hasItem("2026年08月31日")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].coverageStatus")
-                        .value(org.hamcrest.Matchers.hasItem("AVAILABLE")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].calculationVersion")
-                        .value(org.hamcrest.Matchers.hasItem("地区余粮公开填报口径第1版")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].auditSources.length()")
-                        .value(org.hamcrest.Matchers.hasItem(2)))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].auditSources[*].subjectKey")
-                        .value(org.hamcrest.Matchers.hasItem(
-                                "VISIBLE|余粮主体样本点|13800000001")));
-    }
-
-    @Test
-    void reproducesHistoricalAndCurrentRegionSurplusFromTheSamePublicFields() throws Exception {
-        String productionId = UUID.randomUUID().toString();
-        String marketId = UUID.randomUUID().toString();
-        jdbc.sql("""
-                INSERT INTO production.production_record(record_id,product_code,object_type_code,region_code,
-                  survey_date,reported_at,cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,version)
-                VALUES(:id,'CORN','FARMER','230208',DATE '2025-08-10',
-                  '2025-08-10T10:00:00+08:00',1,1,'APPROVED','test',2)
-                """).param("id", productionId).update();
-        jdbc.sql("""
-                INSERT INTO production.production_record_submission_metadata(record_id,field_code,value)
-                VALUES(:id,'PROD_ENDING_INVENTORY','12'),
-                      (:id,'PROD_SAMPLE_NAME','历史产情样本点'),
-                      (:id,'PROD_SAMPLE_CONTACT','13800000002')
-                """).param("id", productionId).update();
-        approvalEvent("PRODUCTION_RECORD", productionId, "PRODUCTION_RECORD_APPROVED",
-                "2025-08-10T10:00:00+08:00");
-
-        jdbc.sql("""
-                INSERT INTO market.market_record(record_id,product_code,object_type_code,region_code,trade_date,
-                  reported_at,purchase_base_price,sale_base_price,trade_direction,carriage_board_amount,
-                  freight_amount,status_code,last_modified_by,version)
-                VALUES(:id,'CORN','TRADER','230208',DATE '2025-08-10','2025-08-10T11:00:00+08:00',
-                  1,1,'BOTH',0,0,'APPROVED','test',2)
-                """).param("id", marketId).update();
-        jdbc.sql("""
-                INSERT INTO market.market_record_fact(record_id,fact_code,value,product_code,object_type_code)
-                VALUES(:id,'ENDING_INVENTORY',20,'CORN','TRADER')
-                """).param("id", marketId).update();
-        jdbc.sql("""
-                INSERT INTO market.market_record_core_value(
-                  record_id,product_code,field_code,domain_binding,value)
-                VALUES(:id,'CORN','MKT_SAMPLE_NAME','EXTENSION','历史市场样本点'),
-                      (:id,'CORN','MKT_SAMPLE_CONTACT','EXTENSION','13900000002')
-                """).param("id", marketId).update();
-        approvalEvent("MARKET_RECORD", marketId, "MARKET_RECORD_APPROVED",
-                "2025-08-10T11:00:00+08:00");
-
-        mvc.perform(get("/api/v1/overview/dashboard")
-                        .queryParam("productCode", "CORN")
-                        .queryParam("regionCode", "230200")
-                        .queryParam("year", "2025"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].value")
-                        .value(org.hamcrest.Matchers.hasItem("32")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].coverageStatus")
-                        .value(org.hamcrest.Matchers.hasItem("AVAILABLE")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].calculationVersion")
-                        .value(org.hamcrest.Matchers.hasItem("地区余粮公开填报口径第1版")));
-
-        jdbc.sql("""
-                UPDATE production.production_record
-                SET survey_date=DATE '2026-08-10',reported_at='2026-08-10T10:00:00+08:00'
-                WHERE record_id=:id
-                """).param("id", productionId).update();
-        jdbc.sql("""
-                UPDATE market.market_record
-                SET trade_date=DATE '2026-08-10',reported_at='2026-08-10T11:00:00+08:00'
-                WHERE record_id=:id
-                """).param("id", marketId).update();
-        jdbc.sql("""
-                UPDATE platform.business_event_outbox
-                SET occurred_at=occurred_at + interval '1 year'
-                WHERE aggregate_id IN (:productionId,:marketId)
-                """).param("productionId", productionId).param("marketId", marketId).update();
-
-        mvc.perform(get("/api/v1/overview/dashboard")
-                        .queryParam("productCode", "CORN")
-                        .queryParam("regionCode", "230200")
-                        .queryParam("periodCode", "2026-Q3"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].value")
-                        .value(org.hamcrest.Matchers.hasItem("32")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].coverageStatus")
-                        .value(org.hamcrest.Matchers.hasItem("AVAILABLE")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].calculationVersion")
-                        .value(org.hamcrest.Matchers.hasItem("地区余粮公开填报口径第1版")));
-    }
-
-    @Test
-    void exposesPartialPublicRegionSurplusUntilBothBusinessDomainsAreAvailable() throws Exception {
-        String productionId = UUID.randomUUID().toString();
-        String marketId = UUID.randomUUID().toString();
-        String samplePointId = UUID.randomUUID().toString();
-        jdbc.sql("""
-                INSERT INTO registry.sample_point(
-                  sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
-                  effective_from,created_by,updated_by)
-                VALUES(CAST(:id AS uuid),'SURVEY_SITE','余粮主体样本点','230208','APPROVED','MISSING',
-                  DATE '2026-01-01','production-tester','production-tester')
-                """).param("id", samplePointId).update();
-        jdbc.sql("""
-                INSERT INTO production.production_record(record_id,product_code,object_type_code,region_code,
-                  survey_date,reported_at,cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,version,
-                  sample_point_id)
-                VALUES(:id,'CORN','FARMER','230208',DATE '2026-08-10',
-                  '2026-08-10T10:00:00+08:00',1,1,'APPROVED','test',2,CAST(:samplePointId AS uuid))
-                """).param("id", productionId).param("samplePointId", samplePointId).update();
-        jdbc.sql("""
-                INSERT INTO production.production_record_submission_metadata(record_id,field_code,value)
-                VALUES(:id,'PROD_ENDING_INVENTORY','12'),
-                      (:id,'PROD_SAMPLE_NAME','公开产情样本点'),
-                      (:id,'PROD_SAMPLE_CONTACT','13800000003')
-                """).param("id", productionId).update();
-        approvalEvent("PRODUCTION_RECORD", productionId, "PRODUCTION_RECORD_APPROVED",
-                "2026-08-10T10:00:00+08:00");
-
-        mvc.perform(get("/api/v1/overview/dashboard")
-                        .queryParam("productCode", "CORN")
-                        .queryParam("regionCode", "230200")
-                        .queryParam("periodCode", "2026-Q3"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].value")
-                        .value(org.hamcrest.Matchers.hasItem("12")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].sourceCount")
-                        .value(org.hamcrest.Matchers.hasItem(1)))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].coverageStatus")
-                        .value(org.hamcrest.Matchers.hasItem("PARTIAL")));
-
-        jdbc.sql("""
-                INSERT INTO market.market_record(record_id,product_code,object_type_code,region_code,trade_date,
-                  reported_at,purchase_base_price,sale_base_price,trade_direction,carriage_board_amount,
-                  freight_amount,status_code,last_modified_by,version)
-                VALUES(:id,'CORN','TRADER','230208',DATE '2026-08-10','2026-08-10T11:00:00+08:00',
-                  1,1,'BOTH',0,0,'APPROVED','test',2)
-                """).param("id", marketId).update();
-        jdbc.sql("""
-                INSERT INTO market.market_record_fact(record_id,fact_code,value,product_code,object_type_code)
-                VALUES(:id,'ENDING_INVENTORY',20,'CORN','TRADER')
-                """).param("id", marketId).update();
-        jdbc.sql("""
-                INSERT INTO market.market_record_core_value(
-                  record_id,product_code,field_code,domain_binding,value)
-                VALUES(:id,'CORN','MKT_SAMPLE_NAME','EXTENSION','公开市场样本点'),
-                      (:id,'CORN','MKT_SAMPLE_CONTACT','EXTENSION','13900000003')
-                """).param("id", marketId).update();
-        approvalEvent("MARKET_RECORD", marketId, "MARKET_RECORD_APPROVED",
-                "2026-08-10T11:00:00+08:00");
-
-        mvc.perform(get("/api/v1/overview/dashboard")
-                        .queryParam("productCode", "CORN")
-                        .queryParam("regionCode", "230200")
-                        .queryParam("periodCode", "2026-Q3"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].value")
-                        .value(org.hamcrest.Matchers.hasItem("32")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].sourceCount")
-                        .value(org.hamcrest.Matchers.hasItem(2)))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].coverageStatus")
-                        .value(org.hamcrest.Matchers.hasItem("AVAILABLE")));
     }
 
     @Test
@@ -513,6 +342,8 @@ class OverviewRestIntegrationTest {
                 VALUES('230208',ST_Multi(ST_Buffer(ST_SetSRID(ST_MakePoint(123,47),4326),0.04)),
                   'inventory chain fixture','https://example.invalid/inventory-chain','test','test',repeat('8',64))
                 """).update();
+        jdbc.sql("SELECT overview.refresh_administrative_boundary_render()")
+                .query(Object.class).single();
         jdbc.sql("""
                 INSERT INTO evidence.evidence_photo(photo_id,state_code,original_filename,media_type,
                   original_bytes,watermarked_bytes,byte_length,sha256,captured_at,capture_latitude,
@@ -611,6 +442,130 @@ class OverviewRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.scope.townshipCount").value(0))
                 .andExpect(jsonPath("$.data.scope.villageCount").value(1));
+    }
+
+    @Test
+    void projectsApprovedBusinessMetricsToTheValidatedCoordinateRegion() throws Exception {
+        insertSampleCountRegions();
+        jdbc.sql("""
+                INSERT INTO platform.monitoring_scope_region(scope_code,region_code,included)
+                VALUES('FORMAL_BUSINESS','230281999',true),('FORMAL_BUSINESS','230281999001',true)
+                """).update();
+        jdbc.sql("""
+                INSERT INTO overview.administrative_boundary(
+                  region_code,geometry,source_name,source_url,source_revision,source_license,geometry_sha256)
+                VALUES
+                  ('230281999',ST_Multi(ST_Buffer(ST_SetSRID(ST_MakePoint(124.88,48.48),4326),0.04)),
+                    'spatial metric parent fixture','https://example.invalid/spatial-metric-parent',
+                    'test','test',repeat('7',64)),
+                  ('230281999001',ST_Multi(ST_Buffer(ST_SetSRID(ST_MakePoint(124.88,48.48),4326),0.01)),
+                    'spatial metric child fixture','https://example.invalid/spatial-metric-child',
+                    'test','test',repeat('6',64))
+                """).update();
+        String samplePointId = UUID.randomUUID().toString();
+        jdbc.sql("""
+                INSERT INTO registry.sample_point(
+                  sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
+                  governed_point,containment_boundary_sha256,effective_from,created_by,updated_by)
+                VALUES(CAST(:id AS uuid),'SURVEY_SITE','坐标归属指标测试样本点','230281999',
+                  'APPROVED','VALID',ST_SetSRID(ST_MakePoint(124.88,48.48),4326),repeat('7',64),
+                  DATE '2026-01-01','production-tester','production-tester')
+                """).param("id", samplePointId).update();
+        String productionId = UUID.randomUUID().toString();
+        jdbc.sql("""
+                INSERT INTO production.production_record(
+                  record_id,product_code,object_type_code,region_code,survey_date,reported_at,
+                  cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,version,sample_point_id,
+                  survey_period_governance_state)
+                VALUES(CAST(:id AS uuid),'CORN','FARMER','230281999',DATE '2026-08-10',now(),
+                  17,20,'APPROVED','overview-test',1,CAST(:samplePointId AS uuid),'CONFIRMED')
+                """).param("id", productionId).param("samplePointId", samplePointId).update();
+        String marketId = UUID.randomUUID().toString();
+        jdbc.sql("""
+                INSERT INTO market.market_record(
+                  record_id,product_code,object_type_code,region_code,trade_date,reported_at,
+                  purchase_base_price,sale_base_price,trade_direction,carriage_board_amount,freight_amount,
+                  status_code,last_modified_by,version,sample_point_id,survey_period_governance_state)
+                VALUES(CAST(:id AS uuid),'CORN','TRADER','230281999',DATE '2026-08-10',now(),
+                  2600,2700,'BOTH',20,30,'APPROVED','market-tester',1,
+                  CAST(:samplePointId AS uuid),'CONFIRMED')
+                """).param("id", marketId).param("samplePointId", samplePointId).update();
+        jdbc.sql("""
+                INSERT INTO logistics.logistics_node(node_code,node_name,node_type_code,region_code)
+                VALUES('SPATIAL-OV-A','坐标归属物流起点','RAIL_NODE','231100'),
+                      ('SPATIAL-OV-B','坐标归属物流终点','RAIL_NODE','230281999')
+                """).update();
+        String logisticsId = UUID.randomUUID().toString();
+        jdbc.sql("""
+                INSERT INTO logistics.route_event(
+                  event_id,product_code,monitoring_period_code,collection_date,reported_at,
+                  origin_region_code,origin_node_id,origin_node_code,destination_region_code,
+                  destination_node_id,destination_node_code,transport_mode_code,direction_code,
+                  source_organization,reporter,status_code,created_by,last_modified_by,created_at,updated_at,
+                  business_region_code,survey_year,survey_month,survey_period_precision,
+                  survey_period_governance_state,sample_point_id)
+                SELECT CAST(:id AS uuid),'CORN','2026-Q3',DATE '2026-08-10',now(),
+                  '231100',origin.node_id,origin.node_code,'230281999',destination.node_id,
+                  destination.node_code,'RAIL','INFLOW','坐标归属物流测试','production-tester',
+                  'APPROVED','production-tester','production-tester',now(),now(),'230281999',
+                  2026,8,'YEAR_MONTH','CONFIRMED',CAST(:samplePointId AS uuid)
+                FROM logistics.logistics_node origin CROSS JOIN logistics.logistics_node destination
+                WHERE origin.node_code='SPATIAL-OV-A' AND destination.node_code='SPATIAL-OV-B'
+                """).param("id", logisticsId).param("samplePointId", samplePointId).update();
+        jdbc.sql("""
+                INSERT INTO logistics.route_fact(event_id,fact_code,value,unit_code)
+                VALUES(CAST(:id AS uuid),'ROUTE_VOLUME',3,'吨')
+                """).param("id", logisticsId).update();
+
+        mvc.perform(get("/api/v1/overview/indicators")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", "230281999001")
+                        .queryParam("year", "2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].value")
+                        .value(org.hamcrest.Matchers.hasItem("17")))
+                .andExpect(jsonPath("$.data[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].sourceCount")
+                        .value(org.hamcrest.Matchers.hasItem(1)))
+                .andExpect(jsonPath("$.data[?(@.code == 'MARKET_AVERAGE_PURCHASE_PRICE')].value")
+                        .value(org.hamcrest.Matchers.hasItem("2600")))
+                .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_INFLOW_VOLUME')].value")
+                        .value(org.hamcrest.Matchers.hasItem("3")));
+
+        mvc.perform(get("/api/v1/overview/dashboard")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", "230281999001")
+                        .queryParam("year", "2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath(
+                        "$.data.businessTables[?(@.code == 'PRODUCTION')].rows[0].regionCode")
+                        .value(org.hamcrest.Matchers.hasItem("230281999001")))
+                .andExpect(jsonPath(
+                        "$.data.businessTables[?(@.code == 'PRODUCTION')].rows[0].sourceCount")
+                        .value(org.hamcrest.Matchers.hasItem(1)))
+                .andExpect(jsonPath(
+                        "$.data.businessTables[?(@.code == 'PRODUCTION')].rows[0].values.PROD_AREA_MU.value")
+                        .value(org.hamcrest.Matchers.hasItem("17")))
+                .andExpect(jsonPath(
+                        "$.data.businessTables[?(@.code == 'MARKET')].rows[0].sourceCount")
+                        .value(org.hamcrest.Matchers.hasItem(1)))
+                .andExpect(jsonPath(
+                        "$.data.businessTables[?(@.code == 'MARKET')].rows[0].values.MKT_PURCHASE_BASE_PRICE.value")
+                        .value(org.hamcrest.Matchers.hasItem("2600")))
+                .andExpect(jsonPath(
+                        "$.data.businessTables[?(@.code == 'LOGISTICS')].rows[0].sourceCount")
+                        .value(org.hamcrest.Matchers.hasItem(1)))
+                .andExpect(jsonPath(
+                        "$.data.businessTables[?(@.code == 'LOGISTICS')].rows[0].values.LOG_ROUTE_VOLUME.value")
+                        .value(org.hamcrest.Matchers.hasItem("3")));
+
+        mvc.perform(get("/api/v1/overview/annual-comparisons")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", "230281999001")
+                        .queryParam("surveyYear", "2026")
+                        .queryParam("indicatorCode", "PRODUCTION_CULTIVATED_AREA"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.points[0].businessYear").value("2026"))
+                .andExpect(jsonPath("$.data.points[0].value").value(17.0));
     }
 
     @Test
@@ -779,7 +734,27 @@ class OverviewRestIntegrationTest {
                  WHERE member.scope_code='FORMAL_BUSINESS' AND member.included
                    AND region.administrative_level='PREFECTURE'
                 """).query(Long.class).single();
+        long remainingCountyPartitionHoles = jdbc.sql("""
+                WITH county_coverage AS (
+                  SELECT child.parent_code,
+                         ST_Multi(ST_UnaryUnion(ST_Collect(render.geometry))) geometry
+                    FROM platform.region child
+                    JOIN overview.administrative_boundary_render render
+                      ON render.region_code=child.code
+                   WHERE child.administrative_level='COUNTY'
+                   GROUP BY child.parent_code
+                )
+                SELECT COALESCE(SUM(
+                         ST_NRings(coverage.geometry)-ST_NumGeometries(coverage.geometry)
+                       ),0)
+                  FROM platform.monitoring_scope_region member
+                  JOIN platform.region parent ON parent.code=member.region_code
+                  JOIN county_coverage coverage ON coverage.parent_code=parent.code
+                 WHERE member.scope_code='FORMAL_BUSINESS' AND member.included
+                   AND parent.administrative_level='PREFECTURE'
+                """).query(Long.class).single();
         assertThat(remainingRootHoles).isZero();
+        assertThat(remainingCountyPartitionHoles).isZero();
     }
 
     @Test
@@ -906,22 +881,8 @@ class OverviewRestIntegrationTest {
                 .andExpect(jsonPath("$.data.metrics[?(@.code == 'MARKET_AVERAGE_PURCHASE_PRICE')].value").value("2000"))
                 .andExpect(jsonPath("$.data.metrics[?(@.code == 'MARKET_AVERAGE_SALE_PRICE')].value").value("2400"))
                 .andExpect(jsonPath("$.data.metrics[?(@.code == 'MARKET_AVERAGE_TRADE_PRICE')]").isEmpty())
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'SUPPLY_TOTAL_SUPPLY')].sourceCount").value(2))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'SUPPLY_TOTAL_SUPPLY')].value")
-                        .value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.nullValue())))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'SUPPLY_TOTAL_SUPPLY')].coverageStatus")
-                        .value("PARTIAL"))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'SUPPLY_TOTAL_USE')].sourceCount").value(2))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'SUPPLY_TOTAL_USE')].value")
-                        .value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.nullValue())))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'SUPPLY_TOTAL_USE')].coverageStatus")
-                        .value("PARTIAL"))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'SUPPLY_ADOPTED_ENDING_INVENTORY')].sourceCount")
-                        .value(1))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'SUPPLY_ADOPTED_ENDING_INVENTORY')].value")
-                        .value("0.0004"))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'SUPPLY_ADOPTED_ENDING_INVENTORY')].coverageStatus")
-                        .value("PARTIAL"))
+                .andExpect(jsonPath("$.data.metrics[?(@.code =~ /SUPPLY_.*/)]").isEmpty())
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')]").isEmpty())
                 .andExpect(jsonPath("$.data.regionPath[0].code").value("230200"))
                 .andExpect(jsonPath("$.data.priceTrend[0].periodLabel").value("2026-08"))
                 .andExpect(jsonPath("$.data.productStructure[?(@.productCode == 'CORN')].value").value("200"))
@@ -933,7 +894,7 @@ class OverviewRestIntegrationTest {
                 .andExpect(jsonPath("$.data.outputYoY[0].currentValue").value("200"))
                 .andExpect(jsonPath("$.data.outputYoY[0].previousValue").value("50"))
                 .andExpect(jsonPath("$.data.alerts.length()").value(0))
-                .andExpect(jsonPath("$.data.businessTables.length()").value(4))
+                .andExpect(jsonPath("$.data.businessTables.length()").value(3))
                 .andExpect(jsonPath("$.data.businessTables[0].code").value("PRODUCTION"))
                 .andExpect(jsonPath("$.data.businessTables[0].title").value("产情监测表"))
                 .andExpect(jsonPath("$.data.businessTables[0].coverageStatus").value("AVAILABLE"))
@@ -964,14 +925,6 @@ class OverviewRestIntegrationTest {
                 .andExpect(jsonPath(
                         "$.data.businessTables[?(@.code == 'LOGISTICS')].coverageStatus")
                         .value(org.hamcrest.Matchers.hasItem("NO_APPROVED_SOURCES")))
-                .andExpect(jsonPath(
-                        "$.data.businessTables[?(@.code == 'SUPPLY')].coverageStatus")
-                        .value(org.hamcrest.Matchers.hasItem("NO_APPROVED_SOURCES")))
-                .andExpect(jsonPath(
-                        "$.data.businessTables[?(@.code == 'SUPPLY')].rows[?(@.regionCode == '230208')].values.SUPPLY_TOTAL_SUPPLY.value")
-                        .value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.nullValue())))
-                .andExpect(jsonPath(
-                        "$.data.businessTables[?(@.code == 'SUPPLY')].rows[?(@.regionCode == '230208')].values.SUPPLY_TOTAL_SUPPLY.sourceCount")
-                        .value(org.hamcrest.Matchers.hasItem(0)));
+                .andExpect(jsonPath("$.data.businessTables[?(@.code == 'SUPPLY')]").isEmpty());
     }
 }

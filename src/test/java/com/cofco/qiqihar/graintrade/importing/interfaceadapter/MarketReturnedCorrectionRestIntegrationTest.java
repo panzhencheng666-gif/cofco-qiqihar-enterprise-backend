@@ -65,12 +65,11 @@ class MarketReturnedCorrectionRestIntegrationTest {
                 RESTART IDENTITY CASCADE
                 """).update();
         boundary("230200", 122, 46, 125, 49);
-        boundary("231100", 125, 48, 128, 52);
+        boundary("231100", 122, 46, 125, 49);
     }
 
     @AfterEach
     void clean() {
-        ProtectedTestDatabaseConfiguration.provisionSecurityTestSubjects(jdbc);
         jdbc.sql("""
                 TRUNCATE platform.import_row_result,platform.import_job,platform.business_audit_event,
                   platform.business_import_draft,market.market_record,evidence.evidence_photo
@@ -78,6 +77,17 @@ class MarketReturnedCorrectionRestIntegrationTest {
                 """).update();
         jdbc.sql("DELETE FROM overview.administrative_boundary WHERE source_url=:source")
                 .param("source", "urn:test:returned-market-correction").update();
+        jdbc.sql("""
+                DELETE FROM registry.sample_point point
+                WHERE point.created_by='market-tester'
+                  AND NOT EXISTS(SELECT 1 FROM production.production_record record
+                    WHERE record.sample_point_id=point.sample_point_id)
+                  AND NOT EXISTS(SELECT 1 FROM market.market_record record
+                    WHERE record.sample_point_id=point.sample_point_id)
+                  AND NOT EXISTS(SELECT 1 FROM logistics.route_event event
+                    WHERE event.sample_point_id=point.sample_point_id)
+                """).update();
+        ProtectedTestDatabaseConfiguration.provisionSecurityTestSubjects(jdbc);
     }
 
     @Test
@@ -255,6 +265,7 @@ class MarketReturnedCorrectionRestIntegrationTest {
                 "CORN", "TRADER", "230200", "区县下级边界样本", COORDINATE_REASON);
         boundary("230200", 0, 0, 1, 1);
         boundary("230202", 122, 46, 125, 49);
+        boundary("230208", 0, 0, 1, 1);
         long recordCount = count("market.market_record");
 
         String correctedId = subjects.callAs("market-tester", () -> rowService.correctAndSubmit(
@@ -431,6 +442,33 @@ class MarketReturnedCorrectionRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.id").value(id))
                 .andExpect(jsonPath("$.data.status").value("APPROVED"));
+        assertThat(jdbc.sql("""
+                WITH RECURSIVE scope(code) AS (
+                  SELECT code FROM platform.region WHERE code='230200'
+                  UNION ALL
+                  SELECT child.code FROM platform.region child JOIN scope parent
+                    ON child.parent_code=parent.code)
+                SELECT count(*) FROM market.market_record record
+                LEFT JOIN registry.current_sample_subject_resolution resolution
+                  ON resolution.source_domain='MARKET'
+                 AND resolution.source_record_id=record.record_id
+                JOIN registry.sample_point point ON point.sample_point_id=COALESCE(
+                  resolution.target_sample_point_id,record.sample_point_id)
+                JOIN platform.monitoring_scope_region member
+                  ON member.scope_code='FORMAL_BUSINESS'
+                 AND member.region_code=point.region_code AND member.included
+                JOIN overview.administrative_boundary boundary
+                  ON boundary.region_code=point.region_code
+                 AND boundary.geometry_sha256=point.containment_boundary_sha256
+                 AND boundary.source_revision=point.containment_boundary_revision
+                JOIN market.market_record_business_identity identity
+                  ON identity.record_id=record.record_id
+                WHERE record.record_id=:id AND record.status_code='APPROVED'
+                  AND record.survey_period_governance_state='CONFIRMED'
+                  AND point.approval_state='APPROVED' AND point.location_state='VALID'
+                  AND point.region_code IN(SELECT code FROM scope)
+                  AND ST_Covers(boundary.geometry,point.governed_point)
+                """).param("id", id).query(Long.class).single()).isOne();
         mvc.perform(get("/api/v1/observable-analysis/snapshots")
                         .principal(() -> "production-tester")
                         .queryParam("productCode", "CORN").queryParam("regionCode", "230200")
@@ -450,12 +488,8 @@ class MarketReturnedCorrectionRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.metrics[?(@.code == 'MARKET_AVERAGE_PURCHASE_PRICE')].value")
                         .value(org.hamcrest.Matchers.hasItem("2300")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'SUPPLY_ADOPTED_ENDING_INVENTORY')].value")
-                        .value(org.hamcrest.Matchers.hasItem("0.0012")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'SUPPLY_ADOPTED_ENDING_INVENTORY')].unitCode")
-                        .value(org.hamcrest.Matchers.hasItem("万吨")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].value")
-                        .value(org.hamcrest.Matchers.hasItem("12")));
+                .andExpect(jsonPath("$.data.metrics[?(@.code =~ /SUPPLY_.*/)]").isEmpty())
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')]").isEmpty());
 
         assertThat(count("market.market_record")).isEqualTo(recordCount);
         assertThat(jdbc.sql("""
@@ -533,7 +567,7 @@ class MarketReturnedCorrectionRestIntegrationTest {
         String body = """
                 {"productCode":"%s","coreValues":{
                  "MKT_OBJECT_TYPE":"%s","MKT_REGION":"%s","MKT_TRADE_DATE":"2026-08-01",
-                 "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":"2300",
+                 "MKT_PURCHASE_BASE_PRICE":"2300"%s,
                  "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
                  "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",
                  "MKT_SAMPLE_NAME":"%s","MKT_SURVEYOR_NAME":"王雷",
@@ -541,7 +575,9 @@ class MarketReturnedCorrectionRestIntegrationTest {
                  "MKT_SAMPLE_LATITUDE":"47.3543","MKT_SAMPLE_LONGITUDE":"123.9182"},
                  "facts":{"PURCHASE_VOLUME":"12","ENDING_INVENTORY":"12","%s":"14.6"},
                  "evidencePhotoIds":["%s"]}
-                """.formatted(product, objectType, region, sampleName, quality, photo);
+                """.formatted(product, objectType, region,
+                "TRADER".equals(objectType) ? ",\"MKT_SALE_BASE_PRICE\":\"2300\"" : "",
+                sampleName, quality, photo);
         String id = mvc.perform(post("/api/v1/market-records")
                         .principal(() -> "market-tester")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -623,7 +659,7 @@ class MarketReturnedCorrectionRestIntegrationTest {
         core.put("MKT_REGION", region);
         core.put("MKT_TRADE_DATE", "2026-08-01");
         core.put("MKT_PURCHASE_BASE_PRICE", "2300");
-        core.put("MKT_SALE_BASE_PRICE", "2300");
+        if ("TRADER".equals(objectType)) core.put("MKT_SALE_BASE_PRICE", "2300");
         core.put("MKT_CARRIAGE_BOARD_AMOUNT", "36");
         core.put("MKT_PACKAGING_AMOUNT", "12");
         core.put("MKT_FREIGHT_AMOUNT", "72");

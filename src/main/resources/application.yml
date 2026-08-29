@@ -5,6 +5,9 @@ spring:
     url: ${QIQIHAR_DB_URL:jdbc:postgresql://127.0.0.1:5432/qiqihar_enterprise_dev}
     username: ${QIQIHAR_DB_USERNAME:${USER}}
     password: ${QIQIHAR_DB_PASSWORD:}
+    hikari:
+      data-source-properties:
+        prepareThreshold: ${QIQIHAR_DB_PREPARE_THRESHOLD:-1}
   flyway:
     enabled: true
     locations: classpath:db/migration

@@ -357,26 +357,53 @@ class BusinessReadRegionIsolationIntegrationTest {
     }
 
     private void production(String id, String region, String surveyDate, String area) {
+        java.util.UUID samplePointId = java.util.UUID.nameUUIDFromBytes(
+                id.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        jdbc.sql("""
+                INSERT INTO registry.sample_point(
+                  sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
+                  governed_point,effective_from,created_by,updated_by)
+                SELECT :samplePointId,'SURVEY_SITE',:id,:region,'APPROVED','VALID',
+                  ST_PointOnSurface(boundary.geometry),DATE '2026-01-01',:reader,:reader
+                FROM overview.administrative_boundary boundary WHERE boundary.region_code=:region
+                """).param("samplePointId", samplePointId).param("id", id).param("region", region)
+                .param("reader", READER_A).update();
         jdbc.sql("""
                 INSERT INTO production.production_record(
                   record_id,product_code,object_type_code,region_code,survey_date,reported_at,
-                  cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by)
+                  cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,sample_point_id,
+                  survey_period_governance_state)
                 VALUES (:id,'CORN','FARMER',:region,CAST(:surveyDate AS date),'2026-08-08T08:00:00+08:00',
-                  CAST(:area AS numeric),10,'APPROVED',:reader)
+                  CAST(:area AS numeric),10,'APPROVED',:reader,:samplePointId,'CONFIRMED')
                 """).param("id", id).param("region", region).param("surveyDate", surveyDate)
-                .param("area", area).param("reader", READER_A).update();
+                .param("area", area).param("reader", READER_A)
+                .param("samplePointId", samplePointId).update();
     }
 
     private void market(String id, String region, String tradeDate, String price) {
+        java.util.UUID samplePointId = java.util.UUID.nameUUIDFromBytes(
+                id.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        jdbc.sql("""
+                INSERT INTO registry.sample_point(
+                  sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
+                  governed_point,effective_from,created_by,updated_by)
+                SELECT :samplePointId,'SURVEY_SITE',:id,:region,'APPROVED','VALID',
+                  ST_PointOnSurface(boundary.geometry),DATE '2026-01-01',:reader,:reader
+                FROM overview.administrative_boundary boundary WHERE boundary.region_code=:region
+                """).param("samplePointId", samplePointId).param("id", id).param("region", region)
+                .param("reader", READER_A).update();
         jdbc.sql("""
                 INSERT INTO market.market_record(
                   record_id,product_code,object_type_code,region_code,trade_date,reported_at,
                   purchase_base_price,trade_direction,carriage_board_amount,packaging_amount,
-                  freight_amount,packaging_form,status_code,last_modified_by)
+                  freight_amount,packaging_form,status_code,last_modified_by,sample_point_id,
+                  survey_period_governance_state)
                 VALUES (:id,'CORN','TRADER',:region,CAST(:tradeDate AS date),'2026-08-08T08:00:00+08:00',
-                  CAST(:price AS numeric),'PURCHASE',0,0,0,'BULK','APPROVED',:reader)
+                  CAST(:price AS numeric),'PURCHASE',0,0,0,'BULK','APPROVED',:reader,
+                  :samplePointId,'CONFIRMED')
                 """).param("id", id).param("region", region).param("tradeDate", tradeDate)
-                .param("price", price).param("reader", READER_A).update();
+                .param("price", price).param("reader", READER_A)
+                .param("samplePointId", samplePointId).update();
     }
 
     private void quality(String id, String region, String label) {
@@ -493,6 +520,10 @@ class BusinessReadRegionIsolationIntegrationTest {
                         MARKET_A, MARKET_B, QUALITY_A, QUALITY_B, QUALITY_PRODUCT_MISMATCH)).update();
         jdbc.sql("DELETE FROM production.production_record WHERE record_id IN (:ids)")
                 .param("ids", java.util.List.of(PRODUCTION_A, PRODUCTION_B)).update();
+        jdbc.sql("DELETE FROM registry.sample_point WHERE canonical_name IN (:ids)")
+                .param("ids", java.util.List.of(
+                        PRODUCTION_A, PRODUCTION_B, MARKET_A, MARKET_B,
+                        QUALITY_PRODUCT_MISMATCH)).update();
         jdbc.sql("DELETE FROM platform.business_period WHERE code=:period").param("period", PERIOD).update();
         jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id IN (:ids)")
                 .param("ids", java.util.List.of(READER_A, READER_B, EMPTY_READER)).update();

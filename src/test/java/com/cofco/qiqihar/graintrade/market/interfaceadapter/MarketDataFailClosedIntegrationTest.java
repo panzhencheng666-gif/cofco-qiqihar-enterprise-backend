@@ -29,7 +29,7 @@ class MarketDataFailClosedIntegrationTest {
     @Autowired DataSource dataSource;
 
     @Test
-    void typedAndExtensionCodeCollisionFailsListAndDetailClosedWithTheSameTypedError()
+    void typedAndExtensionCodeCollisionIsExcludedFromFormalListAndFailsDetailClosed()
             throws Exception {
         String id = mockMvc.perform(post("/api/v1/market-records")
                         .principal(() -> "data-fault-test")
@@ -55,15 +55,15 @@ class MarketDataFailClosedIntegrationTest {
         mockMvc.perform(get("/api/v1/market-records")
                         .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
                         .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
-                .andExpect(status().isInternalServerError())
-                .andExpect(jsonPath("$.error.code").value("MARKET_DATA_INTEGRITY"));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(0));
         mockMvc.perform(get("/api/v1/market-records/{id}", id))
                 .andExpect(status().isInternalServerError())
                 .andExpect(jsonPath("$.error.code").value("MARKET_DATA_INTEGRITY"));
     }
 
     @Test
-    void historicallyInapplicableFactFailsListAndDetailClosedWithTheSameTypedError()
+    void historicallyInapplicableFactIsExcludedFromFormalListAndFailsDetailClosed()
             throws Exception {
         String id = mockMvc.perform(post("/api/v1/market-records")
                         .principal(() -> "data-fault-test")
@@ -93,15 +93,15 @@ class MarketDataFailClosedIntegrationTest {
         mockMvc.perform(get("/api/v1/market-records")
                         .queryParam("productCode", "SOYBEAN").queryParam("pageKind", "MONITORING")
                         .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
-                .andExpect(status().isInternalServerError())
-                .andExpect(jsonPath("$.error.code").value("MARKET_DATA_INTEGRITY"));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(0));
         mockMvc.perform(get("/api/v1/market-records/{id}", id))
                 .andExpect(status().isInternalServerError())
                 .andExpect(jsonPath("$.error.code").value("MARKET_DATA_INTEGRITY"));
     }
 
     @Test
-    void nonCollidingUnmountedExtensionFailsListAndDetailClosedWithTheSameTypedError()
+    void nonCollidingUnmountedExtensionIsExcludedFromFormalListAndFailsDetailClosed()
             throws Exception {
         String id = mockMvc.perform(post("/api/v1/market-records")
                         .principal(() -> "data-fault-test")
@@ -130,8 +130,8 @@ class MarketDataFailClosedIntegrationTest {
         mockMvc.perform(get("/api/v1/market-records")
                         .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
                         .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
-                .andExpect(status().isInternalServerError())
-                .andExpect(jsonPath("$.error.code").value("MARKET_DATA_INTEGRITY"));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(0));
         mockMvc.perform(get("/api/v1/market-records/{id}", id))
                 .andExpect(status().isInternalServerError())
                 .andExpect(jsonPath("$.error.code").value("MARKET_DATA_INTEGRITY"));
@@ -142,7 +142,7 @@ class MarketDataFailClosedIntegrationTest {
                 {"productCode":"CORN","coreValues":{
                  "MKT_OBJECT_TYPE":"FEED_MILL","MKT_REGION":"230200",
                  "MKT_TRADE_DATE":"2026-08-01",
-                 "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":"2300",
+                 "MKT_PURCHASE_BASE_PRICE":"2300",
                  "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
                  "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",
                  "MKT_REPORTER_NAME":"数据故障测试员","MKT_SURVEYOR_NAME":"王雷",

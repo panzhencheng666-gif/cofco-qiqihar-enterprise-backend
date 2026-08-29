@@ -9,6 +9,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
+import com.cofco.qiqihar.graintrade.testsupport.AdministrativeBoundarySnapshot;
 import com.cofco.qiqihar.graintrade.notification.application.BusinessEventDeliveryService;
 import com.cofco.qiqihar.graintrade.notification.application.BusinessNotification;
 import com.cofco.qiqihar.graintrade.notification.application.BusinessNotificationRepository;
@@ -65,9 +66,11 @@ class MarketMonitoringRestIntegrationTest {
     @Autowired DataSource dataSource;
     @Autowired BusinessNotificationRepository notifications;
     @Autowired BusinessEventDeliveryService eventDeliveries;
+    private AdministrativeBoundarySnapshot boundarySnapshot;
     @BeforeEach
     void clearRecords() {
         JdbcClient jdbc = JdbcClient.create(dataSource);
+        boundarySnapshot = AdministrativeBoundarySnapshot.capture(jdbc, "230200");
         jdbc.sql(
                 "TRUNCATE platform.business_audit_event,market.market_record,evidence.evidence_photo,"
                         + "registry.sample_point,market.business_party CASCADE")
@@ -126,9 +129,13 @@ class MarketMonitoringRestIntegrationTest {
                 $reset$
                 """).update();
         jdbc.sql("TRUNCATE overview.region_surplus_calculation_activation_audit").update();
+        jdbc.sql("DELETE FROM overview.administrative_boundary "
+                        + "WHERE source_url='urn:test:market-sample-point'")
+                .update();
+        boundarySnapshot.restore(jdbc);
     }
 
-    @Test void createsAndTransitionsCornFeedMillWithBothObjectPrices() throws Exception {
+    @Test void createsAndTransitionsCornFeedMillWithPurchasePriceOnly() throws Exception {
         String body = draftBody("CORN", "FEED_MILL", "MOISTURE", null)
                 .replace("\"MKT_SAMPLE_LATITUDE\":\"47.3543\"", "\"MKT_SAMPLE_LATITUDE\":\"47\"")
                 .replace("\"MKT_SAMPLE_LONGITUDE\":\"123.9182\"", "\"MKT_SAMPLE_LONGITUDE\":\"123\"");
@@ -136,7 +143,7 @@ class MarketMonitoringRestIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.coreValues.MKT_PURCHASE_BASE_PRICE").value("2300.0000"))
-                .andExpect(jsonPath("$.data.coreValues.MKT_SALE_BASE_PRICE").value("2300.0000"))
+                .andExpect(jsonPath("$.data.coreValues.MKT_SALE_BASE_PRICE").doesNotExist())
                 .andExpect(jsonPath("$.data.coreValues.MKT_REPORTER_NAME").value("市场测试员"))
                 .andExpect(jsonPath("$.data.coreValues.MKT_SAMPLE_LATITUDE").value("47.0000000"))
                 .andExpect(jsonPath("$.data.facts.PURCHASE_VOLUME").value("12.0000"))
@@ -157,6 +164,22 @@ class MarketMonitoringRestIntegrationTest {
                 SELECT party_id IS NULL AND sample_point_id IS NOT NULL
                 FROM market.market_record WHERE record_id=:id
                 """).param("id", id).query(Boolean.class).single()).isTrue();
+    }
+
+    @Test
+    void rejectsAMarketDraftWhoseCoordinatesFallOutsideTheDeclaredRegion() throws Exception {
+        String body = draftBody("CORN", "FEED_MILL", "MOISTURE", null)
+                .replace("\"MKT_SAMPLE_LATITUDE\":\"47.3543\"", "\"MKT_SAMPLE_LATITUDE\":\"60\"")
+                .replace("\"MKT_SAMPLE_LONGITUDE\":\"123.9182\"", "\"MKT_SAMPLE_LONGITUDE\":\"150\"");
+
+        mockMvc.perform(post("/api/v1/market-records")
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("SAMPLE_COORDINATE_REGION_MISMATCH"));
+
+        assertThat(recordCount()).isZero();
     }
 
     @Test
@@ -181,29 +204,16 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
-    void sameEnterpriseAtTwoInventoryLocationsKeepsOneSampleIdentityAndApprovesBoth()
+    void sameStableIdentityCannotClaimTwoInventoryLocations()
             throws Exception {
-        String first = createSubmitAndApproveInventory(
+        createSubmitAndApproveInventory(
                 "多库企业", "13800000000", "47.3500000", "123.9100000", "300");
-        String second = createSubmitAndApproveInventory(
+        String secondBody = inventoryDraft(
                 "多库企业", "13800000000", "47.3600000", "123.9200000", "200");
-
-        JdbcClient jdbc = JdbcClient.create(dataSource);
-        assertThat(jdbc.sql("""
-                SELECT count(DISTINCT sample_point_id) FROM market.market_record
-                WHERE record_id IN (:first,:second) AND status_code='APPROVED'
-                """).param("first", first).param("second", second)
-                .query(Long.class).single()).isEqualTo(1L);
-        assertThat(jdbc.sql("""
-                SELECT count(DISTINCT latitude.value || '|' || longitude.value)
-                FROM market.market_record_core_value latitude
-                JOIN market.market_record_core_value longitude
-                  ON longitude.record_id=latitude.record_id
-                WHERE latitude.field_code='MKT_SAMPLE_LATITUDE'
-                  AND longitude.field_code='MKT_SAMPLE_LONGITUDE'
-                  AND latitude.record_id IN (:first,:second)
-                """).param("first", first).param("second", second)
-                .query(Long.class).single()).isEqualTo(2L);
+        mockMvc.perform(post("/api/v1/market-records").principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(secondBody))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("SAMPLE_IDENTITY_COORDINATE_MISMATCH"));
     }
 
     @Test
@@ -318,7 +328,7 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
-    void capturesBothObjectPricesWithoutExposingATradeDirection() throws Exception {
+    void capturesOnlyApplicableObjectPricesWithoutExposingATradeDirection() throws Exception {
         mockMvc.perform(get("/api/v1/market-record-definitions")
                         .queryParam("productCode", "CORN")
                         .queryParam("objectTypeCode", "FEED_MILL"))
@@ -328,7 +338,7 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(jsonPath(
                         "$.data.coreFields[?(@.code == 'MKT_PURCHASE_BASE_PRICE' && @.required == true)]").exists())
                 .andExpect(jsonPath(
-                        "$.data.coreFields[?(@.code == 'MKT_SALE_BASE_PRICE' && @.required == true)]").exists())
+                        "$.data.coreFields[?(@.code == 'MKT_SALE_BASE_PRICE')]").isEmpty())
                 .andExpect(jsonPath(
                         "$.data.coreFields[?(@.code == 'MKT_PURCHASE_BASE_PRICE')].scale").value(4))
                 .andExpect(jsonPath(
@@ -341,7 +351,7 @@ class MarketMonitoringRestIntegrationTest {
                 {"productCode":"CORN","coreValues":{
                  "MKT_OBJECT_TYPE":"FEED_MILL","MKT_REGION":"230200",
                  "MKT_TRADE_DATE":"2026-08-01",
-                 "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":"2380",
+                 "MKT_PURCHASE_BASE_PRICE":"2300",
                  "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
                  "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",%s},
                  "facts":{"PURCHASE_VOLUME":"12","MOISTURE":"14.6"},
@@ -355,13 +365,28 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(jsonPath("$.data.coreValues.MKT_TRADE_DIRECTION").doesNotExist())
                 .andExpect(jsonPath("$.data.coreValues.MKT_ACTUAL_TRADE_PRICE").doesNotExist())
                 .andExpect(jsonPath("$.data.coreValues.MKT_PURCHASE_BASE_PRICE").value("2300.0000"))
-                .andExpect(jsonPath("$.data.coreValues.MKT_SALE_BASE_PRICE").value("2380.0000"))
+                .andExpect(jsonPath("$.data.coreValues.MKT_SALE_BASE_PRICE").doesNotExist())
                 .andReturn().getResponse().getContentAsString()
                 .replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
 
         assertThat(JdbcClient.create(dataSource).sql("""
                 SELECT trade_direction FROM market.market_record WHERE record_id = :id
-                """).param("id", id).query(String.class).single()).isEqualTo("BOTH");
+                """).param("id", id).query(String.class).single()).isEqualTo("PURCHASE");
+
+        for (String objectType : List.of("DEEP_PROCESSOR", "BREEDING_FACTORY")) {
+            mockMvc.perform(get("/api/v1/market-record-definitions")
+                            .queryParam("productCode", "CORN")
+                            .queryParam("objectTypeCode", objectType))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath(
+                            "$.data.coreFields[?(@.code == 'MKT_SALE_BASE_PRICE')]").isEmpty());
+        }
+        mockMvc.perform(get("/api/v1/market-record-definitions")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("objectTypeCode", "TRADER"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath(
+                        "$.data.coreFields[?(@.code == 'MKT_SALE_BASE_PRICE' && @.required == true)]").exists());
     }
 
     @Test void exposesOnlyApplicableFeedMillDefinitionsAndRejectsUnauthenticatedWrites() throws Exception {
@@ -395,6 +420,45 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    void createsAndResubmitsMarketRecordsThroughAtomicSubmissionEndpoints() throws Exception {
+        String body = draftBody("CORN", "FEED_MILL", "MOISTURE", null);
+        String id = mockMvc.perform(post("/api/v1/market-records/submit")
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"))
+                .andExpect(jsonPath("$.data.version").value(1))
+                .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"))
+                .andReturn().getResponse().getContentAsString()
+                .replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        assertThat(jdbc.sql("SELECT status_code FROM market.market_record WHERE record_id=:id")
+                .param("id", id).query(String.class).single()).isEqualTo("PENDING_REVIEW");
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type='MARKET_RECORD' AND aggregate_id=:id
+                  AND action_code IN ('MARKET_RECORD_CREATED','MARKET_RECORD_SUBMITTED')
+                """).param("id", id).query(Long.class).single()).isEqualTo(2L);
+
+        mockMvc.perform(post("/api/v1/market-records/{id}/return", id)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1,\"reason\":\"补充现场依据\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("RETURNED"))
+                .andExpect(jsonPath("$.data.version").value(2));
+
+        mockMvc.perform(put("/api/v1/market-records/{id}/submit", id)
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(versioned(body, 2)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(id))
+                .andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"))
+                .andExpect(jsonPath("$.data.version").value(4));
+    }
+
+    @Test
     void rejectsMissingConcreteReportedObjectWithoutCreatingARecord() throws Exception {
         long before = recordCount();
         String body = draftBody("CORN", "FEED_MILL", "MOISTURE", null)
@@ -416,7 +480,7 @@ class MarketMonitoringRestIntegrationTest {
                 {"productCode":"CORN","coreValues":{
                  "MKT_OBJECT_TYPE":"FEED_MILL","MKT_REGION":"230200",
                  "MKT_TRADE_DATE":"2026-08-01",
-                 "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":"2300",
+                 "MKT_PURCHASE_BASE_PRICE":"2300",
                  "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
                  "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",
                  "MKT_SOURCE_NOTE":"产地直采",%s},
@@ -430,7 +494,7 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.coreValues.MKT_SOURCE_NOTE").value("产地直采"))
                 .andExpect(jsonPath("$.data.coreValues.MKT_PURCHASE_BASE_PRICE").value("2300.0000"))
-                .andExpect(jsonPath("$.data.coreValues.MKT_SALE_BASE_PRICE").value("2300.0000"))
+                .andExpect(jsonPath("$.data.coreValues.MKT_SALE_BASE_PRICE").doesNotExist())
                 .andExpect(jsonPath("$.data.objectTypeCode").doesNotExist())
                 .andReturn().getResponse().getContentAsString()
                 .replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
@@ -439,11 +503,11 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.coreValues.MKT_OBJECT_TYPE").value("FEED_MILL"))
                 .andExpect(jsonPath("$.data.coreValues.MKT_SOURCE_NOTE").value("产地直采"));
-        mockMvc.perform(get("/api/v1/market-records")
+        var list = mockMvc.perform(get("/api/v1/market-records")
                         .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
                         .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[0].values.MKT_SOURCE_NOTE").value("产地直采"));
+                .andExpect(jsonPath("$.data.items").isEmpty());
 
         String modified = body.replace("产地直采", "铁路到库");
         mockMvc.perform(put("/api/v1/market-records/{id}", id)
@@ -513,8 +577,7 @@ class MarketMonitoringRestIntegrationTest {
                         .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
                         .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[0].values.MKT_TEST_SOURCE_NOTE")
-                        .value("玉米产地直采"));
+                .andExpect(jsonPath("$.data.items").isEmpty());
         mockMvc.perform(get("/api/v1/market-record-definitions")
                         .queryParam("productCode", "CORN")
                         .queryParam("objectTypeCode", "FEED_MILL"))
@@ -598,15 +661,15 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
-    void acceptsCoordinateBoundariesAndRejectsOutOfRangeCoordinatesWithoutWriting() throws Exception {
+    void acceptsCoordinatesInsideTheDeclaredRegionAndRejectsOutOfRangeCoordinatesWithoutWriting() throws Exception {
         String valid = draftBody("CORN", "FEED_MILL", "MOISTURE", null);
         mockMvc.perform(post("/api/v1/market-records")
                         .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content(valid.replace("\"47.3543\"", "\"-90\"")
-                                .replace("\"123.9182\"", "\"180\"")))
+                        .content(valid.replace("\"47.3543\"", "\"47\"")
+                                .replace("\"123.9182\"", "\"123\"")))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.coreValues.MKT_SAMPLE_LATITUDE").value("-90.0000000"))
-                .andExpect(jsonPath("$.data.coreValues.MKT_SAMPLE_LONGITUDE").value("180.0000000"));
+                .andExpect(jsonPath("$.data.coreValues.MKT_SAMPLE_LATITUDE").value("47.0000000"))
+                .andExpect(jsonPath("$.data.coreValues.MKT_SAMPLE_LONGITUDE").value("123.0000000"));
 
         long before = recordCount();
         for (String body : List.of(
@@ -682,7 +745,7 @@ class MarketMonitoringRestIntegrationTest {
     @MethodSource("allApplicableContexts")
     void exposesOrderedFormDefinitionForEveryApplicableObject(
             String product, String objectType, String qualityCode) throws Exception {
-        mockMvc.perform(get("/api/v1/market-record-definitions")
+        var response = mockMvc.perform(get("/api/v1/market-record-definitions")
                         .queryParam("productCode", product).queryParam("objectTypeCode", objectType))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.productCode").value(product))
@@ -692,13 +755,17 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_REPORTED_AT' && @.controlType == 'READONLY_DATETIME')]").exists())
                 .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_PURCHASE_BASE_PRICE')].description")
                         .value("被调查对象当前对外采购报价"))
-                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_SALE_BASE_PRICE')].description")
-                        .value("被调查对象当前对外销售报价"))
                 .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_TRADE_DIRECTION')]").isEmpty())
                 .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_ACTUAL_TRADE_PRICE')]").isEmpty())
                 .andExpect(jsonPath("$.data.groups.length()").value(5))
                 .andExpect(jsonPath("$.data.groups[0].label").value("质量指标"))
                 .andExpect(jsonPath("$.data.groups[?(@.category == 'QUALITY')].fields[?(@.code == '" + qualityCode + "')]").exists());
+        if (supportsSalePrice(objectType)) {
+            response.andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_SALE_BASE_PRICE')].description")
+                    .value("被调查对象当前对外销售报价"));
+        } else {
+            response.andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_SALE_BASE_PRICE')]").isEmpty());
+        }
     }
 
     @ParameterizedTest(name = "{0}/{1} round-trips purchase volume and quality")
@@ -706,12 +773,16 @@ class MarketMonitoringRestIntegrationTest {
     void fullWriteReviewAndListPreserveQuantityQualityAndServerPrice(
             String product, String objectType, String qualityCode) throws Exception {
         String id = create(product, objectType, qualityCode);
-        mockMvc.perform(get("/api/v1/market-records/{id}", id))
+        var record = mockMvc.perform(get("/api/v1/market-records/{id}", id))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.coreValues.MKT_PURCHASE_BASE_PRICE").value("2300.0000"))
-                .andExpect(jsonPath("$.data.coreValues.MKT_SALE_BASE_PRICE").value("2300.0000"))
                 .andExpect(jsonPath("$.data.facts.PURCHASE_VOLUME").value("12.0000"))
                 .andExpect(jsonPath("$.data.facts." + qualityCode).value("14.6000"));
+        if (supportsSalePrice(objectType)) {
+            record.andExpect(jsonPath("$.data.coreValues.MKT_SALE_BASE_PRICE").value("2300.0000"));
+        } else {
+            record.andExpect(jsonPath("$.data.coreValues.MKT_SALE_BASE_PRICE").doesNotExist());
+        }
         mockMvc.perform(post("/api/v1/market-records/{id}/submit", id)
                         .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"version\":0}"))
@@ -722,7 +793,7 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("APPROVED"))
                 .andExpect(jsonPath("$.data.facts.PURCHASE_VOLUME").value("12.0000"));
-        mockMvc.perform(get("/api/v1/market-records")
+        var list = mockMvc.perform(get("/api/v1/market-records")
                         .queryParam("productCode", product).queryParam("pageKind", "MONITORING")
                         .queryParam("pageNumber", "0").queryParam("pageSize", "100")
                         .queryParam("filter.objectTypeCode", objectType))
@@ -730,9 +801,63 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(jsonPath("$.data.items[0].values.PURCHASE_VOLUME").value("12.0000"))
                 .andExpect(jsonPath("$.data.items[0].values.MKT_REPORTED_AT").isNotEmpty())
                 .andExpect(jsonPath("$.data.items[0].values.MKT_PURCHASE_BASE_PRICE").value("2300.0000"))
-                .andExpect(jsonPath("$.data.items[0].values.MKT_SALE_BASE_PRICE").value("2300.0000"))
                 .andExpect(jsonPath("$.data.items[0].values.MKT_SURVEYOR_PHONE").value("13800000000"))
                 .andExpect(jsonPath("$.data.items[0].allowedActions[0]").value("VIEW"));
+        if (supportsSalePrice(objectType)) {
+            list.andExpect(jsonPath("$.data.items[0].values.MKT_SALE_BASE_PRICE").value("2300.0000"));
+        } else {
+            list.andExpect(jsonPath("$.data.items[0].values.MKT_SALE_BASE_PRICE").doesNotExist());
+        }
+    }
+
+    @Test
+    void removesAnInvalidatedSampleFromTheCurrentCollectionListButKeepsItsHistory() throws Exception {
+        String id = create("CORN", "DEEP_PROCESSOR", "MOISTURE");
+        mockMvc.perform(post("/api/v1/market-records/{id}/submit", id)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":0}"))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/v1/market-records/{id}/approve", id)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk());
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        UUID samplePointId = jdbc.sql("SELECT sample_point_id FROM market.market_record WHERE record_id=:id")
+                .param("id", id).query(UUID.class).single();
+
+        mockMvc.perform(get("/api/v1/market-records")
+                        .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0").queryParam("pageSize", "100"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(1));
+
+        jdbc.sql("""
+                UPDATE overview.administrative_boundary
+                SET source_revision='test-v2' WHERE region_code=(
+                  SELECT region_code FROM registry.sample_point WHERE sample_point_id=:id)
+                """).param("id", samplePointId).update();
+        mockMvc.perform(get("/api/v1/market-records")
+                        .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0").queryParam("pageSize", "100"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(1));
+        jdbc.sql("""
+                UPDATE overview.administrative_boundary
+                SET source_revision='test-v1' WHERE region_code=(
+                  SELECT region_code FROM registry.sample_point WHERE sample_point_id=:id)
+                """).param("id", samplePointId).update();
+
+        jdbc.sql("""
+                UPDATE registry.sample_point
+                SET location_state='OUTSIDE_REGION',governed_point=NULL,
+                    containment_boundary_sha256=NULL,containment_boundary_revision=NULL
+                WHERE sample_point_id=:id
+                """).param("id", samplePointId).update();
+
+        mockMvc.perform(get("/api/v1/market-records")
+                        .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0").queryParam("pageSize", "100"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(0));
+        mockMvc.perform(get("/api/v1/market-records/{id}", id))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.id").value(id));
     }
 
     @Test
@@ -768,6 +893,104 @@ class MarketMonitoringRestIntegrationTest {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         assertThat(jdbc.sql("SELECT status_code FROM market.market_record WHERE record_id=:id")
                 .param("id", id).query(String.class).single()).isEqualTo("APPROVED");
+    }
+
+    @Test
+    void approvalDoesNotRepeatRegionValidationAfterSubmissionAcceptedTheRecord() throws Exception {
+        String firstBody = singleFactDraft("CORN", "FEED_MILL", "ENDING_INVENTORY", "20", false)
+                .replace("齐齐哈尔第一粮店", "跨期审核决定粮店")
+                .replace("13900000000", "13700000000");
+        String firstId = mockMvc.perform(post("/api/v1/market-records")
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(firstBody))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString()
+                .replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+        mockMvc.perform(post("/api/v1/market-records/{id}/submit", firstId)
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"version\":0}"))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/v1/market-records/{id}/approve", firstId)
+                        .principal(() -> "production-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"version\":1}"))
+                .andExpect(status().isOk());
+
+        String body = singleFactDraft("CORN", "FEED_MILL", "ENDING_INVENTORY", "21", false)
+                .replace("齐齐哈尔第一粮店", "跨期审核决定粮店")
+                .replace("13900000000", "13700000000")
+                .replace("2026-08-01", "2026-07-01");
+        String id = mockMvc.perform(post("/api/v1/market-records")
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString()
+                .replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+
+        mockMvc.perform(post("/api/v1/market-records/{id}/submit", id)
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"version\":0}"))
+                .andExpect(status().isOk());
+
+        mockMvc.perform(post("/api/v1/market-records/{id}/approve", id)
+                        .principal(() -> "production-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"version\":1}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("APPROVED"));
+
+        mockMvc.perform(get("/api/v1/market-records")
+                        .principal(() -> "market-tester")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0")
+                        .queryParam("pageSize", "20")
+                        .queryParam("filter.surveyYear", "2026")
+                        .queryParam("filter.status", "APPROVED"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items[0].id").value(firstId));
+
+        UUID samplePointId = JdbcClient.create(dataSource).sql("""
+                SELECT sample_point_id FROM market.market_record WHERE record_id=:id
+                """).param("id", firstId).query(UUID.class).single();
+        JdbcClient.create(dataSource).sql("""
+                DELETE FROM market.market_record WHERE record_id IN (:ids)
+                """).param("ids", List.of(firstId, id)).update();
+        JdbcClient.create(dataSource).sql("""
+                DELETE FROM registry.sample_point WHERE sample_point_id=:samplePointId
+                """).param("samplePointId", samplePointId).update();
+    }
+
+    @Test
+    void rejectsCoordinateChangeForAnExistingStableIdentityAtEntry() throws Exception {
+        String firstBody = singleFactDraft("CORN", "FEED_MILL", "ENDING_INVENTORY", "20", false)
+                .replace("齐齐哈尔第一粮店", "稳定位置粮店")
+                .replace("13900000000", "13700000001");
+        String firstId = mockMvc.perform(post("/api/v1/market-records")
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(firstBody))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString()
+                .replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+        mockMvc.perform(post("/api/v1/market-records/{id}/submit", firstId)
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"version\":0}"))
+                .andExpect(status().isOk());
+        mockMvc.perform(post("/api/v1/market-records/{id}/approve", firstId)
+                        .principal(() -> "production-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"version\":1}"))
+                .andExpect(status().isOk());
+
+        String changedCoordinateBody = firstBody
+                .replace("2026-08-01", "2026-07-01")
+                .replace("\"MKT_SAMPLE_LATITUDE\":\"47.3543\"",
+                        "\"MKT_SAMPLE_LATITUDE\":\"47.3544\"")
+                .replace("\"MKT_SAMPLE_LONGITUDE\":\"123.9182\"",
+                        "\"MKT_SAMPLE_LONGITUDE\":\"123.9183\"");
+        mockMvc.perform(post("/api/v1/market-records")
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(changedCoordinateBody))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("SAMPLE_IDENTITY_COORDINATE_MISMATCH"));
     }
 
     @Test
@@ -985,29 +1208,15 @@ class MarketMonitoringRestIntegrationTest {
                 """).param("id", id).param("partyId", mistaken.partyId())
                 .param("pointId", mistaken.samplePointId()).query(Boolean.class).single()).isTrue();
 
-        jdbc.sql("""
-                SELECT overview.activate_region_surplus_calculation_contract(
-                  'REGION_SURPLUS_V2',clock_timestamp()-interval '1 second',
-                  'production-tester','审核后库存身份纠正测试')
-                """).query((row, ignored) -> true).single();
         String beforeCorrectionDashboard = mockMvc.perform(get("/api/v1/overview/dashboard")
                         .principal(() -> "production-tester")
                         .queryParam("productCode", "CORN").queryParam("regionCode", "230200")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].value")
-                        .value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.nullValue())))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].sourceCount")
-                        .value(org.hamcrest.Matchers.hasItem(0)))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].coverageStatus")
-                        .value(org.hamcrest.Matchers.hasItem("INSUFFICIENT_COVERAGE")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].auditSources.length()")
-                        .value(org.hamcrest.Matchers.hasItem(1)))
-                .andExpect(jsonPath(
-                        "$.data.metrics[?(@.code == 'REGION_SURPLUS')].auditSources[*].subjectKey")
-                        .value(org.hamcrest.Matchers.hasItem(mistaken.partyId().toString())))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')]").isEmpty())
                 .andReturn().getResponse().getContentAsString();
-        assertThat(beforeCorrectionDashboard).contains(mistaken.partyId().toString())
+        assertThat(beforeCorrectionDashboard)
+                .doesNotContain(mistaken.partyId().toString())
                 .doesNotContain(corrected.partyId().toString());
 
         UUID mistakenRevisionId = jdbc.sql("""
@@ -1182,19 +1391,10 @@ class MarketMonitoringRestIntegrationTest {
                         .queryParam("productCode", "CORN").queryParam("regionCode", "230200")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].value")
-                        .value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.nullValue())))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].sourceCount")
-                        .value(org.hamcrest.Matchers.hasItem(0)))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].coverageStatus")
-                        .value(org.hamcrest.Matchers.hasItem("INSUFFICIENT_COVERAGE")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')].auditSources.length()")
-                        .value(org.hamcrest.Matchers.hasItem(1)))
-                .andExpect(jsonPath(
-                        "$.data.metrics[?(@.code == 'REGION_SURPLUS')].auditSources[*].subjectKey")
-                        .value(org.hamcrest.Matchers.hasItem(corrected.partyId().toString())))
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'REGION_SURPLUS')]").isEmpty())
                 .andReturn().getResponse().getContentAsString();
-        assertThat(afterCorrectionDashboard).contains(corrected.partyId().toString())
+        assertThat(afterCorrectionDashboard)
+                .doesNotContain(corrected.partyId().toString())
                 .doesNotContain(mistaken.partyId().toString());
 
         mockMvc.perform(get("/api/v1/market-records/{id}", id)
@@ -1988,20 +2188,26 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
-    void rejectsPathologicalAndMetadataOverPrecisionCoreDecimalsWithoutWrites() throws Exception {
-        for (String latitude : List.of("1E999999999", "47.12345678")) {
-            String body = draftBody("CORN", "FEED_MILL", "MOISTURE", null)
-                    .replace("\"MKT_SAMPLE_LATITUDE\":\"47.3543\"",
-                            "\"MKT_SAMPLE_LATITUDE\":\"" + latitude + "\"");
-            mockMvc.perform(post("/api/v1/market-records")
-                            .principal(() -> "market-tester")
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(body))
-                    .andExpect(status().isBadRequest())
-                    .andExpect(jsonPath("$.error.code").value("INVALID_MARKET_RECORD"));
-        }
+    void acceptsUsefulCoordinatePrecisionButRejectsPathologicalDecimalsWithoutPartialWrites() throws Exception {
+        String precise = draftBody("CORN", "FEED_MILL", "MOISTURE", null)
+                .replace("\"MKT_SAMPLE_LATITUDE\":\"47.3543\"",
+                        "\"MKT_SAMPLE_LATITUDE\":\"47.12345678\"");
+        mockMvc.perform(post("/api/v1/market-records")
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(precise))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.coreValues.MKT_SAMPLE_LATITUDE").value("47.1234568"));
 
-        assertThat(recordCount()).isZero();
+        String pathological = precise.replace("47.12345678", "1E999999999");
+        mockMvc.perform(post("/api/v1/market-records")
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(pathological))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_MARKET_RECORD"));
+
+        assertThat(recordCount()).isEqualTo(1);
     }
 
     @Test
@@ -2061,11 +2267,7 @@ class MarketMonitoringRestIntegrationTest {
                         .queryParam("filter.fillingDateFrom", "2026-08-05")
                         .queryParam("filter.fillingDateTo", "2026-08-05"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.totalElements").value(1))
-                .andExpect(jsonPath("$.data.items[0].values.MKT_SURVEY_YEAR").value("2026"))
-                .andExpect(jsonPath("$.data.items[0].values.MKT_SURVEY_MONTH").value("8"))
-                .andExpect(jsonPath("$.data.items[0].values.MKT_SURVEY_PERIOD_PRECISION").value("YEAR_MONTH"))
-                .andExpect(jsonPath("$.data.items[0].values.MKT_FILLING_TIME_BASIS").value("DRAFT_CREATED_AT"));
+                .andExpect(jsonPath("$.data.totalElements").value(0));
 
         jdbc.sql("""
                 UPDATE market.market_record SET survey_month=NULL,survey_period_precision='YEAR'
@@ -2080,7 +2282,7 @@ class MarketMonitoringRestIntegrationTest {
                         .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
                         .queryParam("pageNumber", "0").queryParam("pageSize", "20")
                         .queryParam("filter.surveyYear", "2026"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(1));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(0));
 
         mockMvc.perform(post("/api/v1/market-records/{id}/submit", id)
                         .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
@@ -2092,6 +2294,10 @@ class MarketMonitoringRestIntegrationTest {
                 UPDATE market.market_record SET submitted_at=TIMESTAMPTZ '2026-08-06 10:30:00+08'
                 WHERE record_id=:id
                 """).param("id", id).update();
+        mockMvc.perform(post("/api/v1/market-records/{id}/approve", id)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isOk());
         mockMvc.perform(get("/api/v1/market-records")
                         .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
                         .queryParam("pageNumber", "0").queryParam("pageSize", "20")
@@ -2153,16 +2359,7 @@ class MarketMonitoringRestIntegrationTest {
     private String createSubmitAndApproveInventory(
             String name, String contact, String latitude, String longitude, String inventory)
             throws Exception {
-        String id = create(singleFactDraft(
-                "CORN", "TRADER", "ENDING_INVENTORY", inventory, false)
-                .replace("\"MKT_SAMPLE_NAME\":\"齐齐哈尔第一粮店\"",
-                        "\"MKT_SAMPLE_NAME\":\"" + name + "\"")
-                .replace("\"MKT_SAMPLE_CONTACT\":\"13900000000\"",
-                        "\"MKT_SAMPLE_CONTACT\":\"" + contact + "\"")
-                .replace("\"MKT_SAMPLE_LATITUDE\":\"47.3543\"",
-                        "\"MKT_SAMPLE_LATITUDE\":\"" + latitude + "\"")
-                .replace("\"MKT_SAMPLE_LONGITUDE\":\"123.9182\"",
-                        "\"MKT_SAMPLE_LONGITUDE\":\"" + longitude + "\""));
+        String id = create(inventoryDraft(name, contact, latitude, longitude, inventory));
         mockMvc.perform(post("/api/v1/market-records/{id}/submit", id)
                         .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
                         .content("{\"version\":0}"))
@@ -2175,6 +2372,20 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(jsonPath("$.data.status").value("APPROVED"))
                 .andExpect(jsonPath("$.data.inventoryGovernanceStatus").doesNotExist());
         return id;
+    }
+
+    private String inventoryDraft(
+            String name, String contact, String latitude, String longitude, String inventory) {
+        return singleFactDraft(
+                "CORN", "TRADER", "ENDING_INVENTORY", inventory, false)
+                .replace("\"MKT_SAMPLE_NAME\":\"齐齐哈尔第一粮店\"",
+                        "\"MKT_SAMPLE_NAME\":\"" + name + "\"")
+                .replace("\"MKT_SAMPLE_CONTACT\":\"13900000000\"",
+                        "\"MKT_SAMPLE_CONTACT\":\"" + contact + "\"")
+                .replace("\"MKT_SAMPLE_LATITUDE\":\"47.3543\"",
+                        "\"MKT_SAMPLE_LATITUDE\":\"" + latitude + "\"")
+                .replace("\"MKT_SAMPLE_LONGITUDE\":\"123.9182\"",
+                        "\"MKT_SAMPLE_LONGITUDE\":\"" + longitude + "\"");
     }
 
     private void approve(String id) throws Exception {
@@ -2190,17 +2401,18 @@ class MarketMonitoringRestIntegrationTest {
 
     private String draftBody(String product, String objectType, String qualityCode, Long version) {
         String versionValue = version == null ? "" : ",\"version\":" + version;
+        String salePrice = supportsSalePrice(objectType) ? ",\"MKT_SALE_BASE_PRICE\":\"2300\"" : "";
         return """
                 {"productCode":"%s","coreValues":{
                  "MKT_OBJECT_TYPE":"%s","MKT_REGION":"230200",
                  "MKT_TRADE_DATE":"2026-08-01",
-                 "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":"2300",
+                 "MKT_PURCHASE_BASE_PRICE":"2300"%s,
                  "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
                  "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",%s},
                  "facts":{"PURCHASE_VOLUME":"12","%s":"14.6"},
                  "evidencePhotoIds":["%s"]%s}
                 """.formatted(
-                        product, objectType, submissionMetadata(), qualityCode,
+                        product, objectType, salePrice, submissionMetadata(), qualityCode,
                         stageEvidencePhoto(), versionValue);
     }
 
@@ -2213,17 +2425,22 @@ class MarketMonitoringRestIntegrationTest {
             String product, String objectType, String factCode, String value,
             boolean includeInventoryContract) {
         String inventoryContract = "";
+        String salePrice = supportsSalePrice(objectType) ? ",\"MKT_SALE_BASE_PRICE\":\"2300\"" : "";
         return """
                 {"productCode":"%s","coreValues":{
                  "MKT_OBJECT_TYPE":"%s","MKT_REGION":"230200",
                  "MKT_TRADE_DATE":"2026-08-01",
-                 "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":"2300",
+                 "MKT_PURCHASE_BASE_PRICE":"2300"%s,
                  "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
                  "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK"%s,%s},
                  "facts":{"%s":"%s"},"evidencePhotoIds":["%s"]}
                 """.formatted(
-                        product, objectType, inventoryContract, submissionMetadata(), factCode, value,
+                        product, objectType, salePrice, inventoryContract, submissionMetadata(), factCode, value,
                         stageEvidencePhoto());
+    }
+
+    private static boolean supportsSalePrice(String objectType) {
+        return !Set.of("DEEP_PROCESSOR", "FEED_MILL", "BREEDING_FACTORY").contains(objectType);
     }
 
     private UUID stageEvidencePhoto() {

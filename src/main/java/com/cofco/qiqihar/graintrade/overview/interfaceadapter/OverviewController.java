@@ -2,6 +2,7 @@ package com.cofco.qiqihar.graintrade.overview.interfaceadapter;
 
 import com.cofco.qiqihar.graintrade.overview.application.OverviewIndicator;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewDashboard;
+import com.cofco.qiqihar.graintrade.overview.application.OverviewDashboardSummary;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewMapScope;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewRegion;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewOptions;
@@ -72,5 +73,15 @@ public class OverviewController {
             @RequestParam(required = false) String regionCode,
             @RequestParam(required = false) String marketingYear) {
         return new OverviewContractResponse<>(service.dashboard(productCode, year, periodCode, regionCode));
+    }
+
+    @GetMapping("/api/v1/overview/dashboard-summary")
+    OverviewContractResponse<OverviewDashboardSummary> dashboardSummary(
+            @RequestParam String productCode,
+            @RequestParam(required = false) Integer year,
+            @RequestParam(required = false) String periodCode,
+            @RequestParam(required = false) String regionCode,
+            @RequestParam(required = false) String marketingYear) {
+        return new OverviewContractResponse<>(service.dashboardSummary(productCode, year, periodCode, regionCode));
     }
 }

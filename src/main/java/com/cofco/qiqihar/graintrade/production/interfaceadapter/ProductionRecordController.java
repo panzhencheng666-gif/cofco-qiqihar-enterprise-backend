@@ -113,9 +113,21 @@ public class ProductionRecordController {
         return new ApiResponse<>(RecordResponse.from(service.create(request.toDraft())));
     }
 
+    @PostMapping("/api/v1/production-records/submit")
+    @ResponseStatus(HttpStatus.CREATED)
+    ApiResponse<RecordResponse> createAndSubmit(@RequestBody DraftRequest request) {
+        return new ApiResponse<>(RecordResponse.from(service.createAndSubmit(request.toDraft())));
+    }
+
     @PutMapping("/api/v1/production-records/{id}")
     ApiResponse<RecordResponse> saveDraft(@PathVariable String id, @RequestBody DraftRequest request) {
         return new ApiResponse<>(RecordResponse.from(service.saveDraft(id, request.requiredVersion(), request.toDraft())));
+    }
+
+    @PutMapping("/api/v1/production-records/{id}/submit")
+    ApiResponse<RecordResponse> saveAndSubmit(@PathVariable String id, @RequestBody DraftRequest request) {
+        return new ApiResponse<>(RecordResponse.from(
+                service.saveAndSubmit(id, request.requiredVersion(), request.toDraft())));
     }
 
     @PostMapping("/api/v1/production-records/{id}/submit")
@@ -178,8 +190,8 @@ public class ProductionRecordController {
             if (metadata == null) return;
             String latitude = metadata.get("PROD_SAMPLE_LATITUDE");
             String longitude = metadata.get("PROD_SAMPLE_LONGITUDE");
-            if (latitude != null) PlainDecimal.parse(latitude, 3, 7, "INVALID_PRODUCTION_RECORD");
-            if (longitude != null) PlainDecimal.parse(longitude, 3, 7, "INVALID_PRODUCTION_RECORD");
+            if (latitude != null) PlainDecimal.parse(latitude, 3, 15, "INVALID_PRODUCTION_RECORD");
+            if (longitude != null) PlainDecimal.parse(longitude, 3, 15, "INVALID_PRODUCTION_RECORD");
         }
         private SurveyTime surveyTime() {
             if (surveyYear == null) {

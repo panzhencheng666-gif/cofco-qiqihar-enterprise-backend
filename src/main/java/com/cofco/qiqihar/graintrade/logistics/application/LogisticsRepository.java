@@ -4,6 +4,7 @@ import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 public interface LogisticsRepository {
     default PagedResult<LogisticsRecordView> findPage(
             String productCode, int pageNumber, int pageSize, Map<String,String> filters) {
@@ -18,7 +19,11 @@ public interface LogisticsRepository {
     Set<String> regionsForDraft(LogisticsDraft draft);
     Set<String> regionsForRecord(String id);
     LogisticsRecordView insert(String id, LogisticsDraft draft, String actor, Instant now);
+    LogisticsRecordView insertOfficialObservation(
+            String id, LogisticsDraft draft, UUID samplePointId,
+            String actor, Instant observedAt, Instant officialSavedAt);
     LogisticsRecordView update(String id, long version, LogisticsDraft draft,
             LogisticsStatus status, String returnReason, String actor, Instant now);
     LogisticsRecordView transition(String id, long version, LogisticsStatus status, String reason, String actor, Instant now);
+    void linkApprovedSamplePoint(String id, String approvingActorId, Instant approvedAt);
 }

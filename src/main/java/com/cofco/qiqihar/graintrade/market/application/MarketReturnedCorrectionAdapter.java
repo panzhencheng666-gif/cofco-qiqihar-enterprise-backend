@@ -25,7 +25,7 @@ public final class MarketReturnedCorrectionAdapter implements MarketReturnedCorr
     public List<MarketReturnedCorrectionRecord> returned(String productCode) {
         ArrayList<MarketReturnedCorrectionRecord> records = new ArrayList<>();
         for (int pageNumber = 0;; pageNumber++) {
-            var page = service.list(new MarketRecordQuery(
+            var page = service.listLifecycle(new MarketRecordQuery(
                     productCode, "MONITORING", pageNumber, PAGE_SIZE,
                     Map.of("status", MarketStatus.RETURNED.name())));
             page.items().forEach(item -> addIfEligible(records, productCode, item));

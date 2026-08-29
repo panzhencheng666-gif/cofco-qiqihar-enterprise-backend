@@ -289,7 +289,7 @@ class QueuedBusinessImportIntegrationTest {
     }
 
     private static String marketRow(UUID photoId) {
-        return String.join(",", "CORN", "FEED_MILL", "230200", "2026-08-01", "2300", "2380",
+        return String.join(",", "CORN", "FEED_MILL", "230200", "2026-08-01", "2300", "",
                 "36", "12", "72", "BULK", "伪造姓名", "13800000000", "齐齐哈尔粮店",
                 "13900000000", "47.3543", "123.9182", "12", "14.6", photoId.toString()) + "\n";
     }

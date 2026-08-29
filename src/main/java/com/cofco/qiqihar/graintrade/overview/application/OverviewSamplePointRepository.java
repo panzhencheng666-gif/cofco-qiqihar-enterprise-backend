@@ -17,7 +17,12 @@ public interface OverviewSamplePointRepository {
     List<OverviewSamplePointIcon> icons(int year, String productCode, String regionCode,
             String categoryCode, String typeCode, String query,
             Set<String> authorizedRegionCodes);
+    OverviewSamplePointSnapshot snapshot(int year, String productCode, String regionCode,
+            String categoryCode, String typeCode, String query,
+            Set<String> authorizedRegionCodes);
     Optional<OverviewSamplePointDetail> detail(int year, String productCode, UUID samplePointId,
             String regionCode, String categoryCode, String typeCode,
             Set<String> authorizedRegionCodes);
+    List<OverviewSamplePointExportRow> exportRows(
+            int year, String regionCode, Set<String> authorizedRegionCodes);
 }

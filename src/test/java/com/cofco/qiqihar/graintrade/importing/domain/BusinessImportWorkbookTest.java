@@ -27,6 +27,22 @@ import org.junit.jupiter.api.Test;
 class BusinessImportWorkbookTest {
 
     @Test
+    void removesOnlySpreadsheetFloatingPointResidueWithoutRoundingRealBusinessPrecision() {
+        BusinessImportWorkbook.ColumnRule decimalRule = new BusinessImportWorkbook.ColumnRule(
+                "预计单产（公斤/亩）", "DECIMAL", "DECIMAL", true, List.of(), 18, 4, null);
+
+        assertThat(BusinessImportWorkbook.normalizeCell("69.40000000000001", decimalRule))
+                .isEqualTo("69.4");
+        assertThat(BusinessImportWorkbook.normalizeCell("65.09999999999999", decimalRule))
+                .isEqualTo("65.1");
+        assertThat(BusinessImportWorkbook.normalizeCell("69.40001", decimalRule))
+                .isEqualTo("69.40001");
+        assertThatThrownBy(() -> BusinessImportWorkbook.validateCell("69.40001", decimalRule))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("XLSX_VALUE_FORMAT");
+    }
+
+    @Test
     void acceptsOnlyAnExplicitlyAllowlistedPriorContractAndAppliesTheCurrentBroaderRule() {
         BusinessImportWorkbook.ColumnRule legacyRule = new BusinessImportWorkbook.ColumnRule(
                 "地租（元/亩）", "DECIMAL", "DECIMAL", false, List.of(), 18, 0, null);

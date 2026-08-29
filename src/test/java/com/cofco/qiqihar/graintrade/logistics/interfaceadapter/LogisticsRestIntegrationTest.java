@@ -7,8 +7,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
+import com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabaseConfiguration;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.util.Set;
+import java.util.UUID;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
@@ -48,6 +50,104 @@ class LogisticsRestIntegrationTest {
     }
 
     @Test
+    void approvalReusesTheSameVisibleSampleIdentityAcrossMarketAndLogistics() throws Exception {
+        UUID samplePointId = UUID.fromString("64000000-0000-0000-0000-000000000001");
+        String marketRecordId = "64000000-0000-0000-0000-000000000002";
+        try {
+            jdbc.sql("""
+                    INSERT INTO overview.administrative_boundary(
+                      region_code,geometry,source_name,source_url,source_revision,source_license,
+                      source_feature_id,source_effective_on,geometry_sha256)
+                    VALUES('230202',
+                      ST_Multi(ST_Buffer(ST_SetSRID(ST_MakePoint(123.9182,47.3543),4326),0.01)),
+                      'logistics identity fixture','urn:test:logistics-identity','test-v1',
+                      'Test fixture','230202',DATE '2026-08-20',repeat('6',64))
+                    ON CONFLICT(region_code) DO UPDATE SET geometry=excluded.geometry,
+                      source_name=excluded.source_name,source_url=excluded.source_url,
+                      source_revision=excluded.source_revision,source_license=excluded.source_license,
+                      source_feature_id=excluded.source_feature_id,
+                      source_effective_on=excluded.source_effective_on,
+                      geometry_sha256=excluded.geometry_sha256
+                    """).update();
+            jdbc.sql("""
+                    INSERT INTO registry.sample_point(
+                      sample_point_id,kind_code,canonical_name,region_code,approval_state,
+                      location_state,governed_point,effective_from,created_by,updated_by)
+                    VALUES(:id,'SURVEY_SITE','齐齐哈尔物流样本点','230202','APPROVED','VALID',
+                      ST_SetSRID(ST_MakePoint(123.918200,47.354300),4326),DATE '2026-01-01',
+                      'market-tester','market-tester')
+                    """).param("id", samplePointId).update();
+            jdbc.sql("""
+                    INSERT INTO market.market_record(
+                      record_id,product_code,object_type_code,region_code,trade_date,reported_at,
+                      purchase_base_price,trade_direction,carriage_board_amount,packaging_amount,
+                      freight_amount,packaging_form,status_code,last_modified_by,version,
+                      survey_year,survey_month,survey_period_precision,survey_period_governance_state,
+                      sample_point_id)
+                    VALUES(:id,'CORN','TRADER','230202',DATE '2026-08-01',CURRENT_TIMESTAMP,
+                      2300,'PURCHASE',0,0,0,'BULK','APPROVED','market-tester',1,
+                      2026,8,'YEAR_MONTH','CONFIRMED',:samplePointId)
+                    """).param("id", marketRecordId).param("samplePointId", samplePointId).update();
+            jdbc.sql("""
+                    INSERT INTO market.market_record_core_value(
+                      record_id,product_code,field_code,domain_binding,value)
+                    VALUES(:id,'CORN','MKT_SAMPLE_NAME','EXTENSION','齐齐哈尔物流样本点'),
+                          (:id,'CORN','MKT_SAMPLE_CONTACT','EXTENSION','13900000000')
+                    """).param("id", marketRecordId).update();
+
+            String logisticsId = mvc.perform(post("/api/v1/logistics-records")
+                            .principal(() -> "logistics-tester")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body("CORN","RAIL","TEST_RAIL","TEST_ROAD","12.500",true,null)
+                                    .replace("\"LOG_REGION\":\"230200\"",
+                                            "\"LOG_REGION\":\"230202\"")))
+                    .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()
+                    .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
+            transition(logisticsId,"submit",0,null);
+            transition(logisticsId,"approve",1,null);
+
+            org.assertj.core.api.Assertions.assertThat(jdbc.sql("""
+                    SELECT sample_point_id FROM logistics.route_event WHERE event_id::text=:id
+                    """).param("id", logisticsId).query(UUID.class).single()).isEqualTo(samplePointId);
+            org.assertj.core.api.Assertions.assertThat(jdbc.sql("""
+                    SELECT count(*) FROM registry.sample_point
+                    WHERE canonical_name='齐齐哈尔物流样本点'
+                    """).query(Long.class).single()).isOne();
+            mvc.perform(get("/api/v1/logistics-records")
+                            .queryParam("productCode", "CORN").queryParam("pageNumber", "0")
+                            .queryParam("pageSize", "20").queryParam("filter.regionCode", "230202"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.items[?(@.id == '%s')]".formatted(logisticsId)).exists());
+
+            jdbc.sql("""
+                    UPDATE registry.sample_point
+                    SET location_state='OUTSIDE_REGION',governed_point=NULL,
+                        containment_boundary_sha256=NULL,containment_boundary_revision=NULL
+                    WHERE sample_point_id=:id
+                    """).param("id", samplePointId).update();
+
+            mvc.perform(get("/api/v1/logistics-records")
+                            .queryParam("productCode", "CORN").queryParam("pageNumber", "0")
+                            .queryParam("pageSize", "20").queryParam("filter.regionCode", "230202"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.items[?(@.id == '%s')]".formatted(logisticsId)).isEmpty());
+            mvc.perform(get("/api/v1/logistics-records/{id}", logisticsId))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.id").value(logisticsId));
+        } finally {
+            jdbc.sql("DELETE FROM logistics.route_event WHERE sample_point_id=:id")
+                    .param("id", samplePointId).update();
+            jdbc.sql("DELETE FROM market.market_record WHERE record_id=:id")
+                    .param("id", marketRecordId).update();
+            jdbc.sql("DELETE FROM registry.sample_point WHERE sample_point_id=:id")
+                    .param("id", samplePointId).update();
+            jdbc.sql("""
+                    DELETE FROM overview.administrative_boundary
+                    WHERE region_code='230202' AND source_name='logistics identity fixture'
+                    """).update();
+        }
+    }
+
+    @Test
     void voidsALogisticsDraftThroughHttpAndPersistsATerminalAuditedState() throws Exception {
         String id=create("CORN","RAIL","TEST_RAIL","TEST_ROAD",true);
 
@@ -80,6 +180,7 @@ class LogisticsRestIntegrationTest {
     @BeforeEach
     void fixture() {
         jdbc = JdbcClient.create(dataSource);
+        ProtectedTestDatabaseConfiguration.provisionSecurityTestSubjects(jdbc);
         jdbc.sql("TRUNCATE logistics.route_event,logistics.logistics_node RESTART IDENTITY CASCADE").update();
         jdbc.sql("DELETE FROM platform.logistics_core_field_applicability WHERE field_code='LOG_REFERENCE'").update();
         jdbc.sql("DELETE FROM platform.logistics_core_field_definition WHERE code='LOG_REFERENCE'").update();
@@ -87,6 +188,21 @@ class LogisticsRestIntegrationTest {
         jdbc.sql("""
                 INSERT INTO platform.business_period(code,name,starts_on,ends_on,sort_order,marketing_year_code)
                 VALUES('LOG-2026-08','2026年8月物流监测期','2026-08-01','2026-08-31',900,'2026/27')
+                """).update();
+        jdbc.sql("""
+                INSERT INTO overview.administrative_boundary(
+                  region_code,geometry,source_name,source_url,source_revision,source_license,
+                  source_feature_id,source_effective_on,geometry_sha256)
+                VALUES('230200',
+                  ST_Multi(ST_Buffer(ST_SetSRID(ST_MakePoint(123.9182,47.3543),4326),0.05)),
+                  'logistics approval fixture','urn:test:logistics-approval','test-v1',
+                  'Test fixture','230200',DATE '2026-08-20',repeat('7',64))
+                ON CONFLICT(region_code) DO UPDATE SET geometry=excluded.geometry,
+                  source_name=excluded.source_name,source_url=excluded.source_url,
+                  source_revision=excluded.source_revision,source_license=excluded.source_license,
+                  source_feature_id=excluded.source_feature_id,
+                  source_effective_on=excluded.source_effective_on,
+                  geometry_sha256=excluded.geometry_sha256
                 """).update();
         node(jdbc, "TEST_RAIL", "测试铁路站", "RAIL_NODE");
         node(jdbc, "TEST_ROAD", "测试公路节点", "ROAD_NODE");
@@ -107,6 +223,17 @@ class LogisticsRestIntegrationTest {
     @AfterEach
     void clearAuditEvents() {
         jdbc.sql("TRUNCATE platform.business_audit_event").update();
+        jdbc.sql("TRUNCATE logistics.route_event RESTART IDENTITY CASCADE").update();
+        jdbc.sql("""
+                DELETE FROM registry.sample_point
+                WHERE kind_code='LOGISTICS_NODE'
+                  AND canonical_name='齐齐哈尔物流样本点'
+                  AND created_by='logistics-tester'
+                """).update();
+        jdbc.sql("""
+                DELETE FROM overview.administrative_boundary
+                WHERE region_code='230200' AND source_name='logistics approval fixture'
+                """).update();
     }
 
     @Test
@@ -233,15 +360,24 @@ class LogisticsRestIntegrationTest {
                 .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_AVERAGE_FREIGHT_RATE')].sourceCount")
                         .value(2));
 
+        mvc.perform(get("/api/v1/overview/sample-point-icons").principal(() -> "logistics-tester")
+                        .queryParam("productCode", "CORN").queryParam("regionCode", "230200")
+                        .queryParam("year", "2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1));
+
         mvc.perform(get("/api/v1/overview/dashboard").principal(() -> "logistics-tester")
                         .queryParam("productCode", "CORN").queryParam("regionCode", "230200")
                         .queryParam("year", "2026").queryParam("periodCode", "LOG-2026-08"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'LOGISTICS_INFLOW_VOLUME')].value")
-                        .value(org.hamcrest.Matchers.hasItem("12.5")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'LOGISTICS_OUTFLOW_VOLUME')].value")
-                        .value(org.hamcrest.Matchers.hasItem("7")))
-                .andExpect(jsonPath("$.data.metrics[?(@.code == 'LOGISTICS_AVERAGE_FREIGHT_RATE')].value")
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'LOGISTICS_INFLOW_VOLUME')]").isEmpty())
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'LOGISTICS_OUTFLOW_VOLUME')]").isEmpty())
+                .andExpect(jsonPath("$.data.metrics[?(@.code == 'LOGISTICS_AVERAGE_FREIGHT_RATE')]").isEmpty())
+                .andExpect(jsonPath(
+                                "$.data.businessTables[?(@.code == 'LOGISTICS')].rows[*].values.LOG_ROUTE_VOLUME.value")
+                        .value(org.hamcrest.Matchers.hasItem("19.5")))
+                .andExpect(jsonPath(
+                                "$.data.businessTables[?(@.code == 'LOGISTICS')].rows[*].values.LOG_FREIGHT_RATE.value")
                         .value(org.hamcrest.Matchers.hasItem("75.125")));
     }
 

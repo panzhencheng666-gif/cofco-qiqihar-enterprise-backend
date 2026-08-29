@@ -115,6 +115,53 @@ class SampleIdentityReviewRestIntegrationTest {
     }
 
     @Test
+    void linkOrDistinctIdentityDecisionCannotCreateASecondCurrentRecordForTheSamePeriod()
+            throws Exception {
+        UUID distinctDraft = seedPendingDraft("production-tester");
+        String existing = "95300000-0000-0000-0000-000000000202";
+        jdbc.sql("""
+                INSERT INTO production.production_record(
+                  record_id,product_code,object_type_code,region_code,survey_date,reported_at,
+                  cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,
+                  survey_year,survey_month,survey_period_precision,survey_period_governance_state)
+                VALUES(:record,'CORN','FARMER','230208',DATE '2026-08-01',now(),
+                  100,500,'PENDING_REVIEW','production-tester',2026,8,'YEAR_MONTH','CONFIRMED')
+                """).param("record", existing).update();
+        jdbc.sql("""
+                INSERT INTO production.production_record_submission_metadata(record_id,field_code,value)
+                VALUES(:record,'PROD_SAMPLE_NAME','身份核验样本'),
+                      (:record,'PROD_SAMPLE_CONTACT','13900000000')
+                """).param("record", existing).update();
+
+        mvc.perform(post("/api/v1/sample-point-identities/reviews/{draftId}/decisions", draftId)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"decision":"LINK_EXISTING","targetSamplePointId":"%s",
+                                 "expectedVersion":0,"reason":"不得绕过同期间记录守卫"}
+                                """.formatted(TARGET)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("SAMPLE_PERIOD_RECORD_CONFLICT"));
+        mvc.perform(post("/api/v1/sample-point-identities/reviews/{draftId}/decisions", distinctDraft)
+                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"decision":"CONFIRM_DISTINCT","expectedVersion":0,
+                                 "reason":"身份结论不能形成同业务键第三条记录"}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("SAMPLE_PERIOD_RECORD_CONFLICT"));
+
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM production.production_record
+                WHERE survey_year=2026 AND survey_month=8
+                """).query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_import_draft
+                WHERE import_draft_id IN (:linkDraft,:distinctDraft) AND state_code='DRAFT'
+                """).param("linkDraft", draftId).param("distinctDraft", distinctDraft)
+                .query(Long.class).single()).isEqualTo(2);
+    }
+
+    @Test
     void rejectsOrdinarySelfReview() throws Exception {
         mvc.perform(post("/api/v1/sample-point-identities/reviews/{draftId}/decisions", draftId)
                         .principal(() -> "production-tester")
@@ -218,6 +265,60 @@ class SampleIdentityReviewRestIntegrationTest {
         assertThat(jdbc.sql("""
                 SELECT sample_point_id FROM market.market_record WHERE record_id=:record
                 """).param("record", recordId).query(UUID.class).single()).isEqualTo(TARGET);
+    }
+
+    @Test
+    void approvalRejectsALinkedStableIdentityWhenItsReportedCoordinateChangedAcrossPeriods() throws Exception {
+        jdbc.sql("""
+                UPDATE platform.business_import_draft
+                SET values_json=jsonb_set(
+                      jsonb_set(values_json,'{PROD_SAMPLE_LONGITUDE}','\"123.810000\"'::jsonb),
+                      '{PROD_SAMPLE_LATITUDE}','\"47.560000\"'::jsonb)
+                WHERE import_draft_id=:draft
+                """).param("draft", draftId).update();
+        jdbc.sql("""
+                UPDATE production.production_record_submission_metadata
+                SET value='后续修正名称'
+                WHERE field_code='PROD_SAMPLE_NAME'
+                """).update();
+        jdbc.sql("""
+                UPDATE registry.sample_point
+                SET governed_point=ST_SetSRID(ST_MakePoint(123.820000,47.570000),4326)
+                WHERE sample_point_id=:point
+                """).param("point", TARGET).update();
+
+        mvc.perform(post("/api/v1/sample-point-identities/reviews/{draftId}/decisions", draftId)
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"decision":"LINK_EXISTING","targetSamplePointId":"%s",
+                                 "expectedVersion":0,"reason":"跨月位置更新，审核人确认仍为同一经营主体"}
+                                """.formatted(TARGET)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.stateCode").value("PROMOTED"));
+        String recordId = jdbc.sql("""
+                SELECT canonical_record_id FROM platform.business_import_draft
+                WHERE import_draft_id=:id
+                """).param("id", draftId).query(String.class).single();
+
+        mvc.perform(post("/api/v1/production-records/{id}/approve", recordId)
+                        .principal(() -> "production-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"version\":1}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("SAMPLE_IDENTITY_COORDINATE_MISMATCH"));
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM production.production_record
+                WHERE record_id=:record AND status_code='PENDING_REVIEW'
+                """).param("record", recordId).query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("""
+                SELECT detail->>'targetSamplePointId'
+                FROM platform.business_audit_event
+                WHERE aggregate_type='SAMPLE_IDENTITY_REVIEW'
+                  AND aggregate_id=:draft AND action_code='SAMPLE_IDENTITY_LINK_EXISTING'
+                ORDER BY occurred_at DESC,event_id DESC LIMIT 1
+                """).param("draft", draftId.toString()).query(String.class).single())
+                .isEqualTo(TARGET.toString());
     }
 
     @Test
@@ -362,9 +463,13 @@ class SampleIdentityReviewRestIntegrationTest {
                   work_unit_code,occurred_at,detail)
                 VALUES(gen_random_uuid(),'SAMPLE_IDENTITY_REVIEW',CAST(:draft AS text),
                   'SAMPLE_IDENTITY_REVIEW_SUBMITTED',:creator,'TEST',now(),
-                  '{"reasonCode":"SAMPLE_IDENTITY_CONTACT_CONFLICT",
-                    "reasonMessage":"联系方式变化，需核验"}')
-                """).param("draft", pendingDraft).param("creator", creator).update();
+                  CAST(:detail AS jsonb))
+                """).param("draft", pendingDraft).param("creator", creator)
+                .param("detail", """
+                        {"reasonCode":"SAMPLE_IDENTITY_CONTACT_CONFLICT",
+                         "reasonMessage":"联系方式变化，需核验",
+                         "candidateSamplePointIds":["%s"]}
+                        """.formatted(TARGET)).update();
         return pendingDraft;
     }
 
@@ -405,9 +510,13 @@ class SampleIdentityReviewRestIntegrationTest {
                   work_unit_code,occurred_at,detail)
                 VALUES(gen_random_uuid(),'SAMPLE_IDENTITY_REVIEW',CAST(:draft AS text),
                   'SAMPLE_IDENTITY_REVIEW_SUBMITTED',:creator,'TEST',now(),
-                  '{"reasonCode":"SAMPLE_IDENTITY_CONTACT_CONFLICT",
-                    "reasonMessage":"联系方式变化，需核验"}')
-                """).param("draft", pendingDraft).param("creator", creator).update();
+                  CAST(:detail AS jsonb))
+                """).param("draft", pendingDraft).param("creator", creator)
+                .param("detail", """
+                        {"reasonCode":"SAMPLE_IDENTITY_CONTACT_CONFLICT",
+                         "reasonMessage":"联系方式变化，需核验",
+                         "candidateSamplePointIds":["%s"]}
+                        """.formatted(TARGET)).update();
         return pendingDraft;
     }
 

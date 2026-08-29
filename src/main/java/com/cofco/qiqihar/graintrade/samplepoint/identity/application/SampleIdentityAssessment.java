@@ -62,12 +62,9 @@ public record SampleIdentityAssessment(
         }
         if (exact.size() == 1) {
             Candidate candidate = exact.getFirst();
-            if (!sameLocation(input, candidate)) {
-                return review("SAMPLE_IDENTITY_LOCATION_CONFLICT",
-                        "姓名和联系方式一致，但地区或坐标与历史样本点不一致", sameName);
-            }
             return new SampleIdentityAssessment(Outcome.MATCHED, "SAMPLE_IDENTITY_MATCHED",
-                    "已匹配一个历史样本身份", candidate.samplePointId(), sameName);
+                    "已按稳定姓名和联系方式匹配历史样本身份；本期地区和经纬度作为本期业务事实保存",
+                    candidate.samplePointId(), sameName);
         }
         boolean everyContactDistinguishes = sameName.stream()
                 .map(Candidate::sampleContact)
@@ -119,8 +116,10 @@ public record SampleIdentityAssessment(
 
     private static String normalize(String value) {
         if (value == null) return "";
-        return Normalizer.normalize(value, Normalizer.Form.NFKC).strip()
+        String folded = Normalizer.normalize(value, Normalizer.Form.NFKC).strip()
                 .toLowerCase(Locale.ROOT);
+        return Normalizer.normalize(folded, Normalizer.Form.NFKD)
+                .replaceAll("[\\u0300-\\u036f]+", "");
     }
 
     private static boolean blank(String value) { return value == null || value.isBlank(); }

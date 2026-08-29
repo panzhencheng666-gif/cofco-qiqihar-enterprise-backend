@@ -18,15 +18,25 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
 
     @Override
     public boolean validAssignment(EmployeeAssignment value) {
-        if(value.roleCodes().isEmpty()||value.positionCodes().isEmpty()||value.regionCodes().isEmpty())return false;
+        if(value.roleCodes().isEmpty()||value.regionCodes().isEmpty())return false;
         boolean privileged=value.roleCodes().stream().anyMatch(
                 role->role.equals("SYSTEM_ADMIN")||role.equals("IDENTITY_ADMIN"));
         return count("SELECT count(*) FROM platform.work_unit WHERE code=:code AND active","code",value.workUnitCode())==1
                 && countIn("SELECT count(*) FROM platform.access_role WHERE code IN (:codes) AND active",value.roleCodes())==value.roleCodes().size()
-                && countIn("SELECT count(*) FROM platform.position WHERE code IN (:codes) AND active",value.positionCodes())==value.positionCodes().size()
+                && (value.positionCodes().isEmpty()
+                    || countIn("SELECT count(*) FROM platform.position WHERE code IN (:codes) AND active",value.positionCodes())==value.positionCodes().size())
                 && jdbc.sql("""
-                        SELECT count(*) FROM platform.work_unit_region_scope
-                        WHERE work_unit_code=:unit AND region_code IN (:regions)
+                        WITH RECURSIVE authorized_region(code) AS (
+                            SELECT scope.region_code
+                            FROM platform.work_unit_region_scope scope
+                            WHERE scope.work_unit_code=:unit
+                            UNION
+                            SELECT child.code
+                            FROM platform.region child
+                            JOIN authorized_region parent ON child.parent_code=parent.code
+                        )
+                        SELECT count(*) FROM authorized_region
+                        WHERE code IN (:regions)
                         """).param("unit",value.workUnitCode()).param("regions",value.regionCodes())
                         .query(Long.class).single()==value.regionCodes().size()
                 && (privileged || jdbc.sql("""
@@ -111,12 +121,22 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
         List<AssignmentOptions.Option> roles=jdbc.sql("""
                 SELECT code,name FROM platform.access_role WHERE active ORDER BY sort_order,code
                 """).query((row,index)->new AssignmentOptions.Option(row.getString(1),row.getString(2))).list();
-        List<AssignmentOptions.Option> positions=jdbc.sql("""
-                SELECT code,name FROM platform.position WHERE active ORDER BY sort_order,code
-                """).query((row,index)->new AssignmentOptions.Option(row.getString(1),row.getString(2))).list();
+        List<AssignmentOptions.Option> positions=List.of();
         List<String> regions=jdbc.sql("""
-                SELECT region_code FROM platform.work_unit_region_scope
-                WHERE work_unit_code=:unit ORDER BY region_code
+                WITH RECURSIVE authorized_region(code) AS (
+                    SELECT scope.region_code
+                    FROM platform.work_unit_region_scope scope
+                    WHERE scope.work_unit_code=:unit
+                    UNION
+                    SELECT child.code
+                    FROM platform.region child
+                    JOIN authorized_region parent ON child.parent_code=parent.code
+                )
+                SELECT region.code
+                FROM platform.region region
+                JOIN authorized_region authorized ON authorized.code=region.code
+                WHERE region.administrative_level='TOWNSHIP'
+                ORDER BY region.code
                 """).param("unit",workUnitCode).query(String.class).list();
         if(workUnits.stream().noneMatch(unit->unit.code().equals(workUnitCode)))return new AssignmentOptions(
                 workUnits,roles,positions,List.of());

@@ -22,11 +22,13 @@ final class DraftWorkbookRows {
         List<DraftWorkbookRow> result = new ArrayList<>();
         for (int rowIndex = 0; rowIndex < sheet.rows().size(); rowIndex++) {
             Map<String, String> values = new LinkedHashMap<>();
+            Map<String, String> normalizedValues = new LinkedHashMap<>();
             for (int column = 0; column < codes.size(); column++) {
-                values.put(codes.get(column), sheet.rows().get(rowIndex).get(column).trim());
+                values.put(codes.get(column), sheet.submittedRows().get(rowIndex).get(column).trim());
+                normalizedValues.put(codes.get(column), sheet.rows().get(rowIndex).get(column).trim());
             }
             systemGeneratedCodes.forEach(values::remove);
-            Map<String, String> normalizedValues = new LinkedHashMap<>(values);
+            systemGeneratedCodes.forEach(normalizedValues::remove);
             String objectType = fixedObjectType;
             String errorCode = null;
             String errorMessage = null;

@@ -15,6 +15,7 @@ public record OverviewDashboard(
         List<OverviewBusinessTable> businessTables) {
 
     public record Scope(
+            long prefectureCount,
             long countyCount,
             long townshipCount,
             long villageCount,
@@ -34,16 +35,11 @@ public record OverviewDashboard(
             String sourcePath,
             String sourceRelation,
             String coverageScope,
-            String calculationVersion,
-            List<RegionSurplusAuditSource> auditSources) {
+            String calculationVersion) {
         public Metric(String code, String name, String unitCode, String value, long sourceCount) {
             this(code, name, unitCode, value, sourceCount, null,
                     sourceCount > 0 ? "AVAILABLE" : "NO_APPROVED_SOURCES",
-                    null, null, null, null, null, List.of());
-        }
-
-        public Metric {
-            auditSources = auditSources == null ? List.of() : List.copyOf(auditSources);
+                    null, null, null, null, null);
         }
     }
 
