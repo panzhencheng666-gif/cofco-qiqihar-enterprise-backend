@@ -39,6 +39,7 @@ import tools.jackson.databind.ObjectMapper;
 class FormalSampleObservationRestIntegrationTest {
     private static final String ACTOR = "production-tester";
     private static final String RESTRICTED_ACTOR = "formal-observation-restricted";
+    private static final String COORDINATE_REVIEWER = "market-tester";
     private static final UUID SAMPLE_POINT_ID =
             UUID.fromString("f5100000-0000-0000-0000-000000000001");
     private static final String RECORD_ID = "f5100000-0000-0000-0000-000000000002";
@@ -90,9 +91,10 @@ class FormalSampleObservationRestIntegrationTest {
         jdbc.sql("""
                 INSERT INTO registry.sample_point(
                   sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
-                  governed_point,effective_from,created_by,updated_by)
+                  governed_point,effective_from,created_by,updated_by,created_at,updated_at)
                 VALUES(:samplePointId,'SURVEY_SITE','龙江县既有正式样本','230221','APPROVED','VALID',
-                  ST_SetSRID(ST_MakePoint(123.2000000,47.3000000),4326),DATE '2026-01-01',:actor,:actor)
+                  ST_SetSRID(ST_MakePoint(123.2000000,47.3000000),4326),DATE '2026-01-01',
+                  :actor,:actor,TIMESTAMPTZ '2026-08-28 09:00:00+08',TIMESTAMPTZ '2026-08-28 09:00:00+08')
                 """).param("samplePointId", SAMPLE_POINT_ID).param("actor", ACTOR).update();
         jdbc.sql("""
                 INSERT INTO production.production_record(
@@ -169,6 +171,7 @@ class FormalSampleObservationRestIntegrationTest {
                 .andExpect(jsonPath("$.data[0].regionName").isNotEmpty())
                 .andExpect(jsonPath("$.data[0].latitude").value("47.3000000"))
                 .andExpect(jsonPath("$.data[0].longitude").value("123.2000000"))
+                .andExpect(jsonPath("$.data[0].coordinateVersion").value(0))
                 .andExpect(jsonPath("$.data[0].effectiveFrom").value("2026-01-01"))
                 .andExpect(jsonPath("$.data[0].latestObservationId").value(RECORD_ID))
                 .andExpect(jsonPath("$.data[0].latestObservedAt").value("2026-08-20T01:30:00Z"))
@@ -297,6 +300,93 @@ class FormalSampleObservationRestIntegrationTest {
                     .as("%s eligible samples must use the overview formal-sample projection", domain)
                     .isEqualTo(samplePointIds(overview, "/data/items"));
         }
+    }
+
+    @Test
+    void publishesOneReviewedCoordinateToEligibleMapAndExportWithoutOverwritingBusinessLedgers()
+            throws Exception {
+        String submitted = mvc.perform(post("/api/v1/sample-point-coordinate-corrections/requests")
+                        .principal(() -> ACTOR)
+                        .header("Idempotency-Key", "formal-projection-coordinate-001")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"samplePointId":"%s","expectedVersion":0,
+                                 "originalLongitude":"123.2000000","originalLatitude":"47.3000000",
+                                 "correctedLongitude":"123.2100000","correctedLatitude":"47.3100000",
+                                 "coordinateSource":"FIELD_GPS",
+                                 "coordinateCollectedAt":"2026-08-29T02:00:00Z",
+                                 "verifiedAddress":"龙江县现场复核地址",
+                                 "changeReason":"现场复核发现原定位偏移",
+                                 "evidenceReference":"现场照片20260829-正式样本"}
+                                """.formatted(SAMPLE_POINT_ID)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.statusCode").value("PENDING_REVIEW"))
+                .andReturn().getResponse().getContentAsString();
+        String requestId = submitted.replaceFirst(
+                "(?s).*?\\\"requestId\\\":\\\"([^\\\"]+)\\\".*", "$1");
+
+        mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
+                        .principal(() -> ACTOR).queryParam("domain", "PRODUCTION")
+                        .queryParam("productCode", "CORN").queryParam("regionCode", "230221")
+                        .queryParam("year", "2026")
+                        .queryParam("observedAt", "2026-08-29T11:00:00+08:00"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].longitude").value("123.2000000"))
+                .andExpect(jsonPath("$.data[0].latitude").value("47.3000000"))
+                .andExpect(jsonPath("$.data[0].coordinateVersion").value(0));
+
+        mvc.perform(post("/api/v1/sample-point-coordinate-corrections/requests/{id}/review", requestId)
+                        .principal(() -> COORDINATE_REVIEWER)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"decision\":\"APPROVE\",\"reason\":\"独立核验坐标、地址和现场证据一致\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.statusCode").value("APPLIED"));
+
+        mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
+                        .principal(() -> ACTOR).queryParam("domain", "PRODUCTION")
+                        .queryParam("productCode", "CORN").queryParam("regionCode", "230221")
+                        .queryParam("year", "2026")
+                        .queryParam("observedAt", "2026-08-29T11:00:00+08:00"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].longitude").value("123.2100000"))
+                .andExpect(jsonPath("$.data[0].latitude").value("47.3100000"))
+                .andExpect(jsonPath("$.data[0].coordinateVersion").value(1));
+        mvc.perform(get("/api/v1/overview/sample-point-icons")
+                        .principal(() -> ACTOR).queryParam("domain", "PRODUCTION")
+                        .queryParam("productCode", "CORN").queryParam("regionCode", "230221")
+                        .queryParam("year", "2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].samplePointId").value(SAMPLE_POINT_ID.toString()))
+                .andExpect(jsonPath("$.data[0].longitude").value(123.21))
+                .andExpect(jsonPath("$.data[0].latitude").value(47.31));
+        byte[] export = mvc.perform(get("/api/v1/overview/sample-points/export")
+                        .principal(() -> ACTOR).queryParam("year", "2026")
+                        .queryParam("regionCode", "230221"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+        assertThat(new String(export, java.nio.charset.StandardCharsets.UTF_8))
+                .contains("123.21", "47.31");
+
+        assertAll(
+                () -> assertThat(jdbc.sql("""
+                        SELECT value FROM production.production_record_submission_metadata
+                        WHERE record_id=:recordId AND field_code='PROD_SAMPLE_LONGITUDE'
+                        """).param("recordId", RECORD_ID).query(String.class).single())
+                        .isEqualTo("123.2000000"),
+                () -> assertThat(jdbc.sql("""
+                        SELECT value FROM market.market_record_core_value
+                        WHERE record_id=:recordId AND field_code='MKT_SAMPLE_LONGITUDE'
+                        """).param("recordId", MARKET_RECORD_ID).query(String.class).single())
+                        .isEqualTo("123.2000000"),
+                () -> assertThat(jdbc.sql("""
+                        SELECT sample_longitude::text FROM logistics.route_event WHERE event_id=:recordId
+                        """).param("recordId", UUID.fromString(LOGISTICS_RECORD_ID))
+                        .query(String.class).single()).isEqualTo("123.200000"),
+                () -> assertThat(jdbc.sql("""
+                        SELECT count(*) FROM platform.business_audit_event
+                        WHERE aggregate_id=:requestId
+                          AND action_code='SAMPLE_POINT_COORDINATE_CORRECTION_APPLIED'
+                          AND detail->>'evidenceReference'='现场照片20260829-正式样本'
+                        """).param("requestId", requestId).query(Long.class).single()).isOne());
     }
 
     @Test

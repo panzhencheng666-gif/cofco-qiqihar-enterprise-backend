@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade.samplepoint.coordinate.interfaceadapter;
 
+import com.cofco.qiqihar.graintrade.samplepoint.coordinate.application.FormalSampleCoordinateChangeCommand;
 import com.cofco.qiqihar.graintrade.samplepoint.coordinate.application.SamplePointCoordinateCorrectionService;
 import com.cofco.qiqihar.graintrade.samplepoint.coordinate.application.SamplePointCoordinateCorrectionView.JobView;
 import com.cofco.qiqihar.graintrade.samplepoint.coordinate.application.SamplePointCoordinateCorrectionView.ReviewView;
@@ -82,6 +83,14 @@ public class SamplePointCoordinateCorrectionController {
     @GetMapping("/requests")
     ApiResponse<List<ReviewView>> reviewQueue() {
         return new ApiResponse<>(service.reviewQueue());
+    }
+
+    @PostMapping("/requests")
+    ResponseEntity<ApiResponse<ReviewView>> submit(
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestBody FormalSampleCoordinateChangeCommand request) {
+        return ResponseEntity.status(201)
+                .body(new ApiResponse<>(service.submit(idempotencyKey, request)));
     }
 
     @PostMapping("/requests/{requestId}/review")

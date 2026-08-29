@@ -70,6 +70,26 @@ public class JdbcSamplePointCoordinateCorrectionRepository {
                 .query((row, index) -> Boolean.TRUE).single();
     }
 
+    public Optional<Candidate> lockApprovedCandidate(UUID samplePointId) {
+        List<Candidate> values = jdbc.sql("""
+                SELECT point.sample_point_id,point.version,point.canonical_name,point.region_code,
+                       region.name region_name,point.kind_code,
+                       ST_X(point.governed_point)::numeric longitude,
+                       ST_Y(point.governed_point)::numeric latitude
+                FROM registry.sample_point point
+                JOIN platform.region region ON region.code=point.region_code
+                WHERE point.sample_point_id=:id AND point.approval_state='APPROVED'
+                  AND point.location_state='VALID' AND point.governed_point IS NOT NULL
+                FOR UPDATE OF point
+                """).param("id", samplePointId).query((row, index) -> new Candidate(
+                        row.getObject("sample_point_id", UUID.class), row.getLong("version"),
+                        row.getString("canonical_name"), row.getString("region_code"),
+                        row.getString("region_name"), row.getString("kind_code"),
+                        row.getBigDecimal("longitude"), row.getBigDecimal("latitude")))
+                .list();
+        return values.stream().findFirst();
+    }
+
     public Optional<ExportSnapshot> findExport(
             UUID batchId, String subjectId, String workUnitCode) {
         return jsonOne("""
@@ -104,6 +124,20 @@ public class JdbcSamplePointCoordinateCorrectionRepository {
                 .param("actor", subjectId).param("workUnit", workUnitCode)
                 .param("key", idempotencyKey).query(String.class).list();
         return values.stream().findFirst().map(value -> read(value, JobSnapshot.class));
+    }
+
+    public Optional<RequestSnapshot> findRequestByIdempotency(
+            String subjectId, String workUnitCode, String idempotencyKey) {
+        List<String> values = jdbc.sql("""
+                SELECT detail::text FROM platform.business_audit_event
+                WHERE aggregate_type=:type AND action_code=:action
+                  AND actor_subject_id=:actor AND work_unit_code=:workUnit
+                  AND detail->>'idempotencyKey'=:key
+                ORDER BY occurred_at DESC,event_id DESC LIMIT 1
+                """).param("type", REQUEST_TYPE).param("action", REQUEST_SUBMITTED)
+                .param("actor", subjectId).param("workUnit", workUnitCode)
+                .param("key", idempotencyKey).query(String.class).list();
+        return values.stream().findFirst().map(value -> read(value, RequestSnapshot.class));
     }
 
     public List<JobSnapshot> history(String subjectId, String workUnitCode) {

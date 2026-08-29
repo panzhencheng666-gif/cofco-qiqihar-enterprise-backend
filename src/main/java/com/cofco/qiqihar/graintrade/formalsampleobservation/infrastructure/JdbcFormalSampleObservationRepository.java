@@ -163,7 +163,7 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                        object_type.name object_type_name,point.region_code,region.name region_name,
                        trim(to_char(ST_Y(point.governed_point),'FM999990.0000000')) latitude,
                        trim(to_char(ST_X(point.governed_point),'FM999990.0000000')) longitude,
-                       point.effective_from,point.effective_to,
+                       point.version coordinate_version,point.effective_from,point.effective_to,
                        latest.source_record_id,latest.latest_observed_at,latest.latest_values
                 FROM registry.sample_point point
                 JOIN platform.region region ON region.code=point.region_code
@@ -200,6 +200,7 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                         row.getString("object_type_name"), domain, productCode,
                         row.getString("region_code"), row.getString("region_name"),
                         row.getString("latitude"), row.getString("longitude"),
+                        row.getLong("coordinate_version"),
                         row.getObject("effective_from", LocalDate.class),
                         row.getObject("effective_to", LocalDate.class),
                         row.getString("source_record_id"),

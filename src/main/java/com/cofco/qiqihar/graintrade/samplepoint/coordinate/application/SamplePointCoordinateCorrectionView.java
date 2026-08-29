@@ -43,16 +43,21 @@ public final class SamplePointCoordinateCorrectionView {
     public record RequestSnapshot(
             UUID requestId, UUID jobId, UUID batchId, UUID samplePointId,
             long expectedVersion, String canonicalName, String regionCode,
+            String regionName,
             BigDecimal originalLongitude, BigDecimal originalLatitude,
             BigDecimal correctedLongitude, BigDecimal correctedLatitude,
             String coordinateSource, String correctionNote, String requestedBy,
-            String workUnitCode, Instant createdAt) {}
+            String workUnitCode, Instant createdAt, Instant coordinateCollectedAt,
+            String verifiedAddress, String changeReason, String evidenceReference,
+            String idempotencyKey, String requestSha256) {}
 
     public record ReviewView(
-            UUID requestId, UUID samplePointId, String canonicalName, String regionCode,
+            UUID requestId, UUID samplePointId, long expectedVersion,
+            String canonicalName, String regionCode, String regionName,
             BigDecimal originalLongitude, BigDecimal originalLatitude,
             BigDecimal correctedLongitude, BigDecimal correctedLatitude,
             String coordinateSource, String correctionNote, String requestedBy,
-            Instant createdAt, String statusCode, String reviewedBy,
-            String reviewReason, Instant reviewedAt) {}
+            Instant createdAt, Instant coordinateCollectedAt, String verifiedAddress,
+            String changeReason, String evidenceReference, String statusCode,
+            String reviewedBy, String reviewReason, Instant reviewedAt) {}
 }

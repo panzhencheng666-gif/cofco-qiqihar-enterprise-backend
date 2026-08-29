@@ -16,6 +16,7 @@ public record EligibleFormalSample(
         String regionName,
         String latitude,
         String longitude,
+        long coordinateVersion,
         LocalDate effectiveFrom,
         LocalDate effectiveTo,
         String latestObservationId,

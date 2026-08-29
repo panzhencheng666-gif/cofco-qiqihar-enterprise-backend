@@ -48,6 +48,8 @@ import tools.jackson.databind.ObjectMapper;
 @Service
 public class SamplePointCoordinateCorrectionService {
     private static final int MAX_BYTES = 50 * 1024 * 1024;
+    private static final Set<String> COORDINATE_SOURCES = Set.of(
+            "FIELD_GPS", "EVIDENCE_PHOTO", "OFFICIAL_GEOCODE", "VERIFIED_MAP", "OTHER");
     private final JdbcSamplePointCoordinateCorrectionRepository repository;
     private final SamplePointCoordinateGuard coordinateGuard;
     private final AccessControl access;
@@ -186,6 +188,63 @@ public class SamplePointCoordinateCorrectionService {
     }
 
     @Transactional
+    public ReviewView submit(
+            String idempotencyKey, FormalSampleCoordinateChangeCommand command) {
+        SecurityPrincipal principal = access.require("BUSINESS_IMPORT", null);
+        validateDirectRequest(idempotencyKey, command);
+        String requestSha256 = digest(canonicalRequest(command).getBytes(StandardCharsets.UTF_8));
+        repository.lockIdempotency(principal.subjectId(), idempotencyKey);
+        var existing = repository.findRequestByIdempotency(
+                principal.subjectId(), principal.workUnitCode(), idempotencyKey);
+        if (existing.isPresent()) {
+            if (!requestSha256.equals(existing.get().requestSha256())) {
+                throw new ConflictException("SAMPLE_POINT_CORRECTION_IDEMPOTENCY_CONFLICT",
+                        "相同提交标识已用于其他坐标变更申请");
+            }
+            return reviewView(existing.get(), "PENDING_REVIEW", null, null, null);
+        }
+
+        Candidate candidate = repository.lockApprovedCandidate(command.samplePointId())
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "FORMAL_SAMPLE_COORDINATE_CHANGE_NOT_AVAILABLE",
+                        "正式样本不存在或当前状态不可申请坐标变更"));
+        access.require("BUSINESS_IMPORT", candidate.regionCode());
+        if (candidate.version() != command.expectedVersion()
+                || candidate.longitude().compareTo(command.originalLongitude()) != 0
+                || candidate.latitude().compareTo(command.originalLatitude()) != 0) {
+            throw new ConflictException("SAMPLE_POINT_CORRECTION_STALE",
+                    "样本点版本或当前坐标已变化，请刷新后重新申请");
+        }
+        if (candidate.longitude().compareTo(command.correctedLongitude()) == 0
+                && candidate.latitude().compareTo(command.correctedLatitude()) == 0) {
+            throw new ClientRequestException("SAMPLE_POINT_COORDINATE_UNCHANGED",
+                    "变更后坐标与当前坐标相同");
+        }
+        if (!repository.withinRegion(candidate.regionCode(),
+                command.correctedLongitude(), command.correctedLatitude())) {
+            throw new ConflictException("SAMPLE_POINT_CORRECTION_OUTSIDE_REGION",
+                    "变更后坐标不在样本点所属行政边界内");
+        }
+        coordinateGuard.lockAndRequireAvailable(candidate.samplePointId(),
+                command.correctedLongitude(), command.correctedLatitude());
+
+        Instant now = clock.instant();
+        UUID requestId = UUID.randomUUID();
+        RequestSnapshot request = new RequestSnapshot(
+                requestId, null, null, candidate.samplePointId(), candidate.version(),
+                candidate.canonicalName(), candidate.regionCode(), candidate.regionName(),
+                candidate.longitude(), candidate.latitude(), command.correctedLongitude(),
+                command.correctedLatitude(), command.coordinateSource().trim(),
+                command.changeReason().trim(), principal.subjectId(), principal.workUnitCode(), now,
+                command.coordinateCollectedAt(), command.verifiedAddress().trim(),
+                command.changeReason().trim(), command.evidenceReference().trim(),
+                idempotencyKey, requestSha256);
+        audit.record(principal, REQUEST_TYPE, requestId.toString(), REQUEST_SUBMITTED,
+                now, json(request));
+        return reviewView(request, "PENDING_REVIEW", null, null, null);
+    }
+
+    @Transactional
     public ReviewView review(UUID requestId, String decision, String reason) {
         SecurityPrincipal principal = access.require("BUSINESS_APPROVE", null);
         RequestSnapshot request = repository.findRequest(requestId)
@@ -243,13 +302,23 @@ public class SamplePointCoordinateCorrectionService {
             throw new ConflictException("SAMPLE_POINT_CORRECTION_STALE",
                     "样本点已发生变化，请重新导出修正清单");
         }
+        Map<String, Object> appliedDetail = new LinkedHashMap<>();
+        appliedDetail.put("requestId", requestId);
+        appliedDetail.put("samplePointId", request.samplePointId());
+        appliedDetail.put("regionCode", request.regionCode());
+        appliedDetail.put("requestedBy", request.requestedBy());
+        appliedDetail.put("reason", reason.trim());
+        appliedDetail.put("longitude", request.correctedLongitude());
+        appliedDetail.put("latitude", request.correctedLatitude());
+        appliedDetail.put("coordinateSource", request.coordinateSource());
+        appliedDetail.put("coordinateCollectedAt", request.coordinateCollectedAt());
+        appliedDetail.put("verifiedAddress", request.verifiedAddress());
+        appliedDetail.put("changeReason", request.changeReason());
+        appliedDetail.put("evidenceReference", request.evidenceReference());
+        appliedDetail.put("requestSha256", request.requestSha256());
+        appliedDetail.put("privilegedSelfReview", privilegedSelfReview);
         audit.record(principal, request.workUnitCode(), REQUEST_TYPE, requestId.toString(),
-                REQUEST_APPLIED, now, json(Map.of(
-                        "requestId", requestId, "samplePointId", request.samplePointId(),
-                        "regionCode", request.regionCode(), "requestedBy", request.requestedBy(),
-                        "reason", reason.trim(), "longitude", request.correctedLongitude(),
-                        "latitude", request.correctedLatitude(),
-                        "privilegedSelfReview", privilegedSelfReview)));
+                REQUEST_APPLIED, now, json(appliedDetail));
         return reviewView(request, "APPLIED", principal.subjectId(), reason.trim(), now);
     }
 
@@ -302,9 +371,11 @@ public class SamplePointCoordinateCorrectionService {
                 RequestSnapshot request = new RequestSnapshot(
                         requestId, jobId, export.batchId(), row.samplePointId(),
                         row.expectedVersion(), row.canonicalName(), row.regionCode(),
+                        row.regionName(),
                         row.originalLongitude(), row.originalLatitude(), row.correctedLongitude(),
                         row.correctedLatitude(), row.coordinateSource(), row.correctionNote(),
-                        principal.subjectId(), principal.workUnitCode(), now);
+                        principal.subjectId(), principal.workUnitCode(), now, null, null,
+                        row.correctionNote(), null, null, null);
                 audit.record(principal, REQUEST_TYPE, requestId.toString(), REQUEST_SUBMITTED,
                         now, json(request));
                 results.add(new RowResult(index + 2, row.samplePointId(), "PENDING_REVIEW",
@@ -426,11 +497,71 @@ public class SamplePointCoordinateCorrectionService {
 
     private static ReviewView reviewView(
             RequestSnapshot request, String status, String reviewer, String reason, Instant reviewedAt) {
-        return new ReviewView(request.requestId(), request.samplePointId(), request.canonicalName(),
-                request.regionCode(), request.originalLongitude(), request.originalLatitude(),
+        return new ReviewView(request.requestId(), request.samplePointId(), request.expectedVersion(),
+                request.canonicalName(), request.regionCode(), request.regionName(),
+                request.originalLongitude(), request.originalLatitude(),
                 request.correctedLongitude(), request.correctedLatitude(),
                 request.coordinateSource(), request.correctionNote(), request.requestedBy(),
-                request.createdAt(), status, reviewer, reason, reviewedAt);
+                request.createdAt(), request.coordinateCollectedAt(), request.verifiedAddress(),
+                request.changeReason(), request.evidenceReference(), status, reviewer, reason,
+                reviewedAt);
+    }
+
+    private void validateDirectRequest(
+            String idempotencyKey, FormalSampleCoordinateChangeCommand command) {
+        if (idempotencyKey == null || idempotencyKey.isBlank()
+                || idempotencyKey.length() < 8 || idempotencyKey.length() > 128
+                || command == null || command.samplePointId() == null
+                || command.expectedVersion() == null || command.expectedVersion() < 0
+                || command.originalLongitude() == null || command.originalLatitude() == null
+                || command.correctedLongitude() == null || command.correctedLatitude() == null
+                || blankOrLong(command.coordinateSource(), 40)
+                || !COORDINATE_SOURCES.contains(command.coordinateSource().trim())
+                || command.coordinateCollectedAt() == null
+                || command.coordinateCollectedAt().isAfter(clock.instant())
+                || blankOrLong(command.verifiedAddress(), 300)
+                || blankOrLong(command.changeReason(), 500)
+                || blankOrLong(command.evidenceReference(), 500)) {
+            throw invalidCoordinate();
+        }
+        validateCoordinate(command.originalLongitude(), command.originalLatitude());
+        validateCoordinate(command.correctedLongitude(), command.correctedLatitude());
+        if (command.correctedLongitude().compareTo(BigDecimal.ZERO) == 0
+                && command.correctedLatitude().compareTo(BigDecimal.ZERO) == 0) {
+            throw new ClientRequestException("SAMPLE_POINT_COORDINATE_PLACEHOLDER",
+                    "经纬度不能使用 0，0 占位坐标");
+        }
+    }
+
+    private static void validateCoordinate(BigDecimal longitude, BigDecimal latitude) {
+        if (longitude.scale() > 7 || latitude.scale() > 7
+                || longitude.compareTo(BigDecimal.valueOf(-180)) < 0
+                || longitude.compareTo(BigDecimal.valueOf(180)) > 0
+                || latitude.compareTo(BigDecimal.valueOf(-90)) < 0
+                || latitude.compareTo(BigDecimal.valueOf(90)) > 0) {
+            throw invalidCoordinate();
+        }
+    }
+
+    private static boolean blankOrLong(String value, int maxLength) {
+        return value == null || value.isBlank() || value.trim().length() > maxLength;
+    }
+
+    private static String canonicalRequest(FormalSampleCoordinateChangeCommand command) {
+        return String.join("|", command.samplePointId().toString(),
+                Long.toString(command.expectedVersion()),
+                command.originalLongitude().toPlainString(),
+                command.originalLatitude().toPlainString(),
+                command.correctedLongitude().toPlainString(),
+                command.correctedLatitude().toPlainString(),
+                command.coordinateSource().trim(), command.coordinateCollectedAt().toString(),
+                command.verifiedAddress().trim(), command.changeReason().trim(),
+                command.evidenceReference().trim());
+    }
+
+    private static ClientRequestException invalidCoordinate() {
+        return new ClientRequestException("INVALID_SAMPLE_POINT_COORDINATE",
+                "经纬度、来源、采集时间、地址、变更原因或证据不符合要求");
     }
 
     private void validateUpload(String key, String filename, String mediaType, byte[] bytes) {
