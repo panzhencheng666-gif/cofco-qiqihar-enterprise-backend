@@ -10,6 +10,9 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.AdministrativeBoundarySnapshot;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneId;
 import java.util.Set;
 import java.util.UUID;
 import javax.sql.DataSource;
@@ -18,7 +21,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.web.servlet.MockMvc;
@@ -28,6 +35,7 @@ import tools.jackson.databind.ObjectMapper;
 @SpringBootTest(classes = GrainTradeApplication.class)
 @AutoConfigureMockMvc
 @UsesProtectedTestDatabase
+@Import(FormalSampleObservationRestIntegrationTest.FixedClockConfiguration.class)
 class FormalSampleObservationRestIntegrationTest {
     private static final String ACTOR = "production-tester";
     private static final String RESTRICTED_ACTOR = "formal-observation-restricted";
@@ -312,6 +320,54 @@ class FormalSampleObservationRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].latestObservationId").value(RECORD_ID))
                 .andExpect(jsonPath("$.data[0].latestValues.surveyYear").value("2026"));
+    }
+
+    @Test
+    void keepsTheCurrentOverviewProjectionAlignedBeforeAFormalSampleBecomesEffective()
+            throws Exception {
+        makeSampleEffectiveFrom2024November();
+
+        String eligible = mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
+                        .principal(() -> ACTOR).queryParam("domain", "PRODUCTION")
+                        .queryParam("productCode", "CORN").queryParam("regionCode", "230221")
+                        .queryParam("year", "2024")
+                        .queryParam("observedAt", "2024-08-29T12:00:00+08:00"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        String overview = mvc.perform(get("/api/v1/overview/sample-points")
+                        .principal(() -> ACTOR).queryParam("categoryCode", "PRODUCTION")
+                        .queryParam("productCode", "CORN").queryParam("regionCode", "230221")
+                        .queryParam("year", "2024"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+
+        assertThat(samplePointIds(eligible, "/data")).isEmpty();
+        assertThat(samplePointIds(overview, "/data/items"))
+                .as("current overview must not expose a formal sample before its effective date")
+                .isEqualTo(samplePointIds(eligible, "/data"));
+    }
+
+    @Test
+    void usesTheRequestedObservationDateForEligibleSamplesWithoutChangingTheCurrentOverviewCutoff()
+            throws Exception {
+        makeSampleEffectiveFrom2024November();
+
+        String eligible = mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
+                        .principal(() -> ACTOR).queryParam("domain", "PRODUCTION")
+                        .queryParam("productCode", "CORN").queryParam("regionCode", "230221")
+                        .queryParam("year", "2024")
+                        .queryParam("observedAt", "2024-11-01T12:00:00+08:00"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        String overview = mvc.perform(get("/api/v1/overview/sample-points")
+                        .principal(() -> ACTOR).queryParam("categoryCode", "PRODUCTION")
+                        .queryParam("productCode", "CORN").queryParam("regionCode", "230221")
+                        .queryParam("year", "2024"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+
+        assertThat(samplePointIds(eligible, "/data"))
+                .as("eligibility must use the requested observation date")
+                .containsExactly(SAMPLE_POINT_ID);
+        assertThat(samplePointIds(overview, "/data/items"))
+                .as("current overview keeps the selected year's current-date cutoff")
+                .isEmpty();
     }
 
     @Test
@@ -696,5 +752,34 @@ class FormalSampleObservationRestIntegrationTest {
         return java.util.stream.StreamSupport.stream(samples.spliterator(), false)
                 .map(sample -> UUID.fromString(sample.get("samplePointId").asText()))
                 .collect(java.util.stream.Collectors.toSet());
+    }
+
+    private void makeSampleEffectiveFrom2024November() {
+        jdbc.sql("""
+                UPDATE registry.sample_point
+                SET effective_from=DATE '2024-11-01'
+                WHERE sample_point_id=:samplePointId
+                """).param("samplePointId", SAMPLE_POINT_ID).update();
+        jdbc.sql("""
+                INSERT INTO production.production_record(
+                  record_id,product_code,object_type_code,region_code,survey_date,reported_at,
+                  cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,
+                  survey_year,survey_period_precision,survey_period_governance_state,sample_point_id)
+                VALUES(:recordId,'CORN','FARMER','230221',DATE '2024-11-01',
+                  TIMESTAMPTZ '2024-11-01 09:30:00+08',120,520,'APPROVED',:actor,
+                  2024,'YEAR','CONFIRMED',:samplePointId)
+                """).param("recordId", FUTURE_PRODUCTION_RECORD_ID).param("actor", ACTOR)
+                .param("samplePointId", SAMPLE_POINT_ID).update();
+    }
+
+    @TestConfiguration(proxyBeanMethods = false)
+    static class FixedClockConfiguration {
+        @Bean
+        @Primary
+        Clock fixedFormalSampleProjectionClock() {
+            return Clock.fixed(
+                    Instant.parse("2026-08-29T04:00:00Z"),
+                    ZoneId.of("Asia/Shanghai"));
+        }
     }
 }

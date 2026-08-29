@@ -10,6 +10,7 @@ import com.cofco.qiqihar.graintrade.overview.application.OverviewSamplePointSnap
 import com.cofco.qiqihar.graintrade.overview.api.CurrentOverviewSamplePoint;
 import com.cofco.qiqihar.graintrade.overview.api.CurrentOverviewSamplePointReader;
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -49,11 +50,13 @@ public class JdbcOverviewSamplePointRepository
                     "TRANSIT_TIME", "BOARD_PRICE"));
 
     private final JdbcClient jdbc;
+    private final Clock clock;
     private final Map<ProjectionCacheKey, CompletableFuture<EntityProjection>> baseProjectionInFlight =
             new ConcurrentHashMap<>();
 
-    public JdbcOverviewSamplePointRepository(JdbcClient jdbc) {
+    public JdbcOverviewSamplePointRepository(JdbcClient jdbc, Clock clock) {
         this.jdbc = jdbc;
+        this.clock = clock;
     }
 
     @Override
@@ -436,7 +439,18 @@ public class JdbcOverviewSamplePointRepository
     public List<CurrentOverviewSamplePoint> read(
             int year, String productCode, String regionCode, String categoryCode,
             Set<String> authorizedRegionCodes) {
-        return icons(year, productCode, regionCode, categoryCode, null, null, authorizedRegionCodes)
+        return readAtLifecycleCutoff(year, productCode, regionCode, categoryCode,
+                projectionDate(year), authorizedRegionCodes);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<CurrentOverviewSamplePoint> readAtLifecycleCutoff(
+            int year, String productCode, String regionCode, String categoryCode,
+            LocalDate lifecycleCutoff, Set<String> authorizedRegionCodes) {
+        return iconsFromProjection(projection(
+                        year, productCode, regionCode, categoryCode, null, null,
+                        authorizedRegionCodes, false, lifecycleCutoff), productCode)
                 .stream()
                 .map(icon -> new CurrentOverviewSamplePoint(
                         icon.samplePointId(), icon.longitude(), icon.latitude()))
@@ -607,6 +621,14 @@ public class JdbcOverviewSamplePointRepository
             int year, String productCode, String regionCode, Set<String> authorizedRegionCodes,
             boolean includePeriodHistory, List<UUID> samplePointIds,
             boolean includeSampleContact) {
+        return sourceRows(year, productCode, regionCode, authorizedRegionCodes,
+                includePeriodHistory, samplePointIds, includeSampleContact, projectionDate(year));
+    }
+
+    private List<SourceRow> sourceRows(
+            int year, String productCode, String regionCode, Set<String> authorizedRegionCodes,
+            boolean includePeriodHistory, List<UUID> samplePointIds,
+            boolean includeSampleContact, LocalDate projectionDate) {
         jdbc.sql("SET LOCAL enable_nestloop=off").update();
         return jdbc.sql("""
                 WITH RECURSIVE requested(code) AS (
@@ -696,6 +718,9 @@ public class JdbcOverviewSamplePointRepository
                   AND source.unresolved_reason IS NULL
                   AND point.approval_state='APPROVED'
                   AND point.location_state='VALID'
+                  AND (:includePeriodHistory OR (
+                    point.effective_from<=:projectionDate
+                    AND (point.effective_to IS NULL OR point.effective_to>=:projectionDate)))
                   AND resolution.resolution_action IS DISTINCT FROM 'VOID'
                   AND (
                     COALESCE(
@@ -718,6 +743,7 @@ public class JdbcOverviewSamplePointRepository
                         ? List.of(new UUID(0L, 0L)) : samplePointIds)
                 .param("region", regionCode)
                 .param("includePeriodHistory", includePeriodHistory)
+                .param("projectionDate", projectionDate)
                 .param("includeSampleContact", includeSampleContact)
                 .param("unrestricted", unrestricted(authorizedRegionCodes))
                 .param("authorizedRegionList", authorizedRegionList(authorizedRegionCodes))
@@ -987,6 +1013,10 @@ public class JdbcOverviewSamplePointRepository
         return value == null ? null : decimal(value) + " 度";
     }
 
+    private LocalDate projectionDate(int year) {
+        return LocalDate.now(clock).withYear(year);
+    }
+
     private record DirectoryValue(String code, String label, String unit, String value) {}
 
     private EntityProjection projection(int year, String productCode, String regionCode, String categoryCode,
@@ -998,9 +1028,16 @@ public class JdbcOverviewSamplePointRepository
     private EntityProjection projection(int year, String productCode, String regionCode, String categoryCode,
             String typeCode, String query, Set<String> authorizedRegionCodes,
             boolean loadAllProducts) {
+        return projection(year, productCode, regionCode, categoryCode, typeCode, query,
+                authorizedRegionCodes, loadAllProducts, projectionDate(year));
+    }
+
+    private EntityProjection projection(int year, String productCode, String regionCode, String categoryCode,
+            String typeCode, String query, Set<String> authorizedRegionCodes,
+            boolean loadAllProducts, LocalDate projectionDate) {
         if (categoryCode == null && typeCode == null && query == null) {
             ProjectionCacheKey key = new ProjectionCacheKey(
-                    year, productCode, regionCode, loadAllProducts,
+                    year, productCode, regionCode, loadAllProducts, projectionDate,
                     authorizedRegionCodes.stream().sorted().toList());
             CompletableFuture<EntityProjection> created = new CompletableFuture<>();
             CompletableFuture<EntityProjection> inFlight =
@@ -1009,7 +1046,7 @@ public class JdbcOverviewSamplePointRepository
             try {
                 EntityProjection loaded = loadProjection(
                         year, productCode, regionCode, null, null, null,
-                        authorizedRegionCodes, loadAllProducts);
+                        authorizedRegionCodes, loadAllProducts, projectionDate);
                 created.complete(loaded);
                 return loaded;
             } catch (RuntimeException error) {
@@ -1020,16 +1057,17 @@ public class JdbcOverviewSamplePointRepository
             }
         }
         return loadProjection(year, productCode, regionCode, categoryCode, typeCode, query,
-                authorizedRegionCodes, loadAllProducts);
+                authorizedRegionCodes, loadAllProducts, projectionDate);
     }
 
     private EntityProjection loadProjection(
             int year, String productCode, String regionCode, String categoryCode,
             String typeCode, String query, Set<String> authorizedRegionCodes,
-            boolean loadAllProducts) {
+            boolean loadAllProducts, LocalDate projectionDate) {
         List<SourceRow> rows = sourceRows(
                 year, loadAllProducts ? null : productCode,
-                regionCode, authorizedRegionCodes, false, List.of(), query != null);
+                regionCode, authorizedRegionCodes, false, List.of(), query != null,
+                projectionDate);
         Map<UUID, List<SourceRow>> byPoint = rows.stream()
                 .filter(SourceRow::approvedPoint)
                 .collect(Collectors.groupingBy(SourceRow::samplePointId,
@@ -1428,7 +1466,7 @@ public class JdbcOverviewSamplePointRepository
     private record AggregateRegion(String code, String name, String level) {}
     private record ProjectionCacheKey(
             int year, String productCode, String regionCode, boolean loadAllProducts,
-            List<String> authorizedRegionCodes) {}
+            LocalDate projectionDate, List<String> authorizedRegionCodes) {}
     private record EntityProjection(List<Entity> entities, List<SourceRow> corrections) {}
     private record Entity(
             UUID samplePointId,

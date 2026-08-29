@@ -71,8 +71,8 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
             LocalDate observedOn,
             Set<String> authorizedRegionCodes) {
         if (authorizedRegionCodes.isEmpty()) return List.of();
-        Set<UUID> currentSamplePointIds = currentOverviewSamplePoints.read(
-                        observedOn.getYear(), productCode, regionCode, domain.name(),
+        Set<UUID> currentSamplePointIds = currentOverviewSamplePoints.readAtLifecycleCutoff(
+                        observedOn.getYear(), productCode, regionCode, domain.name(), observedOn,
                         authorizedRegionCodes).stream()
                 .map(CurrentOverviewSamplePoint::samplePointId)
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
