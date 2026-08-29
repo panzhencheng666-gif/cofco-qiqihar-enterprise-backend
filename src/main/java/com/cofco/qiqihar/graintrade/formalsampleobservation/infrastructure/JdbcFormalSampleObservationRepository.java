@@ -24,6 +24,30 @@ import org.springframework.stereotype.Repository;
 
 @Repository
 public class JdbcFormalSampleObservationRepository implements FormalSampleObservationRepository {
+    private static final String LOGISTICS_PUBLIC_VALUES_SQL = """
+            jsonb_build_object('productCode',event.product_code,
+              'surveyYear',event.survey_year::text,
+              'surveyMonth',COALESCE(event.survey_month::text,''),
+              'LOG_SAMPLE_NAME',event.source_organization,
+              'LOG_REGION',event.business_region_code,
+              'LOG_REPORTER',event.reporter,
+              'LOG_SAMPLE_CONTACT',event.sample_contact,
+              'LOG_SAMPLE_LATITUDE',event.sample_latitude::text,
+              'LOG_SAMPLE_LONGITUDE',event.sample_longitude::text,
+              'LOG_TRANSPORT_MODE',event.transport_mode_code,
+              'LOG_DIRECTION',event.direction_code)
+            || COALESCE((SELECT jsonb_object_agg(value.field_code,value.value)
+                FROM logistics.route_event_core_value value
+                WHERE value.event_id=event.event_id),'{}'::jsonb)
+            || COALESCE((SELECT jsonb_object_agg(definition.code,fact.value::text)
+                FROM logistics.route_fact fact
+                JOIN platform.logistics_core_field_definition definition
+                  ON definition.binding='FACT.' || fact.fact_code
+                JOIN platform.logistics_core_field_applicability applicability
+                  ON applicability.field_code=definition.code
+                 AND applicability.product_code=event.product_code
+                WHERE fact.event_id=event.event_id),'{}'::jsonb)
+            """;
     private final JdbcClient jdbc;
     private final ObjectMapper objectMapper;
     private final CurrentOverviewSamplePointReader currentOverviewSamplePoints;
@@ -123,20 +147,7 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                     SELECT event.event_id::text source_record_id,
                            NULL::varchar object_type_code,
                            event.reported_at latest_observed_at,
-                           jsonb_build_object('productCode',event.product_code,
-                             'surveyYear',event.survey_year::text,
-                             'surveyMonth',COALESCE(event.survey_month::text,''),
-                             'LOG_SAMPLE_NAME',event.source_organization,
-                             'LOG_REGION',event.business_region_code,
-                             'LOG_REPORTER',event.reporter,
-                             'LOG_SAMPLE_CONTACT',event.sample_contact,
-                             'LOG_SAMPLE_LATITUDE',event.sample_latitude::text,
-                             'LOG_SAMPLE_LONGITUDE',event.sample_longitude::text,
-                             'LOG_TRANSPORT_MODE',event.transport_mode_code,
-                             'LOG_DIRECTION',event.direction_code)
-                           || COALESCE((SELECT jsonb_object_agg(value.field_code,value.value)
-                               FROM logistics.route_event_core_value value
-                               WHERE value.event_id=event.event_id),'{}'::jsonb) latest_values
+                           %s latest_values
                     FROM logistics.route_event event
                     WHERE event.sample_point_id=point.sample_point_id
                       AND event.product_code=:productCode
@@ -145,7 +156,7 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                       AND event.survey_period_governance_state='CONFIRMED'
                     ORDER BY event.collection_date DESC,event.updated_at DESC,event.event_id DESC
                     LIMIT 1
-                    """;
+                    """.formatted(LOGISTICS_PUBLIC_VALUES_SQL);
         };
         return jdbc.sql("""
                 SELECT point.sample_point_id,point.canonical_name,latest.object_type_code,
@@ -301,19 +312,7 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                            COALESCE(receipt.official_saved_at,event.updated_at,event.reported_at) official_saved_at,
                            COALESCE(NULLIF(actor.display_name,''),'历史导入') actor_display_name,
                            receipt.observation_id,receipt.projection_version,event.survey_year,
-                           jsonb_build_object('productCode',event.product_code,
-                             'surveyYear',event.survey_year::text,
-                             'surveyMonth',COALESCE(event.survey_month::text,''),
-                             'LOG_SAMPLE_NAME',event.source_organization,
-                             'LOG_REGION',event.business_region_code,'LOG_REPORTER',event.reporter,
-                             'LOG_SAMPLE_CONTACT',event.sample_contact,
-                             'LOG_SAMPLE_LATITUDE',event.sample_latitude::text,
-                             'LOG_SAMPLE_LONGITUDE',event.sample_longitude::text,
-                             'LOG_TRANSPORT_MODE',event.transport_mode_code,
-                             'LOG_DIRECTION',event.direction_code)
-                           || COALESCE((SELECT jsonb_object_agg(value.field_code,value.value)
-                               FROM logistics.route_event_core_value value
-                               WHERE value.event_id=event.event_id),'{}'::jsonb) values,
+                           %s values,
                            ROW_NUMBER() OVER (ORDER BY event.collection_date DESC,event.updated_at DESC,
                              event.event_id DESC)=1 latest
                     FROM logistics.route_event event
@@ -325,7 +324,7 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                       AND event.status_code='APPROVED'
                       AND event.survey_period_governance_state='CONFIRMED'
                       AND point.region_code IN (:authorizedRegionCodes)
-                    """;
+                    """.formatted(LOGISTICS_PUBLIC_VALUES_SQL);
         };
         long total = jdbc.sql("""
                 WITH all_history AS (

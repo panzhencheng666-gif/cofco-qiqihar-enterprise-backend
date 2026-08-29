@@ -5,6 +5,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertAll;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.AdministrativeBoundarySnapshot;
@@ -543,6 +544,70 @@ class FormalSampleObservationRestIntegrationTest {
                 .param("id", SAMPLE_POINT_ID).query(Long.class).single()).isEqualTo(2);
         assertThat(jdbc.sql("SELECT count(*) FROM logistics.route_event WHERE sample_point_id=:id AND status_code='APPROVED'")
                 .param("id", SAMPLE_POINT_ID).query(Long.class).single()).isEqualTo(2);
+    }
+
+    @Test
+    void projectsSavedLogisticsFactsThroughResponseEligibleAndHistory() throws Exception {
+        jdbc.sql("""
+                UPDATE logistics.route_event
+                SET collection_date=DATE '2026-07-20',survey_month=7
+                WHERE event_id::text=:id
+                """)
+                .param("id", LOGISTICS_RECORD_ID).update();
+        String logistics = """
+                {"domain":"LOGISTICS","samplePointId":"%s","productCode":"CORN",
+                 "observedAt":"2026-08-28T10:15:00+08:00","payload":{"productCode":"CORN","values":{
+                 "surveyYear":"2026","surveyMonth":"8","LOG_SAMPLE_NAME":"伪造样本",
+                 "LOG_REGION":"230202","LOG_REPORTER":"伪造填报员","LOG_SAMPLE_CONTACT":"19900000000",
+                 "LOG_SAMPLE_LATITUDE":"1","LOG_SAMPLE_LONGITUDE":"2","LOG_TRANSPORT_MODE":"ROAD",
+                 "LOG_DIRECTION":"INFLOW","LOG_ROUTE_VOLUME":"13.5","LOG_FREIGHT_RATE":"81.25",
+                 "LOG_BOARD_PRICE":"2650"}}}
+                """.formatted(SAMPLE_POINT_ID);
+
+        String saved = mvc.perform(post("/api/v1/formal-sample-observations/observations")
+                        .principal(() -> ACTOR).header("Idempotency-Key", "logistics-fact-projection-1")
+                        .contentType(MediaType.APPLICATION_JSON).content(logistics))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String eligible = mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
+                        .principal(() -> ACTOR).queryParam("domain", "LOGISTICS")
+                        .queryParam("productCode", "CORN").queryParam("regionCode", "230221")
+                        .queryParam("year", "2026")
+                        .queryParam("observedAt", "2026-08-28T10:16:00+08:00"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String history = mvc.perform(get("/api/v1/formal-sample-observations/observations")
+                        .principal(() -> ACTOR).queryParam("domain", "LOGISTICS")
+                        .queryParam("samplePointId", SAMPLE_POINT_ID.toString())
+                        .queryParam("productCode", "CORN").queryParam("year", "2026"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(jdbc.sql("""
+                SELECT fact.fact_code || '=' || fact.value::text
+                FROM logistics.route_event event
+                JOIN logistics.route_fact fact ON fact.event_id=event.event_id
+                WHERE event.sample_point_id=:samplePointId AND event.event_id::text<>:legacyId
+                ORDER BY fact.fact_code
+                """).param("samplePointId", SAMPLE_POINT_ID).param("legacyId", LOGISTICS_RECORD_ID)
+                .query(String.class).list()).containsExactly(
+                        "BOARD_PRICE=2650.0000", "FREIGHT_RATE=81.2500", "ROUTE_VOLUME=13.5000");
+
+        JsonNode savedValues = objectMapper.readTree(saved).at("/data/values");
+        JsonNode eligibleValues = objectMapper.readTree(eligible).at("/data/0/latestValues");
+        JsonNode latestHistory = objectMapper.readTree(history).at("/data/items/0");
+        assertThat(latestHistory.path("latest").asBoolean()).isTrue();
+        JsonNode historyValues = latestHistory.path("values");
+        assertAll("route facts use the same public projection after an official save",
+                () -> assertThat(savedValues.path("LOG_ROUTE_VOLUME").asText(null)).isEqualTo("13.5000"),
+                () -> assertThat(savedValues.path("LOG_FREIGHT_RATE").asText(null)).isEqualTo("81.2500"),
+                () -> assertThat(savedValues.path("LOG_BOARD_PRICE").asText(null)).isEqualTo("2650.0000"),
+                () -> assertThat(eligibleValues.path("LOG_ROUTE_VOLUME").asText(null)).isEqualTo("13.5000"),
+                () -> assertThat(eligibleValues.path("LOG_FREIGHT_RATE").asText(null)).isEqualTo("81.2500"),
+                () -> assertThat(eligibleValues.path("LOG_BOARD_PRICE").asText(null)).isEqualTo("2650.0000"),
+                () -> assertThat(historyValues.path("LOG_ROUTE_VOLUME").asText(null)).isEqualTo("13.5000"),
+                () -> assertThat(historyValues.path("LOG_FREIGHT_RATE").asText(null)).isEqualTo("81.2500"),
+                () -> assertThat(historyValues.path("LOG_BOARD_PRICE").asText(null)).isEqualTo("2650.0000"));
     }
 
     @Test
