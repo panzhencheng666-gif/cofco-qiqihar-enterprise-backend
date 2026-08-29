@@ -434,9 +434,9 @@ public class JdbcOverviewSamplePointRepository
     @Override
     @Transactional(readOnly = true)
     public List<CurrentOverviewSamplePoint> read(
-            int year, String productCode, String regionCode,
+            int year, String productCode, String regionCode, String categoryCode,
             Set<String> authorizedRegionCodes) {
-        return icons(year, productCode, regionCode, null, null, null, authorizedRegionCodes)
+        return icons(year, productCode, regionCode, categoryCode, null, null, authorizedRegionCodes)
                 .stream()
                 .map(icon -> new CurrentOverviewSamplePoint(
                         icon.samplePointId(), icon.longitude(), icon.latitude()))

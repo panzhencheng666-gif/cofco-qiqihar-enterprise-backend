@@ -9,6 +9,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.AdministrativeBoundarySnapshot;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
+import java.util.Set;
 import java.util.UUID;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
@@ -20,6 +21,8 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.web.servlet.MockMvc;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 @SpringBootTest(classes = GrainTradeApplication.class)
 @AutoConfigureMockMvc
@@ -32,8 +35,17 @@ class FormalSampleObservationRestIntegrationTest {
     private static final String RECORD_ID = "f5100000-0000-0000-0000-000000000002";
     private static final String MARKET_RECORD_ID = "f5100000-0000-0000-0000-000000000003";
     private static final String LOGISTICS_RECORD_ID = "f5100000-0000-0000-0000-000000000004";
+    private static final UUID SHADOWED_SAMPLE_POINT_ID =
+            UUID.fromString("f5100000-0000-0000-0000-000000000005");
+    private static final String SHADOWING_PRODUCTION_RECORD_ID =
+            "f5100000-0000-0000-0000-000000000006";
+    private static final String SHADOWING_MARKET_RECORD_ID =
+            "f5100000-0000-0000-0000-000000000007";
+    private static final String FUTURE_PRODUCTION_RECORD_ID =
+            "f5100000-0000-0000-0000-000000000008";
 
     @Autowired MockMvc mvc;
+    @Autowired ObjectMapper objectMapper;
     @Autowired DataSource dataSource;
     private JdbcClient jdbc;
     private AdministrativeBoundarySnapshot boundarySnapshot;
@@ -211,6 +223,94 @@ class FormalSampleObservationRestIntegrationTest {
                         .queryParam("observedAt", "2026-08-28T10:15:00+08:00"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("INVALID_FORMAL_SAMPLE_OBSERVATION_QUERY"));
+    }
+
+    @Test
+    void exposesTheSameCurrentFormalSampleProjectionAsOverviewForEachBusinessDomain()
+            throws Exception {
+        jdbc.sql("""
+                INSERT INTO registry.sample_point(
+                  sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
+                  governed_point,effective_from,created_by,updated_by)
+                VALUES(:samplePointId,'SURVEY_SITE','龙江县当前正式样本','230221','APPROVED','VALID',
+                  ST_SetSRID(ST_MakePoint(123.2100000,47.3100000),4326),DATE '2026-01-01',:actor,:actor)
+                """).param("samplePointId", SHADOWED_SAMPLE_POINT_ID).param("actor", ACTOR).update();
+        jdbc.sql("""
+                INSERT INTO production.production_record(
+                  record_id,product_code,object_type_code,region_code,survey_date,reported_at,
+                  cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,
+                  survey_year,survey_period_precision,survey_period_governance_state,sample_point_id)
+                VALUES(:recordId,'CORN','FARMER','230221',DATE '2026-08-21',
+                  TIMESTAMPTZ '2026-08-21 09:30:00+08',110,510,'APPROVED',:actor,
+                  2026,'YEAR','CONFIRMED',:samplePointId)
+                """).param("recordId", SHADOWING_PRODUCTION_RECORD_ID).param("actor", ACTOR)
+                .param("samplePointId", SHADOWED_SAMPLE_POINT_ID).update();
+        jdbc.sql("""
+                INSERT INTO production.production_record_submission_metadata(record_id,field_code,value)
+                VALUES(:recordId,'PROD_SAMPLE_NAME','龙江县既有正式样本'),
+                      (:recordId,'PROD_SAMPLE_CONTACT','13800000000'),
+                      (:recordId,'PROD_SAMPLE_LATITUDE','47.3100000'),
+                      (:recordId,'PROD_SAMPLE_LONGITUDE','123.2100000')
+                """).param("recordId", SHADOWING_PRODUCTION_RECORD_ID).update();
+        jdbc.sql("""
+                INSERT INTO market.market_record(
+                  record_id,product_code,object_type_code,region_code,trade_date,reported_at,
+                  purchase_base_price,sale_base_price,trade_direction,carriage_board_amount,
+                  packaging_amount,freight_amount,packaging_form,status_code,last_modified_by,
+                  survey_year,survey_month,survey_period_precision,survey_period_governance_state,sample_point_id)
+                VALUES(:id,'CORN','TRADER','230221',DATE '2026-08-21',
+                  TIMESTAMPTZ '2026-08-21 09:30:00+08',2310,2390,'BOTH',36,12,72,'BULK',
+                  'APPROVED',:actor,2026,8,'YEAR_MONTH','CONFIRMED',:samplePointId)
+                """).param("id", SHADOWING_MARKET_RECORD_ID).param("actor", ACTOR)
+                .param("samplePointId", SHADOWED_SAMPLE_POINT_ID).update();
+        jdbc.sql("""
+                INSERT INTO market.market_record_core_value(record_id,product_code,field_code,domain_binding,value)
+                VALUES(:id,'CORN','MKT_SAMPLE_NAME','EXTENSION','龙江县既有正式样本'),
+                      (:id,'CORN','MKT_SAMPLE_CONTACT','EXTENSION','13800000000'),
+                      (:id,'CORN','MKT_SAMPLE_LATITUDE','EXTENSION','47.3100000'),
+                      (:id,'CORN','MKT_SAMPLE_LONGITUDE','EXTENSION','123.2100000')
+                """).param("id", SHADOWING_MARKET_RECORD_ID).update();
+
+        for (String domain : java.util.List.of("PRODUCTION", "MARKET", "LOGISTICS")) {
+            String eligible = mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
+                            .principal(() -> ACTOR).queryParam("domain", domain)
+                            .queryParam("productCode", "CORN").queryParam("regionCode", "230221")
+                            .queryParam("year", "2026")
+                            .queryParam("observedAt", "2026-08-28T10:15:00+08:00"))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+            String overview = mvc.perform(get("/api/v1/overview/sample-points")
+                            .principal(() -> ACTOR).queryParam("categoryCode", domain)
+                            .queryParam("productCode", "CORN").queryParam("regionCode", "230221")
+                            .queryParam("year", "2026"))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+
+            assertThat(samplePointIds(eligible, "/data"))
+                    .as("%s eligible samples must use the overview formal-sample projection", domain)
+                    .isEqualTo(samplePointIds(overview, "/data/items"));
+        }
+    }
+
+    @Test
+    void readsEligibleLatestValuesFromTheSelectedYearProjection() throws Exception {
+        jdbc.sql("""
+                INSERT INTO production.production_record(
+                  record_id,product_code,object_type_code,region_code,survey_date,reported_at,
+                  cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,
+                  survey_year,survey_period_precision,survey_period_governance_state,sample_point_id)
+                VALUES(:recordId,'CORN','FARMER','230221',DATE '2027-08-20',
+                  TIMESTAMPTZ '2027-08-20 09:30:00+08',120,520,'APPROVED',:actor,
+                  2027,'YEAR','CONFIRMED',:samplePointId)
+                """).param("recordId", FUTURE_PRODUCTION_RECORD_ID).param("actor", ACTOR)
+                .param("samplePointId", SAMPLE_POINT_ID).update();
+
+        mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
+                        .principal(() -> ACTOR).queryParam("domain", "PRODUCTION")
+                        .queryParam("productCode", "CORN").queryParam("regionCode", "230221")
+                        .queryParam("year", "2026")
+                        .queryParam("observedAt", "2026-08-28T10:15:00+08:00"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].latestObservationId").value(RECORD_ID))
+                .andExpect(jsonPath("$.data[0].latestValues.surveyYear").value("2026"));
     }
 
     @Test
@@ -498,6 +598,14 @@ class FormalSampleObservationRestIntegrationTest {
 
     private void clearFixture() {
         if (jdbc == null) return;
+        jdbc.sql("DELETE FROM production.production_record WHERE record_id=:recordId")
+                .param("recordId", FUTURE_PRODUCTION_RECORD_ID).update();
+        jdbc.sql("DELETE FROM market.market_record WHERE record_id=:recordId")
+                .param("recordId", SHADOWING_MARKET_RECORD_ID).update();
+        jdbc.sql("DELETE FROM production.production_record WHERE record_id=:recordId")
+                .param("recordId", SHADOWING_PRODUCTION_RECORD_ID).update();
+        jdbc.sql("DELETE FROM registry.sample_point WHERE sample_point_id=:samplePointId")
+                .param("samplePointId", SHADOWED_SAMPLE_POINT_ID).update();
         jdbc.sql("DELETE FROM platform.formal_sample_observation WHERE sample_point_id=:samplePointId")
                 .param("samplePointId", SAMPLE_POINT_ID).update();
         jdbc.sql("DELETE FROM production.production_record WHERE sample_point_id=:samplePointId AND record_id<>:recordId")
@@ -516,5 +624,12 @@ class FormalSampleObservationRestIntegrationTest {
                 .param("subject", RESTRICTED_ACTOR).update();
         jdbc.sql("DELETE FROM platform.security_user WHERE subject_id=:subject")
                 .param("subject", RESTRICTED_ACTOR).update();
+    }
+
+    private Set<UUID> samplePointIds(String response, String pointer) throws Exception {
+        JsonNode samples = objectMapper.readTree(response).at(pointer);
+        return java.util.stream.StreamSupport.stream(samples.spliterator(), false)
+                .map(sample -> UUID.fromString(sample.get("samplePointId").asText()))
+                .collect(java.util.stream.Collectors.toSet());
     }
 }

@@ -3,6 +3,8 @@ package com.cofco.qiqihar.graintrade.formalsampleobservation.infrastructure;
 import com.cofco.qiqihar.graintrade.formalsampleobservation.application.EligibleFormalSample;
 import com.cofco.qiqihar.graintrade.formalsampleobservation.application.FormalSampleObservationDomain;
 import com.cofco.qiqihar.graintrade.formalsampleobservation.application.FormalSampleObservationRepository;
+import com.cofco.qiqihar.graintrade.overview.api.CurrentOverviewSamplePoint;
+import com.cofco.qiqihar.graintrade.overview.api.CurrentOverviewSamplePointReader;
 import com.cofco.qiqihar.graintrade.shared.application.FormalSampleIdentity;
 import com.cofco.qiqihar.graintrade.formalsampleobservation.application.FormalSampleObservationResult;
 import com.cofco.qiqihar.graintrade.formalsampleobservation.application.FormalSampleObservationHistoryItem;
@@ -24,10 +26,15 @@ import org.springframework.stereotype.Repository;
 public class JdbcFormalSampleObservationRepository implements FormalSampleObservationRepository {
     private final JdbcClient jdbc;
     private final ObjectMapper objectMapper;
+    private final CurrentOverviewSamplePointReader currentOverviewSamplePoints;
 
-    public JdbcFormalSampleObservationRepository(JdbcClient jdbc, ObjectMapper objectMapper) {
+    public JdbcFormalSampleObservationRepository(
+            JdbcClient jdbc,
+            ObjectMapper objectMapper,
+            CurrentOverviewSamplePointReader currentOverviewSamplePoints) {
         this.jdbc = jdbc;
         this.objectMapper = objectMapper;
+        this.currentOverviewSamplePoints = currentOverviewSamplePoints;
     }
 
     @Override
@@ -40,6 +47,12 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
             LocalDate observedOn,
             Set<String> authorizedRegionCodes) {
         if (authorizedRegionCodes.isEmpty()) return List.of();
+        Set<UUID> currentSamplePointIds = currentOverviewSamplePoints.read(
+                        observedOn.getYear(), productCode, regionCode, domain.name(),
+                        authorizedRegionCodes).stream()
+                .map(CurrentOverviewSamplePoint::samplePointId)
+                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+        if (currentSamplePointIds.isEmpty()) return List.of();
         String latest = switch (domain) {
             case PRODUCTION -> """
                     SELECT record.record_id source_record_id,
@@ -71,6 +84,7 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                     FROM production.production_record record
                     WHERE record.sample_point_id=point.sample_point_id
                       AND record.product_code=:productCode
+                      AND record.survey_year=:year
                       AND record.status_code='APPROVED'
                       AND record.survey_period_governance_state='CONFIRMED'
                     ORDER BY record.survey_date DESC,record.updated_at DESC,record.record_id DESC
@@ -99,6 +113,7 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                     FROM market.market_record record
                     WHERE record.sample_point_id=point.sample_point_id
                       AND record.product_code=:productCode
+                      AND record.survey_year=:year
                       AND record.status_code='APPROVED'
                       AND record.survey_period_governance_state='CONFIRMED'
                     ORDER BY record.trade_date DESC,record.updated_at DESC,record.record_id DESC
@@ -125,6 +140,7 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                     FROM logistics.route_event event
                     WHERE event.sample_point_id=point.sample_point_id
                       AND event.product_code=:productCode
+                      AND event.survey_year=:year
                       AND event.status_code='APPROVED'
                       AND event.survey_period_governance_state='CONFIRMED'
                     ORDER BY event.collection_date DESC,event.updated_at DESC,event.event_id DESC
@@ -150,6 +166,7 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                   AND point.governed_point IS NOT NULL
                   AND point.effective_from<=:observedOn
                   AND (point.effective_to IS NULL OR point.effective_to>=:observedOn)
+                  AND point.sample_point_id IN (:currentSamplePointIds)
                   AND point.region_code IN (:authorizedRegionCodes)
                   AND (CAST(:regionCode AS varchar) IS NULL OR point.region_code=:regionCode)
                   AND (CAST(:objectTypeCode AS varchar) IS NULL OR latest.object_type_code=:objectTypeCode)
@@ -158,8 +175,10 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                     OR region.name ILIKE :keywordPattern ESCAPE '\\')
                 ORDER BY point.canonical_name,point.sample_point_id
                 """).param("productCode", productCode)
+                .param("year", observedOn.getYear())
                 .param("domain", domain.name())
                 .param("observedOn", observedOn)
+                .param("currentSamplePointIds", currentSamplePointIds)
                 .param("authorizedRegionCodes", authorizedRegionCodes)
                 .param("regionCode", regionCode, java.sql.Types.VARCHAR)
                 .param("objectTypeCode", objectTypeCode, java.sql.Types.VARCHAR)
