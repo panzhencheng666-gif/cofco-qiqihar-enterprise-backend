@@ -59,7 +59,8 @@ public final class JdbcOidcSessionRegistry implements OidcSessionRegistry {
                 .param("audience",user.getAudience().toArray(String[]::new))
                 .param("authorities",write(information.getAuthorities()))
                 .param("now",Timestamp.from(now)).param("expiresAt",Timestamp.from(expiresAt)).update();
-        if(inserted!=1)throw new IllegalStateException("OIDC identity is not bound to an enterprise subject");
+        if(inserted==0)return;
+        if(inserted!=1)throw new IllegalStateException("OIDC session registration was not unique");
 
         List<String> obsolete=jdbc.sql("""
                 SELECT session_id FROM platform.oidc_session_registry

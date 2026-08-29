@@ -15,6 +15,7 @@ public interface IdentityGovernanceRepository {
     AssignmentOptions assignmentOptions(String workUnitCode);
     Optional<IdentityInvitation> findInvitationByIdempotency(String actorSubjectId,String idempotencyKey);
     Optional<IdentityInvitation> findInvitation(UUID invitationId);
+    Optional<IdentityInvitation> findCurrentInvitation(String subjectId);
     Optional<IdentityInvitation> revokeInvitation(UUID invitationId,Instant revokedAt);
     void revokePendingInvitations(String subjectId,Instant revokedAt);
     IdentityInvitation createInvitation(UUID invitationId,String subjectId,String tokenSha256,

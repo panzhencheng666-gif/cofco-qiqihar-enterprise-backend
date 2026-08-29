@@ -4,6 +4,7 @@ import com.cofco.qiqihar.graintrade.identity.application.EmployeeAssignment;
 import com.cofco.qiqihar.graintrade.identity.application.EmployeeProfile;
 import com.cofco.qiqihar.graintrade.identity.application.IdentityGovernanceService;
 import com.cofco.qiqihar.graintrade.identity.application.IdentityInvitationReceipt;
+import com.cofco.qiqihar.graintrade.identity.application.IdentityLifecycleContract;
 import com.cofco.qiqihar.graintrade.identity.application.AssignmentOptions;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
@@ -40,6 +41,11 @@ public class IdentityGovernanceController {
         return new ApiResponse<>(service.employee(subjectId));
     }
 
+    @GetMapping("/{subjectId}/invitation")
+    ApiResponse<IdentityInvitationReceipt> currentInvitation(@PathVariable String subjectId) {
+        return new ApiResponse<>(service.currentInvitation(subjectId));
+    }
+
     @GetMapping("/assignment-options")
     ApiResponse<AssignmentOptions> assignmentOptions(@RequestParam String workUnitCode) {
         return new ApiResponse<>(service.assignmentOptions(workUnitCode));
@@ -47,7 +53,7 @@ public class IdentityGovernanceController {
 
     @PostMapping
     ResponseEntity<ApiResponse<IdentityInvitationReceipt>> invite(
-            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestHeader(IdentityLifecycleContract.IDEMPOTENCY_HEADER) String idempotencyKey,
             @RequestBody InviteRequest request) {
         if (request == null) throw invalid();
         IdentityInvitationReceipt receipt=service.invite(
@@ -65,7 +71,7 @@ public class IdentityGovernanceController {
     @PostMapping("/{subjectId}/invitations")
     ResponseEntity<ApiResponse<IdentityInvitationReceipt>> reissue(
             @PathVariable String subjectId,
-            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestHeader(IdentityLifecycleContract.IDEMPOTENCY_HEADER) String idempotencyKey,
             @RequestBody ReissueRequest request) {
         if(request==null)throw invalid();
         IdentityInvitationReceipt receipt=service.reissueInvitation(

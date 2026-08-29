@@ -21,7 +21,7 @@ public record IdentityInvitationReceipt(
         String deliveryStatus,
         Instant expiresAt,
         boolean replayed) {
-    public static final String CONTRACT_VERSION = "2026-08-30";
+    public static final String CONTRACT_VERSION = IdentityLifecycleContract.VERSION;
 
     public static IdentityInvitationReceipt from(
             EmployeeProfile employee, IdentityInvitation invitation, boolean replayed) {

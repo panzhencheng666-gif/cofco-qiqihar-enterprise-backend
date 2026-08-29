@@ -99,11 +99,11 @@ public class IdentityGovernanceService {
                 .orElse(null);
         if(existing!=null) {
             if(!existing.requestSha256().equals(requestSha256))throw new ConflictException(
-                    "IDENTITY_INVITATION_IDEMPOTENCY_CONFLICT",
+                    IdentityLifecycleContract.ERROR_IDEMPOTENCY_CONFLICT,
                     "相同幂等键已用于其他邀请请求");
             EmployeeProfile employee=repository.find(existing.subjectId(),
                     systemAdministrator(actor)?null:actor.workUnitCode()).orElseThrow(
-                            ()->new ConflictException("IDENTITY_INVITATION_IDEMPOTENCY_CONFLICT",
+                            ()->new ConflictException(IdentityLifecycleContract.ERROR_IDEMPOTENCY_CONFLICT,
                                     "相同幂等键已用于其他邀请请求"));
             return IdentityInvitationReceipt.from(businessProfile(employee),existing,true);
         }
@@ -116,7 +116,8 @@ public class IdentityGovernanceService {
                 invitationTokens.encryptDeliveryPayload(deliveryAddress.strip(),token),
                 invitationTokens.sha256(deliveryAddress.strip().toLowerCase(java.util.Locale.ROOT)),
                 clock.instant().plus(Duration.ofHours(24)),actor.subjectId(),idempotencyKey,requestSha256);
-        audit.record(actor,assignment.workUnitCode(),"SECURITY_USER",subjectId,"SECURITY_USER_INVITED",clock.instant(),
+        audit.record(actor,assignment.workUnitCode(),"SECURITY_USER",subjectId,
+                IdentityLifecycleContract.AUDIT_INVITED,clock.instant(),
                 "{\"accountStatus\":\"INVITED\",\"deliveryStatus\":\"QUEUED\","
                         +"\"contractVersion\":\""+IdentityInvitationReceipt.CONTRACT_VERSION+"\"}");
         return IdentityInvitationReceipt.from(businessProfile(created),invitation,false);
@@ -138,7 +139,7 @@ public class IdentityGovernanceService {
                 activated.subjectId(),activated.displayName(),activated.workUnitCode(),
                 Set.of(),Set.copyOf(activated.regionCodes()));
         audit.record(principal,activated.workUnitCode(),"SECURITY_USER",activated.subjectId(),
-                "SECURITY_USER_ACTIVATED",clock.instant(),
+                IdentityLifecycleContract.AUDIT_ACTIVATED,clock.instant(),
                 "{\"bindingStatus\":\"ACTIVE\",\"issuerSha256\":\""
                         +invitationTokens.sha256(issuerUri)+"\"}");
         return IdentityActivationResult.active(activated.subjectId());
@@ -149,15 +150,26 @@ public class IdentityGovernanceService {
         SecurityPrincipal actor=access.require("IDENTITY_ADMIN",null);
         IdentityInvitation invitation=repository.findInvitation(invitationId)
                 .orElseThrow(IdentityGovernanceService::invitationNotFound);
-        EmployeeProfile employee=required(invitation.subjectId(),actor);
+        EmployeeProfile employee=repository.find(invitation.subjectId(),
+                systemAdministrator(actor)?null:actor.workUnitCode())
+                .orElseThrow(IdentityGovernanceService::invitationNotFound);
         if(invitation.invitationStatus().equals("ACTIVATED"))throw new ConflictException(
-                "IDENTITY_INVITATION_STATE_CONFLICT","已激活邀请不能撤销");
+                IdentityLifecycleContract.ERROR_INVITATION_STATE_CONFLICT,"已激活邀请不能撤销");
         IdentityInvitation revoked=repository.revokeInvitation(invitationId,clock.instant())
                 .orElseThrow(IdentityGovernanceService::invitationNotFound);
         audit.record(actor,employee.workUnitCode(),"SECURITY_USER",employee.subjectId(),
-                "SECURITY_INVITATION_REVOKED",clock.instant(),
+                IdentityLifecycleContract.AUDIT_REVOKED,clock.instant(),
                 "{\"invitationId\":\""+invitationId+"\"}");
         return IdentityInvitationReceipt.from(businessProfile(employee),revoked,false);
+    }
+
+    @Transactional(readOnly=true)
+    public IdentityInvitationReceipt currentInvitation(String subjectId) {
+        SecurityPrincipal actor=access.require("IDENTITY_ADMIN",null);
+        EmployeeProfile employee=required(subjectId,actor);
+        IdentityInvitation invitation=repository.findCurrentInvitation(subjectId)
+                .orElseThrow(IdentityGovernanceService::invitationNotFound);
+        return IdentityInvitationReceipt.from(businessProfile(employee),invitation,false);
     }
 
     @Transactional
@@ -168,7 +180,8 @@ public class IdentityGovernanceService {
         requireDeliveryAddress(deliveryAddress);
         EmployeeProfile employee=required(subjectId,actor);
         if(!employee.accountStatus().equals("INVITED")||!employee.employmentStatus().equals("ACTIVE"))
-            throw new ConflictException("IDENTITY_INVITATION_STATE_CONFLICT","当前账号状态不能重新邀请");
+            throw new ConflictException(IdentityLifecycleContract.ERROR_INVITATION_STATE_CONFLICT,
+                    "当前账号状态不能重新邀请");
         String requestFingerprint=invitationFingerprint(subjectId,deliveryAddress,new EmployeeAssignment(
                 employee.displayName(),employee.workUnitCode(),"INVITED",employee.employmentStatus(),
                 employee.roles().stream().map(EmployeeProfile.Grant::code).toList(),
@@ -178,14 +191,15 @@ public class IdentityGovernanceService {
                 .orElse(null);
         if(existing!=null) {
             if(!existing.requestSha256().equals(requestFingerprint)||!existing.subjectId().equals(subjectId))
-                throw new ConflictException("IDENTITY_INVITATION_IDEMPOTENCY_CONFLICT",
+                throw new ConflictException(IdentityLifecycleContract.ERROR_IDEMPOTENCY_CONFLICT,
                         "相同幂等键已用于其他邀请请求");
             return IdentityInvitationReceipt.from(businessProfile(employee),existing,true);
         }
         repository.revokePendingInvitations(subjectId,clock.instant());
         IdentityInvitation invitation=createInvitation(
                 subjectId,deliveryAddress,actor.subjectId(),idempotencyKey,requestFingerprint);
-        audit.record(actor,employee.workUnitCode(),"SECURITY_USER",subjectId,"SECURITY_USER_REINVITED",
+        audit.record(actor,employee.workUnitCode(),"SECURITY_USER",subjectId,
+                IdentityLifecycleContract.AUDIT_REINVITED,
                 clock.instant(),"{\"deliveryStatus\":\"QUEUED\"}");
         return IdentityInvitationReceipt.from(businessProfile(employee),invitation,false);
     }
@@ -222,7 +236,7 @@ public class IdentityGovernanceService {
     private EmployeeProfile required(String subjectId,SecurityPrincipal actor) {
         return repository.find(subjectId,systemAdministrator(actor)?null:actor.workUnitCode())
                 .orElseThrow(() -> new ResourceNotFoundException(
-                        "IDENTITY_SUBJECT_NOT_FOUND","员工账号不存在"));
+                        IdentityLifecycleContract.ERROR_SUBJECT_NOT_FOUND,"员工账号不存在"));
     }
 
     private void validate(EmployeeAssignment assignment) {
@@ -291,11 +305,12 @@ public class IdentityGovernanceService {
     }
     private static void requireIdempotencyKey(String value){
         if(value==null||!value.matches("^[A-Za-z0-9][A-Za-z0-9._:-]{7,159}$"))throw new ClientRequestException(
-                "INVALID_IDEMPOTENCY_KEY","幂等键格式不正确");
+                IdentityLifecycleContract.ERROR_INVALID_IDEMPOTENCY_KEY,"幂等键格式不正确");
     }
     private static void requireDeliveryAddress(String value){
         if(value==null||value.length()>254||!value.matches("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"))
-            throw new ClientRequestException("INVALID_INVITATION_DELIVERY_ADDRESS","邀请送达地址格式不正确");
+            throw new ClientRequestException(IdentityLifecycleContract.ERROR_INVALID_DELIVERY_ADDRESS,
+                    "邀请送达地址格式不正确");
     }
     private static boolean trustedHttpsIssuer(String value){
         try {
@@ -308,9 +323,9 @@ public class IdentityGovernanceService {
     private static ClientRequestException invalid(){return new ClientRequestException(
             "INVALID_IDENTITY_ASSIGNMENT","员工账号或授权信息不完整");}
     private static ClientRequestException invalidInvitation(){return new ClientRequestException(
-            "IDENTITY_INVITATION_INVALID","邀请凭证无效或已失效");}
+            IdentityLifecycleContract.ERROR_INVITATION_INVALID,"邀请凭证无效或已失效");}
     private static ResourceNotFoundException invitationNotFound(){return new ResourceNotFoundException(
-            "IDENTITY_INVITATION_NOT_FOUND","邀请不存在");}
+            IdentityLifecycleContract.ERROR_INVITATION_NOT_FOUND,"邀请不存在");}
 
     private String invitationFingerprint(
             String subjectId,String deliveryAddress,EmployeeAssignment assignment) {

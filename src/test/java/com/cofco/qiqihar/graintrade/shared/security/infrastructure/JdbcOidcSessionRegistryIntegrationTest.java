@@ -108,6 +108,19 @@ class JdbcOidcSessionRegistryIntegrationTest {
                 .param("id",sibling).query(Long.class).single()).isOne();
     }
 
+    @Test
+    void unboundOidcLoginRemainsAvailableOnlyForInvitationActivation() {
+        jdbc.sql("DELETE FROM platform.identity_provider_binding WHERE security_subject_id=:subject")
+                .param("subject",subject).update();
+        JdbcOidcSessionRegistry registry=new JdbcOidcSessionRegistry(jdbc,json,1);
+        String sessionId=UUID.randomUUID().toString();
+
+        registry.saveSessionInformation(session(sessionId,"provider-session-unbound"));
+
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.oidc_session_registry WHERE session_id=:id")
+                .param("id",sessionId).query(Long.class).single()).isZero();
+    }
+
     private OidcSessionInformation session(String sessionId,String providerSessionId) {
         Instant now=Instant.now();
         OidcIdToken token=OidcIdToken.withTokenValue("id-token")

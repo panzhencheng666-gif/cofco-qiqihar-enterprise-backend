@@ -104,6 +104,22 @@ class IdentityDeliveryOutboxIntegrationTest {
                         &&command.activationToken().length()>=40));
     }
 
+    @Test
+    void expiredProcessingLeaseIsClaimedAgainAfterWorkerInterruption() {
+        jdbc.sql("""
+                UPDATE platform.identity_delivery_outbox
+                SET delivery_status='PROCESSING',attempt_count=1,leased_until=now()-interval '1 second'
+                WHERE event_id=:id
+                """).param("id",eventId).update();
+
+        assertThat(worker.drainOne()).isTrue();
+
+        MapState delivered=state();
+        assertThat(delivered.status()).isEqualTo("DELIVERED");
+        assertThat(delivered.invitationDelivery()).isEqualTo("DELIVERED");
+        assertThat(delivered.attempts()).isEqualTo(2);
+    }
+
     private MapState state() {
         return jdbc.sql("""
                 SELECT outbox.delivery_status,invitation.delivery_status,outbox.attempt_count,

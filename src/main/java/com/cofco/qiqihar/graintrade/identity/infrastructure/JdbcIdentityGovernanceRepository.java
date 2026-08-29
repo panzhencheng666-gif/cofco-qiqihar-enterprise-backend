@@ -207,6 +207,20 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
     }
 
     @Override
+    public Optional<IdentityInvitation> findCurrentInvitation(String subjectId) {
+        return jdbc.sql("""
+                SELECT invitation_id,security_subject_id,state,delivery_status,
+                       expires_at,request_fingerprint
+                FROM platform.identity_invitation
+                WHERE security_subject_id=:subject
+                ORDER BY created_at DESC,invitation_id DESC
+                LIMIT 1
+                """).param("subject",subjectId).query((row,index)->new IdentityInvitation(
+                        row.getObject(1,UUID.class),row.getString(2),row.getString(3),
+                        row.getString(4),row.getTimestamp(5).toInstant(),row.getString(6))).optional();
+    }
+
+    @Override
     public Optional<IdentityInvitation> revokeInvitation(UUID invitationId,Instant revokedAt) {
         IdentityInvitation existing=findInvitation(invitationId).orElse(null);
         if(existing==null||existing.invitationStatus().equals("ACTIVATED"))return Optional.empty();
@@ -254,15 +268,16 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
     @Override
     public Optional<EmployeeProfile> activateInvitation(
             String tokenSha256,String issuerUri,String providerSubject,Instant activatedAt) {
-        record Candidate(UUID invitationId,String subjectId,String status,Instant expiresAt) {}
+        record Candidate(UUID invitationId,String subjectId,String status,Instant expiresAt,String createdBy) {}
         Candidate candidate=jdbc.sql("""
-                SELECT invitation_id,security_subject_id,state,expires_at
+                SELECT invitation_id,security_subject_id,state,expires_at,created_by
                 FROM platform.identity_invitation
                 WHERE token_hash=:tokenHash
                 FOR UPDATE
                 """).param("tokenHash",tokenSha256)
                 .query((row,index)->new Candidate(row.getObject(1,UUID.class),row.getString(2),
-                        row.getString(3),row.getTimestamp(4).toInstant())).optional().orElse(null);
+                        row.getString(3),row.getTimestamp(4).toInstant(),row.getString(5)))
+                .optional().orElse(null);
         if(candidate==null||!candidate.status().equals("PENDING")
                 ||!activatedAt.isBefore(candidate.expiresAt()))return Optional.empty();
         long providerBinding=countInBinding(issuerUri,providerSubject,candidate.subjectId());
@@ -272,9 +287,10 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
                     binding_id,provider_code,issuer_uri,provider_subject,security_subject_id,
                     state,valid_from,approved_by,approved_at)
                 VALUES(:id,'ENTERPRISE_OIDC',:issuer,:providerSubject,:subject,
-                       'ACTIVE',:activatedAt,:subject,:activatedAt)
+                       'ACTIVE',:activatedAt,:approvedBy,:activatedAt)
                 """).param("id",UUID.randomUUID()).param("issuer",issuerUri)
                 .param("providerSubject",providerSubject).param("subject",candidate.subjectId())
+                .param("approvedBy",candidate.createdBy())
                 .param("activatedAt",Timestamp.from(activatedAt)).update();
         int activated=jdbc.sql("""
                 UPDATE platform.security_user

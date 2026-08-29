@@ -55,6 +55,7 @@ import org.springframework.security.oauth2.client.oidc.web.logout.OidcClientInit
 import org.springframework.security.oauth2.client.oidc.session.OidcSessionRegistry;
 import org.springframework.security.web.csrf.CookieCsrfTokenRepository;
 import org.springframework.security.web.csrf.CsrfToken;
+import org.springframework.security.web.csrf.CsrfTokenRequestAttributeHandler;
 import org.springframework.security.web.session.HttpSessionEventPublisher;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -134,6 +135,7 @@ public class ProductionSecurityConfiguration {
             @Value("${qiqihar.security.session-cookie-secure:true}") boolean secureCookies) throws Exception {
         CookieCsrfTokenRepository csrfTokens = CookieCsrfTokenRepository.withHttpOnlyFalse();
         csrfTokens.setCookieCustomizer(cookie -> cookie.path("/").sameSite("Strict").secure(secureCookies));
+        CsrfTokenRequestAttributeHandler csrfRequestHandler=new CsrfTokenRequestAttributeHandler();
         Set<String> acceptedAmr=values(mfaAmrValues);
         Set<String> acceptedAcr=values(mfaAcrValues);
         AuthenticationSuccessHandler loginSuccess=new EnterpriseAuthenticationSuccessHandler(
@@ -144,7 +146,8 @@ public class ProductionSecurityConfiguration {
         LogoutSuccessHandler logoutSuccess=providerLogout;
         LogoutHandler logoutAudit=new SecuritySessionLogoutHandler(sessionAudit);
         http
-                .csrf(csrf -> csrf.csrfTokenRepository(csrfTokens))
+                .csrf(csrf -> csrf.csrfTokenRepository(csrfTokens)
+                        .csrfTokenRequestHandler(csrfRequestHandler))
                 .sessionManagement(session -> session
                         .sessionCreationPolicy(SessionCreationPolicy.IF_REQUIRED)
                         .sessionFixation(fixation -> fixation.migrateSession()))
@@ -205,7 +208,7 @@ public class ProductionSecurityConfiguration {
                     return;
                 }
                 SecurityPrincipal principal=findEnabledOidc(principals,authentication).orElse(null);
-                if(principal==null&&invitationActivation(request)) {
+                if(principal==null&&invitationActivationEntry(request)) {
                     filterChain.doFilter(request,response);
                     return;
                 }
@@ -247,10 +250,12 @@ public class ProductionSecurityConfiguration {
             return path.startsWith("/api/v1/") && !path.equals("/api/v1/session/login");
         }
 
-        private static boolean invitationActivation(HttpServletRequest request) {
+        private static boolean invitationActivationEntry(HttpServletRequest request) {
             String path=request.getRequestURI().substring(request.getContextPath().length());
-            return request.getMethod().equals("POST")
-                    && path.equals("/api/v1/identity/invitations/activate");
+            return (request.getMethod().equals("POST")
+                    && path.equals("/api/v1/identity/invitations/activate"))
+                    ||(request.getMethod().equals("GET")
+                    && path.equals("/api/v1/identity/invitations/activation-bootstrap"));
         }
 
         private static boolean authenticated(Authentication authentication) {

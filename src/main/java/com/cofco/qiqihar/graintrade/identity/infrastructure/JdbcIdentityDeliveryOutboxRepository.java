@@ -25,7 +25,8 @@ public class JdbcIdentityDeliveryOutboxRepository implements IdentityDeliveryOut
                        outbox.attempt_count+1
                 FROM platform.identity_delivery_outbox outbox
                 JOIN platform.identity_invitation invitation USING(invitation_id)
-                WHERE outbox.delivery_status IN ('QUEUED','FAILED')
+                WHERE (outbox.delivery_status IN ('QUEUED','FAILED')
+                    OR (outbox.delivery_status='PROCESSING' AND outbox.leased_until<:now))
                   AND outbox.available_at<=:now
                   AND (outbox.leased_until IS NULL OR outbox.leased_until<:now)
                   AND invitation.state='PENDING' AND invitation.expires_at>:now
@@ -39,9 +40,12 @@ public class JdbcIdentityDeliveryOutboxRepository implements IdentityDeliveryOut
                 UPDATE platform.identity_delivery_outbox
                 SET delivery_status='PROCESSING',attempt_count=:attempt,
                     leased_until=:leasedUntil,last_error_code=NULL,last_error_message=NULL
-                WHERE event_id=:event AND delivery_status IN ('QUEUED','FAILED')
+                WHERE event_id=:event
+                  AND (delivery_status IN ('QUEUED','FAILED')
+                    OR (delivery_status='PROCESSING' AND leased_until<:now))
                 """).param("attempt",candidate.attemptCount())
                 .param("leasedUntil",Timestamp.from(now.plus(lease)))
+                .param("now",Timestamp.from(now))
                 .param("event",candidate.eventId()).update();
         return updated==1?Optional.of(candidate):Optional.empty();
     }

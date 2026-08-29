@@ -1,11 +1,11 @@
 package com.cofco.qiqihar.graintrade.shared.security.interfaceadapter;
 
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.oidcLogin;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.cookie;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -201,8 +201,22 @@ class ProductionSecurityConfigurationTest {
         var unbound=oidcLogin().idToken(token -> token.issuer("https://issuer.example.test")
                 .subject("new-provider-subject").claim("amr",List.of("mfa")));
 
+        MvcResult bootstrap=mockMvc.perform(get("/api/v1/identity/invitations/activation-bootstrap")
+                        .with(unbound))
+                .andExpect(status().isOk())
+                .andExpect(cookie().exists("XSRF-TOKEN"))
+                .andExpect(content().json("""
+                        {"contractVersion":"2026-08-30","csrfReady":true}
+                        """))
+                .andReturn();
+        Cookie csrfCookie=bootstrap.getResponse().getCookie("XSRF-TOKEN");
         mockMvc.perform(post("/api/v1/identity/invitations/activate")
-                        .with(unbound).with(csrf()))
+                        .with(unbound))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(post("/api/v1/identity/invitations/activate")
+                        .with(unbound)
+                        .cookie(csrfCookie)
+                        .header("X-XSRF-TOKEN",csrfCookie.getValue()))
                 .andExpect(status().isOk())
                 .andExpect(content().string("new-provider-subject"));
         mockMvc.perform(get("/api/v1/whoami").with(unbound))
@@ -240,10 +254,18 @@ class ProductionSecurityConfigurationTest {
                 .claim("amr", java.util.List.of("mfa")));
         mockMvc.perform(post("/api/v1/session/logout").with(login))
                 .andExpect(status().isForbidden());
+        MvcResult bootstrap=mockMvc.perform(get("/api/v1/identity/invitations/activation-bootstrap")
+                        .with(login))
+                .andExpect(status().isOk())
+                .andExpect(cookie().exists("XSRF-TOKEN"))
+                .andReturn();
+        Cookie csrfCookie=bootstrap.getResponse().getCookie("XSRF-TOKEN");
         clearInvocations(sessionAudit);
         mockMvc.perform(post("/api/v1/session/logout")
                         .param("_spring_security_internal_logout","true")
-                        .with(login).with(csrf()))
+                        .with(login)
+                        .cookie(csrfCookie)
+                        .header("X-XSRF-TOKEN",csrfCookie.getValue()))
                 .andExpect(status().isFound())
                 .andExpect(header().string("Location",org.hamcrest.Matchers.startsWith(
                         "https://issuer.example.test/logout")));
@@ -298,6 +320,11 @@ class ProductionSecurityConfigurationTest {
         @org.springframework.web.bind.annotation.PostMapping("/api/v1/identity/invitations/activate")
         String activate(java.security.Principal principal) {
             return principal.getName();
+        }
+
+        @GetMapping("/api/v1/identity/invitations/activation-bootstrap")
+        java.util.Map<String,Object> activationBootstrap() {
+            return java.util.Map.of("contractVersion","2026-08-30","csrfReady",true);
         }
     }
 

@@ -21,6 +21,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.security.oauth2.core.oidc.IdTokenClaimNames;
+import org.springframework.mock.web.MockHttpSession;
 import org.springframework.test.web.servlet.MockMvc;
 
 @SpringBootTest(classes = GrainTradeApplication.class)
@@ -84,8 +85,17 @@ class IdentityLifecycleClosureIntegrationTest {
                 .andExpect(jsonPath("$.data.deliveryStatus").value("QUEUED"))
                 .andExpect(jsonPath("$.data.invitationId").isNotEmpty())
                 .andExpect(jsonPath("$.data.expiresAt").isNotEmpty())
+                .andExpect(jsonPath("$.data.roles").isArray())
+                .andExpect(jsonPath("$.data.positions").isArray())
+                .andExpect(jsonPath("$.data.regionCodes").isArray())
                 .andExpect(jsonPath("$.data.token").doesNotExist())
                 .andReturn().getResponse().getContentAsString();
+
+        mvc.perform(post("/api/v1/identity/employees")
+                        .principal(() -> "production-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(request))
+                .andExpect(status().isBadRequest());
 
         String invitationId = com.jayway.jsonpath.JsonPath.read(first, "$.data.invitationId");
         mvc.perform(post("/api/v1/identity/employees")
@@ -174,6 +184,49 @@ class IdentityLifecycleClosureIntegrationTest {
                 """).param("subject",subject)
                 .param("issuer","https://idp.example.test/realms/cofco")
                 .query(Long.class).single()).isOne();
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql("""
+                SELECT approved_by FROM platform.identity_provider_binding
+                WHERE security_subject_id=:subject AND issuer_uri=:issuer
+                """).param("subject",subject)
+                .param("issuer","https://idp.example.test/realms/cofco")
+                .query(String.class).single()).isEqualTo("production-tester");
+    }
+
+    @Test
+    void successfulActivationInvalidatesTheUnregisteredBootstrapSession() throws Exception {
+        String response=invite("activation-session-"+UUID.randomUUID(),"employee@example.test");
+        String invitationId=com.jayway.jsonpath.JsonPath.read(response,"$.data.invitationId");
+        String token=invitationTokens.decryptDeliveryPayload(jdbc.sql("""
+                SELECT encrypted_delivery_payload FROM platform.identity_invitation
+                WHERE invitation_id=CAST(:id AS uuid)
+                """).param("id",invitationId).query(String.class).single()).token();
+        MockHttpSession session=new MockHttpSession();
+
+        activate(token,session).andExpect(status().isOk());
+
+        org.assertj.core.api.Assertions.assertThat(session.isInvalid()).isTrue();
+    }
+
+    @Test
+    void activationRollsBackProviderBindingWhenInvitedAccountStateChangedConcurrently() throws Exception {
+        String response=invite("activation-state-race-"+UUID.randomUUID(),"employee@example.test");
+        String invitationId=com.jayway.jsonpath.JsonPath.read(response,"$.data.invitationId");
+        String token=invitationTokens.decryptDeliveryPayload(jdbc.sql("""
+                SELECT encrypted_delivery_payload FROM platform.identity_invitation
+                WHERE invitation_id=CAST(:id AS uuid)
+                """).param("id",invitationId).query(String.class).single()).token();
+        jdbc.sql("""
+                UPDATE platform.security_user SET account_status='ACTIVE',enabled=true
+                WHERE subject_id=:subject
+                """).param("subject",subject).update();
+
+        activate(token).andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("IDENTITY_INVITATION_INVALID"));
+
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.identity_provider_binding
+                WHERE security_subject_id=:subject
+                """).param("subject",subject).query(Long.class).single()).isZero();
     }
 
     @Test
@@ -208,6 +261,26 @@ class IdentityLifecycleClosureIntegrationTest {
         org.assertj.core.api.Assertions.assertThat(secondId).isNotEqualTo(firstId);
         org.assertj.core.api.Assertions.assertThat(secondToken).isNotEqualTo(firstToken);
         activate(secondToken).andExpect(status().isOk());
+    }
+
+    @Test
+    void currentInvitationCanBeRequeriedWithoutExposingItsSecret() throws Exception {
+        String created=invite("current-invitation-"+UUID.randomUUID(),"employee@example.test");
+        String invitationId=com.jayway.jsonpath.JsonPath.read(created,"$.data.invitationId");
+
+        mvc.perform(get("/api/v1/identity/employees/{subjectId}/invitation",subject)
+                        .principal(()->"production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.contractVersion").value(CONTRACT_VERSION))
+                .andExpect(jsonPath("$.data.invitationId").value(invitationId))
+                .andExpect(jsonPath("$.data.invitationStatus").value("PENDING"))
+                .andExpect(jsonPath("$.data.deliveryStatus").value("QUEUED"))
+                .andExpect(jsonPath("$.data.token").doesNotExist())
+                .andExpect(jsonPath("$.data.activationUrl").doesNotExist());
+        mvc.perform(get("/api/v1/identity/employees/{subjectId}/invitation","unknown-subject")
+                        .principal(()->"production-tester"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.error.code").value("IDENTITY_SUBJECT_NOT_FOUND"));
     }
 
     @Test
@@ -277,12 +350,19 @@ class IdentityLifecycleClosureIntegrationTest {
     }
 
     private org.springframework.test.web.servlet.ResultActions activate(String token) throws Exception {
-        return mvc.perform(post("/api/v1/identity/invitations/activate")
+        return activate(token,null);
+    }
+
+    private org.springframework.test.web.servlet.ResultActions activate(
+            String token,MockHttpSession session) throws Exception {
+        var request=post("/api/v1/identity/invitations/activate")
                 .with(oidcLogin().idToken(idToken -> idToken
                         .claim(IdTokenClaimNames.ISS,"https://idp.example.test/realms/cofco")
                         .claim(IdTokenClaimNames.SUB,"provider-subject-001")))
                 .contentType(MediaType.APPLICATION_JSON)
-                .content("{\"token\":\""+token+"\"}"));
+                .content("{\"token\":\""+token+"\"}");
+        if(session!=null)request.session(session);
+        return mvc.perform(request);
     }
 
     private void deleteSubject() {
