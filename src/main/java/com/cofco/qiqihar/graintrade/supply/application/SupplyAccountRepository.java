@@ -1,14 +1,24 @@
 package com.cofco.qiqihar.graintrade.supply.application;
+import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import java.time.Instant;
 import java.util.List;
 import java.util.Set;
 public interface SupplyAccountRepository{
  SupplyTemporalContext findTemporalContext(String periodCode);
  default List<SupplyAccountView> find(String productCode,String regionCode,String periodCode,String resultState,Integer version){
-  return find(productCode,regionCode,periodCode,resultState,version,Set.of("*"));
+ return find(productCode,regionCode,periodCode,resultState,version,Set.of("*"));
  }
  List<SupplyAccountView> find(String productCode,String regionCode,String periodCode,String resultState,Integer version,
          Set<String> authorizedRegionCodes);
+ default PagedResult<SupplyAccountView> findPage(String productCode,String regionCode,String periodCode,
+         String resultState,Integer version,int pageNumber,int pageSize,Set<String> authorizedRegionCodes){
+  List<SupplyAccountView> rows=find(productCode,regionCode,periodCode,resultState,version,authorizedRegionCodes);
+  long offset=(long)pageNumber*pageSize;
+  if(offset>=rows.size())return new PagedResult<>(List.of(),pageNumber,pageSize,rows.size());
+  int from=(int)offset;
+  int to=(int)Math.min((long)rows.size(),offset+pageSize);
+  return new PagedResult<>(rows.subList(from,to),pageNumber,pageSize,rows.size());
+ }
  default SupplyInputWorkspaceView loadInputWorkspace(String productCode,String regionCode,String periodCode){
   return loadInputWorkspace(productCode,regionCode,periodCode,Set.of("*"));
  }

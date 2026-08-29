@@ -14,6 +14,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -142,6 +147,153 @@ class SupplyAccountRestIntegrationTest {
     }
 
     @Test
+    void retriesTheSameCalculationWithoutDuplicatingHistoryOrAuditAndExposesTheCalculationActor() throws Exception {
+        controlledCornSources();
+        String inputSet = inputSet("CORN", 0, Map.of());
+        String body = runBody("CORN", inputSet, "1.000", 0);
+
+        mvc.perform(post("/api/v1/supply-accounts/runs").principal(() -> "supply-reviewer")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.calculatedByName").value("供需测试员"))
+                .andExpect(jsonPath("$.data.calculatedAt").isNotEmpty());
+        mvc.perform(post("/api/v1/supply-accounts/runs").principal(() -> "supply-reviewer")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.resultVersion").value(1))
+                .andExpect(jsonPath("$.data.calculatedByName").value("供需测试员"));
+
+        assertThat(jdbc.sql("SELECT count(*) FROM supply.calculation_run WHERE product_code='CORN'")
+                .query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type='SUPPLY_ACCOUNT' AND action_code='SUPPLY_ACCOUNT_CALCULATED'
+                """).query(Long.class).single()).isEqualTo(1);
+    }
+
+    @Test
+    void paginatesCalculationHistoryInStableNewestFirstOrderAndRejectsInvalidBounds() throws Exception {
+        controlledCornSources();
+        String inputSet = inputSet("CORN", 0, Map.of());
+        mvc.perform(post("/api/v1/supply-accounts/runs").principal(() -> "supply-reviewer")
+                        .contentType(MediaType.APPLICATION_JSON).content(runBody("CORN", inputSet, "1.000", 0)))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/v1/supply-accounts/runs").principal(() -> "supply-reviewer")
+                        .contentType(MediaType.APPLICATION_JSON).content(runBody("CORN", inputSet, "1.100", 0)))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/v1/supply-accounts/runs").principal(() -> "supply-reviewer")
+                        .contentType(MediaType.APPLICATION_JSON).content(runBody("CORN", inputSet, "1.200", 1)))
+                .andExpect(status().isOk());
+
+        mvc.perform(get("/api/v1/supply-accounts").principal(() -> "supply-reviewer")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", "230200")
+                        .queryParam("periodCode", "2026")
+                        .queryParam("pageNumber", "0")
+                        .queryParam("pageSize", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(2))
+                .andExpect(jsonPath("$.data.items[0].resultVersion").value(3))
+                .andExpect(jsonPath("$.data.items[1].resultVersion").value(2))
+                .andExpect(jsonPath("$.data.pageNumber").value(0))
+                .andExpect(jsonPath("$.data.pageSize").value(2))
+                .andExpect(jsonPath("$.data.totalElements").value(3))
+                .andExpect(jsonPath("$.data.totalPages").value(2));
+        mvc.perform(get("/api/v1/supply-accounts").principal(() -> "supply-reviewer")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", "230200")
+                        .queryParam("periodCode", "2026")
+                        .queryParam("pageNumber", "-1"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_SUPPLY_ACCOUNT_REQUEST"));
+        mvc.perform(get("/api/v1/supply-accounts").principal(() -> "supply-reviewer")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", "230200")
+                        .queryParam("periodCode", "2026")
+                        .queryParam("pageSize", "51"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_SUPPLY_ACCOUNT_REQUEST"));
+    }
+
+    @Test
+    void serializesConcurrentDuplicateCalculationsIntoOneHistoryAndAuditRecord() throws Exception {
+        controlledCornSources();
+        String inputSet = inputSet("CORN", 0, Map.of());
+        String body = runBody("CORN", inputSet, "1.000", 0);
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService requests = Executors.newFixedThreadPool(2);
+        try {
+            Future<Integer> first = requests.submit(() -> {
+                start.await();
+                return mvc.perform(post("/api/v1/supply-accounts/runs").principal(() -> "supply-reviewer")
+                                .contentType(MediaType.APPLICATION_JSON).content(body))
+                        .andReturn().getResponse().getStatus();
+            });
+            Future<Integer> second = requests.submit(() -> {
+                start.await();
+                return mvc.perform(post("/api/v1/supply-accounts/runs").principal(() -> "supply-reviewer")
+                                .contentType(MediaType.APPLICATION_JSON).content(body))
+                        .andReturn().getResponse().getStatus();
+            });
+            start.countDown();
+            assertThat(List.of(first.get(10, TimeUnit.SECONDS), second.get(10, TimeUnit.SECONDS)))
+                    .containsExactlyInAnyOrder(200, 200);
+        } finally {
+            requests.shutdownNow();
+        }
+        assertThat(jdbc.sql("SELECT count(*) FROM supply.calculation_run WHERE product_code='CORN'")
+                .query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type='SUPPLY_ACCOUNT' AND action_code='SUPPLY_ACCOUNT_CALCULATED'
+                """).query(Long.class).single()).isEqualTo(1);
+    }
+
+    @Test
+    void enforcesSupplyReadAndWriteResponsibilityRegionsWithStableErrorCodes() throws Exception {
+        jdbc.sql("""
+                INSERT INTO platform.security_user(subject_id,display_name,work_unit_code)
+                VALUES('limited-supply-user','有限责任区供需人员','TEST')
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_role(subject_id,role_code)
+                VALUES('limited-supply-user','SYSTEM_ADMIN')
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_region_scope(subject_id,region_code)
+                VALUES('limited-supply-user','230221')
+                """).update();
+
+        mvc.perform(get("/api/v1/supply-input-workspaces").principal(() -> "limited-supply-user")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", "230221")
+                        .queryParam("periodCode", "2026"))
+                .andExpect(status().isOk());
+        mvc.perform(get("/api/v1/supply-input-workspaces").principal(() -> "limited-supply-user")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", "230200")
+                        .queryParam("periodCode", "2026"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+        mvc.perform(post("/api/v1/supply-inputs/manual-decisions").principal(() -> "limited-supply-user")
+                        .contentType(MediaType.APPLICATION_JSON).content("""
+                                {"productCode":"CORN","regionCode":"230200","periodCode":"2026",
+                                 "roleCode":"OPENING_INVENTORY","value":"0","reason":"责任区拒绝测试",
+                                 "expectedVersion":0}
+                                """))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+        mvc.perform(post("/api/v1/supply-inputs/manual-decisions").principal(() -> "limited-supply-user")
+                        .contentType(MediaType.APPLICATION_JSON).content("""
+                                {"productCode":"CORN","regionCode":"230221","periodCode":"2026",
+                                 "roleCode":"OPENING_INVENTORY","value":null,"reason":"空值拒绝测试",
+                                 "expectedVersion":0}
+                                """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_SUPPLY_ACCOUNT_REQUEST"));
+    }
+
+    @Test
     void acceptsThePublicLogisticsSurveyContractAsAGovernedSupplySource() throws Exception {
         String record = publicLogisticsRecord("CORN", "12500.000", "INFLOW");
 
@@ -264,8 +416,8 @@ class SupplyAccountRestIntegrationTest {
                         .queryParam("regionCode", "230200").queryParam("marketingYear", "2026/27")
                         .queryParam("version", "1"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].formula.version").value(1))
-                .andExpect(jsonPath("$.data[0].sources[?(@.roleCode == 'LOCAL_PRODUCTION')].sourceValue")
+                .andExpect(jsonPath("$.data.items[0].formula.version").value(1))
+                .andExpect(jsonPath("$.data.items[0].sources[?(@.roleCode == 'LOCAL_PRODUCTION')].sourceValue")
                         .value("3.0000"));
 
         String releaseId = jdbc.sql("SELECT source_release_id::text FROM supply.source_release LIMIT 1")
@@ -349,25 +501,25 @@ class SupplyAccountRestIntegrationTest {
                         .queryParam("regionCode", "230200")
                         .queryParam("periodCode", "2026"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(4))
-                .andExpect(jsonPath("$.data[0].periodPrecision").value("YEAR"))
-                .andExpect(jsonPath("$.data[1].periodCode").value("2026-Q3"))
-                .andExpect(jsonPath("$.data[1].resultVersion").value(2))
-                .andExpect(jsonPath("$.data[2].resultVersion").value(1))
-                .andExpect(jsonPath("$.data[3].periodCode").value("2026-Q4"));
+                .andExpect(jsonPath("$.data.items.length()").value(4))
+                .andExpect(jsonPath("$.data.items[0].periodPrecision").value("YEAR"))
+                .andExpect(jsonPath("$.data.items[1].periodCode").value("2026-Q3"))
+                .andExpect(jsonPath("$.data.items[1].resultVersion").value(2))
+                .andExpect(jsonPath("$.data.items[2].resultVersion").value(1))
+                .andExpect(jsonPath("$.data.items[3].periodCode").value("2026-Q4"));
         mvc.perform(get("/api/v1/supply-accounts")
                         .queryParam("productCode", "RICE")
                         .queryParam("regionCode", "230200")
                         .queryParam("periodCode", "2026-Q3"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(2));
+                .andExpect(jsonPath("$.data.items.length()").value(2));
         mvc.perform(get("/api/v1/supply-accounts")
                         .queryParam("productCode", "RICE")
                         .queryParam("regionCode", "230200")
                         .queryParam("periodCode", "2026-Q4"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(1))
-                .andExpect(jsonPath("$.data[0].resultVersion").value(1));
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].resultVersion").value(1));
 
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM supply.approved_adjustment

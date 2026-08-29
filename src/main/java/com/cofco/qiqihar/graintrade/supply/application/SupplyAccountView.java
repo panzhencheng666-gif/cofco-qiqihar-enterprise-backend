@@ -29,6 +29,8 @@ public record SupplyAccountView(
         String inventoryReconciliationDifference,
         String inputSetId,
         boolean legacyReadOnly,
+        String calculatedByName,
+        String calculatedAt,
         SupplyAdjustmentProposalView adjustmentProposal,
         SupplyAdjustmentAuditView adjustmentAudit,
         SupplyFormulaView formula,

@@ -3,6 +3,7 @@ package com.cofco.qiqihar.graintrade.supply.interfaceadapter;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.BoundedInput;
 import com.cofco.qiqihar.graintrade.shared.application.PlainDecimal;
+import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.StrictQueryParameters;
 import com.cofco.qiqihar.graintrade.supply.application.ManualInputDecisionCommand;
@@ -27,7 +28,8 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 public class SupplyAccountController {
     private static final Set<String> ACCOUNT_QUERY_PARAMETERS =
-            Set.of("productCode", "regionCode", "periodCode", "marketingYear", "resultState", "version");
+            Set.of("productCode", "regionCode", "periodCode", "marketingYear", "resultState", "version",
+                    "pageNumber", "pageSize");
     private static final Set<String> WORKSPACE_QUERY_PARAMETERS =
             Set.of("productCode", "regionCode", "periodCode", "marketingYear");
 
@@ -38,17 +40,19 @@ public class SupplyAccountController {
     }
 
     @GetMapping("/api/v1/supply-accounts")
-    ApiResponse<List<SupplyAccountView>> list(@RequestParam MultiValueMap<String, String> parameters) {
+    ApiResponse<PageResponse> list(@RequestParam MultiValueMap<String, String> parameters) {
         StrictQueryParameters parsed = StrictQueryParameters.parse(
                 parameters, ACCOUNT_QUERY_PARAMETERS::contains, SupplyAccountController::invalid);
         String rawVersion = parsed.optional("version");
         Integer version = rawVersion == null ? null : integer(rawVersion);
-        return new ApiResponse<>(service.list(
+        return new ApiResponse<>(PageResponse.from(service.list(
                 parsed.required("productCode"),
                 parsed.required("regionCode"),
                 canonicalPeriod(parsed.optional("periodCode"), parsed.optional("marketingYear")),
                 parsed.optional("resultState"),
-                version));
+                version,
+                parsed.integer("pageNumber", 0),
+                parsed.integer("pageSize", 20))));
     }
 
     @GetMapping("/api/v1/supply-input-workspaces")
@@ -180,6 +184,18 @@ public class SupplyAccountController {
 
         SupplyInputSetCommand.Item item() {
             return new SupplyInputSetCommand.Item(roleCode, sourceReleaseId);
+        }
+    }
+
+    record PageResponse(
+            List<SupplyAccountView> items,
+            int pageNumber,
+            int pageSize,
+            long totalElements,
+            int totalPages) {
+        static PageResponse from(PagedResult<SupplyAccountView> page) {
+            return new PageResponse(page.items(), page.pageNumber(), page.pageSize(),
+                    page.totalElements(), page.totalPages());
         }
     }
 

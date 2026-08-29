@@ -4,6 +4,7 @@ import com.cofco.qiqihar.graintrade.shared.application.AuthenticationRequiredExc
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.ServerContractException;
+import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder;
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
 import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
@@ -68,14 +69,17 @@ public class SupplyAccountService {
     }
 
     @Transactional(readOnly = true)
-    public List<SupplyAccountView> list(
-            String product, String region, String period, String state, Integer version) {
+    public PagedResult<SupplyAccountView> list(
+            String product, String region, String period, String state, Integer version,
+            int pageNumber, int pageSize) {
         if (!PRODUCTS.contains(product) || blank(region) || blank(period)
                 || (state != null && !Set.of("DRAFT", "CONFIRMED", "PUBLISHED").contains(state))
-                || (version != null && version < 1)) throw invalid();
+                || (version != null && version < 1)
+                || pageNumber < 0 || pageSize < 1 || pageSize > 50) throw invalid();
         requireTemporalContext(period);
         AuthorizedReadScope scope=readScope(); scope.requireRegion(region);
-        return repository.find(product, region, period, state, version, scope.regionCodes());
+        return repository.findPage(
+                product, region, period, state, version, pageNumber, pageSize, scope.regionCodes());
     }
 
     @Transactional(readOnly = true)
@@ -119,10 +123,6 @@ public class SupplyAccountService {
                 || !material.inputSet().regionCode().equals(command.regionCode())
                 || !material.inputSet().periodCode().equals(command.periodCode())) throw invalidInputSet();
         validateFormula(material.formula().formula());
-        if (material.decision().version() != command.expectedDecisionVersion()) {
-            throw new ConflictException("SUPPLY_DECISION_VERSION_CONFLICT", "Supply decision has changed");
-        }
-
         List<SupplySource> sources = material.inputSet().sources().stream().map(source -> new SupplySource(
                 source.roleCode(), source.domain(), source.recordId(), source.sourceVersion(), ApprovalState.APPROVED,
                 QualityState.valueOf(source.qualityState()), source.accountValue(), material.inputSet().reason(),
@@ -143,6 +143,14 @@ public class SupplyAccountService {
         boolean eligible = errors.isEmpty() && calculation != null && calculation.balanced();
         boolean formal = eligible && command.publish();
         String state = formal ? "PUBLISHED" : eligible ? "CONFIRMED" : "DRAFT";
+        String checksum = calculationChecksum(material, calculation, command);
+        SupplyAccountView existing = repository.find(
+                        command.productCode(), command.regionCode(), command.periodCode(), null, null, Set.of("*"))
+                .stream().filter(view -> checksum.equals(view.calculationChecksum())).findFirst().orElse(null);
+        if (existing != null) return existing;
+        if (material.decision().version() != command.expectedDecisionVersion()) {
+            throw new ConflictException("SUPPLY_DECISION_VERSION_CONFLICT", "Supply decision has changed");
+        }
         long decisionVersion = material.decision().version();
         if (formal) {
             repository.persistFormalDecision(command, material, current, now);
@@ -151,7 +159,7 @@ public class SupplyAccountService {
         SupplyAccountView persisted = repository.persistRun(new SupplyRunPersistence(
                 material,
                 formulaSnapshot(material.formula()),
-                calculationChecksum(material, calculation),
+                checksum,
                 command.productCode(),
                 command.regionCode(),
                 temporalContext,
@@ -329,10 +337,15 @@ public class SupplyAccountService {
         return digest(command + "|" + value.toPlainString());
     }
 
-    private String calculationChecksum(SupplyCalculationMaterial material, SupplyAccountCalculation calculation) {
+    private String calculationChecksum(
+            SupplyCalculationMaterial material, SupplyAccountCalculation calculation, SupplyRunCommand command) {
         StringBuilder contents = new StringBuilder(formulaSnapshot(material.formula()))
                 .append('|').append(material.inputSet().id())
-                .append('|').append(material.inputSet().version());
+                .append('|').append(material.inputSet().version())
+                .append('|').append(command.adjustmentProposalValue().toPlainString())
+                .append('|').append(command.adjustmentProposalReason())
+                .append('|').append(command.expectedDecisionVersion())
+                .append('|').append(command.publish());
         material.inputSet().sources().forEach(source -> contents.append('|').append(source.roleCode())
                 .append('|').append(source.releaseId()).append('|').append(source.recordId())
                 .append('|').append(source.sourceVersion()).append('|').append(source.sourceFieldCode())

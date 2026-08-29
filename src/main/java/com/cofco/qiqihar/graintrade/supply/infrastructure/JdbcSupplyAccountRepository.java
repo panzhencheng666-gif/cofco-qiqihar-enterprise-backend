@@ -82,6 +82,8 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                   r.adjustment_reason_snapshot,r.adjustment_actor_snapshot,r.adjustment_decided_at_snapshot,
                   r.adjustment_proposal_value,r.adjustment_proposal_reason,r.adjustment_requested_by,
                   r.adjustment_requested_at,r.input_set_id::text,
+                  COALESCE(calculation_actor.display_name,'已记录业务人员') calculated_by_name,
+                  r.created_at calculated_at,
                   (r.input_set_id IS NULL OR COALESCE(input_set.legacy, false)
                     OR r.calculation_checksum IS NULL) legacy_read_only,
                   r.formula_snapshot->>'code' formula_code,(r.formula_snapshot->>'version')::integer formula_version,
@@ -94,6 +96,7 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                 LEFT JOIN supply.result_version previous_version
                   ON previous_version.result_version_id=rv.supersedes_result_version_id
                 LEFT JOIN supply.source_adoption_set input_set ON input_set.input_set_id=r.input_set_id
+                LEFT JOIN platform.security_user calculation_actor ON calculation_actor.subject_id=r.created_by
                 WHERE r.product_code=:product AND r.region_code=:region
                 """);
         Map<String, Object> params = new LinkedHashMap<>();
@@ -141,6 +144,8 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                 plain(row.getBigDecimal("adjustment_proposal_value")), row.getString("adjustment_proposal_reason"),
                 row.getString("adjustment_requested_by"),
                 timestamp(row.getObject("adjustment_requested_at", OffsetDateTime.class)), row.getString("input_set_id"),
+                row.getString("calculated_by_name"),
+                timestamp(row.getObject("calculated_at", OffsetDateTime.class)),
                 Boolean.TRUE.equals(row.getObject("legacy_read_only", Boolean.class)),
                 new FormulaHeader(row.getString("formula_code"), row.getInt("formula_version"),
                         row.getString("formula_name"), row.getInt("formula_precision"), row.getInt("formula_scale"),
@@ -659,7 +664,8 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                     normalized(header.totalUse, header.formula), normalized(header.calculated, header.formula),
                     normalized(header.adjustment, header.formula), normalized(header.adopted, header.formula),
                     normalized(header.surveyed, header.formula), normalized(header.difference, header.formula),
-                    header.inputSetId, header.legacyReadOnly, proposal, audit, formula,
+                    header.inputSetId, header.legacyReadOnly, header.calculatedByName, header.calculatedAt,
+                    proposal, audit, formula,
                     List.copyOf(sources.getOrDefault(header.id, List.of())));
         }).toList();
     }
@@ -867,5 +873,6 @@ public class JdbcSupplyAccountRepository implements SupplyAccountRepository {
                           String adopted, String surveyed, String difference, String adjustmentReason,
                           String adjustmentActor, String adjustmentAt, String proposalValue,
                           String proposalReason, String proposalActor, String proposalAt,
-                          String inputSetId, boolean legacyReadOnly, FormulaHeader formula) {}
+                          String inputSetId, String calculatedByName, String calculatedAt,
+                          boolean legacyReadOnly, FormulaHeader formula) {}
 }
