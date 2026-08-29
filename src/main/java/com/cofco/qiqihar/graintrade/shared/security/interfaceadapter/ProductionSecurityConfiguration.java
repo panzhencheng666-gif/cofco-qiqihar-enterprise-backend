@@ -205,6 +205,10 @@ public class ProductionSecurityConfiguration {
                     return;
                 }
                 SecurityPrincipal principal=findEnabledOidc(principals,authentication).orElse(null);
+                if(principal==null&&invitationActivation(request)) {
+                    filterChain.doFilter(request,response);
+                    return;
+                }
                 if(principal==null||principal.roleCodes().isEmpty()) {
                     deny(request,response,authentication,principal==null?"SUBJECT_DISABLED":"ROLE_REQUIRED");
                     return;
@@ -243,6 +247,12 @@ public class ProductionSecurityConfiguration {
             return path.startsWith("/api/v1/") && !path.equals("/api/v1/session/login");
         }
 
+        private static boolean invitationActivation(HttpServletRequest request) {
+            String path=request.getRequestURI().substring(request.getContextPath().length());
+            return request.getMethod().equals("POST")
+                    && path.equals("/api/v1/identity/invitations/activate");
+        }
+
         private static boolean authenticated(Authentication authentication) {
             return authentication != null && authentication.isAuthenticated()
                     && !(authentication instanceof AnonymousAuthenticationToken);
@@ -269,7 +279,7 @@ public class ProductionSecurityConfiguration {
                 Authentication authentication) throws IOException,ServletException {
             SecurityPrincipal principal=findEnabledOidc(principals,authentication).orElse(null);
             String reason=!approvedMfa(authentication,acceptedAmr,acceptedAcr)?"MFA_REQUIRED"
-                    : principal==null?"SUBJECT_DISABLED":principal.roleCodes().isEmpty()?"ROLE_REQUIRED":null;
+                    : principal!=null&&principal.roleCodes().isEmpty()?"ROLE_REQUIRED":null;
             if(reason!=null) {
                 var session=request.getSession(false);
                 audit.record(authentication.getName(),session==null?null:session.getId(),
@@ -277,6 +287,13 @@ public class ProductionSecurityConfiguration {
                 if(session!=null)session.invalidate();
                 SecurityContextHolder.clearContext();
                 response.sendError(HttpStatus.FORBIDDEN.value());
+                return;
+            }
+            if(principal==null) {
+                var session=request.getSession();
+                audit.record(authentication.getName(),session.getId(),
+                        "LOGIN_ACTIVATION_REQUIRED","{}");
+                delegate.onAuthenticationSuccess(request,response,authentication);
                 return;
             }
             var session=request.getSession();

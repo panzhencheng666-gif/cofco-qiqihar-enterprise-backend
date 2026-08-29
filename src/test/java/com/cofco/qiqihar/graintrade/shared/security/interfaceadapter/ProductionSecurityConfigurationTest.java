@@ -195,6 +195,21 @@ class ProductionSecurityConfigurationTest {
     }
 
     @Test
+    void unboundMfaOidcIdentityCanOnlyCompleteInvitationActivation() throws Exception {
+        when(principals.findEnabledByOidcIdentity(
+                "https://issuer.example.test","new-provider-subject")).thenReturn(Optional.empty());
+        var unbound=oidcLogin().idToken(token -> token.issuer("https://issuer.example.test")
+                .subject("new-provider-subject").claim("amr",List.of("mfa")));
+
+        mockMvc.perform(post("/api/v1/identity/invitations/activate")
+                        .with(unbound).with(csrf()))
+                .andExpect(status().isOk())
+                .andExpect(content().string("new-provider-subject"));
+        mockMvc.perform(get("/api/v1/whoami").with(unbound))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
     void disabledAndRolelessOidcSubjectsAreRejectedOnEveryRequest() throws Exception {
         when(principals.findEnabled("disabled-subject")).thenReturn(Optional.empty());
         when(principals.findEnabled("roleless-subject"))
@@ -278,6 +293,11 @@ class ProductionSecurityConfigurationTest {
         @GetMapping("/api/v1/whoami-async")
         java.util.concurrent.Callable<String> whoamiAsync(java.security.Principal principal) {
             return principal::getName;
+        }
+
+        @org.springframework.web.bind.annotation.PostMapping("/api/v1/identity/invitations/activate")
+        String activate(java.security.Principal principal) {
+            return principal.getName();
         }
     }
 
