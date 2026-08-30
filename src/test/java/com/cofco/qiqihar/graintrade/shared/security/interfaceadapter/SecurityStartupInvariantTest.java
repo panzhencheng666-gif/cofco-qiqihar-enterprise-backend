@@ -116,6 +116,40 @@ class SecurityStartupInvariantTest {
     }
 
     @Test
+    void productionIdentityLifecycleConfigurationFailsClosed() {
+        String key="AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        assertThatThrownBy(() -> completeIdentityProduction("",false,true,"https://id.example.test/deliver",
+                "credential","https://app.example.test/activate","https://id.example.test/account"))
+                .hasMessageContaining("QIQIHAR_IDENTITY_INVITATION_ENCRYPTION_KEY");
+        assertThatThrownBy(() -> completeIdentityProduction(key,true,true,"https://id.example.test/deliver",
+                "credential","https://app.example.test/activate","https://id.example.test/account"))
+                .hasMessageContaining("self-registration");
+        assertThatThrownBy(() -> completeIdentityProduction(key,false,false,"https://id.example.test/deliver",
+                "credential","https://app.example.test/activate","https://id.example.test/account"))
+                .hasMessageContaining("DELIVERY_WORKER_ENABLED");
+        assertThatThrownBy(() -> completeIdentityProduction(key,false,true,"",
+                "credential","https://app.example.test/activate","https://id.example.test/account"))
+                .hasMessageContaining("QIQIHAR_IDENTITY_DELIVERY_ENDPOINT");
+        assertThatThrownBy(() -> completeIdentityProduction(key,false,true,"https://id.example.test/deliver",
+                "credential","https://app.example.test/activate",""))
+                .hasMessageContaining("QIQIHAR_IDENTITY_MANAGEMENT_URL");
+        assertThatCode(() -> completeIdentityProduction(key,false,true,"https://id.example.test/deliver",
+                "credential","https://app.example.test/activate","https://id.example.test/account"))
+                .doesNotThrowAnyException();
+    }
+
+    private static void completeIdentityProduction(String encryptionKey,boolean selfRegistration,
+            boolean workerEnabled,String deliveryEndpoint,String deliveryCredential,
+            String activationUrl,String identityManagementUrl) {
+        SecurityStartupInvariant.validate(Set.of("production"),"127.0.0.1","",
+                "https://id.example.test","client","secret",
+                "https://app.example.test/login/oauth2/code/enterprise",
+                "https://app.example.test/logged-out","mfa","",true,
+                encryptionKey,selfRegistration,workerEnabled,deliveryEndpoint,deliveryCredential,
+                activationUrl,identityManagementUrl);
+    }
+
+    @Test
     void rejectsTestProfileWithoutTheTestClasspathMarker() {
         assertThatThrownBy(() -> SecurityStartupInvariant.validate(
                 Set.of("test"), "127.0.0.1", "", "", false))

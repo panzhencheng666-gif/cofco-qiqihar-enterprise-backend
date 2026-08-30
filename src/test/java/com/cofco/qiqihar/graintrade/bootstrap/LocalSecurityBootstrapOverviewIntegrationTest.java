@@ -56,6 +56,8 @@ class LocalSecurityBootstrapOverviewIntegrationTest {
         jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id = 'position-free-employee'").update();
         jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id = 'position-free-employee'").update();
         jdbc.sql("DELETE FROM platform.security_user_position WHERE subject_id = 'position-free-employee'").update();
+        jdbc.sql("DELETE FROM platform.identity_delivery_outbox WHERE security_subject_id = 'position-free-employee'").update();
+        jdbc.sql("DELETE FROM platform.identity_invitation WHERE security_subject_id = 'position-free-employee'").update();
         jdbc.sql("DELETE FROM platform.security_user WHERE subject_id = 'position-free-employee'").update();
         jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id = 'wang-yang'").update();
         jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id = 'wang-yang'").update();
@@ -186,9 +188,11 @@ class LocalSecurityBootstrapOverviewIntegrationTest {
         mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post(
                         "/api/v1/identity/employees")
                         .header("X-Actor", "wang-yang")
+                        .header("Idempotency-Key", "local-position-free-employee")
                         .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
                         .content("""
                                 {"subjectId":"position-free-employee","displayName":"OIDC普通员工验收",
+                                 "deliveryAddress":"position-free-employee@example.test",
                                  "workUnitCode":"NEHE_DEPOT","positionCodes":[],
                                  "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["230281997"]}
                                 """))

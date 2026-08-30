@@ -30,11 +30,20 @@ public final class SecurityStartupInvariant {
             @Value("${qiqihar.security.oidc.redirect-uri:}") String redirectUri,
             @Value("${qiqihar.security.oidc.post-logout-redirect-uri:}") String postLogoutRedirectUri,
             @Value("${qiqihar.security.oidc.mfa-amr-values:}") String mfaAmrValues,
-            @Value("${qiqihar.security.oidc.mfa-acr-values:}") String mfaAcrValues) {
+            @Value("${qiqihar.security.oidc.mfa-acr-values:}") String mfaAcrValues,
+            @Value("${qiqihar.identity.invitation-encryption-key:}") String invitationEncryptionKey,
+            @Value("${qiqihar.identity.public-self-registration-enabled:false}") boolean selfRegistration,
+            @Value("${qiqihar.identity.delivery.worker-enabled:false}") boolean deliveryWorkerEnabled,
+            @Value("${qiqihar.identity.delivery.endpoint:}") String deliveryEndpoint,
+            @Value("${qiqihar.identity.delivery.bearer-token:}") String deliveryCredential,
+            @Value("${qiqihar.identity.delivery.activation-url:}") String activationUrl,
+            @Value("${qiqihar.identity.management-url:}") String identityManagementUrl) {
         validate(Set.copyOf(Arrays.asList(environment.getActiveProfiles())),
                 serverAddress, trustedSubjectHeader, issuerUri,
                 clientId, clientSecret, redirectUri, postLogoutRedirectUri, mfaAmrValues, mfaAcrValues,
-                ClassUtils.isPresent(TEST_CLASSPATH_MARKER, resourceLoader.getClassLoader()));
+                ClassUtils.isPresent(TEST_CLASSPATH_MARKER, resourceLoader.getClassLoader()),
+                invitationEncryptionKey,selfRegistration,deliveryWorkerEnabled,deliveryEndpoint,
+                deliveryCredential,activationUrl,identityManagementUrl);
     }
 
     static void validate(Set<String> activeProfiles, String serverAddress,
@@ -45,7 +54,8 @@ public final class SecurityStartupInvariant {
     static void validate(Set<String> activeProfiles, String serverAddress,
             String trustedSubjectHeader, String issuerUri, boolean testClasspathMarkerPresent) {
         validate(activeProfiles, serverAddress, trustedSubjectHeader, issuerUri,
-                "", "", "", "", "", "", testClasspathMarkerPresent);
+                "", "", "", "", "", "", testClasspathMarkerPresent,
+                "",false,false,"","","","");
     }
 
     static void validate(Set<String> activeProfiles, String serverAddress,
@@ -53,6 +63,20 @@ public final class SecurityStartupInvariant {
             String clientId, String clientSecret, String redirectUri,
             String postLogoutRedirectUri, String mfaAmrValues, String mfaAcrValues,
             boolean testClasspathMarkerPresent) {
+        validate(activeProfiles,serverAddress,trustedSubjectHeader,issuerUri,clientId,clientSecret,
+                redirectUri,postLogoutRedirectUri,mfaAmrValues,mfaAcrValues,testClasspathMarkerPresent,
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",false,true,
+                "https://identity.example.test/deliver","configured-credential",
+                "https://app.example.test/activate","https://identity.example.test/account");
+    }
+
+    static void validate(Set<String> activeProfiles, String serverAddress,
+            String trustedSubjectHeader, String issuerUri,
+            String clientId, String clientSecret, String redirectUri,
+            String postLogoutRedirectUri, String mfaAmrValues, String mfaAcrValues,
+            boolean testClasspathMarkerPresent,String invitationEncryptionKey,
+            boolean selfRegistration,boolean deliveryWorkerEnabled,String deliveryEndpoint,
+            String deliveryCredential,String activationUrl,String identityManagementUrl) {
         Set<String> profiles = activeProfiles.stream()
                 .map(profile -> profile.toLowerCase(Locale.ROOT))
                 .collect(Collectors.toUnmodifiableSet());
@@ -98,6 +122,41 @@ public final class SecurityStartupInvariant {
             throw new IllegalStateException(
                     "At least one approved OIDC MFA AMR or ACR value is required in production");
         }
+        if(!local&&!test&&!validEncryptionKey(invitationEncryptionKey)) {
+            throw new IllegalStateException(
+                    "QIQIHAR_IDENTITY_INVITATION_ENCRYPTION_KEY must be base64url for exactly 32 bytes");
+        }
+        if(!local&&!test&&selfRegistration) {
+            throw new IllegalStateException("Identity public self-registration must remain disabled");
+        }
+        if(!local&&!test&&!deliveryWorkerEnabled) {
+            throw new IllegalStateException("QIQIHAR_IDENTITY_DELIVERY_WORKER_ENABLED must be true in production");
+        }
+        if(!local&&!test&&!controlledHttps(deliveryEndpoint)) {
+            throw new IllegalStateException("QIQIHAR_IDENTITY_DELIVERY_ENDPOINT must be controlled HTTPS");
+        }
+        if(!local&&!test&&deliveryCredential.isBlank()) {
+            throw new IllegalStateException("QIQIHAR_IDENTITY_DELIVERY_BEARER_TOKEN is required in production");
+        }
+        if(!local&&!test&&!controlledHttps(activationUrl)) {
+            throw new IllegalStateException("QIQIHAR_IDENTITY_ACTIVATION_URL must be controlled HTTPS");
+        }
+        if(!local&&!test&&!controlledHttps(identityManagementUrl)) {
+            throw new IllegalStateException("QIQIHAR_IDENTITY_MANAGEMENT_URL must be controlled HTTPS");
+        }
+    }
+
+    private static boolean validEncryptionKey(String value) {
+        try{return value!=null&&java.util.Base64.getUrlDecoder().decode(value).length==32;}
+        catch(IllegalArgumentException invalid){return false;}
+    }
+
+    private static boolean controlledHttps(String value) {
+        try {
+            java.net.URI uri=java.net.URI.create(value);
+            return "https".equalsIgnoreCase(uri.getScheme())&&uri.getHost()!=null
+                    &&uri.getUserInfo()==null&&uri.getFragment()==null;
+        } catch(IllegalArgumentException invalid){return false;}
     }
 
     private static boolean isLoopback(String address) {

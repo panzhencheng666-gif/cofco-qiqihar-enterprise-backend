@@ -22,6 +22,10 @@ spring:
       resourceserver:
         jwt:
           issuer-uri: ${QIQIHAR_OIDC_ISSUER_URI:}
+  session:
+    jdbc:
+      initialize-schema: never
+      table-name: platform.http_session
 
 server:
   port: ${QIQIHAR_SERVER_PORT:8090}
@@ -36,6 +40,19 @@ server:
         same-site: strict
 
 qiqihar:
+  identity:
+    invitation-encryption-key: ${QIQIHAR_IDENTITY_INVITATION_ENCRYPTION_KEY:}
+    public-self-registration-enabled: ${QIQIHAR_IDENTITY_PUBLIC_SELF_REGISTRATION_ENABLED:false}
+    management-url: ${QIQIHAR_IDENTITY_MANAGEMENT_URL:}
+    delivery:
+      endpoint: ${QIQIHAR_IDENTITY_DELIVERY_ENDPOINT:}
+      bearer-token: ${QIQIHAR_IDENTITY_DELIVERY_BEARER_TOKEN:}
+      activation-url: ${QIQIHAR_IDENTITY_ACTIVATION_URL:}
+      worker-enabled: ${QIQIHAR_IDENTITY_DELIVERY_WORKER_ENABLED:false}
+      poll-delay: ${QIQIHAR_IDENTITY_DELIVERY_POLL_DELAY:5s}
+      lease: ${QIQIHAR_IDENTITY_DELIVERY_LEASE:30s}
+      base-retry: ${QIQIHAR_IDENTITY_DELIVERY_BASE_RETRY:10s}
+      maximum-retry: ${QIQIHAR_IDENTITY_DELIVERY_MAXIMUM_RETRY:15m}
   evidence:
     content:
       mode: ${QIQIHAR_EVIDENCE_CONTENT_MODE:database}
@@ -67,6 +84,7 @@ qiqihar:
       mfa-amr-values: ${QIQIHAR_OIDC_MFA_AMR_VALUES:}
       mfa-acr-values: ${QIQIHAR_OIDC_MFA_ACR_VALUES:}
     session-cookie-secure: ${QIQIHAR_SESSION_COOKIE_SECURE:true}
+    maximum-concurrent-sessions: ${QIQIHAR_MAXIMUM_CONCURRENT_SESSIONS:1}
   import:
     returned-correction-binding-key: ${QIQIHAR_RETURNED_CORRECTION_BINDING_KEY:}
     sync-row-limit: ${QIQIHAR_IMPORT_SYNC_ROW_LIMIT:5000}

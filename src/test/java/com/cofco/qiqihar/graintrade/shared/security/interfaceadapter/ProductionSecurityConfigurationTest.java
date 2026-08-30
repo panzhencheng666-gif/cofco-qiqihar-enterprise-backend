@@ -1,11 +1,11 @@
 package com.cofco.qiqihar.graintrade.shared.security.interfaceadapter;
 
-import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.oidcLogin;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.asyncDispatch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.cookie;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -30,9 +30,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
+import org.springframework.security.oauth2.client.oidc.session.InMemoryOidcSessionRegistry;
+import org.springframework.security.oauth2.client.oidc.session.OidcSessionRegistry;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.mock.web.MockHttpSession;
+import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
@@ -52,7 +55,14 @@ import org.springframework.web.bind.annotation.RestController;
                 "qiqihar.security.oidc.end-session-uri=https://issuer.example.test/logout",
                 "qiqihar.security.oidc.redirect-uri=https://app.example.test/login/oauth2/code/enterprise",
                 "qiqihar.security.oidc.post-logout-redirect-uri=https://app.example.test/logged-out",
-                "qiqihar.security.oidc.mfa-amr-values=mfa,otp"
+                "qiqihar.security.oidc.mfa-amr-values=mfa,otp",
+                "qiqihar.identity.invitation-encryption-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "qiqihar.identity.public-self-registration-enabled=false",
+                "qiqihar.identity.delivery.worker-enabled=true",
+                "qiqihar.identity.delivery.endpoint=https://id.example.test/deliver",
+                "qiqihar.identity.delivery.bearer-token=test-credential",
+                "qiqihar.identity.delivery.activation-url=https://app.example.test/activate",
+                "qiqihar.identity.management-url=https://id.example.test/account"
         })
 @Import({ProductionSecurityConfigurationTest.ProbeController.class,
         OidcLoginController.class, ProductionSecurityConfiguration.class, SecurityStartupInvariant.class})
@@ -69,8 +79,14 @@ class ProductionSecurityConfigurationTest {
     @MockitoBean
     SecuritySessionAuditRecorder sessionAudit;
 
+    @MockitoBean
+    JdbcClient jdbc;
+
     @Autowired
     ClientRegistrationRepository clientRegistrations;
+
+    @Autowired
+    OidcSessionRegistry oidcSessions;
 
     @BeforeEach
     void authorizeKnownEnterpriseSubjects() {
@@ -102,6 +118,30 @@ class ProductionSecurityConfigurationTest {
     void forgedActorHeaderDoesNotAuthenticateBusinessApi() throws Exception {
         mockMvc.perform(get("/api/v1/whoami").header("X-Actor", "forged-subject"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void productionOidcSessionRegistryIsDurableInsteadOfProcessLocal() {
+        org.assertj.core.api.Assertions.assertThat(oidcSessions)
+                .isNotInstanceOf(InMemoryOidcSessionRegistry.class);
+    }
+
+    @Test
+    void existingSessionIsInvalidatedWhenEffectiveAuthorizationChanges() throws Exception {
+        when(principals.findEnabledByOidcIdentity("https://issuer.example.test", "oidc-subject"))
+                .thenReturn(Optional.of(principal("employee-001", Set.of("BUSINESS_REVIEWER"))),
+                        Optional.of(principal("employee-001", Set.of("BUSINESS_OPERATOR"))));
+
+        MvcResult first = mockMvc.perform(get("/api/v1/whoami").with(oidcLogin()
+                        .idToken(token -> token.issuer("https://issuer.example.test")
+                                .subject("oidc-subject").claim("amr", List.of("mfa")))))
+                .andExpect(status().isOk()).andReturn();
+        MockHttpSession session = (MockHttpSession) first.getRequest().getSession(false);
+
+        mockMvc.perform(get("/api/v1/whoami").session(session))
+                .andExpect(status().isForbidden());
+        verify(sessionAudit).record(eq("employee-001"), eq(session.getId()),
+                eq("SESSION_ACCESS_DENIED"), eq("{\"reason\":\"IDENTITY_CHANGED\"}"));
     }
 
     @Test
@@ -155,6 +195,35 @@ class ProductionSecurityConfigurationTest {
     }
 
     @Test
+    void unboundMfaOidcIdentityCanOnlyCompleteInvitationActivation() throws Exception {
+        when(principals.findEnabledByOidcIdentity(
+                "https://issuer.example.test","new-provider-subject")).thenReturn(Optional.empty());
+        var unbound=oidcLogin().idToken(token -> token.issuer("https://issuer.example.test")
+                .subject("new-provider-subject").claim("amr",List.of("mfa")));
+
+        MvcResult bootstrap=mockMvc.perform(get("/api/v1/identity/invitations/activation-bootstrap")
+                        .with(unbound))
+                .andExpect(status().isOk())
+                .andExpect(cookie().exists("XSRF-TOKEN"))
+                .andExpect(content().json("""
+                        {"contractVersion":"2026-08-30","csrfReady":true}
+                        """))
+                .andReturn();
+        Cookie csrfCookie=bootstrap.getResponse().getCookie("XSRF-TOKEN");
+        mockMvc.perform(post("/api/v1/identity/invitations/activate")
+                        .with(unbound))
+                .andExpect(status().isForbidden());
+        mockMvc.perform(post("/api/v1/identity/invitations/activate")
+                        .with(unbound)
+                        .cookie(csrfCookie)
+                        .header("X-XSRF-TOKEN",csrfCookie.getValue()))
+                .andExpect(status().isOk())
+                .andExpect(content().string("new-provider-subject"));
+        mockMvc.perform(get("/api/v1/whoami").with(unbound))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
     void disabledAndRolelessOidcSubjectsAreRejectedOnEveryRequest() throws Exception {
         when(principals.findEnabled("disabled-subject")).thenReturn(Optional.empty());
         when(principals.findEnabled("roleless-subject"))
@@ -185,10 +254,18 @@ class ProductionSecurityConfigurationTest {
                 .claim("amr", java.util.List.of("mfa")));
         mockMvc.perform(post("/api/v1/session/logout").with(login))
                 .andExpect(status().isForbidden());
+        MvcResult bootstrap=mockMvc.perform(get("/api/v1/identity/invitations/activation-bootstrap")
+                        .with(login))
+                .andExpect(status().isOk())
+                .andExpect(cookie().exists("XSRF-TOKEN"))
+                .andReturn();
+        Cookie csrfCookie=bootstrap.getResponse().getCookie("XSRF-TOKEN");
         clearInvocations(sessionAudit);
         mockMvc.perform(post("/api/v1/session/logout")
                         .param("_spring_security_internal_logout","true")
-                        .with(login).with(csrf()))
+                        .with(login)
+                        .cookie(csrfCookie)
+                        .header("X-XSRF-TOKEN",csrfCookie.getValue()))
                 .andExpect(status().isFound())
                 .andExpect(header().string("Location",org.hamcrest.Matchers.startsWith(
                         "https://issuer.example.test/logout")));
@@ -238,6 +315,16 @@ class ProductionSecurityConfigurationTest {
         @GetMapping("/api/v1/whoami-async")
         java.util.concurrent.Callable<String> whoamiAsync(java.security.Principal principal) {
             return principal::getName;
+        }
+
+        @org.springframework.web.bind.annotation.PostMapping("/api/v1/identity/invitations/activate")
+        String activate(java.security.Principal principal) {
+            return principal.getName();
+        }
+
+        @GetMapping("/api/v1/identity/invitations/activation-bootstrap")
+        java.util.Map<String,Object> activationBootstrap() {
+            return java.util.Map.of("contractVersion","2026-08-30","csrfReady",true);
         }
     }
 

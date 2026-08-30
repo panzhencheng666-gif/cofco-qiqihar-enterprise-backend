@@ -66,6 +66,11 @@ public class TestSecurityConfiguration {
         @Override
         protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                 FilterChain filterChain) throws ServletException, IOException {
+            var existingAuthentication = SecurityContextHolder.getContext().getAuthentication();
+            if (existingAuthentication != null && existingAuthentication.isAuthenticated()) {
+                filterChain.doFilter(request, response);
+                return;
+            }
             var principal = request.getUserPrincipal();
             String subject = principal == null ? null : principal.getName();
             if (subject == null || subject.isBlank()) {

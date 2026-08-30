@@ -48,7 +48,17 @@ class IdentityProviderBindingMigrationIntegrationTest {
         assertThat(jdbc.sql("""
                 SELECT has_table_privilege(
                     'qiqihar_enterprise_runtime','platform.identity_provider_binding','INSERT')
-                """).query(Boolean.class).single()).isFalse();
+                """).query(Boolean.class).single()).isTrue();
+        assertThat(jdbc.sql("""
+                SELECT has_table_privilege(
+                    'qiqihar_enterprise_runtime','platform.identity_provider_binding','UPDATE')
+                """).query(Boolean.class).single()).isTrue();
+        assertThat(jdbc.sql("""
+                SELECT NOT has_table_privilege(
+                         'qiqihar_enterprise_runtime','platform.identity_provider_binding','DELETE')
+                   AND NOT has_table_privilege(
+                         'qiqihar_enterprise_runtime','platform.identity_provider_binding','TRUNCATE')
+                """).query(Boolean.class).single()).isTrue();
     }
 
     @Test

@@ -63,6 +63,8 @@ import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.boot.SpringBootConfiguration;
+import org.springframework.security.oauth2.client.oidc.session.InMemoryOidcSessionRegistry;
+import org.springframework.security.oauth2.client.oidc.session.OidcSessionRegistry;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -82,6 +84,7 @@ class RealOidcJwtIntegrationTest {
         springApplication.setWebApplicationType(WebApplicationType.SERVLET);
         application = springApplication.run(
                 "--spring.profiles.active=production",
+                "--spring.main.allow-bean-definition-overriding=true",
                 "--server.address=127.0.0.1",
                 "--server.port=0",
                 "--spring.security.oauth2.resourceserver.jwt.issuer-uri=" + OIDC.issuer(),
@@ -90,6 +93,13 @@ class RealOidcJwtIntegrationTest {
                 "--qiqihar.security.oidc.redirect-uri={baseUrl}/login/oauth2/code/enterprise",
                 "--qiqihar.security.oidc.post-logout-redirect-uri={baseUrl}/logged-out",
                 "--qiqihar.security.oidc.mfa-amr-values=mfa,otp",
+                "--qiqihar.identity.invitation-encryption-key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "--qiqihar.identity.public-self-registration-enabled=false",
+                "--qiqihar.identity.delivery.worker-enabled=true",
+                "--qiqihar.identity.delivery.endpoint=https://identity.example.test/deliver",
+                "--qiqihar.identity.delivery.bearer-token=integration-only-delivery-credential",
+                "--qiqihar.identity.delivery.activation-url=https://app.example.test/activate",
+                "--qiqihar.identity.management-url=https://identity.example.test/account",
                 "--qiqihar.security.session-cookie-secure=false",
                 "--server.servlet.session.cookie.name=COFCO_SESSION",
                 "--server.servlet.session.cookie.secure=false",
@@ -332,6 +342,11 @@ class RealOidcJwtIntegrationTest {
         @Bean
         AccessControl businessReadAccessControl() {
             return BUSINESS_READ_ACCESS;
+        }
+
+        @Bean
+        OidcSessionRegistry enterpriseOidcSessionRegistry() {
+            return new InMemoryOidcSessionRegistry();
         }
     }
 

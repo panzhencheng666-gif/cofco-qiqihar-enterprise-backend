@@ -3,11 +3,14 @@ package com.cofco.qiqihar.graintrade.identity.interfaceadapter;
 import com.cofco.qiqihar.graintrade.identity.application.EmployeeAssignment;
 import com.cofco.qiqihar.graintrade.identity.application.EmployeeProfile;
 import com.cofco.qiqihar.graintrade.identity.application.IdentityGovernanceService;
+import com.cofco.qiqihar.graintrade.identity.application.IdentityInvitationReceipt;
+import com.cofco.qiqihar.graintrade.identity.application.IdentityLifecycleContract;
 import com.cofco.qiqihar.graintrade.identity.application.AssignmentOptions;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import java.util.List;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -17,6 +20,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RequestHeader;
 
 @RestController
 @RequestMapping("/api/v1/identity/employees")
@@ -37,16 +41,25 @@ public class IdentityGovernanceController {
         return new ApiResponse<>(service.employee(subjectId));
     }
 
+    @GetMapping("/{subjectId}/invitation")
+    ApiResponse<IdentityInvitationReceipt> currentInvitation(@PathVariable String subjectId) {
+        return new ApiResponse<>(service.currentInvitation(subjectId));
+    }
+
     @GetMapping("/assignment-options")
     ApiResponse<AssignmentOptions> assignmentOptions(@RequestParam String workUnitCode) {
         return new ApiResponse<>(service.assignmentOptions(workUnitCode));
     }
 
     @PostMapping
-    @ResponseStatus(HttpStatus.CREATED)
-    ApiResponse<EmployeeProfile> invite(@RequestBody InviteRequest request) {
+    ResponseEntity<ApiResponse<IdentityInvitationReceipt>> invite(
+            @RequestHeader(IdentityLifecycleContract.IDEMPOTENCY_HEADER) String idempotencyKey,
+            @RequestBody InviteRequest request) {
         if (request == null) throw invalid();
-        return new ApiResponse<>(service.invite(request.subjectId(), request.assignment()));
+        IdentityInvitationReceipt receipt=service.invite(
+                idempotencyKey,request.subjectId(),request.deliveryAddress(),request.assignment());
+        return ResponseEntity.status(receipt.replayed()?HttpStatus.OK:HttpStatus.CREATED)
+                .body(new ApiResponse<>(receipt));
     }
 
     @PutMapping("/{subjectId}")
@@ -55,9 +68,22 @@ public class IdentityGovernanceController {
         return new ApiResponse<>(service.update(subjectId, request.version(), request.assignment()));
     }
 
+    @PostMapping("/{subjectId}/invitations")
+    ResponseEntity<ApiResponse<IdentityInvitationReceipt>> reissue(
+            @PathVariable String subjectId,
+            @RequestHeader(IdentityLifecycleContract.IDEMPOTENCY_HEADER) String idempotencyKey,
+            @RequestBody ReissueRequest request) {
+        if(request==null)throw invalid();
+        IdentityInvitationReceipt receipt=service.reissueInvitation(
+                idempotencyKey,subjectId,request.deliveryAddress());
+        return ResponseEntity.status(receipt.replayed()?HttpStatus.OK:HttpStatus.CREATED)
+                .body(new ApiResponse<>(receipt));
+    }
+
     record InviteRequest(
             String subjectId,
             String displayName,
+            String deliveryAddress,
             String workUnitCode,
             List<String> positionCodes,
             List<String> roleCodes,
@@ -82,6 +108,8 @@ public class IdentityGovernanceController {
                     safe(roleCodes), safe(positionCodes), safe(regionCodes));
         }
     }
+
+    record ReissueRequest(String deliveryAddress) {}
 
     private static List<String> safe(List<String> values) {
         return values == null ? List.of() : List.copyOf(values);
