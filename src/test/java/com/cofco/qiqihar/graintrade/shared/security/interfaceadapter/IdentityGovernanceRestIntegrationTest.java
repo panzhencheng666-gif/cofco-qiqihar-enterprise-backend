@@ -68,7 +68,7 @@ class IdentityGovernanceRestIntegrationTest {
         jdbc.sql("""
                 INSERT INTO platform.work_unit(code,name,sort_order)
                 VALUES('QIQIHAR_BUSINESS','身份治理自动化测试单位',9981)
-                ON CONFLICT(code) DO NOTHING
+                ON CONFLICT(code) DO UPDATE SET name=EXCLUDED.name,sort_order=EXCLUDED.sort_order
                 """).update();
         jdbc.sql("""
                 INSERT INTO platform.work_unit(code,name,sort_order)
