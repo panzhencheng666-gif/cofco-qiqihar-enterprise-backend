@@ -25,10 +25,11 @@ public class AccessReviewService {
     private final AccessControl access;
     private final BusinessAuditRecorder audit;
     private final Clock clock;
+    private final IdentitySessionInvalidator sessions;
 
     public AccessReviewService(AccessReviewRepository repository, AccessControl access,
-            BusinessAuditRecorder audit, Clock clock) {
-        this.repository=repository;this.access=access;this.audit=audit;this.clock=clock;
+            BusinessAuditRecorder audit, Clock clock,IdentitySessionInvalidator sessions) {
+        this.repository=repository;this.access=access;this.audit=audit;this.clock=clock;this.sessions=sessions;
     }
 
     @Transactional
@@ -80,6 +81,9 @@ public class AccessReviewService {
         Instant now=clock.instant();
         if(!repository.decide(reviewId,decisions,actor.subjectId(),now))throw new ConflictException(
                 "ACCESS_REVIEW_CONFLICT","Access review has already changed");
+        decisions.stream().filter(decision->"REVOKE".equals(decision.decisionCode()))
+                .map(AccessReviewDecision::subjectId).distinct()
+                .forEach(subject->sessions.invalidate(subject,"ACCESS_REVOKED"));
         AccessReviewCampaign updated=required(reviewId);
         audit.record(actor,campaign.workUnitCode(),"ACCESS_REVIEW",reviewId.toString(),"ACCESS_REVIEW_DECIDED",now,
                 "{\"decisionCount\":"+decisions.size()+",\"status\":\""+updated.statusCode()+"\"}");
