@@ -95,6 +95,7 @@ public class IdentityGovernanceService {
                 assignment.displayName(),assignment.workUnitCode(),
                 String.join(",",assignment.roleCodes()),String.join(",",assignment.positionCodes()),
                 String.join(",",assignment.regionCodes())));
+        repository.lockInvitationIdempotency(actor.subjectId(),idempotencyKey);
         IdentityInvitation existing=repository.findInvitationByIdempotency(actor.subjectId(),idempotencyKey)
                 .orElse(null);
         if(existing!=null) {
@@ -187,6 +188,7 @@ public class IdentityGovernanceService {
                 employee.roles().stream().map(EmployeeProfile.Grant::code).toList(),
                 employee.positions().stream().map(EmployeeProfile.Position::code).toList(),
                 employee.regionCodes()));
+        repository.lockInvitationIdempotency(actor.subjectId(),idempotencyKey);
         IdentityInvitation existing=repository.findInvitationByIdempotency(actor.subjectId(),idempotencyKey)
                 .orElse(null);
         if(existing!=null) {
