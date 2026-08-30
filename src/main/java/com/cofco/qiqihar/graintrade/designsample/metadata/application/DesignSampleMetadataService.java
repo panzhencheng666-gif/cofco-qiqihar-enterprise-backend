@@ -1,0 +1,206 @@
+package com.cofco.qiqihar.graintrade.designsample.metadata.application;
+
+import com.cofco.qiqihar.graintrade.designsample.metadata.application.DesignSampleValidationResult.ValueState;
+import com.cofco.qiqihar.graintrade.designsample.metadata.domain.DesignSampleContext;
+import com.cofco.qiqihar.graintrade.designsample.metadata.domain.DesignSampleFieldDefinition;
+import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
+import java.math.BigDecimal;
+import java.time.DateTimeException;
+import java.time.LocalDate;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import org.springframework.stereotype.Service;
+import tools.jackson.databind.JsonNode;
+
+@Service
+public class DesignSampleMetadataService {
+    private final DesignSampleMetadataCatalog catalog;
+
+    public DesignSampleMetadataService(DesignSampleMetadataCatalog catalog) {
+        this.catalog = catalog;
+    }
+
+    public DesignSampleMetadataDefinition definition(DesignSampleContext context) {
+        DesignSampleContractSnapshot snapshot = catalog.loadActiveContract();
+        List<DesignSampleFieldDefinition> fields = fields(snapshot, context);
+        return new DesignSampleMetadataDefinition(
+                snapshot.contractVersion(),
+                snapshot.contractDigest(),
+                context,
+                snapshot.domains(),
+                snapshot.products(),
+                snapshot.objectTypes(),
+                snapshot.supportedContexts(),
+                fields.stream().filter(field -> field.sectionCode().equals("IDENTITY")).toList(),
+                fields.stream().filter(field -> field.sectionCode().equals("OBSERVATION")).toList());
+    }
+
+    public DesignSampleValidationResult validate(
+            String contractVersion,
+            String contractDigest,
+            DesignSampleContext context,
+            Map<String, JsonNode> values) {
+        DesignSampleContractSnapshot snapshot = catalog.loadActiveContract();
+        List<DesignSampleFieldDefinition> applicable = fields(snapshot, context);
+        if (!snapshot.contractVersion().equals(contractVersion)
+                || !snapshot.contractDigest().equals(contractDigest)) {
+            throw error("CONTRACT_MISMATCH", "设计样本点字段合同版本或摘要不匹配");
+        }
+        if (values == null) throw error("FIELD_VALUE_INVALID", "字段值不能为空");
+
+        Map<String, DesignSampleFieldDefinition> applicableByCode = new LinkedHashMap<>();
+        applicable.forEach(field -> applicableByCode.put(field.code(), field));
+        Map<String, ValueState> states = new LinkedHashMap<>();
+        Map<String, BigDecimal> decimalValues = new LinkedHashMap<>();
+        boolean knownBusinessObservation = false;
+
+        for (Map.Entry<String, JsonNode> entry : values.entrySet()) {
+            String code = entry.getKey();
+            if (!snapshot.fieldsByCode().containsKey(code)) {
+                throw error("UNKNOWN_FIELD_CODE", "存在未定义的设计样本点字段");
+            }
+            DesignSampleFieldDefinition field = applicableByCode.get(code);
+            if (field == null) {
+                throw error("FIELD_NOT_APPLICABLE", "字段不适用于当前设计样本点上下文");
+            }
+            if (!field.editable()) {
+                throw error("READ_ONLY_FIELD", "客户端不能填写只读设计样本点字段");
+            }
+            JsonNode value = entry.getValue();
+            if (value == null || value.isNull()) {
+                if (!field.nullable()) {
+                    throw error("FIELD_VALUE_INVALID", "不可空字段不能使用未知值");
+                }
+                states.put(code, ValueState.UNKNOWN);
+                continue;
+            }
+            BigDecimal decimal = validateKnown(field, value);
+            if (decimal != null) decimalValues.put(code, decimal);
+            states.put(code, ValueState.KNOWN);
+            if (field.sectionCode().equals("OBSERVATION") && !field.code().equals("OBSERVED_ON")) {
+                knownBusinessObservation = true;
+            }
+        }
+
+        boolean missingRequired = applicable.stream()
+                .filter(DesignSampleFieldDefinition::editable)
+                .filter(DesignSampleFieldDefinition::required)
+                .filter(field -> field.defaultValue() == null)
+                .anyMatch(field -> !states.containsKey(field.code()));
+        if (missingRequired) {
+            throw error("REQUIRED_FIELD_MISSING", "缺少必填的设计样本点字段");
+        }
+
+        validateProductionAreaRelationships(decimalValues);
+        if (!knownBusinessObservation) {
+            throw error("EMPTY_OBSERVATION", "至少需要一个已知的适用业务观测值");
+        }
+        return new DesignSampleValidationResult(
+                snapshot.contractVersion(), snapshot.contractDigest(), context, states);
+    }
+
+    private List<DesignSampleFieldDefinition> fields(
+            DesignSampleContractSnapshot snapshot,
+            DesignSampleContext context) {
+        List<DesignSampleFieldDefinition> fields = snapshot.fieldsByContext().get(context);
+        if (fields == null) {
+            throw error("INVALID_DESIGN_SAMPLE_CONTEXT", "设计样本点业务域、产品和对象组合不合法");
+        }
+        return fields;
+    }
+
+    private BigDecimal validateKnown(DesignSampleFieldDefinition field, JsonNode value) {
+        return switch (field.valueType()) {
+            case "UUID" -> {
+                if (!value.isTextual() || !validUuid(value.asText())) invalidValue();
+                yield null;
+            }
+            case "DATE" -> {
+                if (!value.isTextual() || !validDate(value.asText())) invalidValue();
+                yield null;
+            }
+            case "STRING" -> {
+                if (!value.isTextual() || value.asText().isBlank()
+                        || (field.maxLength() != null && value.asText().length() > field.maxLength())) {
+                    invalidValue();
+                }
+                yield null;
+            }
+            case "ENUM" -> {
+                if (!value.isTextual() || !field.enumOptions().contains(value.asText())) invalidValue();
+                yield null;
+            }
+            case "DECIMAL" -> decimal(field, value);
+            default -> throw error("FIELD_VALUE_INVALID", "字段类型不受支持");
+        };
+    }
+
+    private BigDecimal decimal(DesignSampleFieldDefinition field, JsonNode value) {
+        BigDecimal decimal;
+        try {
+            if (value.isNumber()) {
+                decimal = value.decimalValue();
+            } else if (value.isTextual()) {
+                decimal = new BigDecimal(value.asText());
+            } else {
+                return invalidValue();
+            }
+        } catch (NumberFormatException exception) {
+            return invalidValue();
+        }
+        BigDecimal normalized = decimal.stripTrailingZeros();
+        if (field.precision() != null && field.scale() != null) {
+            int fractionalDigits = Math.max(normalized.scale(), 0);
+            int integerDigits = Math.max(normalized.precision() - normalized.scale(), 0);
+            if (fractionalDigits > field.scale()
+                    || integerDigits > field.precision() - field.scale()) {
+                invalidValue();
+            }
+        }
+        if (field.minimumValue() != null
+                && decimal.compareTo(new BigDecimal(field.minimumValue())) < 0) invalidValue();
+        if (field.maximumValue() != null
+                && decimal.compareTo(new BigDecimal(field.maximumValue())) > 0) invalidValue();
+        return decimal;
+    }
+
+    private void validateProductionAreaRelationships(Map<String, BigDecimal> values) {
+        BigDecimal area = values.get("PROD_AREA_MU");
+        if (area == null) return;
+        if (greaterThan(values.get("PROD_HARVEST_AREA_MU"), area)
+                || greaterThan(values.get("PROD_AFFECTED_AREA_MU"), area)) {
+            throw error("FIELD_VALUE_INVALID", "收获面积或灾损面积不能超过播种面积");
+        }
+    }
+
+    private static boolean greaterThan(BigDecimal value, BigDecimal limit) {
+        return value != null && value.compareTo(limit) > 0;
+    }
+
+    private static boolean validUuid(String value) {
+        try {
+            UUID.fromString(value);
+            return true;
+        } catch (IllegalArgumentException exception) {
+            return false;
+        }
+    }
+
+    private static boolean validDate(String value) {
+        try {
+            return LocalDate.parse(value).toString().equals(value);
+        } catch (DateTimeException exception) {
+            return false;
+        }
+    }
+
+    private static BigDecimal invalidValue() {
+        throw error("FIELD_VALUE_INVALID", "设计样本点字段值不符合类型、精度、枚举或范围合同");
+    }
+
+    private static ClientRequestException error(String code, String message) {
+        return new ClientRequestException(code, message);
+    }
+}
