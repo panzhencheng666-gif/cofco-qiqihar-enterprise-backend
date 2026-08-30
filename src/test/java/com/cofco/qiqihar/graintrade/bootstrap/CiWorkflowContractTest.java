@@ -16,4 +16,11 @@ class CiWorkflowContractTest {
                 .contains("CREATE ROLE cofco_app LOGIN INHERIT")
                 .doesNotContain("CREATE ROLE cofco_app LOGIN NOINHERIT");
     }
+
+    @Test
+    void reservesEnoughTimeForTheFullBackendVerificationSuite() throws Exception {
+        String workflow = Files.readString(Path.of(".github/workflows/ci.yml"));
+
+        assertThat(workflow).contains("timeout-minutes: 60");
+    }
 }

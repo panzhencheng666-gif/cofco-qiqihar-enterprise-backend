@@ -18,7 +18,7 @@ jobs:
   verify:
     name: JDK 21 / Maven verify
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     services:
       postgres:
         image: postgis/postgis:17-3.6-alpine
