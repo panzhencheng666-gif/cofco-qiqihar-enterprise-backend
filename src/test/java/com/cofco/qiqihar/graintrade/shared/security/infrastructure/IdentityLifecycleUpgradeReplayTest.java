@@ -105,7 +105,7 @@ class IdentityLifecycleUpgradeReplayTest {
                     'qiqihar_enterprise_runtime','platform.identity_invitation','created_at','SELECT')::text
                 """)).isEqualTo("false");
 
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isOne();
+        assertThat(DATABASE.flywayToVersion("154").migrate().migrationsExecuted).isOne();
 
         assertThat(queryString("""
                 SELECT string_agg(version,',' ORDER BY installed_rank)
@@ -120,6 +120,44 @@ class IdentityLifecycleUpgradeReplayTest {
                 SELECT has_column_privilege(
                     'qiqihar_enterprise_runtime','platform.identity_invitation','created_at','SELECT')::text
                 """)).isEqualTo("true");
+    }
+
+    @Test
+    void upgradesInstalledV154WithoutChangingPublishedChecksumsAndAddsProductionObjects()
+            throws Exception {
+        resetDatabase();
+        assertThat(DATABASE.flywayToVersion("154").migrate().migrationsExecuted)
+                .isEqualTo(154);
+        String v153Checksum = queryString("""
+                SELECT checksum::text FROM public.flyway_schema_history
+                WHERE version='153' AND success
+                """);
+        String v154Checksum = queryString("""
+                SELECT checksum::text FROM public.flyway_schema_history
+                WHERE version='154' AND success
+                """);
+        assertThat(queryString("""
+                SELECT to_regclass('production.monitoring_object')::text
+                """)).isNull();
+
+        assertThat(DATABASE.flywayToVersion("155").migrate().migrationsExecuted).isOne();
+
+        assertThat(queryString("""
+                SELECT string_agg(version,',' ORDER BY installed_rank)
+                FROM public.flyway_schema_history
+                WHERE success AND version IN ('153','154','155')
+                """)).isEqualTo("153,154,155");
+        assertThat(queryString("""
+                SELECT checksum::text FROM public.flyway_schema_history
+                WHERE version='153' AND success
+                """)).isEqualTo(v153Checksum);
+        assertThat(queryString("""
+                SELECT checksum::text FROM public.flyway_schema_history
+                WHERE version='154' AND success
+                """)).isEqualTo(v154Checksum);
+        assertThat(queryString("""
+                SELECT to_regclass('production.monitoring_object')::text
+                """)).isEqualTo("production.monitoring_object");
     }
 
     private void resetDatabase() throws Exception {

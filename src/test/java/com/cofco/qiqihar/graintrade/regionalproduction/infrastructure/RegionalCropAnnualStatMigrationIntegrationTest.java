@@ -26,7 +26,7 @@ class RegionalCropAnnualStatMigrationIntegrationTest {
     void createsOneFormalCountyAnnualStatWithGeneratedOutputAndAppendOnlyHistory()
             throws Exception {
         resetDatabase();
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(154);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(155);
 
         assertThat(query("""
                 SELECT string_agg(column_name,',' ORDER BY ordinal_position)
