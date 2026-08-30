@@ -55,6 +55,23 @@ class IdentityLifecycleClosureMigrationIntegrationTest {
                 """).query(Boolean.class).single()).isFalse();
     }
 
+    @Test
+    void grantsRuntimeTheColumnsUsedToResolveTheCurrentInvitation() {
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+
+        assertThat(jdbc.sql("""
+                SELECT bool_and(has_column_privilege(
+                    'qiqihar_enterprise_runtime',
+                    'platform.identity_invitation',
+                    required.column_name,
+                    'SELECT'))
+                FROM unnest(ARRAY[
+                    'invitation_id','security_subject_id','state','delivery_status',
+                    'expires_at','request_fingerprint','created_at'
+                ]) AS required(column_name)
+                """).query(Boolean.class).single()).isTrue();
+    }
+
     private static java.util.Optional<String> regclass(JdbcClient jdbc, String name) {
         return jdbc.sql("SELECT to_regclass(:name)::text")
                 .param("name", name).query(String.class).optional();

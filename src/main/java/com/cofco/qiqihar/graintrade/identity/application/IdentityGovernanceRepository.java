@@ -13,6 +13,7 @@ public interface IdentityGovernanceRepository {
     List<EmployeeProfile> findAll(String workUnitCode);
     Optional<EmployeeProfile> update(String subjectId,long expectedVersion,EmployeeAssignment assignment,String actor);
     AssignmentOptions assignmentOptions(String workUnitCode);
+    void lockInvitationIdempotency(String actorSubjectId,String idempotencyKey);
     Optional<IdentityInvitation> findInvitationByIdempotency(String actorSubjectId,String idempotencyKey);
     Optional<IdentityInvitation> findInvitation(UUID invitationId);
     Optional<IdentityInvitation> findCurrentInvitation(String subjectId);

@@ -6,6 +6,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.oidcLogin;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
@@ -824,6 +825,49 @@ class IdentityGovernanceRestIntegrationTest {
                 .andExpect(jsonPath("$.error.code").value("IDENTITY_OIDC_ACTIVATION_REQUIRED"));
 
         org.assertj.core.api.Assertions.assertThat(response).doesNotContain("tokenHash");
+    }
+
+    @Test
+    void concurrentInvitationRetriesWithTheSameIdempotencyKeyReplayOneCreation() throws Exception {
+        String idempotencyKey="invite-concurrent-"+UUID.randomUUID();
+        String requestBody="""
+                {"subjectId":"%s","displayName":"并发幂等员工",
+                 "workUnitCode":"QIQIHAR_BUSINESS","positionCodes":["GOVERNANCE_REPORTER"],
+                 "roleCodes":["BUSINESS_OPERATOR"],"regionCodes":["%s"]}
+                """.formatted(employee,TOWNSHIP);
+        java.util.concurrent.CountDownLatch ready=new java.util.concurrent.CountDownLatch(2);
+        java.util.concurrent.CountDownLatch start=new java.util.concurrent.CountDownLatch(1);
+
+        try(var executor=java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            java.util.concurrent.Callable<org.springframework.test.web.servlet.MvcResult> invitation=()->{
+                ready.countDown();
+                if(!start.await(5,java.util.concurrent.TimeUnit.SECONDS))
+                    throw new IllegalStateException("Concurrent invitations did not become ready");
+                return mvc.perform(inviteRequest()
+                                .header("Idempotency-Key",idempotencyKey)
+                                .principal(()->"production-tester")
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .content(requestBody))
+                        .andReturn();
+            };
+            var first=executor.submit(invitation);
+            var second=executor.submit(invitation);
+            assertThat(ready.await(5,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            var results=java.util.List.of(first.get(),second.get());
+
+            assertThat(results.stream().map(result->result.getResponse().getStatus()).sorted().toList())
+                    .containsExactly(200,201);
+            var responseBodies=java.util.List.of(
+                    results.get(0).getResponse().getContentAsString(),
+                    results.get(1).getResponse().getContentAsString());
+            assertThat(responseBodies.stream().map(body->com.jayway.jsonpath.JsonPath.<String>read(
+                            body,"$.data.invitationId")).distinct())
+                    .hasSize(1);
+            assertThat(responseBodies.stream().map(body->com.jayway.jsonpath.JsonPath.<Boolean>read(
+                            body,"$.data.replayed")).toList())
+                    .containsExactlyInAnyOrder(false,true);
+        }
     }
 
     @Test

@@ -91,6 +91,37 @@ class IdentityLifecycleUpgradeReplayTest {
                 """)).isEqualTo("false");
     }
 
+    @Test
+    void upgradesInstalledV153WithoutChangingItsChecksumAndGrantsCurrentInvitationRead() throws Exception {
+        resetDatabase();
+        assertThat(DATABASE.flywayToVersion("153").migrate().migrationsExecuted)
+                .isEqualTo(153);
+        String v153Checksum = queryString("""
+                SELECT checksum::text FROM public.flyway_schema_history
+                WHERE version='153' AND success
+                """);
+        assertThat(queryString("""
+                SELECT has_column_privilege(
+                    'qiqihar_enterprise_runtime','platform.identity_invitation','created_at','SELECT')::text
+                """)).isEqualTo("false");
+
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isOne();
+
+        assertThat(queryString("""
+                SELECT string_agg(version,',' ORDER BY installed_rank)
+                FROM public.flyway_schema_history
+                WHERE success AND version IN ('153','154')
+                """)).isEqualTo("153,154");
+        assertThat(queryString("""
+                SELECT checksum::text FROM public.flyway_schema_history
+                WHERE version='153' AND success
+                """)).isEqualTo(v153Checksum);
+        assertThat(queryString("""
+                SELECT has_column_privilege(
+                    'qiqihar_enterprise_runtime','platform.identity_invitation','created_at','SELECT')::text
+                """)).isEqualTo("true");
+    }
+
     private void resetDatabase() throws Exception {
         try (Connection connection = DATABASE.openConnection();
                 Statement statement = connection.createStatement()) {

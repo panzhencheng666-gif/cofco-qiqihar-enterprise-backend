@@ -181,6 +181,14 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
     }
 
     @Override
+    public void lockInvitationIdempotency(String actorSubjectId,String idempotencyKey) {
+        jdbc.sql("""
+                SELECT pg_advisory_xact_lock(hashtextextended(:lockKey,0::bigint)),1
+                """).param("lockKey",actorSubjectId+"\n"+idempotencyKey)
+                .query((row,index)->row.getInt(2)).single();
+    }
+
+    @Override
     public Optional<IdentityInvitation> findInvitationByIdempotency(
             String actorSubjectId,String idempotencyKey) {
         return jdbc.sql("""
