@@ -77,7 +77,7 @@ class ProductionSubmissionReadThroughIntegrationTest {
                         .principal(() -> "production-tester"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.submissionMetadata.PROD_REPORTER_NAME").value("产情测试员"))
-                .andExpect(jsonPath("$.data.submissionMetadata.PROD_SAMPLE_LATITUDE").value("47.3543"))
+                .andExpect(jsonPath("$.data.submissionMetadata.PROD_SAMPLE_LATITUDE").value("47.65"))
                 .andExpect(jsonPath("$.data.evidencePhotos[0].state").value("ATTACHED"));
         expectProductionMetrics("10", "200", 1);
     }
@@ -103,7 +103,7 @@ class ProductionSubmissionReadThroughIntegrationTest {
         String response = mvc.perform(multipart("/api/v1/evidence-photos")
                         .file(new MockMultipartFile("file", "field.png", "image/png", pngBytes()))
                         .param("capturedAt", "2026-08-08T09:00:00+08:00")
-                        .param("latitude", "47.3543").param("longitude", "123.9182")
+                        .param("latitude", "47.65").param("longitude", "123.85")
                         .param("watermarkText", "齐齐哈尔 现场采集")
                         .principal(() -> "production-tester"))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
@@ -116,8 +116,8 @@ class ProductionSubmissionReadThroughIntegrationTest {
                  "surveyDate":"2026-08-08","cultivatedAreaMu":"10","yieldPerMuKilograms":"20",
                  "quality":{},"costs":{},"insurance":{},"subsidies":{},
                  "submissionMetadata":{"PROD_REPORTER_NAME":"测试填报员","PROD_REPORTER_PHONE":"13800000000",
-                  "PROD_SAMPLE_CONTACT":"13900000000","PROD_SAMPLE_LATITUDE":"47.3543",
-                  "PROD_SAMPLE_LONGITUDE":"123.9182"},"evidencePhotoIds":["%s"]}
+                  "PROD_SAMPLE_CONTACT":"13900000000","PROD_SAMPLE_LATITUDE":"47.65",
+                  "PROD_SAMPLE_LONGITUDE":"123.85"},"evidencePhotoIds":["%s"]}
                 """.formatted(photoId);
     }
 

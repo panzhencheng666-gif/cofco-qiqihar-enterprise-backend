@@ -22,12 +22,12 @@ class DesignSamplePointUpgradeReplayTest {
     private JdbcClient jdbc;
 
     @BeforeEach
-    void migrateTrustedEquivalentSeedToV158() throws Exception {
+    void migrateTrustedEquivalentSeedToV159() throws Exception {
         resetDatabase();
-        assertThat(DATABASE.flywayToVersion("158").migrate().migrationsExecuted)
-                .isEqualTo(158);
+        assertThat(DATABASE.flywayToVersion("159").migrate().migrationsExecuted)
+                .isEqualTo(159);
         jdbc = JdbcClient.create(DATABASE.dataSource());
-        ProtectedTestDatabaseConfiguration.provisionSecurityTestSubjects(jdbc);
+        ProtectedTestDatabaseConfiguration.provisionSecurityTestSubjectsWithoutBoundaries(jdbc);
         for (int index = 1; index <= 232; index++) {
             GovernedMasterDataFixtures.insertRegion(
                     jdbc, "2302027%05d".formatted(index),
@@ -70,7 +70,7 @@ class DesignSamplePointUpgradeReplayTest {
     }
 
     @Test
-    void upgradesFromV158WithoutChangingFormalSamplesOrTownshipMasterData() {
+    void upgradesFromV159WithoutChangingFormalSamplesOrTownshipMasterData() {
         assertThat(formalCount()).isEqualTo(1064);
         assertThat(townshipCount()).isEqualTo(232);
 

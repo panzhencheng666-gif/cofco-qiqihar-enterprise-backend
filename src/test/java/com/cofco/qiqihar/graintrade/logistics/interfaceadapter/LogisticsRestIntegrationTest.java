@@ -55,21 +55,6 @@ class LogisticsRestIntegrationTest {
         String marketRecordId = "64000000-0000-0000-0000-000000000002";
         try {
             jdbc.sql("""
-                    INSERT INTO overview.administrative_boundary(
-                      region_code,geometry,source_name,source_url,source_revision,source_license,
-                      source_feature_id,source_effective_on,geometry_sha256)
-                    VALUES('230202',
-                      ST_Multi(ST_Buffer(ST_SetSRID(ST_MakePoint(123.9182,47.3543),4326),0.01)),
-                      'logistics identity fixture','urn:test:logistics-identity','test-v1',
-                      'Test fixture','230202',DATE '2026-08-20',repeat('6',64))
-                    ON CONFLICT(region_code) DO UPDATE SET geometry=excluded.geometry,
-                      source_name=excluded.source_name,source_url=excluded.source_url,
-                      source_revision=excluded.source_revision,source_license=excluded.source_license,
-                      source_feature_id=excluded.source_feature_id,
-                      source_effective_on=excluded.source_effective_on,
-                      geometry_sha256=excluded.geometry_sha256
-                    """).update();
-            jdbc.sql("""
                     INSERT INTO registry.sample_point(
                       sample_point_id,kind_code,canonical_name,region_code,approval_state,
                       location_state,governed_point,effective_from,created_by,updated_by)
@@ -140,10 +125,6 @@ class LogisticsRestIntegrationTest {
                     .param("id", marketRecordId).update();
             jdbc.sql("DELETE FROM registry.sample_point WHERE sample_point_id=:id")
                     .param("id", samplePointId).update();
-            jdbc.sql("""
-                    DELETE FROM overview.administrative_boundary
-                    WHERE region_code='230202' AND source_name='logistics identity fixture'
-                    """).update();
         }
     }
 
@@ -189,21 +170,6 @@ class LogisticsRestIntegrationTest {
                 INSERT INTO platform.business_period(code,name,starts_on,ends_on,sort_order,marketing_year_code)
                 VALUES('LOG-2026-08','2026年8月物流监测期','2026-08-01','2026-08-31',900,'2026/27')
                 """).update();
-        jdbc.sql("""
-                INSERT INTO overview.administrative_boundary(
-                  region_code,geometry,source_name,source_url,source_revision,source_license,
-                  source_feature_id,source_effective_on,geometry_sha256)
-                VALUES('230200',
-                  ST_Multi(ST_Buffer(ST_SetSRID(ST_MakePoint(123.9182,47.3543),4326),0.05)),
-                  'logistics approval fixture','urn:test:logistics-approval','test-v1',
-                  'Test fixture','230200',DATE '2026-08-20',repeat('7',64))
-                ON CONFLICT(region_code) DO UPDATE SET geometry=excluded.geometry,
-                  source_name=excluded.source_name,source_url=excluded.source_url,
-                  source_revision=excluded.source_revision,source_license=excluded.source_license,
-                  source_feature_id=excluded.source_feature_id,
-                  source_effective_on=excluded.source_effective_on,
-                  geometry_sha256=excluded.geometry_sha256
-                """).update();
         node(jdbc, "TEST_RAIL", "测试铁路站", "RAIL_NODE");
         node(jdbc, "TEST_ROAD", "测试公路节点", "ROAD_NODE");
         jdbc.sql("""
@@ -229,10 +195,6 @@ class LogisticsRestIntegrationTest {
                 WHERE kind_code='LOGISTICS_NODE'
                   AND canonical_name='齐齐哈尔物流样本点'
                   AND created_by='logistics-tester'
-                """).update();
-        jdbc.sql("""
-                DELETE FROM overview.administrative_boundary
-                WHERE region_code='230200' AND source_name='logistics approval fixture'
                 """).update();
     }
 
@@ -320,7 +282,7 @@ class LogisticsRestIntegrationTest {
 
         mvc.perform(post("/api/v1/logistics-records").principal(() -> "logistics-tester")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(publicBody(null).replace("47.354300", "91.000000")))
+                        .content(publicBody(null).replace("47.650000", "91.000000")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("INVALID_LOGISTICS_RECORD"));
     }
@@ -581,7 +543,7 @@ class LogisticsRestIntegrationTest {
                  "LOG_BOARD_PRICE":"2650.0000","LOG_REPORTER":"客户端伪造账号",
                  "LOG_SURVEYOR_NAME":"王雷","LOG_SURVEYOR_PHONE":"13800000000",
                  "LOG_SAMPLE_CONTACT":"13900000000",
-                 "LOG_SAMPLE_LATITUDE":"47.354300","LOG_SAMPLE_LONGITUDE":"123.918200"}%s}
+                 "LOG_SAMPLE_LATITUDE":"47.650000","LOG_SAMPLE_LONGITUDE":"123.850000"}%s}
                 """.formatted(versionValue);
     }
 }

@@ -260,8 +260,8 @@ class BusinessImportTemplateMatrixIntegrationTest {
             case "调研人" -> "王雷";
             case "调研人联系方式" -> "13800000000";
             case "样本点联系方式" -> "13900000000";
-            case "纬度（度）" -> "47.354300";
-            case "经度（度）" -> "123.918200";
+            case "纬度（度）" -> "47.650000";
+            case "经度（度）" -> "123.850000";
             case "播种面积（亩）" -> "100";
             case "预计单产（公斤/亩）" -> "500";
             default -> "";
@@ -277,8 +277,8 @@ class BusinessImportTemplateMatrixIntegrationTest {
             case "MKT_SURVEYOR_NAME" -> "王雷";
             case "MKT_SURVEYOR_PHONE" -> "13800000000";
             case "MKT_SAMPLE_CONTACT" -> "13900000000";
-            case "MKT_SAMPLE_LATITUDE" -> "47.354300";
-            case "MKT_SAMPLE_LONGITUDE" -> "123.918200";
+            case "MKT_SAMPLE_LATITUDE" -> "47.650000";
+            case "MKT_SAMPLE_LONGITUDE" -> "123.850000";
             case "MKT_PURCHASE_BASE_PRICE" -> "2300";
             case "MKT_SALE_BASE_PRICE" -> "2380";
             case "MKT_PACKAGING_FORM" -> "BULK";
@@ -299,8 +299,8 @@ class BusinessImportTemplateMatrixIntegrationTest {
             case "LOG_SURVEYOR_NAME" -> "王雷";
             case "LOG_SURVEYOR_PHONE" -> "13800000000";
             case "LOG_SAMPLE_CONTACT" -> "13900000000";
-            case "LOG_SAMPLE_LATITUDE" -> "47.354300";
-            case "LOG_SAMPLE_LONGITUDE" -> "123.918200";
+            case "LOG_SAMPLE_LATITUDE" -> "47.650000";
+            case "LOG_SAMPLE_LONGITUDE" -> "123.850000";
             case "LOG_TRANSPORT_MODE" -> "铁路";
             case "LOG_DIRECTION" -> "流入";
             case "LOG_ROUTE_VOLUME" -> "12.5000";

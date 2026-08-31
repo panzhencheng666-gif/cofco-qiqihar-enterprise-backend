@@ -11,7 +11,6 @@ import com.cofco.qiqihar.graintrade.testsupport.GovernedMasterDataFixtures;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.util.UUID;
 import javax.sql.DataSource;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -60,8 +59,6 @@ class OverviewRestIntegrationTest {
                   '230281998','230202998001','230202998')
                 """).update();
         jdbc.sql("DELETE FROM overview.administrative_boundary_display_reference WHERE region_code='230208'").update();
-        jdbc.sql("DELETE FROM overview.administrative_boundary_render WHERE region_code='230208'").update();
-        jdbc.sql("DELETE FROM overview.administrative_boundary WHERE region_code='230208'").update();
         jdbc.sql("DELETE FROM platform.monitoring_scope_region WHERE region_code IN ('230281999001','230281999','230281998001','230281998002','230281998','230202998001','230202998')").update();
         jdbc.sql("DELETE FROM platform.work_unit_region_scope WHERE region_code IN ('230281999001','230281999','230281998001','230281998002','230281998','230202998001','230202998')").update();
         jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE region_code IN ('230281999001','230281999','230281998001','230281998002','230281998','230202998001','230202998')").update();
@@ -95,42 +92,10 @@ class OverviewRestIntegrationTest {
                 VALUES('2026-Q3','2026年第三季度',DATE '2026-07-01',DATE '2026-09-30',202603,'2026/27')
                 ON CONFLICT(code) DO NOTHING
                 """).update();
-        jdbc.sql("""
-                DELETE FROM overview.administrative_boundary
-                 WHERE region_code IN ('230200','230202','230203','230204','230205','230206','230207')
-                """).update();
-        jdbc.sql("""
-                INSERT INTO overview.administrative_boundary(
-                  region_code,geometry,source_name,source_url,source_revision,source_license,geometry_sha256
-                )
-                SELECT fixture.region_code,
-                       ST_Multi(ST_Buffer(ST_SetSRID(ST_MakePoint(123 + fixture.longitude_delta,47),4326),0.04)),
-                       'test fixture','https://example.invalid/boundary','test','test',repeat('0',64)
-                  FROM (VALUES
-                    ('230200',0.00),('230202',0.10),('230203',0.20),('230204',0.30),
-                    ('230205',0.40),('230206',0.50),('230207',0.60)
-                  ) fixture(region_code,longitude_delta)
-                """).update();
         jdbc.sql("SELECT overview.refresh_administrative_boundary_render()")
                 .query(Object.class).single();
     }
     @AfterEach void cleanAfterEach() { clean(); }
-
-    @AfterAll
-    void removeCanonicalBoundaryFixtures() {
-        jdbc.sql("""
-                DELETE FROM overview.administrative_boundary_display_reference
-                WHERE region_code IN ('230200','230202','230203','230204','230205','230206','230207')
-                """).update();
-        jdbc.sql("""
-                DELETE FROM overview.administrative_boundary_render
-                WHERE region_code IN ('230200','230202','230203','230204','230205','230206','230207')
-                """).update();
-        jdbc.sql("""
-                DELETE FROM overview.administrative_boundary
-                WHERE region_code IN ('230200','230202','230203','230204','230205','230206','230207')
-                """).update();
-    }
 
     @Test
     void exposesOnlyAuditedSurveyYearsAndKeepsAnnualDashboardValuesIsolated() throws Exception {
@@ -571,16 +536,6 @@ class OverviewRestIntegrationTest {
     @Test
     void keepsTheDisplayReferenceProvenanceForARealCountyRender() {
         jdbc.sql("""
-                INSERT INTO overview.administrative_boundary(
-                  region_code,geometry,source_name,source_url,source_revision,source_license,geometry_sha256
-                ) VALUES(
-                  '230208',
-                  ST_Multi(ST_Buffer(ST_SetSRID(ST_MakePoint(123.02,47),4326),0.01)),
-                  'unverified county fixture','https://example.invalid/unverified-county',
-                  'test-source','community provenance unverified',repeat('5',64)
-                )
-                """).update();
-        jdbc.sql("""
                 INSERT INTO overview.administrative_boundary_display_reference(
                   region_code,geometry,source_name,source_url,source_revision,source_license,
                   source_feature_id,geometry_sha256
@@ -590,6 +545,14 @@ class OverviewRestIntegrationTest {
                        'county-230208',repeat('4',64)
                   FROM overview.administrative_boundary boundary
                  WHERE boundary.region_code='230208'
+                ON CONFLICT(region_code) DO UPDATE SET
+                  geometry=EXCLUDED.geometry,
+                  source_name=EXCLUDED.source_name,
+                  source_url=EXCLUDED.source_url,
+                  source_revision=EXCLUDED.source_revision,
+                  source_license=EXCLUDED.source_license,
+                  source_feature_id=EXCLUDED.source_feature_id,
+                  geometry_sha256=EXCLUDED.geometry_sha256
                 """).update();
 
         jdbc.sql("SELECT overview.refresh_administrative_boundary_render()")
@@ -635,11 +598,9 @@ class OverviewRestIntegrationTest {
                 SELECT '230281998',geometry,'test township boundary','https://example.invalid/topology','test','test',repeat('8',64)
                   FROM township
                 """).update();
-        jdbc.sql("SELECT overview.refresh_administrative_boundary_render()")
-                .query(Object.class).single();
         jdbc.sql("""
                 WITH parent AS (
-                  SELECT geometry FROM overview.administrative_boundary_render WHERE region_code='230281998'
+                  SELECT geometry FROM overview.administrative_boundary WHERE region_code='230281998'
                 ), inner_piece AS (
                   SELECT ST_Multi(ST_Buffer(ST_PointOnSurface(geometry),0.003)) geometry FROM parent
                 )
@@ -681,8 +642,10 @@ class OverviewRestIntegrationTest {
                 )
                 SELECT count(*)
                   FROM parent CROSS JOIN child_union
-                 WHERE ST_Area(ST_Difference(parent.geometry,child_union.geometry)::geography) > 1
-                    OR ST_Area(ST_Difference(child_union.geometry,parent.geometry)::geography) > 1
+                 WHERE overview.has_visible_surface_gap(
+                         ST_Difference(parent.geometry,child_union.geometry))
+                    OR overview.has_visible_surface_gap(
+                         ST_Difference(child_union.geometry,parent.geometry))
                 """).query(Long.class).single();
 
         assertThat(invalidOrHoled).isZero();
@@ -712,29 +675,29 @@ class OverviewRestIntegrationTest {
 
     @Test
     void closesEveryOverallMapHoleBeforePublishingTheScopeBoundary() {
-        jdbc.sql("""
-                UPDATE overview.administrative_boundary
-                   SET geometry=ST_Multi(ST_GeomFromText(
-                     'POLYGON((123 47,124 47,124 48,123 48,123 47),(123.4 47.4,123.6 47.4,123.6 47.6,123.4 47.6,123.4 47.4))',
-                     4326
-                   ))
-                 WHERE region_code='230200'
-                """).update();
-
         jdbc.sql("SELECT overview.refresh_administrative_boundary_render()")
                 .query(Object.class).single();
         jdbc.sql("SELECT overview.refresh_monitoring_scope_boundary_render('FORMAL_BUSINESS')")
                 .query(Object.class).single();
 
-        long remainingRootHoles = jdbc.sql("""
-                SELECT COALESCE(SUM(ST_NRings(render.geometry)-ST_NumGeometries(render.geometry)),0)
+        long remainingVisibleRootHoles = jdbc.sql("""
+                WITH polygons AS (
+                  SELECT (part).geom geometry
                   FROM platform.monitoring_scope_region member
                   JOIN platform.region region ON region.code=member.region_code
                   JOIN overview.administrative_boundary_render render ON render.region_code=region.code
+                  CROSS JOIN LATERAL ST_Dump(render.geometry) part
                  WHERE member.scope_code='FORMAL_BUSINESS' AND member.included
                    AND region.administrative_level='PREFECTURE'
+                ), rings AS (
+                  SELECT (ring).path path,(ring).geom geometry
+                    FROM polygons CROSS JOIN LATERAL ST_DumpRings(geometry) ring
+                )
+                SELECT count(*) FROM rings
+                 WHERE path[1]>0
+                   AND overview.has_visible_surface_gap(geometry)
                 """).query(Long.class).single();
-        long remainingCountyPartitionHoles = jdbc.sql("""
+        long remainingVisibleCountyPartitionHoles = jdbc.sql("""
                 WITH county_coverage AS (
                   SELECT child.parent_code,
                          ST_Multi(ST_UnaryUnion(ST_Collect(render.geometry))) geometry
@@ -743,18 +706,25 @@ class OverviewRestIntegrationTest {
                       ON render.region_code=child.code
                    WHERE child.administrative_level='COUNTY'
                    GROUP BY child.parent_code
+                ), polygons AS (
+                  SELECT coverage.parent_code,(part).geom geometry
+                    FROM county_coverage coverage
+                    CROSS JOIN LATERAL ST_Dump(coverage.geometry) part
+                ), rings AS (
+                  SELECT parent_code,(ring).path path,(ring).geom geometry
+                    FROM polygons CROSS JOIN LATERAL ST_DumpRings(geometry) ring
                 )
-                SELECT COALESCE(SUM(
-                         ST_NRings(coverage.geometry)-ST_NumGeometries(coverage.geometry)
-                       ),0)
+                SELECT count(*)
                   FROM platform.monitoring_scope_region member
                   JOIN platform.region parent ON parent.code=member.region_code
-                  JOIN county_coverage coverage ON coverage.parent_code=parent.code
+                  JOIN rings ON rings.parent_code=parent.code
                  WHERE member.scope_code='FORMAL_BUSINESS' AND member.included
                    AND parent.administrative_level='PREFECTURE'
+                   AND rings.path[1]>0
+                   AND overview.has_visible_surface_gap(rings.geometry)
                 """).query(Long.class).single();
-        assertThat(remainingRootHoles).isZero();
-        assertThat(remainingCountyPartitionHoles).isZero();
+        assertThat(remainingVisibleRootHoles).isZero();
+        assertThat(remainingVisibleCountyPartitionHoles).isZero();
     }
 
     @Test

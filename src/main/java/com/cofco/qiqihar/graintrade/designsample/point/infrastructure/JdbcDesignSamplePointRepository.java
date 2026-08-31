@@ -59,16 +59,22 @@ public class JdbcDesignSamplePointRepository implements DesignSamplePointReposit
     }
 
     @Override
-    public boolean coordinateWithinRegion(
+    public Optional<BoundaryContainment> coordinateBoundaryState(
             String regionCode, BigDecimal longitude, BigDecimal latitude) {
-        return Boolean.TRUE.equals(jdbc.sql("""
-                SELECT EXISTS(
-                  SELECT 1 FROM overview.administrative_boundary boundary
-                  WHERE boundary.region_code=:regionCode
-                    AND ST_Covers(boundary.geometry,
-                      ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326)))
+        return jdbc.sql("""
+                SELECT CASE
+                  WHEN boundary.region_code IS NULL THEN 'UNAVAILABLE'
+                  WHEN ST_Covers(boundary.geometry,
+                    ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326)) THEN 'INSIDE'
+                  ELSE 'OUTSIDE'
+                END
+                FROM platform.region region
+                LEFT JOIN overview.administrative_boundary boundary
+                  ON boundary.region_code=region.code
+                WHERE region.code=:regionCode
                 """).param("regionCode", regionCode).param("longitude", longitude)
-                .param("latitude", latitude).query(Boolean.class).single());
+                .param("latitude", latitude).query(String.class).optional()
+                .map(BoundaryContainment::valueOf);
     }
 
     @Override

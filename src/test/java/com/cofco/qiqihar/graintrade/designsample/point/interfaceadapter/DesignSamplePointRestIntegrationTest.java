@@ -149,13 +149,47 @@ class DesignSamplePointRestIntegrationTest {
                 .andExpect(jsonPath("$.error.code").value("INVALID_DESIGN_SAMPLE_POINT"));
 
         mvc.perform(post(ENDPOINT)
+                        .header("Idempotency-Key", "design-sample-invalid-region")
+                        .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
+                        .content(request("无效地区设计样本点", "10", null)
+                                .replace("230202", "999999")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_DESIGN_SAMPLE_POINT"));
+
+        mvc.perform(post(ENDPOINT)
+                        .header("Idempotency-Key", "design-sample-boundary-unavailable")
+                        .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
+                        .content(request("缺少边界设计样本点", "10", null)
+                                .replace("230202", "231102")
+                                .replace("123.95", "126.5")
+                                .replace("47.35", "49.5")))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.error.code").value("ADMIN_BOUNDARY_UNAVAILABLE"));
+
+        mvc.perform(post(ENDPOINT)
+                        .header("Idempotency-Key", "design-sample-invalid-longitude")
+                        .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
+                        .content(request("非法经度设计样本点", "10", null)
+                                .replace("123.95", "181")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_VALUE_INVALID"));
+
+        mvc.perform(post(ENDPOINT)
+                        .header("Idempotency-Key", "design-sample-invalid-latitude")
+                        .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
+                        .content(request("非法纬度设计样本点", "10", null)
+                                .replace("47.35", "91")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_VALUE_INVALID"));
+
+        mvc.perform(post(ENDPOINT)
                         .header("Idempotency-Key", "design-sample-outside")
                         .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
                         .content(request("越界设计样本点", "10", null)
                                 .replace("123.95", "130").replace("47.35", "50")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code")
-                        .value("DESIGN_SAMPLE_POINT_COORDINATE_OUTSIDE_REGION"));
+                        .value("COORDINATE_OUTSIDE_REGION"));
 
         mvc.perform(post(ENDPOINT)
                         .header("Idempotency-Key", "design-sample-inapplicable")
@@ -278,6 +312,13 @@ class DesignSamplePointRestIntegrationTest {
                 .andExpect(jsonPath("$.data.version").value(0))
                 .andReturn();
         String id = body(created).path("data").path("id").asText();
+
+        assertThat(jdbc.sql("""
+                SELECT source_dataset_id
+                FROM overview.administrative_boundary
+                WHERE region_code='230202'
+                """).query(String.class).single())
+                .isEqualTo("geoboundaries-chn-adm3-9469f09-qiqihar-2017");
 
         mvc.perform(get(ENDPOINT)
                         .principal(() -> ACTOR)
