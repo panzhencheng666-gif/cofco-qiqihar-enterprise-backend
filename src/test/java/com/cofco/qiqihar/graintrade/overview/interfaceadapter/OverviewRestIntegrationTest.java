@@ -695,7 +695,7 @@ class OverviewRestIntegrationTest {
                 )
                 SELECT count(*) FROM rings
                  WHERE path[1]>0
-                   AND overview.has_visible_surface_gap(ST_MakePolygon(geometry))
+                   AND overview.has_visible_surface_gap(geometry)
                 """).query(Long.class).single();
         long remainingVisibleCountyPartitionHoles = jdbc.sql("""
                 WITH county_coverage AS (
@@ -721,7 +721,7 @@ class OverviewRestIntegrationTest {
                  WHERE member.scope_code='FORMAL_BUSINESS' AND member.included
                    AND parent.administrative_level='PREFECTURE'
                    AND rings.path[1]>0
-                   AND overview.has_visible_surface_gap(ST_MakePolygon(rings.geometry))
+                   AND overview.has_visible_surface_gap(rings.geometry)
                 """).query(Long.class).single();
         assertThat(remainingVisibleRootHoles).isZero();
         assertThat(remainingVisibleCountyPartitionHoles).isZero();
