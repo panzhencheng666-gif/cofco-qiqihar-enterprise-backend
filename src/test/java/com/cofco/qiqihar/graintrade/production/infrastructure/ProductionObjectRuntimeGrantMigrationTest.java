@@ -37,12 +37,12 @@ class ProductionObjectRuntimeGrantMigrationTest {
     }
 
     @Test
-    void upgradesV155WithTwoForwardOnlyMigrations() throws Exception {
+    void upgradesV155WithThreeForwardOnlyMigrations() throws Exception {
         resetDatabase();
         DATABASE.flywayToVersion("155").migrate();
 
         assertPrivileges("production.monitoring_object", "false:false:false:false");
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(2);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(3);
         assertPrivileges("production.monitoring_object", "true:true:true:false");
         assertPrivileges("production.monitoring_object_revision", "true:true:false:false");
     }
