@@ -7,6 +7,7 @@ import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
+import com.cofco.qiqihar.graintrade.shared.application.ServiceUnavailableException;
 import com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder;
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
 import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
@@ -192,10 +193,15 @@ public class DesignSamplePointService {
         String region = requiredValue(values, "DSP_REGION_CODE", 12);
         BigDecimal longitude = decimal(values.get("DSP_LONGITUDE"));
         BigDecimal latitude = decimal(values.get("DSP_LATITUDE"));
-        if (!repository.coordinateWithinRegion(region, longitude, latitude)) {
-            throw new ClientRequestException(
-                    "DESIGN_SAMPLE_POINT_COORDINATE_OUTSIDE_REGION",
-                    "设计样本点坐标不在所选行政区范围内");
+        DesignSamplePointRepository.BoundaryContainment containment = repository
+                .coordinateBoundaryState(region, longitude, latitude)
+                .orElseThrow(DesignSamplePointService::invalidRequest);
+        switch (containment) {
+            case UNAVAILABLE -> throw new ServiceUnavailableException(
+                    "ADMIN_BOUNDARY_UNAVAILABLE", "所选行政区边界数据暂不可用");
+            case OUTSIDE -> throw new ClientRequestException(
+                    "COORDINATE_OUTSIDE_REGION", "设计样本点坐标不在所选行政区范围内");
+            case INSIDE -> { }
         }
         return new ValidatedDraft(draft, Map.copyOf(values), name, region, longitude, latitude);
     }

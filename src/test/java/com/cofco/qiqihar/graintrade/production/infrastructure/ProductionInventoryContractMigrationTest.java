@@ -34,7 +34,7 @@ class ProductionInventoryContractMigrationTest {
     @Test
     void freshMigrationVersionsPublicProductionInventoryWithoutRemovingBusinessFields() throws Exception {
         resetDatabase();
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(159);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(160);
 
         assertThat(query("""
                 SELECT EXISTS(
@@ -170,7 +170,7 @@ class ProductionInventoryContractMigrationTest {
     @Test
     void freshMigrationGrantsRuntimeOverviewContractReadOnlyAccess() throws Exception {
         resetDatabase();
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(159);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(160);
 
         assertThat(query("""
                 SELECT has_table_privilege('cofco_app',

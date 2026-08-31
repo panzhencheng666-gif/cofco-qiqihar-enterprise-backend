@@ -270,10 +270,10 @@ class MarketReturnedCorrectionRestIntegrationTest {
 
         String correctedId = subjects.callAs("market-tester", () -> rowService.correctAndSubmit(
                 id, 2, correctionRow(
-                        "CORN", "TRADER", "230200", "区县下级边界样本", "47.5000000", "123.5000000")));
+                        "CORN", "TRADER", "230200", "区县下级边界样本", "47.2991350", "123.9270770")));
 
         assertThat(correctedId).isEqualTo(id);
-        assertThat(recordSnapshot(id)).contains("PENDING_REVIEW:4:47.5000000:123.5000000");
+        assertThat(recordSnapshot(id)).contains("PENDING_REVIEW:4:47.2991350:123.9270770");
         assertThat(count("market.market_record")).isEqualTo(recordCount);
         assertThat(count("platform.business_import_draft")).isZero();
 

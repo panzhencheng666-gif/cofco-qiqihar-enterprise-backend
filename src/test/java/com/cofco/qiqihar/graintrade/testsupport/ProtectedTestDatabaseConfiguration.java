@@ -44,6 +44,16 @@ public class ProtectedTestDatabaseConfiguration {
 
     /** Restores shared test identities after a test intentionally replaces the security fixture. */
     public static void provisionSecurityTestSubjects(JdbcClient jdbc) {
+            provisionSecurityTestSubjects(jdbc, true);
+    }
+
+    /** Provisions only identities for migration-upgrade tests that must preserve boundary absence. */
+    public static void provisionSecurityTestSubjectsWithoutBoundaries(JdbcClient jdbc) {
+            provisionSecurityTestSubjects(jdbc, false);
+    }
+
+    private static void provisionSecurityTestSubjects(
+            JdbcClient jdbc, boolean includeCoordinateBoundaries) {
             jdbc.sql("""
                     INSERT INTO platform.work_unit(code,name,sort_order)
                     VALUES ('DATABASE_AUTOMATION','数据库受控自动化',9899)
@@ -93,13 +103,17 @@ public class ProtectedTestDatabaseConfiguration {
                       AND unit_scope.work_unit_code = 'TEST'
                     ON CONFLICT DO NOTHING
                     """).update();
-            if (jdbc.sql("SELECT to_regclass('overview.administrative_boundary') IS NOT NULL")
+            if (includeCoordinateBoundaries
+                    && jdbc.sql("SELECT to_regclass('overview.administrative_boundary_dataset') IS NOT NULL")
                     .query(Boolean.class).single()) {
                 provisionBusinessCoordinateTestBoundaries(jdbc);
             }
     }
 
     private static void provisionBusinessCoordinateTestBoundaries(JdbcClient jdbc) {
+        boolean governedOpenBoundaries = jdbc.sql("""
+                SELECT to_regclass('overview.administrative_boundary_dataset') IS NOT NULL
+                """).query(Boolean.class).single();
         jdbc.sql("""
                 INSERT INTO overview.administrative_boundary(
                   region_code,geometry,source_name,source_url,source_revision,source_license,
@@ -123,7 +137,8 @@ public class ProtectedTestDatabaseConfiguration {
                   source_feature_id=EXCLUDED.source_feature_id,
                   source_effective_on=EXCLUDED.source_effective_on,
                   geometry_sha256=EXCLUDED.geometry_sha256
-                """).update();
+                WHERE NOT :governedOpenBoundaries
+                """).param("governedOpenBoundaries", governedOpenBoundaries).update();
         jdbc.sql("""
                 INSERT INTO overview.administrative_boundary_render(
                   region_code,geometry,geo_json,simplify_tolerance,full_point_count,

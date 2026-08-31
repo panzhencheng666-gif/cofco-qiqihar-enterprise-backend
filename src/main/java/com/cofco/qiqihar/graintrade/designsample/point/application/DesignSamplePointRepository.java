@@ -9,7 +9,8 @@ import java.util.UUID;
 import tools.jackson.databind.JsonNode;
 
 public interface DesignSamplePointRepository {
-    boolean coordinateWithinRegion(String regionCode, BigDecimal longitude, BigDecimal latitude);
+    Optional<BoundaryContainment> coordinateBoundaryState(
+            String regionCode, BigDecimal longitude, BigDecimal latitude);
 
     PagedResult<DesignSamplePointView> findPage(DesignSamplePointQuery query);
 
@@ -41,6 +42,8 @@ public interface DesignSamplePointRepository {
             Instant now);
 
     boolean delete(UUID id, long expectedVersion);
+
+    enum BoundaryContainment { UNAVAILABLE, OUTSIDE, INSIDE }
 
     record CreateResult(DesignSamplePointView point, boolean replayed) {}
 }

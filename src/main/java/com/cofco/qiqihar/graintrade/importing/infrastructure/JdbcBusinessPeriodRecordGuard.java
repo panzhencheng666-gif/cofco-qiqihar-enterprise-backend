@@ -9,7 +9,7 @@ import org.springframework.stereotype.Repository;
 @Repository
 public class JdbcBusinessPeriodRecordGuard implements BusinessPeriodRecordGuard {
     private static final String NORMALIZED_NAME =
-            "regexp_replace(regexp_replace(normalize(lower(normalize(%s,NFKC)),NFKD),"
+            "regexp_replace(regexp_replace(normalize(lower(replace(normalize(%s,NFKC),'İ','i')),NFKD),"
                     + "'[' || chr(768) || '-' || chr(879) || ']+','','g'),"
                     + "'[[:space:]]+','','g')";
     private static final String NORMALIZED_CONTACT =
@@ -48,7 +48,7 @@ public class JdbcBusinessPeriodRecordGuard implements BusinessPeriodRecordGuard 
                 WITH normalized AS (
                   SELECT
                     regexp_replace(regexp_replace(
-                      normalize(lower(normalize(CAST(:sampleName AS text),NFKC)),NFKD),
+                      normalize(lower(replace(normalize(CAST(:sampleName AS text),NFKC),'İ','i')),NFKD),
                       '[' || chr(768) || '-' || chr(879) || ']+','','g'),
                       '[[:space:]]+','','g') AS sample_name,
                     regexp_replace(regexp_replace(
