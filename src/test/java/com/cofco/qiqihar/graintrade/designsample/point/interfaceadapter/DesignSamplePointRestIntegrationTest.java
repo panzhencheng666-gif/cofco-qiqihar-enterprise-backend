@@ -38,6 +38,7 @@ class DesignSamplePointRestIntegrationTest {
     private static final String ENDPOINT = "/api/v1/design-sample-points";
     private static final String ACTOR = "production-tester";
     private static final String READER = "design-sample-reader";
+    private static final String OTHER_REGION_READER = "design-sample-other-region-reader";
 
     @Autowired MockMvc mvc;
     @Autowired ObjectMapper json;
@@ -60,15 +61,17 @@ class DesignSamplePointRestIntegrationTest {
                 INSERT INTO platform.work_unit_region_scope(work_unit_code,region_code)
                 VALUES('DESIGN_SAMPLE_TEST','230202') ON CONFLICT DO NOTHING;
                 INSERT INTO platform.security_user(subject_id,display_name,work_unit_code)
-                VALUES(:reader,'设计样本点只读员','DESIGN_SAMPLE_TEST')
+                VALUES(:reader,'设计样本点只读员','DESIGN_SAMPLE_TEST'),
+                      (:otherReader,'设计样本点其他区域只读员','DESIGN_SAMPLE_TEST')
                 ON CONFLICT(subject_id) DO UPDATE SET enabled=true,work_unit_code=EXCLUDED.work_unit_code;
                 INSERT INTO platform.security_user_role(subject_id,role_code)
-                VALUES(:reader,'REPORTER')
+                VALUES(:reader,'REPORTER'),(:otherReader,'REPORTER')
                 ON CONFLICT(subject_id,role_code,valid_from) DO UPDATE SET valid_until=NULL;
                 INSERT INTO platform.security_user_region_scope(subject_id,region_code)
-                VALUES(:reader,'230202')
+                VALUES(:reader,'230202'),(:otherReader,'230208')
                 ON CONFLICT(subject_id,region_code,valid_from) DO UPDATE SET valid_until=NULL
-                """).param("reader", READER).update();
+                """).param("reader", READER)
+                .param("otherReader", OTHER_REGION_READER).update();
         auditBaseline = countEvents("platform.business_audit_event");
         outboxBaseline = countEvents("platform.business_event_outbox");
     }
@@ -101,6 +104,127 @@ class DesignSamplePointRestIntegrationTest {
         assertThat(count("platform.design_sample_point")).isOne();
         assertThat(countEvents("platform.business_audit_event")).isEqualTo(auditBaseline + 1);
         assertThat(countEvents("platform.business_event_outbox")).isEqualTo(outboxBaseline + 1);
+    }
+
+    @Test
+    void persistsValidatedFieldValuesInOneCanonicalJsonRepresentation() throws Exception {
+        mvc.perform(post(ENDPOINT)
+                        .header("Idempotency-Key", "design-sample-canonical-values")
+                        .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"contractVersion":"design-sample-fields-v1",
+                                 "contractDigest":"%s",
+                                 "context":{"domainCode":"PRODUCTION","productCode":"CORN",
+                                            "objectTypeCode":"FARMER"},
+                                 "values":{"DSP_NAME":"  规范化设计样本点  ",
+                                           "DSP_REGION_CODE":"230202",
+                                           "DSP_LONGITUDE":"123.9500000",
+                                           "DSP_LATITUDE":"47.3500000",
+                                           "OBSERVED_ON":"2026-06-01",
+                                           "PROD_AREA_MU":"10.0000",
+                                           "PROD_GROWTH_STAGE":"  拔节期  "}}
+                                """.formatted(contractDigest)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.values.DSP_NAME").value("规范化设计样本点"))
+                .andExpect(jsonPath("$.data.values.DSP_LONGITUDE").value(123.95))
+                .andExpect(jsonPath("$.data.values.DSP_LATITUDE").value(47.35))
+                .andExpect(jsonPath("$.data.values.PROD_AREA_MU").value(10))
+                .andExpect(jsonPath("$.data.values.PROD_GROWTH_STAGE").value("拔节期"));
+    }
+
+    @Test
+    void requeriesOneAuthoritativePointWithinTheCurrentReadScope() throws Exception {
+        String id = create("design-sample-authoritative-get", "权威重查设计样本点", "10");
+
+        mvc.perform(get(ENDPOINT + "/{id}", id).principal(() -> READER))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(id))
+                .andExpect(jsonPath("$.data.regionCode").value("230202"))
+                .andExpect(jsonPath("$.data.values.DSP_NAME").value("权威重查设计样本点"));
+
+        mvc.perform(get(ENDPOINT + "/{id}", id).principal(() -> OTHER_REGION_READER))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+    }
+
+    @Test
+    void switchesAgriculturalInputStoreToTraderWithoutStaleFieldsOrFailedWriteResidue()
+            throws Exception {
+        MvcResult created = mvc.perform(post(ENDPOINT)
+                        .header("Idempotency-Key", "design-sample-object-type-switch")
+                        .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
+                        .content(agriculturalInputRequest(null)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.context.objectTypeCode")
+                        .value("AGRICULTURAL_INPUT_STORE"))
+                .andExpect(jsonPath("$.data.values.AGRI_INPUT_SEED_SALES_VOLUME").value(1200))
+                .andExpect(jsonPath("$.data.values.AGRI_INPUT_SEED_RETAIL_PRICE").value(8.5))
+                .andExpect(jsonPath("$.data.values.AGRI_INPUT_SUPPLY_STATUS").value("SUFFICIENT"))
+                .andExpect(jsonPath("$.data.values.AGRI_INPUT_PLANTING_INTENTION_TREND")
+                        .value("STABLE"))
+                .andReturn();
+        String id = body(created).path("data").path("id").asText();
+
+        mvc.perform(get(ENDPOINT + "/{id}", id).principal(() -> READER))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.values.AGRI_INPUT_SEED_RETAIL_PRICE").value(8.5));
+
+        mvc.perform(put(ENDPOINT + "/{id}", id)
+                        .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
+                        .content(traderRequest(0L, true)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_NOT_APPLICABLE"));
+
+        mvc.perform(get(ENDPOINT + "/{id}", id).principal(() -> READER))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.context.objectTypeCode")
+                        .value("AGRICULTURAL_INPUT_STORE"))
+                .andExpect(jsonPath("$.data.version").value(0));
+        assertThat(countEvents("platform.business_audit_event")).isEqualTo(auditBaseline + 1);
+        assertThat(countEvents("platform.business_event_outbox")).isEqualTo(outboxBaseline + 1);
+
+        mvc.perform(put(ENDPOINT + "/{id}", id)
+                        .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
+                        .content(traderRequest(0L, false)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.context.objectTypeCode").value("TRADER"))
+                .andExpect(jsonPath("$.data.values.MKT_PURCHASE_BASE_PRICE").value(2300))
+                .andExpect(jsonPath("$.data.values.MKT_SALE_BASE_PRICE").value(2380))
+                .andExpect(jsonPath("$.data.values.AGRI_INPUT_SEED_SALES_VOLUME").doesNotExist())
+                .andExpect(jsonPath("$.data.version").value(1));
+
+        mvc.perform(get(ENDPOINT + "/{id}", id).principal(() -> READER))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.values.MKT_PURCHASE_BASE_PRICE").value(2300))
+                .andExpect(jsonPath("$.data.values.MKT_SALE_BASE_PRICE").value(2380))
+                .andExpect(jsonPath("$.data.values.AGRI_INPUT_SUPPLY_STATUS").doesNotExist());
+        assertThat(jdbc.sql("""
+                SELECT EXISTS (
+                  SELECT 1
+                  FROM jsonb_object_keys(values_json) field_code
+                  WHERE field_code IN (
+                    'AGRI_INPUT_SEED_SALES_VOLUME','AGRI_INPUT_SEED_RETAIL_PRICE',
+                    'AGRI_INPUT_SUPPLY_STATUS','AGRI_INPUT_PLANTING_INTENTION_TREND')
+                )
+                FROM platform.design_sample_point
+                WHERE design_sample_point_id=CAST(:id AS uuid)
+                """).param("id", id).query(Boolean.class).single()).isFalse();
+
+        mvc.perform(delete(ENDPOINT + "/{id}", id)
+                        .principal(() -> ACTOR).queryParam("expectedVersion", "1"))
+                .andExpect(status().isNoContent());
+
+        assertThat(count("platform.design_sample_point")).isZero();
+        assertThat(jdbc.sql("""
+                SELECT action_code FROM platform.business_event_outbox
+                WHERE aggregate_type='DESIGN_SAMPLE_POINT' AND aggregate_id=:id
+                ORDER BY event_sequence
+                """).param("id", id).query(String.class).list()).containsExactly(
+                        "DESIGN_SAMPLE_POINT_CREATED",
+                        "DESIGN_SAMPLE_POINT_UPDATED",
+                        "DESIGN_SAMPLE_POINT_DELETED");
+        assertThat(countEvents("platform.business_audit_event")).isEqualTo(auditBaseline + 3);
+        assertThat(countEvents("platform.business_event_outbox")).isEqualTo(outboxBaseline + 3);
     }
 
     @Test
@@ -439,6 +563,40 @@ class DesignSamplePointRestIntegrationTest {
                            "DSP_LONGITUDE":123.95,"DSP_LATITUDE":47.35,
                            "OBSERVED_ON":"2026-06-01","PROD_AREA_MU":%s}%s}
                 """.formatted(contractDigest, name, area, version);
+    }
+
+    private String agriculturalInputRequest(Long expectedVersion) {
+        String version = expectedVersion == null ? "" : ",\"expectedVersion\":" + expectedVersion;
+        return """
+                {"contractVersion":"design-sample-fields-v1",
+                 "contractDigest":"%s",
+                 "context":{"domainCode":"MARKET","productCode":"CORN",
+                            "objectTypeCode":"AGRICULTURAL_INPUT_STORE"},
+                 "values":{"DSP_NAME":"农资店设计样本点","DSP_REGION_CODE":"230202",
+                           "DSP_LONGITUDE":"123.95","DSP_LATITUDE":"47.35",
+                           "OBSERVED_ON":"2026-06-01",
+                           "AGRI_INPUT_SEED_SALES_VOLUME":"1200",
+                           "AGRI_INPUT_SEED_RETAIL_PRICE":"8.5000",
+                           "AGRI_INPUT_SUPPLY_STATUS":"SUFFICIENT",
+                           "AGRI_INPUT_PLANTING_INTENTION_TREND":"STABLE"}%s}
+                """.formatted(contractDigest, version);
+    }
+
+    private String traderRequest(long expectedVersion, boolean retainAgriculturalInputField) {
+        String staleField = retainAgriculturalInputField
+                ? ",\"AGRI_INPUT_SEED_SALES_VOLUME\":1200" : "";
+        return """
+                {"contractVersion":"design-sample-fields-v1",
+                 "contractDigest":"%s",
+                 "context":{"domainCode":"MARKET","productCode":"CORN",
+                            "objectTypeCode":"TRADER"},
+                 "values":{"DSP_NAME":"贸易商设计样本点","DSP_REGION_CODE":"230202",
+                           "DSP_LONGITUDE":"123.95","DSP_LATITUDE":"47.35",
+                           "OBSERVED_ON":"2026-06-02",
+                           "MKT_PURCHASE_BASE_PRICE":"2300.0000",
+                           "MKT_SALE_BASE_PRICE":"2380.0000"%s},
+                 "expectedVersion":%d}
+                """.formatted(contractDigest, staleField, expectedVersion);
     }
 
     private JsonNode body(MvcResult result) throws Exception {

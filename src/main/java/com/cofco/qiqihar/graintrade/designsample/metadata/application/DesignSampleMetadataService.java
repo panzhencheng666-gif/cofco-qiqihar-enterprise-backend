@@ -13,13 +13,17 @@ import java.util.Map;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 @Service
 public class DesignSampleMetadataService {
     private final DesignSampleMetadataCatalog catalog;
+    private final ObjectMapper json;
 
-    public DesignSampleMetadataService(DesignSampleMetadataCatalog catalog) {
+    public DesignSampleMetadataService(
+            DesignSampleMetadataCatalog catalog, ObjectMapper json) {
         this.catalog = catalog;
+        this.json = json;
     }
 
     public DesignSampleMetadataDefinition definition(DesignSampleContext context) {
@@ -42,6 +46,15 @@ public class DesignSampleMetadataService {
             String contractDigest,
             DesignSampleContext context,
             Map<String, JsonNode> values) {
+        return validateForPersistence(
+                contractVersion, contractDigest, context, values).publicResult();
+    }
+
+    public ValidatedDesignSampleValues validateForPersistence(
+            String contractVersion,
+            String contractDigest,
+            DesignSampleContext context,
+            Map<String, JsonNode> values) {
         DesignSampleContractSnapshot snapshot = catalog.loadActiveContract();
         List<DesignSampleFieldDefinition> applicable = fields(snapshot, context);
         if (!snapshot.contractVersion().equals(contractVersion)
@@ -53,6 +66,7 @@ public class DesignSampleMetadataService {
         Map<String, DesignSampleFieldDefinition> applicableByCode = new LinkedHashMap<>();
         applicable.forEach(field -> applicableByCode.put(field.code(), field));
         Map<String, ValueState> states = new LinkedHashMap<>();
+        Map<String, JsonNode> normalizedValues = new LinkedHashMap<>();
         Map<String, BigDecimal> decimalValues = new LinkedHashMap<>();
         boolean knownBusinessObservation = false;
 
@@ -74,10 +88,14 @@ public class DesignSampleMetadataService {
                     throw error("FIELD_VALUE_INVALID", "不可空字段不能使用未知值");
                 }
                 states.put(code, ValueState.UNKNOWN);
+                normalizedValues.put(code, json.getNodeFactory().nullNode());
                 continue;
             }
-            BigDecimal decimal = validateKnown(field, value);
-            if (decimal != null) decimalValues.put(code, decimal);
+            JsonNode normalized = normalizeKnown(field, value);
+            normalizedValues.put(code, normalized);
+            if (field.valueType().equals("DECIMAL")) {
+                decimalValues.put(code, normalized.decimalValue());
+            }
             states.put(code, ValueState.KNOWN);
             if (field.sectionCode().equals("OBSERVATION") && !field.code().equals("OBSERVED_ON")) {
                 knownBusinessObservation = true;
@@ -97,8 +115,9 @@ public class DesignSampleMetadataService {
         if (!knownBusinessObservation) {
             throw error("EMPTY_OBSERVATION", "至少需要一个已知的适用业务观测值");
         }
-        return new DesignSampleValidationResult(
-                snapshot.contractVersion(), snapshot.contractDigest(), context, states);
+        return new ValidatedDesignSampleValues(
+                snapshot.contractVersion(), snapshot.contractDigest(), context,
+                normalizedValues, states);
     }
 
     private List<DesignSampleFieldDefinition> fields(
@@ -111,28 +130,33 @@ public class DesignSampleMetadataService {
         return fields;
     }
 
-    private BigDecimal validateKnown(DesignSampleFieldDefinition field, JsonNode value) {
+    private JsonNode normalizeKnown(DesignSampleFieldDefinition field, JsonNode value) {
         return switch (field.valueType()) {
             case "UUID" -> {
-                if (!value.isTextual() || !validUuid(value.asText())) invalidValue();
-                yield null;
+                if (!value.isTextual()) invalidValue();
+                try {
+                    yield json.getNodeFactory().textNode(UUID.fromString(value.asText()).toString());
+                } catch (IllegalArgumentException exception) {
+                    yield invalidValue();
+                }
             }
             case "DATE" -> {
                 if (!value.isTextual() || !validDate(value.asText())) invalidValue();
-                yield null;
+                yield json.getNodeFactory().textNode(value.asText());
             }
             case "STRING" -> {
                 if (!value.isTextual() || value.asText().isBlank()
                         || (field.maxLength() != null && value.asText().length() > field.maxLength())) {
                     invalidValue();
                 }
-                yield null;
+                yield json.getNodeFactory().textNode(value.asText().trim());
             }
             case "ENUM" -> {
                 if (!value.isTextual() || !field.enumOptions().contains(value.asText())) invalidValue();
-                yield null;
+                yield json.getNodeFactory().textNode(value.asText());
             }
-            case "DECIMAL" -> decimal(field, value);
+            case "DECIMAL" -> json.getNodeFactory().numberNode(
+                    decimal(field, value).stripTrailingZeros());
             default -> throw error("FIELD_VALUE_INVALID", "字段类型不受支持");
         };
     }
@@ -179,15 +203,6 @@ public class DesignSampleMetadataService {
         return value != null && value.compareTo(limit) > 0;
     }
 
-    private static boolean validUuid(String value) {
-        try {
-            UUID.fromString(value);
-            return true;
-        } catch (IllegalArgumentException exception) {
-            return false;
-        }
-    }
-
     private static boolean validDate(String value) {
         try {
             return LocalDate.parse(value).toString().equals(value);
@@ -196,7 +211,7 @@ public class DesignSampleMetadataService {
         }
     }
 
-    private static BigDecimal invalidValue() {
+    private static <T> T invalidValue() {
         throw error("FIELD_VALUE_INVALID", "设计样本点字段值不符合类型、精度、枚举或范围合同");
     }
 

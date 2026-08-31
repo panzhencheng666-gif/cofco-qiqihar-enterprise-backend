@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.designsample.point.application;
 
 import com.cofco.qiqihar.graintrade.designsample.metadata.application.DesignSampleMetadataService;
+import com.cofco.qiqihar.graintrade.designsample.metadata.application.ValidatedDesignSampleValues;
 import com.cofco.qiqihar.graintrade.designsample.metadata.domain.DesignSampleContext;
 import com.cofco.qiqihar.graintrade.shared.application.BoundedInput;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
@@ -82,6 +83,14 @@ public class DesignSamplePointService {
         return repository.findPage(new DesignSamplePointQuery(
                 domain, product, objectType, region, search,
                 pageNumber, pageSize, scope.regionCodes()));
+    }
+
+    @Transactional(readOnly = true)
+    public DesignSamplePointView get(UUID id) {
+        AuthorizedReadScope scope = access.requireReadScope();
+        DesignSamplePointView point = required(id);
+        scope.requireRegion(point.regionCode());
+        return point;
     }
 
     @Transactional
@@ -180,19 +189,19 @@ public class DesignSamplePointService {
                 BoundedInput.requireText("INVALID_DESIGN_SAMPLE_POINT", value.asText());
             }
         });
-        normalizeText(values, "DSP_NAME");
-        normalizeText(values, "DSP_REGION_CODE");
-        normalizeText(values, "DSP_COORDINATE_SOURCE");
-        normalizeText(values, "DSP_COORDINATE_SOURCE_REVISION");
-        DesignSamplePointDraft draft = new DesignSamplePointDraft(
+        DesignSamplePointDraft submittedDraft = new DesignSamplePointDraft(
                 submitted.contractVersion().trim(), submitted.contractDigest().trim(),
                 context, values);
-        metadata.validate(draft.contractVersion(), draft.contractDigest(), context, values);
+        ValidatedDesignSampleValues validated = metadata.validateForPersistence(
+                submittedDraft.contractVersion(), submittedDraft.contractDigest(), context, values);
+        Map<String, JsonNode> normalizedValues = validated.values();
+        DesignSamplePointDraft draft = new DesignSamplePointDraft(
+                validated.contractVersion(), validated.contractDigest(), context, normalizedValues);
 
-        String name = requiredValue(values, "DSP_NAME", 200);
-        String region = requiredValue(values, "DSP_REGION_CODE", 12);
-        BigDecimal longitude = decimal(values.get("DSP_LONGITUDE"));
-        BigDecimal latitude = decimal(values.get("DSP_LATITUDE"));
+        String name = requiredValue(normalizedValues, "DSP_NAME", 200);
+        String region = requiredValue(normalizedValues, "DSP_REGION_CODE", 12);
+        BigDecimal longitude = decimal(normalizedValues.get("DSP_LONGITUDE"));
+        BigDecimal latitude = decimal(normalizedValues.get("DSP_LATITUDE"));
         DesignSamplePointRepository.BoundaryContainment containment = repository
                 .coordinateBoundaryState(region, longitude, latitude)
                 .orElseThrow(DesignSamplePointService::invalidRequest);
@@ -203,14 +212,8 @@ public class DesignSamplePointService {
                     "COORDINATE_OUTSIDE_REGION", "设计样本点坐标不在所选行政区范围内");
             case INSIDE -> { }
         }
-        return new ValidatedDraft(draft, Map.copyOf(values), name, region, longitude, latitude);
-    }
-
-    private void normalizeText(Map<String, JsonNode> values, String code) {
-        JsonNode value = values.get(code);
-        if (value != null && value.isTextual()) {
-            values.put(code, json.getNodeFactory().textNode(value.asText().trim()));
-        }
+        return new ValidatedDraft(
+                draft, normalizedValues, name, region, longitude, latitude);
     }
 
     private static BigDecimal decimal(JsonNode value) {
