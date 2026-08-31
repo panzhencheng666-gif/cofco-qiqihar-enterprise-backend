@@ -291,7 +291,7 @@ class OperationalReturnedCorrectionRestIntegrationTest {
                 Map.entry("surveyYear", "2026"),
                 Map.entry("surveyMonth", "8"),
                 Map.entry("LOG_SAMPLE_NAME", "物流退回修正样本"),
-                Map.entry("LOG_REGION", "230200"),
+                Map.entry("LOG_REGION", "230208"),
                 Map.entry("LOG_TRANSPORT_MODE", "RAIL"),
                 Map.entry("LOG_DIRECTION", "INFLOW"),
                 Map.entry("LOG_ROUTE_VOLUME", "12.5000"),
@@ -300,8 +300,8 @@ class OperationalReturnedCorrectionRestIntegrationTest {
                 Map.entry("LOG_SURVEYOR_NAME", "王雷"),
                 Map.entry("LOG_SURVEYOR_PHONE", "13800000000"),
                 Map.entry("LOG_SAMPLE_CONTACT", "13900000000"),
-                Map.entry("LOG_SAMPLE_LATITUDE", "47.354300"),
-                Map.entry("LOG_SAMPLE_LONGITUDE", "123.918200")));
+                Map.entry("LOG_SAMPLE_LATITUDE", "47.650000"),
+                Map.entry("LOG_SAMPLE_LONGITUDE", "123.850000")));
     }
 
     private MockMultipartFile correctionFile(String filename, byte[] bytes) {

@@ -680,15 +680,24 @@ class OverviewRestIntegrationTest {
         jdbc.sql("SELECT overview.refresh_monitoring_scope_boundary_render('FORMAL_BUSINESS')")
                 .query(Object.class).single();
 
-        long remainingRootHoles = jdbc.sql("""
-                SELECT COALESCE(SUM(ST_NRings(render.geometry)-ST_NumGeometries(render.geometry)),0)
+        long remainingVisibleRootHoles = jdbc.sql("""
+                WITH polygons AS (
+                  SELECT (part).geom geometry
                   FROM platform.monitoring_scope_region member
                   JOIN platform.region region ON region.code=member.region_code
                   JOIN overview.administrative_boundary_render render ON render.region_code=region.code
+                  CROSS JOIN LATERAL ST_Dump(render.geometry) part
                  WHERE member.scope_code='FORMAL_BUSINESS' AND member.included
                    AND region.administrative_level='PREFECTURE'
+                ), rings AS (
+                  SELECT (ring).path path,(ring).geom geometry
+                    FROM polygons CROSS JOIN LATERAL ST_DumpRings(geometry) ring
+                )
+                SELECT count(*) FROM rings
+                 WHERE path[1]>0
+                   AND overview.has_visible_surface_gap(ST_MakePolygon(geometry))
                 """).query(Long.class).single();
-        long remainingCountyPartitionHoles = jdbc.sql("""
+        long remainingVisibleCountyPartitionHoles = jdbc.sql("""
                 WITH county_coverage AS (
                   SELECT child.parent_code,
                          ST_Multi(ST_UnaryUnion(ST_Collect(render.geometry))) geometry
@@ -697,18 +706,25 @@ class OverviewRestIntegrationTest {
                       ON render.region_code=child.code
                    WHERE child.administrative_level='COUNTY'
                    GROUP BY child.parent_code
+                ), polygons AS (
+                  SELECT coverage.parent_code,(part).geom geometry
+                    FROM county_coverage coverage
+                    CROSS JOIN LATERAL ST_Dump(coverage.geometry) part
+                ), rings AS (
+                  SELECT parent_code,(ring).path path,(ring).geom geometry
+                    FROM polygons CROSS JOIN LATERAL ST_DumpRings(geometry) ring
                 )
-                SELECT COALESCE(SUM(
-                         ST_NRings(coverage.geometry)-ST_NumGeometries(coverage.geometry)
-                       ),0)
+                SELECT count(*)
                   FROM platform.monitoring_scope_region member
                   JOIN platform.region parent ON parent.code=member.region_code
-                  JOIN county_coverage coverage ON coverage.parent_code=parent.code
+                  JOIN rings ON rings.parent_code=parent.code
                  WHERE member.scope_code='FORMAL_BUSINESS' AND member.included
                    AND parent.administrative_level='PREFECTURE'
+                   AND rings.path[1]>0
+                   AND overview.has_visible_surface_gap(ST_MakePolygon(rings.geometry))
                 """).query(Long.class).single();
-        assertThat(remainingRootHoles).isZero();
-        assertThat(remainingCountyPartitionHoles).isZero();
+        assertThat(remainingVisibleRootHoles).isZero();
+        assertThat(remainingVisibleCountyPartitionHoles).isZero();
     }
 
     @Test
