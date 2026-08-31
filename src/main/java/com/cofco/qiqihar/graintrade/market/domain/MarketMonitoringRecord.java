@@ -25,11 +25,19 @@ public record MarketMonitoringRecord(
         }
         purchaseBasePrice = optional(purchaseBasePrice, "purchase base price");
         saleBasePrice = optional(saleBasePrice, "sale base price");
-        carriageBoardAmount = MarketPricing.amount(carriageBoardAmount, "carriage-board amount");
-        packagingAmount = MarketPricing.amount(packagingAmount, "packaging amount");
-        freightAmount = MarketPricing.amount(freightAmount, "freight amount");
-        text(packagingForm, "packaging form");
-        if (!packagingForm.equals("BULK") && !packagingForm.equals("BAGGED")) throw invalid("packaging form is invalid");
+        boolean observationOnly = direction == MarketTradeDirection.OBSERVATION;
+        carriageBoardAmount = observationOnly ? absent(carriageBoardAmount, "carriage-board amount")
+                : MarketPricing.amount(carriageBoardAmount, "carriage-board amount");
+        packagingAmount = observationOnly ? absent(packagingAmount, "packaging amount")
+                : MarketPricing.amount(packagingAmount, "packaging amount");
+        freightAmount = observationOnly ? absent(freightAmount, "freight amount")
+                : MarketPricing.amount(freightAmount, "freight amount");
+        if (observationOnly) {
+            if (packagingForm != null) throw invalid("packaging form is not applicable");
+        } else {
+            text(packagingForm, "packaging form");
+            if (!packagingForm.equals("BULK") && !packagingForm.equals("BAGGED")) throw invalid("packaging form is invalid");
+        }
         if (direction == MarketTradeDirection.PURCHASE && purchaseBasePrice == null) throw invalid("purchase base price is required");
         if (direction == MarketTradeDirection.SALE && saleBasePrice == null) throw invalid("sale base price is required");
         if (direction == MarketTradeDirection.BOTH
@@ -38,8 +46,9 @@ public record MarketMonitoringRecord(
         }
         BigDecimal calculated = MarketPricing.actualPrice(direction, purchaseBasePrice, saleBasePrice,
                 carriageBoardAmount, packagingAmount, freightAmount);
-        actualTradePrice = MarketPricing.amount(actualTradePrice, "actual trade price");
-        if (calculated.compareTo(actualTradePrice) != 0) throw invalid("actual trade price must equal base plus applicable components");
+        actualTradePrice = observationOnly ? absent(actualTradePrice, "actual trade price")
+                : MarketPricing.amount(actualTradePrice, "actual trade price");
+        if (!observationOnly && calculated.compareTo(actualTradePrice) != 0) throw invalid("actual trade price must equal base plus applicable components");
         if (status == MarketStatus.RETURNED && (returnReason == null || returnReason.isBlank())) throw invalid("return reason is required");
         if (status != MarketStatus.RETURNED && returnReason != null) throw invalid("return reason only applies to returned records");
         Map<String, BigDecimal> normalized = new LinkedHashMap<>();
@@ -83,6 +92,10 @@ public record MarketMonitoringRecord(
         return new MarketMonitoringRecord(id, product, object, region, date, reported, direction, purchase, sale, carriage, freight, packagingAmount, packaging, actual, status, reason, facts, version);
     }
     private static BigDecimal optional(BigDecimal value, String description) { return value == null ? null : MarketPricing.amount(value, description); }
+    private static BigDecimal absent(BigDecimal value, String description) {
+        if (value != null) throw invalid(description + " is not applicable");
+        return null;
+    }
     private static void text(String value, String description) { if (value == null || value.isBlank()) throw invalid(description + " must not be blank"); }
     private static MarketValidationException invalid(String message) { return new MarketValidationException(message); }
 }

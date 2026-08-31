@@ -187,8 +187,8 @@ class FlywayMigrationReplayTest {
         assertThat(firstCounts).containsEntry("region", 37L)
                 .containsEntry("product", 3L)
                 .containsEntry("cultivar", 2L)
-                .containsEntry("object_type", 12L)
-                .containsEntry("page_definition_field", 216L)
+                .containsEntry("object_type", 13L)
+                .containsEntry("page_definition_field", 228L)
                 .containsEntry("production_fact_category", 5L)
                 .containsEntry("production_fact_definition", 34L)
                 .containsEntry("production_fact_applicability", 231L);

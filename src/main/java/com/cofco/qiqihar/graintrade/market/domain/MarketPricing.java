@@ -25,7 +25,16 @@ public final class MarketPricing {
             case BOTH -> amount(purchaseBasePrice, "purchase price")
                     .add(amount(saleBasePrice, "sale price"))
                     .divide(BigDecimal.valueOf(2), SCALE, RoundingMode.HALF_UP);
+            case OBSERVATION -> {
+                if (purchaseBasePrice != null || saleBasePrice != null
+                        || carriageBoardAmount != null || packagingAmount != null
+                        || freightAmount != null) {
+                    throw invalid("observation-only record cannot contain trade prices");
+                }
+                yield null;
+            }
         };
+        if (base == null) return null;
         return base
                 .add(amount(carriageBoardAmount, "carriage-board amount"))
                 .add(amount(packagingAmount, "packaging amount"))

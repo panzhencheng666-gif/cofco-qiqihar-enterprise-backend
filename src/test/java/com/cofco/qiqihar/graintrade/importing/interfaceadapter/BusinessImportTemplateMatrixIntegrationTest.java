@@ -136,7 +136,7 @@ class BusinessImportTemplateMatrixIntegrationTest {
     @Test
     void everyMarketTemplateAcceptsTheFirstTwoDataRowsAndImportsThem() throws Exception {
         List<Context> contexts = contexts("MARKET");
-        assertThat(contexts).hasSize(15);
+        assertThat(contexts).hasSize(18);
 
         for (Context context : contexts) {
             String key = context.key();

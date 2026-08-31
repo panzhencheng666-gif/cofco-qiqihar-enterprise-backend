@@ -49,6 +49,10 @@ class MarketV18MasterDataTest {
                         "MKT_SAMPLE_NAME:填报对象/客户名称:TEXT:126",
                         "MKT_CULTIVAR_NAME:具体品种:TEXT:127",
                         "MKT_SAMPLE_SUBJECT_CODE:样本主体唯一标识:TEXT:128",
+                        "AGRI_INPUT_SEED_SALES_VOLUME:种子销售量:DECIMAL:130",
+                        "AGRI_INPUT_SEED_RETAIL_PRICE:种子零售价:DECIMAL:131",
+                        "AGRI_INPUT_SUPPLY_STATUS:供货状态:SELECT:132",
+                        "AGRI_INPUT_PLANTING_INTENTION_TREND:种植意向趋势:SELECT:133",
                         "MKT_INVENTORY_HOLDER_CODE:库存填报主体唯一标识:TEXT:141",
                         "MKT_INVENTORY_OWNERSHIP_TYPE:库存权属:SELECT:142",
                         "MKT_STORAGE_REGION_CODE:库存存放地区:REGION_HIERARCHY:143",
@@ -60,6 +64,13 @@ class MarketV18MasterDataTest {
                 SELECT field_code || ':' || value || ':' || label
                 FROM platform.market_core_field_option ORDER BY field_code, sort_order
                 """)).containsExactly(
+                        "AGRI_INPUT_PLANTING_INTENTION_TREND:INCREASE:增加",
+                        "AGRI_INPUT_PLANTING_INTENTION_TREND:STABLE:持平",
+                        "AGRI_INPUT_PLANTING_INTENTION_TREND:DECREASE:减少",
+                        "AGRI_INPUT_SUPPLY_STATUS:SUFFICIENT:充足",
+                        "AGRI_INPUT_SUPPLY_STATUS:NORMAL:正常",
+                        "AGRI_INPUT_SUPPLY_STATUS:TIGHT:偏紧",
+                        "AGRI_INPUT_SUPPLY_STATUS:OUT_OF_STOCK:缺货",
                         "MKT_INVENTORY_OWNERSHIP_TYPE:OWNED:自有库存",
                         "MKT_INVENTORY_OWNERSHIP_TYPE:CUSTODIAL:代储库存",
                         "MKT_INVENTORY_POLICY_ATTRIBUTE:COMMERCIAL:商品库存",

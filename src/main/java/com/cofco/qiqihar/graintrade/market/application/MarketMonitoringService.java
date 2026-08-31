@@ -51,10 +51,12 @@ public class MarketMonitoringService {
     private static final String PAGE_KIND = "MONITORING";
     private static final String COORDINATE_RETURN_REASON = "地区与经纬度不匹配";
     private static final ZoneId REPORTING_ZONE = ZoneId.of("Asia/Shanghai");
-    private static final Set<String> REQUIRED_TYPED_BINDINGS = Set.of(
+    private static final Set<String> PRICE_TYPED_BINDINGS = Set.of(
             "OBJECT_TYPE", "REGION", "TRADE_DATE", "REPORTED_AT",
             "PURCHASE_BASE_PRICE", "CARRIAGE_BOARD_AMOUNT",
             "PACKAGING_FORM", "PACKAGING_AMOUNT", "FREIGHT_AMOUNT");
+    private static final Set<String> OBSERVATION_TYPED_BINDINGS = Set.of(
+            "OBJECT_TYPE", "REGION", "TRADE_DATE", "REPORTED_AT");
     private static final Set<String> SYSTEM_MANAGED_OR_RETIRED_INPUT_CODES = Set.of(
             "MKT_CULTIVAR_NAME", "MKT_SAMPLE_SUBJECT_CODE", "MKT_STORAGE_REGION_CODE",
             "MKT_INVENTORY_HOLDER_CODE", "MKT_INVENTORY_OWNERSHIP_TYPE", "MKT_CARGO_OWNER_CODE",
@@ -516,9 +518,11 @@ public class MarketMonitoringService {
                 throw invalidDefinition();
             }
         }
-        if (!typedBindings.containsAll(REQUIRED_TYPED_BINDINGS)
-                || typedBindings.stream().anyMatch(binding ->
-                        !REQUIRED_TYPED_BINDINGS.contains(binding) && !"SALE_BASE_PRICE".equals(binding))) {
+        boolean priceContract = typedBindings.containsAll(PRICE_TYPED_BINDINGS)
+                && typedBindings.stream().allMatch(binding ->
+                        PRICE_TYPED_BINDINGS.contains(binding) || "SALE_BASE_PRICE".equals(binding));
+        boolean observationContract = typedBindings.equals(OBSERVATION_TYPED_BINDINGS);
+        if (!priceContract && !observationContract) {
             throw invalidDefinition();
         }
     }
@@ -589,18 +593,21 @@ public class MarketMonitoringService {
         });
 
         try {
+            boolean observationOnly = !byBinding.containsKey("PURCHASE_BASE_PRICE");
             return new ParsedDraft(
                     draft.productCode(), requiredBinding(byBinding, "OBJECT_TYPE"),
                     requiredBinding(byBinding, "REGION"),
                     LocalDate.parse(requiredBinding(byBinding, "TRADE_DATE")),
-                    byBinding.containsKey("SALE_BASE_PRICE")
-                            ? MarketTradeDirection.BOTH : MarketTradeDirection.PURCHASE,
-                    requiredDecimal(byBinding, "PURCHASE_BASE_PRICE"),
+                    observationOnly ? MarketTradeDirection.OBSERVATION
+                            : byBinding.containsKey("SALE_BASE_PRICE")
+                                    ? MarketTradeDirection.BOTH : MarketTradeDirection.PURCHASE,
+                    observationOnly ? null : requiredDecimal(byBinding, "PURCHASE_BASE_PRICE"),
                     optionalDecimal(byBinding.get("SALE_BASE_PRICE")),
-                    requiredDecimal(byBinding, "CARRIAGE_BOARD_AMOUNT"),
-                    requiredDecimal(byBinding, "PACKAGING_AMOUNT"),
-                    requiredDecimal(byBinding, "FREIGHT_AMOUNT"),
-                    requiredBinding(byBinding, "PACKAGING_FORM"), draft.facts(), extensions);
+                    observationOnly ? null : requiredDecimal(byBinding, "CARRIAGE_BOARD_AMOUNT"),
+                    observationOnly ? null : requiredDecimal(byBinding, "PACKAGING_AMOUNT"),
+                    observationOnly ? null : requiredDecimal(byBinding, "FREIGHT_AMOUNT"),
+                    observationOnly ? null : requiredBinding(byBinding, "PACKAGING_FORM"),
+                    draft.facts(), extensions);
         } catch (DateTimeException | NumberFormatException exception) {
             throw invalid("Market core field value is invalid");
         }

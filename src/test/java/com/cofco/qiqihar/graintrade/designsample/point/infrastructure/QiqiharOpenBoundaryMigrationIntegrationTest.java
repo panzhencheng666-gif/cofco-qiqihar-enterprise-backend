@@ -33,19 +33,19 @@ class QiqiharOpenBoundaryMigrationIntegrationTest {
 
     @Test
     void freshMigrationSeedsSeventeenTraceableValidQiqiharBoundaries() {
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(160);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(162);
         assertBoundaryDataset();
     }
 
     @Test
-    void upgradesV159ToV160WithoutChangingExistingBusinessStores() {
+    void upgradesV159ThroughV162WithoutChangingExistingBusinessStores() {
         assertThat(DATABASE.flywayToVersion("159").migrate().migrationsExecuted).isEqualTo(159);
         long formalSamples = count("registry.sample_point");
         long townships = jdbc.sql("""
                 SELECT count(*) FROM platform.region WHERE administrative_level='TOWNSHIP'
                 """).query(Long.class).single();
 
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isOne();
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(3);
 
         assertThat(count("registry.sample_point")).isEqualTo(formalSamples);
         assertThat(jdbc.sql("""

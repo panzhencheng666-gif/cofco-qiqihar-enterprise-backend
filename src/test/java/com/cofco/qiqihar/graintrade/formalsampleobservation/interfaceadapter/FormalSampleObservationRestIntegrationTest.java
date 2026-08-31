@@ -58,11 +58,13 @@ class FormalSampleObservationRestIntegrationTest {
     @Autowired DataSource dataSource;
     private JdbcClient jdbc;
     private AdministrativeBoundarySnapshot boundarySnapshot;
+    private long formalObservationAuditCountBefore;
 
     @BeforeEach
     void setUpFormalProductionSample() {
         jdbc = JdbcClient.create(dataSource);
         clearFixture();
+        formalObservationAuditCountBefore = formalObservationAuditCount();
         boundarySnapshot = AdministrativeBoundarySnapshot.capture(jdbc, "230221");
         jdbc.sql("""
                 INSERT INTO platform.security_user(subject_id,display_name,work_unit_code,enabled)
@@ -439,7 +441,8 @@ class FormalSampleObservationRestIntegrationTest {
                 SELECT count(*) FROM platform.business_audit_event
                 WHERE aggregate_type='FORMAL_SAMPLE_OBSERVATION'
                   AND action_code='FORMAL_SAMPLE_OBSERVATION_SAVED'
-                """).query(Long.class).single()).isEqualTo(1);
+                """).query(Long.class).single())
+                .isEqualTo(formalObservationAuditCountBefore + 1);
 
         mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
                         .principal(() -> ACTOR)
@@ -523,6 +526,72 @@ class FormalSampleObservationRestIntegrationTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.lines[?(@.label == '核定数据条数')].value")
                         .value(org.hamcrest.Matchers.hasItem("1")));
+    }
+
+    @Test
+    void savesAgriculturalInputStoreThroughTheFormalObservationNormalizationChain()
+            throws Exception {
+        jdbc.sql("""
+                UPDATE market.market_record
+                SET object_type_code='AGRICULTURAL_INPUT_STORE',
+                    purchase_base_price=NULL,sale_base_price=NULL,
+                    trade_direction='OBSERVATION',carriage_board_amount=NULL,
+                    packaging_amount=NULL,freight_amount=NULL,packaging_form=NULL
+                WHERE record_id=:id
+                """).param("id", MARKET_RECORD_ID).update();
+        String request = """
+                {"domain":"MARKET","samplePointId":"%s","productCode":"CORN",
+                 "observedAt":"2026-08-28T10:15:00+08:00","payload":{"productCode":"CORN",
+                 "coreValues":{"MKT_OBJECT_TYPE":"TRADER","MKT_REGION":"230202",
+                 "MKT_TRADE_DATE":"2026-08-01","MKT_SAMPLE_NAME":"伪造样本",
+                 "MKT_SAMPLE_CONTACT":"19900000000","MKT_SAMPLE_LATITUDE":"1",
+                 "MKT_SAMPLE_LONGITUDE":"2","AGRI_INPUT_SEED_SALES_VOLUME":"1250.5",
+                 "AGRI_INPUT_SEED_RETAIL_PRICE":"8.75","AGRI_INPUT_SUPPLY_STATUS":"TIGHT",
+                 "AGRI_INPUT_PLANTING_INTENTION_TREND":"INCREASE"},
+                 "facts":{},"evidencePhotoIds":[]}}
+                """.formatted(SAMPLE_POINT_ID);
+
+        mvc.perform(post("/api/v1/formal-sample-observations/observations")
+                        .principal(() -> ACTOR).header("Idempotency-Key", "agri-input-observation-1")
+                        .contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.values.MKT_OBJECT_TYPE")
+                        .value("AGRICULTURAL_INPUT_STORE"))
+                .andExpect(jsonPath("$.data.values.AGRI_INPUT_SEED_SALES_VOLUME")
+                        .value("1250.5000"))
+                .andExpect(jsonPath("$.data.values.AGRI_INPUT_SEED_RETAIL_PRICE")
+                        .value("8.7500"))
+                .andExpect(jsonPath("$.data.values.AGRI_INPUT_SUPPLY_STATUS").value("TIGHT"))
+                .andExpect(jsonPath("$.data.values.AGRI_INPUT_PLANTING_INTENTION_TREND")
+                        .value("INCREASE"))
+                .andExpect(jsonPath("$.data.values.MKT_PURCHASE_BASE_PRICE").doesNotExist())
+                .andExpect(jsonPath("$.data.values.MKT_CARRIAGE_BOARD_AMOUNT").doesNotExist());
+
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM market.market_record
+                WHERE sample_point_id=:samplePointId
+                  AND object_type_code='AGRICULTURAL_INPUT_STORE'
+                  AND trade_direction='OBSERVATION'
+                  AND purchase_base_price IS NULL AND sale_base_price IS NULL
+                  AND carriage_board_amount IS NULL AND packaging_amount IS NULL
+                  AND freight_amount IS NULL AND packaging_form IS NULL
+                """).param("samplePointId", SAMPLE_POINT_ID).query(Long.class).single())
+                .isEqualTo(2);
+        assertThat(jdbc.sql("""
+                SELECT field_code || '=' || value
+                FROM market.market_record_core_value
+                WHERE record_id<>:legacyId
+                  AND record_id IN (SELECT record_id FROM market.market_record
+                    WHERE sample_point_id=:samplePointId)
+                  AND field_code LIKE 'AGRI_INPUT_%'
+                ORDER BY field_code
+                """).param("legacyId", MARKET_RECORD_ID)
+                .param("samplePointId", SAMPLE_POINT_ID).query(String.class).list())
+                .containsExactly(
+                        "AGRI_INPUT_PLANTING_INTENTION_TREND=INCREASE",
+                        "AGRI_INPUT_SEED_RETAIL_PRICE=8.7500",
+                        "AGRI_INPUT_SEED_SALES_VOLUME=1250.5000",
+                        "AGRI_INPUT_SUPPLY_STATUS=TIGHT");
     }
 
     @Test
@@ -745,6 +814,14 @@ class FormalSampleObservationRestIntegrationTest {
                 .param("subject", RESTRICTED_ACTOR).update();
         jdbc.sql("DELETE FROM platform.security_user WHERE subject_id=:subject")
                 .param("subject", RESTRICTED_ACTOR).update();
+    }
+
+    private long formalObservationAuditCount() {
+        return jdbc.sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type='FORMAL_SAMPLE_OBSERVATION'
+                  AND action_code='FORMAL_SAMPLE_OBSERVATION_SAVED'
+                """).query(Long.class).single();
     }
 
     private Set<UUID> samplePointIds(String response, String pointer) throws Exception {

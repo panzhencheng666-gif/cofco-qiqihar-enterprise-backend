@@ -742,12 +742,12 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
         OffsetDateTime fillingAt = row.submittedAt() == null ? row.createdAt() : row.submittedAt();
         values.put("MKT_FILLING_AT", fillingAt.toString());
         values.put("MKT_FILLING_TIME_BASIS", fillingTimeBasis(row.status(), row.submittedAt()));
-        values.put("MKT_PURCHASE_BASE_PRICE", decimal(row.purchaseBasePrice()));
-        values.put("MKT_SALE_BASE_PRICE", decimal(row.saleBasePrice()));
-        values.put("MKT_CARRIAGE_BOARD_AMOUNT", decimal(row.carriageBoardAmount()));
-        values.put("MKT_PACKAGING_FORM", row.packagingLabel());
-        values.put("MKT_PACKAGING_AMOUNT", decimal(row.packagingAmount()));
-        values.put("MKT_FREIGHT_AMOUNT", decimal(row.freightAmount()));
+        if (row.purchaseBasePrice() != null) values.put("MKT_PURCHASE_BASE_PRICE", decimal(row.purchaseBasePrice()));
+        if (row.saleBasePrice() != null) values.put("MKT_SALE_BASE_PRICE", decimal(row.saleBasePrice()));
+        if (row.carriageBoardAmount() != null) values.put("MKT_CARRIAGE_BOARD_AMOUNT", decimal(row.carriageBoardAmount()));
+        if (row.packagingLabel() != null) values.put("MKT_PACKAGING_FORM", row.packagingLabel());
+        if (row.packagingAmount() != null) values.put("MKT_PACKAGING_AMOUNT", decimal(row.packagingAmount()));
+        if (row.freightAmount() != null) values.put("MKT_FREIGHT_AMOUNT", decimal(row.freightAmount()));
         values.put("MKT_STATUS", row.statusLabel() == null ? row.status().name() : row.statusLabel());
         extensions.forEach((code, value) -> putDistinct(values, code, value));
         facts.forEach((code, value) -> putDistinct(values, code, decimal(value)));
