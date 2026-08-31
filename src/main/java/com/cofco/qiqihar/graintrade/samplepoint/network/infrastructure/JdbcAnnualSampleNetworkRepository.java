@@ -597,11 +597,15 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
             return false;
         }
         return Boolean.TRUE.equals(jdbc.sql("""
-                SELECT EXISTS(
-                         SELECT 1 FROM registry.village_design_sample_point)
-                   AND NOT EXISTS(
-                         SELECT 1 FROM registry.village_design_sample_point design
-                         WHERE design.village_region_code NOT IN (:authorizedRegions))
+                SELECT NOT EXISTS(
+                         SELECT 1
+                         FROM registry.sample_point sample
+                         WHERE sample.approval_state='APPROVED'
+                           AND sample.kind_code='SURVEY_SITE'
+                           AND sample.effective_from<=make_date(:year,12,31)
+                           AND (sample.effective_to IS NULL
+                                OR sample.effective_to>=make_date(:year,1,1))
+                           AND sample.region_code NOT IN (:authorizedRegions))
                    AND NOT EXISTS(
                          SELECT 1
                          FROM registry.sample_network_membership membership
