@@ -51,6 +51,11 @@ public class DesignSamplePointController {
                 query.integer("pageSize", 20))));
     }
 
+    @GetMapping("/{id}")
+    ApiResponse<DesignSamplePointView> get(@PathVariable String id) {
+        return new ApiResponse<>(service.get(id(id)));
+    }
+
     @PostMapping
     ResponseEntity<ApiResponse<DesignSamplePointView>> create(
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
