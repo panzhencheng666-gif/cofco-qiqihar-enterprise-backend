@@ -27,17 +27,17 @@ jobs:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
         ports:
-          - 5432:5432
+          - 55432:5432
         options: >-
           --health-cmd "pg_isready -U postgres -d qiqihar_enterprise_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
     env:
-      QIQIHAR_TEST_DB_URL: jdbc:postgresql://127.0.0.1:5432/qiqihar_enterprise_test
+      QIQIHAR_TEST_DB_URL: jdbc:postgresql://127.0.0.1:55432/qiqihar_enterprise_test
       QIQIHAR_TEST_DB_USERNAME: postgres
       QIQIHAR_TEST_DB_PASSWORD: postgres
-      QIQIHAR_EVENT_CONSUMER_REGISTRAR_DB_URL: jdbc:postgresql://127.0.0.1:5432/qiqihar_enterprise_test
+      QIQIHAR_EVENT_CONSUMER_REGISTRAR_DB_URL: jdbc:postgresql://127.0.0.1:55432/qiqihar_enterprise_test
       QIQIHAR_EVENT_CONSUMER_REGISTRAR_DB_USERNAME: qiqihar_event_consumer_registrar_login
       QIQIHAR_EVENT_CONSUMER_REGISTRAR_DB_PASSWORD: ci-only-registrar
     steps:
@@ -64,7 +64,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes fonts-noto-cjk lsof postgresql-client
-          psql --host 127.0.0.1 --username postgres --dbname qiqihar_enterprise_test \
+          psql --host 127.0.0.1 --port 55432 --username postgres --dbname qiqihar_enterprise_test \
             --set ON_ERROR_STOP=1 <<'SQL'
           DO $$
           BEGIN

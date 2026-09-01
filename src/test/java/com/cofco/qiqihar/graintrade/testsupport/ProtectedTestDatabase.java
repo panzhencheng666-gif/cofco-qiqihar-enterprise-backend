@@ -22,9 +22,6 @@ public final class ProtectedTestDatabase {
         "platform", "production", "market", "logistics", "supply", "reporting",
         "workflow", "overview", "evidence", "registry"
     };
-    private static final String DEFAULT_URL =
-            "jdbc:postgresql://127.0.0.1:5432/" + DATABASE_NAME;
-
     private final String url;
     private final String username;
     private final String password;
@@ -45,7 +42,14 @@ public final class ProtectedTestDatabase {
             Map<String, String> environment, Properties systemProperties) {
         Objects.requireNonNull(environment, "environment");
         Objects.requireNonNull(systemProperties, "systemProperties");
-        String url = valueOrDefault(environment.get("QIQIHAR_TEST_DB_URL"), DEFAULT_URL);
+        String url = requireExplicitValue(
+                environment.get("QIQIHAR_TEST_DB_URL"), "QIQIHAR_TEST_DB_URL");
+        requireMatchingUrl("SPRING_DATASOURCE_URL", environment.get("SPRING_DATASOURCE_URL"), url);
+        requireMatchingUrl("SPRING_FLYWAY_URL", environment.get("SPRING_FLYWAY_URL"), url);
+        requireMatchingUrl(
+                "spring.datasource.url", systemProperties.getProperty("spring.datasource.url"), url);
+        requireMatchingUrl(
+                "spring.flyway.url", systemProperties.getProperty("spring.flyway.url"), url);
         String username = valueOrDefault(
                 environment.get("QIQIHAR_TEST_DB_USERNAME"),
                 systemProperties.getProperty("user.name", ""));
@@ -143,7 +147,10 @@ public final class ProtectedTestDatabase {
         return new String[] {
             "--spring.datasource.url=" + url,
             "--spring.datasource.username=" + username,
-            "--spring.datasource.password=" + password
+            "--spring.datasource.password=" + password,
+            "--spring.flyway.url=" + url,
+            "--spring.flyway.user=" + username,
+            "--spring.flyway.password=" + password
         };
     }
 
@@ -169,20 +176,36 @@ public final class ProtectedTestDatabase {
     }
 
     private static void requireDedicatedDatabaseUrl(String url) {
-        String databaseName = databaseName(url);
+        URI uri = postgresUri(url);
+        String databaseName = databaseName(uri);
         if (!DATABASE_NAME.equals(databaseName)) {
             throw new IllegalStateException(
                     "Test database URL must use exact database " + DATABASE_NAME
                             + " but was " + url);
         }
+        if (uri.getPort() <= 0 || uri.getPort() == 5432) {
+            throw new IllegalStateException(
+                    "Test database URL must use a dedicated non-default port and must not use 5432"
+                            + " but was " + url);
+        }
     }
 
-    private static String databaseName(String url) {
+    private static URI postgresUri(String url) {
         try {
             if (url == null || !url.startsWith("jdbc:postgresql://")) {
                 return null;
             }
-            URI uri = URI.create(url.substring("jdbc:".length()));
+            return URI.create(url.substring("jdbc:".length()));
+        } catch (IllegalArgumentException exception) {
+            return null;
+        }
+    }
+
+    private static String databaseName(URI uri) {
+        try {
+            if (uri == null) {
+                return null;
+            }
             String path = uri.getPath();
             if (path == null || path.length() < 2 || path.indexOf('/', 1) >= 0) {
                 return null;
@@ -190,6 +213,21 @@ public final class ProtectedTestDatabase {
             return path.substring(1);
         } catch (IllegalArgumentException exception) {
             return null;
+        }
+    }
+
+    private static String requireExplicitValue(String value, String variableName) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalStateException(
+                    variableName + " must be provided explicitly for an isolated test database");
+        }
+        return value;
+    }
+
+    private static void requireMatchingUrl(String sourceName, String candidate, String protectedUrl) {
+        if (candidate != null && !candidate.isBlank() && !protectedUrl.equals(candidate)) {
+            throw new IllegalStateException(
+                    sourceName + " must match QIQIHAR_TEST_DB_URL when it is set");
         }
     }
 
