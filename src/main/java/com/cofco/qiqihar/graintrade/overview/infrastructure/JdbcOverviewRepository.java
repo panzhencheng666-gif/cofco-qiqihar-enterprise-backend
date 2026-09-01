@@ -595,7 +595,13 @@ public class JdbcOverviewRepository implements OverviewRepository {
                             sourceCount > 0 ? "AVAILABLE" : "NO_APPROVED_SOURCES",
                             row.getString("calculation_version"));
                 }).list();
-        return indicators;
+        Map<String, OverviewIndicator> authoritativeHeadlines = headlineIndicators(
+                productCode, year, regionCode, authorizedRegionCodes).stream()
+                .collect(java.util.stream.Collectors.toMap(
+                        OverviewIndicator::code, indicator -> indicator));
+        return indicators.stream()
+                .map(indicator -> authoritativeHeadlines.getOrDefault(indicator.code(), indicator))
+                .toList();
     }
 
     private static String authorizedRegionList(Set<String> authorizedRegionCodes) {
@@ -897,6 +903,19 @@ public class JdbcOverviewRepository implements OverviewRepository {
     private List<OverviewDashboard.Metric> dashboardMetrics(
             String productCode, int year, String regionCode,
             Set<String> authorizedRegionCodes) {
+        return headlineIndicators(productCode, year, regionCode, authorizedRegionCodes).stream()
+                .map(indicator -> new OverviewDashboard.Metric(
+                        indicator.code(), indicator.name(), indicator.unitCode(),
+                        indicator.sourceCount() == 0 ? null : indicator.value(), indicator.sourceCount(),
+                        indicator.dataCutoff(), indicator.coverageStatus(), indicator.formula(),
+                        indicator.sourcePath(), indicator.sourceRelation(), indicator.coverageScope(),
+                        indicator.calculationVersion()))
+                .toList();
+    }
+
+    private List<OverviewIndicator> headlineIndicators(
+            String productCode, int year, String regionCode,
+            Set<String> authorizedRegionCodes) {
         ObservableAnalysisScope analysisScope = new ObservableAnalysisScope(
                 productCode,
                 regionCode == null
@@ -912,23 +931,32 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 authorizedRegionCodes,
                 () -> currentOverviewSamplePointIds(year, productCode, regionCode,
                         authorizedRegionCodes));
-        return dashboardIndicators(productCode, regionCode, year, headlineMetrics).stream()
-                .map(indicator -> new OverviewDashboard.Metric(
-                        indicator.code(), indicator.name(), indicator.unitCode(),
-                        indicator.sourceCount() == 0 ? null : indicator.value(), indicator.sourceCount(),
-                        indicator.dataCutoff(), indicator.coverageStatus(), indicator.formula(),
-                        indicator.sourcePath(), indicator.sourceRelation(), indicator.coverageScope(),
-                        indicator.calculationVersion()))
-                .toList();
+        return dashboardIndicators(productCode, regionCode, year, headlineMetrics);
     }
 
     private Set<java.util.UUID> currentOverviewSamplePointIds(
             int year, String productCode, String regionCode,
             Set<String> authorizedRegionCodes) {
-        return currentOverviewSamplePointReader.read(
+        Set<java.util.UUID> samplePointIds = currentOverviewSamplePointReader.read(
                         year, productCode, regionCode, authorizedRegionCodes).stream()
                 .map(point -> point.samplePointId())
-                .collect(java.util.stream.Collectors.toUnmodifiableSet());
+                .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+        // Keep the published overview projection authoritative while preserving the existing
+        // child-scope contract for lifecycle-active ancestor samples whose coordinate covers it.
+        samplePointIds.addAll(jdbc.sql(AUTHORIZED_REQUEST_SCOPE + """
+                SELECT point.sample_point_id
+                FROM current_valid_sample sample
+                JOIN registry.sample_point point ON point.sample_point_id=sample.sample_point_id
+                WHERE point.sample_point_id<>'00000000-0000-0000-0000-000000000000'::uuid
+                  AND point.effective_from<=to_date(
+                    CAST(:year AS text)||to_char(CURRENT_DATE,'MMDD'),'YYYYMMDD')
+                  AND (point.effective_to IS NULL OR point.effective_to>=to_date(
+                    CAST(:year AS text)||to_char(CURRENT_DATE,'MMDD'),'YYYYMMDD'))
+                """).param("region", regionCode).param("year", year)
+                .param("unrestricted", authorizedRegionCodes.contains("*"))
+                .param("authorizedRegionList", authorizedRegionList(authorizedRegionCodes))
+                .query(java.util.UUID.class).list());
+        return Set.copyOf(samplePointIds);
     }
 
     private List<OverviewIndicator> dashboardIndicators(

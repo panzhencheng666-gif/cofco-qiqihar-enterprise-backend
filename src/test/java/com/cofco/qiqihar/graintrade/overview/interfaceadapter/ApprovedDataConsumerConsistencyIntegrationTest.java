@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade.overview.interfaceadapter;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -10,9 +11,10 @@ import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabaseConfiguration;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import javax.sql.DataSource;
+import java.util.List;
 import java.util.UUID;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -20,6 +22,8 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.web.servlet.MockMvc;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 @SpringBootTest(classes = GrainTradeApplication.class)
 @AutoConfigureMockMvc
@@ -158,6 +162,66 @@ class ApprovedDataConsumerConsistencyIntegrationTest {
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("2026年08月09日 12:34:56")))
                 .andExpect(content().string(org.hamcrest.Matchers.not(
                         org.hamcrest.Matchers.containsString("production.production_record"))));
+    }
+
+    @Test
+    void overviewEndpointsUseTheSamePublishedSampleHeadlineReadModel() throws Exception {
+        String originalBoundaryHash = jdbc.sql("""
+                SELECT geometry_sha256 FROM overview.administrative_boundary
+                WHERE region_code='230208'
+                """).query(String.class).single();
+        try {
+            jdbc.sql("""
+                    UPDATE overview.administrative_boundary
+                    SET geometry_sha256=repeat('0',64)
+                    WHERE region_code='230208'
+                    """).update();
+
+            String indicators = mvc.perform(get("/api/v1/overview/indicators").principal(() -> ACTOR)
+                            .queryParam("productCode", "CORN").queryParam("regionCode", "230208")
+                            .queryParam("year", "2026"))
+                    .andExpect(status().isOk())
+                    .andReturn().getResponse().getContentAsString();
+            String summary = mvc.perform(get("/api/v1/overview/dashboard-summary").principal(() -> ACTOR)
+                            .queryParam("productCode", "CORN").queryParam("regionCode", "230208")
+                            .queryParam("year", "2026"))
+                    .andExpect(status().isOk())
+                    .andReturn().getResponse().getContentAsString();
+
+            ObjectMapper json = new ObjectMapper();
+            JsonNode indicatorData = json.readTree(indicators).path("data");
+            JsonNode summaryMetrics = json.readTree(summary).path("data").path("metrics");
+            assertThat(metric(summaryMetrics, "PRODUCTION_CULTIVATED_AREA").path("value").asText())
+                    .isEqualTo("10");
+            for (String code : List.of(
+                    "PRODUCTION_CULTIVATED_AREA", "PRODUCTION_ESTIMATED_OUTPUT",
+                    "MARKET_AVERAGE_PURCHASE_PRICE", "MARKET_AVERAGE_SALE_PRICE")) {
+                JsonNode indicator = metric(indicatorData, code);
+                JsonNode headline = metric(summaryMetrics, code);
+                assertThat(indicator.path("value")).isEqualTo(headline.path("value"));
+                assertThat(indicator.path("sourceCount")).isEqualTo(headline.path("sourceCount"));
+                assertThat(indicator.path("dataCutoff")).isEqualTo(headline.path("dataCutoff"));
+                assertThat(indicator.path("coverageStatus")).isEqualTo(headline.path("coverageStatus"));
+                assertThat(indicator.path("formula")).isEqualTo(headline.path("formula"));
+                assertThat(indicator.path("sourcePath")).isEqualTo(headline.path("sourcePath"));
+                assertThat(indicator.path("sourceRelation")).isEqualTo(headline.path("sourceRelation"));
+                assertThat(indicator.path("coverageScope")).isEqualTo(headline.path("coverageScope"));
+                assertThat(indicator.path("calculationVersion"))
+                        .isEqualTo(headline.path("calculationVersion"));
+            }
+        } finally {
+            jdbc.sql("""
+                    UPDATE overview.administrative_boundary SET geometry_sha256=:hash
+                    WHERE region_code='230208'
+                    """).param("hash", originalBoundaryHash).update();
+        }
+    }
+
+    private static JsonNode metric(JsonNode metrics, String code) {
+        for (JsonNode metric : metrics) {
+            if (code.equals(metric.path("code").asText())) return metric;
+        }
+        throw new AssertionError("Missing overview metric " + code);
     }
 
     @Test
