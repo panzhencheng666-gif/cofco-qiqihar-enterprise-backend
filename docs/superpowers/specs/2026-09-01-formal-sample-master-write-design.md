@@ -12,6 +12,7 @@ Add Backend-only create and update operations for formal sample point master dat
 - address
 
 Existing sample points remain readable with a null profile. Their first successful update creates the profile. Changing object type replaces the single profile classification and does not alter historical period observations.
+Updating stable master fields preserves the point's existing approval and effective-period lifecycle state.
 
 ## API
 
@@ -35,4 +36,3 @@ No annual membership is created or modified. Delete relies on the profile foreig
 - occupied coordinate: existing `SAMPLE_POINT_COORDINATE_OCCUPIED`
 - stale update: `FORMAL_SAMPLE_POINT_VERSION_CONFLICT`
 - relational conflict: `FORMAL_SAMPLE_POINT_CONFLICT`
-
