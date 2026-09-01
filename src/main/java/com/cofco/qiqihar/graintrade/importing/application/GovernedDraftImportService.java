@@ -37,6 +37,7 @@ public class GovernedDraftImportService {
     private static final Logger LOGGER = LoggerFactory.getLogger(GovernedDraftImportService.class);
     private static final String SOURCE_PREFIX = "GOVERNED-DRAFT-V1:";
     private final ImportJobWriteExecutor jobWrites;
+    private final ImportDraftBatchExecutor batches;
     private final ImportDraftRowExecutor rows;
     private final BusinessImportPhotoPackage photos;
     private final RegionImportResolver regions;
@@ -46,12 +47,14 @@ public class GovernedDraftImportService {
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
-    public GovernedDraftImportService(ImportJobWriteExecutor jobWrites, ImportDraftRowExecutor rows,
+    public GovernedDraftImportService(ImportJobWriteExecutor jobWrites, ImportDraftBatchExecutor batches,
+            ImportDraftRowExecutor rows,
             BusinessImportPhotoPackage photos,
             RegionImportResolver regions, JdbcSampleIdentityGovernanceRepository identities,
             AccessControl access, BusinessImportLimits limits,
             ObjectMapper objectMapper, Clock clock) {
         this.jobWrites = jobWrites;
+        this.batches = batches;
         this.rows = rows;
         this.photos = photos;
         this.regions = regions;
@@ -106,19 +109,26 @@ public class GovernedDraftImportService {
         if (!prior.job().domainCode().equals(original.domainCode())) {
             throw new ClientRequestException("INVALID_IMPORT_TEMPLATE", "导入任务来源无效");
         }
-        Set<Integer> failedRows = prior.job().rows().stream()
-                .filter(row -> "ERROR".equals(row.outcomeCode()))
-                .filter(GovernedDraftImportService::retryable)
-                .map(ImportRowOutcome::rowNumber)
-                .collect(java.util.stream.Collectors.toSet());
-        if (failedRows.isEmpty()) {
-            throw new ConflictException("IMPORT_RETRY_NOT_AVAILABLE", "导入任务没有可重试的失败行");
-        }
-        List<DraftWorkbookRow> retryRows = original.rows().stream()
-                .filter(row -> failedRows.contains(row.rowNumber()))
-                .toList();
-        if (retryRows.size() != failedRows.size()) {
-            throw new ClientRequestException("INVALID_IMPORT_TEMPLATE", "导入任务失败行来源不完整");
+        boolean atomicRollback = prior.job().rows().stream()
+                .anyMatch(row -> "NOT_IMPORTED_ATOMIC_BATCH".equals(row.errorCode()));
+        List<DraftWorkbookRow> retryRows;
+        if (atomicRollback) {
+            retryRows = original.rows();
+        } else {
+            Set<Integer> failedRows = prior.job().rows().stream()
+                    .filter(row -> "ERROR".equals(row.outcomeCode()))
+                    .filter(GovernedDraftImportService::retryable)
+                    .map(ImportRowOutcome::rowNumber)
+                    .collect(java.util.stream.Collectors.toSet());
+            if (failedRows.isEmpty()) {
+                throw new ConflictException("IMPORT_RETRY_NOT_AVAILABLE", "导入任务没有可重试的失败行");
+            }
+            retryRows = original.rows().stream()
+                    .filter(row -> failedRows.contains(row.rowNumber()))
+                    .toList();
+            if (retryRows.size() != failedRows.size()) {
+                throw new ClientRequestException("INVALID_IMPORT_TEMPLATE", "导入任务失败行来源不完整");
+            }
         }
         UUID photoJobId = original.photoJobId() == null ? prior.job().id() : original.photoJobId();
         DraftSource retrySource = new DraftSource(original.domainCode(), original.domainLabel(),
@@ -132,11 +142,11 @@ public class GovernedDraftImportService {
 
     private ImportJob process(ImportJob reserved, DraftSource source, String digest,
             UUID retryOf, SecurityPrincipal principal) {
-        List<ImportRowOutcome> outcomes = new ArrayList<>(source.rows().size());
-        Map<BatchIdentityKey, SeenBatchIdentity> batchIdentities = new LinkedHashMap<>();
         UUID photoJobId = source.photoJobId() == null ? reserved.id() : source.photoJobId();
-        for (DraftWorkbookRow sourceRow : source.rows()) {
-            outcomes.add(processRow(reserved.id(), photoJobId, source, sourceRow, principal, batchIdentities));
+        List<ImportRowOutcome> outcomes = batches.execute(() -> processRows(
+                reserved.id(), photoJobId, source, principal));
+        if (outcomes.stream().anyMatch(row -> "ERROR".equals(row.outcomeCode()))) {
+            outcomes = outcomes.stream().map(GovernedDraftImportService::atomicOutcome).toList();
         }
         var completedAt = clock.instant();
         String status = outcomes.stream().anyMatch(row -> "ERROR".equals(row.outcomeCode()))
@@ -148,6 +158,22 @@ public class GovernedDraftImportService {
         DraftSource durableSource = new DraftSource(source.domainCode(), source.domainLabel(),
                 source.productCode(), source.rows(), photoJobId);
         return jobWrites.complete(completed, encode(durableSource), principal);
+    }
+
+    private List<ImportRowOutcome> processRows(UUID jobId, UUID photoJobId, DraftSource source,
+            SecurityPrincipal principal) {
+        List<ImportRowOutcome> outcomes = new ArrayList<>(source.rows().size());
+        Map<BatchIdentityKey, SeenBatchIdentity> batchIdentities = new LinkedHashMap<>();
+        for (DraftWorkbookRow sourceRow : source.rows()) {
+            outcomes.add(processRow(jobId, photoJobId, source, sourceRow, principal, batchIdentities));
+        }
+        return outcomes;
+    }
+
+    private static ImportRowOutcome atomicOutcome(ImportRowOutcome outcome) {
+        if (!"IMPORTED".equals(outcome.outcomeCode())) return outcome;
+        return ImportRowOutcome.error(outcome.rowNumber(), "NOT_IMPORTED_ATOMIC_BATCH",
+                "同一批次存在失败行，本行未写入", outcome.values());
     }
 
     private ImportRowOutcome processRow(UUID jobId, UUID photoJobId, DraftSource source,
@@ -227,7 +253,7 @@ public class GovernedDraftImportService {
             LOGGER.warn("Business import draft row failed jobId={} rowNumber={}",
                     jobId, row.rowNumber(), exception);
             return ImportRowOutcome.error(row.rowNumber(), "IMPORT_ROW_WRITE_FAILED",
-                    "本行未能保存，其他行不受影响", row.values());
+                    "本行未能保存，同一批次未写入", row.values());
         }
     }
 
