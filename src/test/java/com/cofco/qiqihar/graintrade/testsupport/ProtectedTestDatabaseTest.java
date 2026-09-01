@@ -111,13 +111,18 @@ class ProtectedTestDatabaseTest {
     }
 
     @Test
-    void verifiesTheActualJdbcMetadataUrlBeforeReturningAConnection() throws Exception {
+    void verifiesTheActualJdbcMetadataUrlWithoutDestroyingMigratedState() throws Exception {
         ProtectedTestDatabase database = ProtectedTestDatabase.resolve(System.getenv(), System.getProperties());
 
-        database.resetForTestSession();
+        database.flyway().migrate();
         try (Connection connection = database.openConnection()) {
             assertThat(connection.getMetaData().getURL()).isEqualTo(database.url());
             assertThat(connection.getCatalog()).isEqualTo("qiqihar_enterprise_test");
+            try (var result = connection.createStatement()
+                    .executeQuery("SELECT to_regclass('platform.work_unit') IS NOT NULL")) {
+                assertThat(result.next()).isTrue();
+                assertThat(result.getBoolean(1)).isTrue();
+            }
         }
         assertThat(database.springApplicationArguments())
                 .contains("--spring.datasource.url=" + database.url());
