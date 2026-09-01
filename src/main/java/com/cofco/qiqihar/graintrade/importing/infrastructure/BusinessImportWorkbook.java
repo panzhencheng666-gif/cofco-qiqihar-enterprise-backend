@@ -44,6 +44,7 @@ public final class BusinessImportWorkbook {
             Map.entry("DEEP_PROCESSOR", "深加工"), Map.entry("WHOLESALE_MARKET", "批发市场"),
             Map.entry("RESERVE_ENTERPRISE", "承储企业"), Map.entry("RICE_MILL", "米厂"),
             Map.entry("BREEDING_FACTORY", "养殖厂"), Map.entry("FEED_MILL", "饲料厂"),
+            Map.entry("AGRICULTURAL_INPUT_STORE", "农资店"),
             Map.entry("RAIL_NODE", "铁路站点"), Map.entry("ROAD_NODE", "公路物流节点"),
             Map.entry("ROUTE_EVENT", "物流业务记录"));
     private static final Map<String, String> INTERNAL_CONTEXT_VALUES = reverse(PUBLIC_CONTEXT_VALUES);

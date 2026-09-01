@@ -2132,6 +2132,102 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    void agriculturalInputStoreUsesItsOwnContractAndTypeSwitchLeavesNoOldValues()
+            throws Exception {
+        mockMvc.perform(get("/api/v1/market-record-definitions")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("objectTypeCode", "AGRICULTURAL_INPUT_STORE"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_PURCHASE_BASE_PRICE')]").isEmpty())
+                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_SALE_BASE_PRICE')]").isEmpty())
+                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_CARRIAGE_BOARD_AMOUNT')]").isEmpty())
+                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'AGRI_INPUT_SEED_SALES_VOLUME'"
+                        + " && @.unit == '公斤' && @.controlType == 'DECIMAL' && @.scale == 4)]").exists())
+                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'AGRI_INPUT_SEED_RETAIL_PRICE'"
+                        + " && @.unit == '元/公斤')]").exists())
+                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'AGRI_INPUT_SUPPLY_STATUS')]"
+                        + ".options[?(@.value == 'OUT_OF_STOCK')].label").value("缺货"))
+                .andExpect(jsonPath("$.data.coreFields[?(@.code == 'AGRI_INPUT_PLANTING_INTENTION_TREND')]"
+                        + ".options[?(@.value == 'INCREASE')].label").value("增加"));
+
+        String trader = singleFactDraft("CORN", "TRADER", "SALES_VOLUME", "17.5");
+        String id = mockMvc.perform(post("/api/v1/market-records")
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(trader))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString()
+                .replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+
+        String agriculturalInput = """
+                {"productCode":"CORN","coreValues":{
+                 "MKT_OBJECT_TYPE":"AGRICULTURAL_INPUT_STORE","MKT_REGION":"230200",
+                 "MKT_TRADE_DATE":"2026-08-01",
+                 "AGRI_INPUT_SEED_SALES_VOLUME":"1250.5",
+                 "AGRI_INPUT_SEED_RETAIL_PRICE":"6.75",
+                 "AGRI_INPUT_SUPPLY_STATUS":"TIGHT",
+                 "AGRI_INPUT_PLANTING_INTENTION_TREND":"INCREASE",%s},
+                 "facts":{},"evidencePhotoIds":["%s"],"version":0}
+                """.formatted(submissionMetadata(), stageEvidencePhoto());
+
+        mockMvc.perform(put("/api/v1/market-records/{id}", id)
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(agriculturalInput))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.version").value(1))
+                .andExpect(jsonPath("$.data.coreValues.MKT_OBJECT_TYPE")
+                        .value("AGRICULTURAL_INPUT_STORE"))
+                .andExpect(jsonPath("$.data.coreValues.AGRI_INPUT_SEED_SALES_VOLUME")
+                        .value("1250.5000"))
+                .andExpect(jsonPath("$.data.coreValues.AGRI_INPUT_SUPPLY_STATUS").value("TIGHT"))
+                .andExpect(jsonPath("$.data.coreValues.MKT_PURCHASE_BASE_PRICE").doesNotExist())
+                .andExpect(jsonPath("$.data.coreValues.MKT_SALE_BASE_PRICE").doesNotExist())
+                .andExpect(jsonPath("$.data.facts").isEmpty());
+
+        mockMvc.perform(get("/api/v1/market-records/{id}", id))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.coreValues.AGRI_INPUT_SEED_RETAIL_PRICE")
+                        .value("6.7500"))
+                .andExpect(jsonPath("$.data.facts.SALES_VOLUME").doesNotExist());
+
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM market.market_record_fact WHERE record_id=:id
+                """).param("id", id).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM market.market_record
+                WHERE record_id=:id AND purchase_base_price IS NULL AND sale_base_price IS NULL
+                  AND carriage_board_amount IS NULL AND packaging_amount IS NULL
+                  AND freight_amount IS NULL AND packaging_form IS NULL
+                """).param("id", id).query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("""
+                SELECT field_code
+                FROM market.market_record_core_value
+                WHERE record_id=:id AND field_code LIKE 'AGRI_INPUT_%'
+                ORDER BY field_code
+                """).param("id", id).query(String.class).list())
+                .containsExactly("AGRI_INPUT_PLANTING_INTENTION_TREND",
+                        "AGRI_INPUT_SEED_RETAIL_PRICE", "AGRI_INPUT_SEED_SALES_VOLUME",
+                        "AGRI_INPUT_SUPPLY_STATUS");
+
+        String traderAgain = singleFactDraft("CORN", "TRADER", "SALES_VOLUME", "18.5");
+        mockMvc.perform(put("/api/v1/market-records/{id}", id)
+                        .principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(versioned(traderAgain, 1)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.version").value(2))
+                .andExpect(jsonPath("$.data.coreValues.MKT_OBJECT_TYPE").value("TRADER"))
+                .andExpect(jsonPath("$.data.coreValues.MKT_PURCHASE_BASE_PRICE").exists())
+                .andExpect(jsonPath("$.data.coreValues.AGRI_INPUT_SEED_SALES_VOLUME")
+                        .doesNotExist())
+                .andExpect(jsonPath("$.data.facts.SALES_VOLUME").value("18.5000"));
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM market.market_record_core_value
+                WHERE record_id=:id AND field_code LIKE 'AGRI_INPUT_%'
+                """).param("id", id).query(Long.class).single()).isZero();
+    }
+
+    @Test
     void stateTransitionsKeepReportedAtAndUseTheApplicationClockForUpdatedAt() throws Exception {
         String approvedId = create("CORN", "FEED_MILL", "MOISTURE");
         resetTransitionTimes(approvedId);
