@@ -25,7 +25,7 @@ class DesignSamplePointUpgradeReplayTest {
     void migrateTrustedEquivalentSeedToV159() throws Exception {
         resetDatabase();
         assertThat(DATABASE.flywayToVersion("159").migrate().migrationsExecuted)
-                .isEqualTo(159);
+                .isEqualTo(157);
         jdbc = JdbcClient.create(DATABASE.dataSource());
         ProtectedTestDatabaseConfiguration.provisionSecurityTestSubjectsWithoutBoundaries(jdbc);
         for (int index = 1; index <= 232; index++) {
@@ -70,11 +70,11 @@ class DesignSamplePointUpgradeReplayTest {
     }
 
     @Test
-    void upgradesFromV159ThroughV163WithoutChangingFormalSamplesOrTownshipMasterData() {
+    void upgradesFromV159ThroughV165WithoutChangingFormalSamplesOrTownshipMasterData() {
         assertThat(formalCount()).isEqualTo(1064);
         assertThat(townshipCount()).isEqualTo(232);
 
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(4);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(8);
         assertThat(formalCount()).isEqualTo(1064);
         assertThat(townshipCount()).isEqualTo(232);
 

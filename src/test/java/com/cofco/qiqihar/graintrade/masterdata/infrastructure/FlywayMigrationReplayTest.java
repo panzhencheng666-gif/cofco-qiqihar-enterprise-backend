@@ -546,7 +546,7 @@ class FlywayMigrationReplayTest {
         try (var files = Files.list(Path.of("src/main/resources/db/migration"))) {
             return (int) files
                     .map(path -> path.getFileName().toString())
-                    .filter(name -> name.matches("V\\d+__.+\\.sql"))
+                    .filter(name -> name.matches("V\\d+(?:_\\d+)*__.+\\.sql"))
                     .count();
         }
     }

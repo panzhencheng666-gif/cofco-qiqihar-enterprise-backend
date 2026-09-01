@@ -10,6 +10,7 @@ import java.sql.Statement;
 import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.flywaydb.core.api.MigrationInfo;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 class IdentityLifecycleUpgradeReplayTest {
@@ -18,6 +19,25 @@ class IdentityLifecycleUpgradeReplayTest {
         "platform", "production", "market", "logistics", "supply", "reporting",
         "workflow", "overview", "evidence", "registry"
     };
+
+    @Test
+    void resolvesTheInstalledLiveV153AndDefersIdentityLifecycleToUnusedVersions() throws Exception {
+        resetDatabase();
+
+        MigrationInfo[] migrations = DATABASE.flyway().info().all();
+
+        assertThat(migration(migrations, "153").getDescription())
+                .isEqualTo("persist production monitoring objects");
+        assertThat(migration(migrations, "153").getChecksum()).isEqualTo(1985169213);
+        assertThat(migrations)
+                .noneMatch(migration -> migration.getVersion() != null
+                        && (migration.getVersion().getVersion().equals("154")
+                        || migration.getVersion().getVersion().equals("155")));
+        assertThat(migration(migrations, "164").getDescription())
+                .isEqualTo("close identity lifecycle and session governance");
+        assertThat(migration(migrations, "165").getDescription())
+                .isEqualTo("grant runtime current invitation read");
+    }
 
     @AfterEach
     void restoreLatestSharedSchemaAndSecurityFixtures() {
@@ -62,13 +82,13 @@ class IdentityLifecycleUpgradeReplayTest {
                 SELECT to_regclass('platform.identity_invitation')::text
                 """)).isNull();
 
-        assertThat(DATABASE.flywayToVersion("153").migrate().migrationsExecuted).isOne();
+        assertThat(DATABASE.flywayToVersion("164").migrate().migrationsExecuted).isEqualTo(12);
 
         assertThat(queryString("""
                 SELECT string_agg(version,',' ORDER BY installed_rank)
                 FROM public.flyway_schema_history
-                WHERE success AND version IN ('152','153')
-                """)).isEqualTo("152,153");
+                WHERE success AND version IN ('152','153','164')
+                """)).isEqualTo("152,153,164");
         assertThat(queryString("""
                 SELECT employee_number || ':' || display_name || ':' || enabled || ':' || session_version
                 FROM platform.security_user WHERE subject_id='identity-v152-upgrade'
@@ -92,7 +112,8 @@ class IdentityLifecycleUpgradeReplayTest {
     }
 
     @Test
-    void upgradesInstalledV153WithoutChangingItsChecksumAndGrantsCurrentInvitationRead() throws Exception {
+    void upgradesInstalledLiveV153WithoutChangingItsChecksumAndAddsDeferredIdentityLifecycle()
+            throws Exception {
         resetDatabase();
         assertThat(DATABASE.flywayToVersion("153").migrate().migrationsExecuted)
                 .isEqualTo(153);
@@ -100,64 +121,37 @@ class IdentityLifecycleUpgradeReplayTest {
                 SELECT checksum::text FROM public.flyway_schema_history
                 WHERE version='153' AND success
                 """);
+        assertThat(v153Checksum).isEqualTo("1985169213");
+        assertThat(queryString("SELECT to_regclass('production.monitoring_object')::text"))
+                .isEqualTo("production.monitoring_object");
+        assertThat(queryString("SELECT to_regclass('platform.identity_invitation')::text"))
+                .isNull();
+
+        assertThat(DATABASE.flywayToVersion("164").migrate().migrationsExecuted).isEqualTo(11);
+
+        assertThat(queryString("""
+                SELECT string_agg(version,',' ORDER BY installed_rank)
+                FROM public.flyway_schema_history WHERE success
+                  AND version IN ('153','154','155','156','163','164')
+                """)).isEqualTo("153,156,163,164");
+        assertThat(queryString("""
+                SELECT checksum::text FROM public.flyway_schema_history
+                WHERE version='153' AND success
+                """)).isEqualTo(v153Checksum);
         assertThat(queryString("""
                 SELECT has_column_privilege(
                     'qiqihar_enterprise_runtime','platform.identity_invitation','created_at','SELECT')::text
                 """)).isEqualTo("false");
 
-        assertThat(DATABASE.flywayToVersion("154").migrate().migrationsExecuted).isOne();
-
-        assertThat(queryString("""
-                SELECT string_agg(version,',' ORDER BY installed_rank)
-                FROM public.flyway_schema_history
-                WHERE success AND version IN ('153','154')
-                """)).isEqualTo("153,154");
-        assertThat(queryString("""
-                SELECT checksum::text FROM public.flyway_schema_history
-                WHERE version='153' AND success
-                """)).isEqualTo(v153Checksum);
+        assertThat(DATABASE.flywayToVersion("165").migrate().migrationsExecuted).isOne();
         assertThat(queryString("""
                 SELECT has_column_privilege(
                     'qiqihar_enterprise_runtime','platform.identity_invitation','created_at','SELECT')::text
                 """)).isEqualTo("true");
-    }
-
-    @Test
-    void upgradesInstalledV154WithoutChangingPublishedChecksumsAndAddsProductionObjects()
-            throws Exception {
-        resetDatabase();
-        assertThat(DATABASE.flywayToVersion("154").migrate().migrationsExecuted)
-                .isEqualTo(154);
-        String v153Checksum = queryString("""
-                SELECT checksum::text FROM public.flyway_schema_history
-                WHERE version='153' AND success
-                """);
-        String v154Checksum = queryString("""
-                SELECT checksum::text FROM public.flyway_schema_history
-                WHERE version='154' AND success
-                """);
-        assertThat(queryString("""
-                SELECT to_regclass('production.monitoring_object')::text
-                """)).isNull();
-
-        assertThat(DATABASE.flywayToVersion("155").migrate().migrationsExecuted).isOne();
-
-        assertThat(queryString("""
-                SELECT string_agg(version,',' ORDER BY installed_rank)
-                FROM public.flyway_schema_history
-                WHERE success AND version IN ('153','154','155')
-                """)).isEqualTo("153,154,155");
         assertThat(queryString("""
                 SELECT checksum::text FROM public.flyway_schema_history
                 WHERE version='153' AND success
                 """)).isEqualTo(v153Checksum);
-        assertThat(queryString("""
-                SELECT checksum::text FROM public.flyway_schema_history
-                WHERE version='154' AND success
-                """)).isEqualTo(v154Checksum);
-        assertThat(queryString("""
-                SELECT to_regclass('production.monitoring_object')::text
-                """)).isEqualTo("production.monitoring_object");
     }
 
     private void resetDatabase() throws Exception {
@@ -193,5 +187,13 @@ class IdentityLifecycleUpgradeReplayTest {
             row.next();
             return row.getString(1);
         }
+    }
+
+    private static MigrationInfo migration(MigrationInfo[] migrations, String version) {
+        return java.util.Arrays.stream(migrations)
+                .filter(migration -> migration.getVersion() != null)
+                .filter(migration -> migration.getVersion().getVersion().equals(version))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("Missing migration V" + version));
     }
 }
