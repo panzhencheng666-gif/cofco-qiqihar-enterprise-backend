@@ -87,7 +87,7 @@ class BootFlywayStartupTest {
         try (var files = Files.list(Path.of("src/main/resources/db/migration"))) {
             return files
                     .map(path -> path.getFileName().toString())
-                    .filter(name -> name.matches("V\\d+__.+\\.sql"))
+                    .filter(name -> name.matches("V\\d+(?:_\\d+)*__.+\\.sql"))
                     .count();
         }
     }

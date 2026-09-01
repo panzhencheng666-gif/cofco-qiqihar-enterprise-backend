@@ -33,19 +33,20 @@ class QiqiharOpenBoundaryMigrationIntegrationTest {
 
     @Test
     void freshMigrationSeedsSeventeenTraceableValidQiqiharBoundaries() {
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(163);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(165);
         assertBoundaryDataset();
+        assertThat(count("overview.administrative_boundary_v160_archive")).isZero();
     }
 
     @Test
-    void upgradesV159ThroughV163WithoutChangingExistingBusinessStores() {
-        assertThat(DATABASE.flywayToVersion("159").migrate().migrationsExecuted).isEqualTo(159);
+    void upgradesV159ThroughV165WithoutChangingExistingBusinessStores() {
+        assertThat(DATABASE.flywayToVersion("159").migrate().migrationsExecuted).isEqualTo(157);
         long formalSamples = count("registry.sample_point");
         long townships = jdbc.sql("""
                 SELECT count(*) FROM platform.region WHERE administrative_level='TOWNSHIP'
                 """).query(Long.class).single();
 
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(4);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(8);
 
         assertThat(count("registry.sample_point")).isEqualTo(formalSamples);
         assertThat(jdbc.sql("""
@@ -56,7 +57,7 @@ class QiqiharOpenBoundaryMigrationIntegrationTest {
 
     @Test
     void rejectsAnExistingQiqiharBoundaryWithDifferentGeometryAndProvenance() {
-        assertThat(DATABASE.flywayToVersion("159").migrate().migrationsExecuted).isEqualTo(159);
+        assertThat(DATABASE.flywayToVersion("159").migrate().migrationsExecuted).isEqualTo(157);
         jdbc.sql("""
                 INSERT INTO overview.administrative_boundary(
                   region_code,geometry,source_name,source_url,source_revision,source_license,
@@ -67,13 +68,65 @@ class QiqiharOpenBoundaryMigrationIntegrationTest {
                 """).update();
 
         assertThatThrownBy(() -> DATABASE.flyway().migrate())
-                .hasMessageContaining("V160 refuses conflicting Qiqihar administrative boundary")
-                .hasMessageContaining("230202");
+                .hasMessageContaining("V159.1 refuses unknown Qiqihar boundary state")
+                .hasMessageContaining("count 1, invalid 1");
         assertThat(jdbc.sql("""
                 SELECT source_url FROM overview.administrative_boundary WHERE region_code='230202'
                 """).query(String.class).single()).isEqualTo("urn:test:conflict");
         assertThat(jdbc.sql("SELECT to_regclass('overview.administrative_boundary_dataset')")
                 .query(String.class).optional()).isEmpty();
+    }
+
+    @Test
+    void normalizesOnlySubvisibleTownshipRenderArtifactsBeforeVillageRepartition() {
+        assertThat(DATABASE.flywayToVersion("159.2").migrate().migrationsExecuted).isEqualTo(159);
+        String townshipCode = "990001001";
+        insertTownshipRenderFixture(townshipCode);
+        jdbc.sql("""
+                UPDATE overview.administrative_boundary_render
+                SET geometry=ST_Multi(ST_Difference(
+                      geometry,ST_Buffer(ST_PointOnSurface(geometry),0.000001)
+                    ))::geometry(MultiPolygon,4326)
+                WHERE region_code=:regionCode
+                """).param("regionCode", townshipCode).update();
+
+        assertThat(interiorRingCount(townshipCode)).isEqualTo(1);
+        assertThat(jdbc.sql("SELECT overview.normalize_subvisible_township_render_artifacts()")
+                .query(Integer.class).single()).isEqualTo(1);
+        assertThat(interiorRingCount(townshipCode)).isZero();
+        assertThat(jdbc.sql("""
+                SELECT geo_json=ST_AsGeoJSON(geometry,7)
+                FROM overview.administrative_boundary_render WHERE region_code=:regionCode
+                """).param("regionCode", townshipCode).query(Boolean.class).single()).isTrue();
+
+        jdbc.sql("""
+                UPDATE overview.administrative_boundary_render
+                SET geometry=ST_Multi(ST_Difference(
+                      geometry,ST_Buffer(ST_PointOnSurface(geometry),0.0001)
+                    ))::geometry(MultiPolygon,4326)
+                WHERE region_code=:regionCode
+                """).param("regionCode", townshipCode).update();
+        assertThat(jdbc.sql("SELECT overview.normalize_subvisible_township_render_artifacts()")
+                .query(Integer.class).single()).isZero();
+        assertThat(interiorRingCount(townshipCode)).isEqualTo(1);
+
+        jdbc.sql("""
+                WITH fixture AS (
+                  SELECT ST_Multi(ST_UnaryUnion(ST_Collect(
+                    boundary.geometry,
+                    ST_MakeEnvelope(123.02,47,123.020001,47.000001,4326)
+                  )))::geometry(MultiPolygon,4326) geometry
+                  FROM overview.administrative_boundary boundary
+                  WHERE boundary.region_code=:regionCode
+                )
+                UPDATE overview.administrative_boundary_render render
+                SET geometry=fixture.geometry
+                FROM fixture WHERE render.region_code=:regionCode
+                """).param("regionCode", townshipCode).update();
+        assertThat(geometryPartCount(townshipCode)).isEqualTo(2);
+        assertThat(jdbc.sql("SELECT overview.normalize_subvisible_township_render_artifacts()")
+                .query(Integer.class).single()).isEqualTo(1);
+        assertThat(geometryPartCount(townshipCode)).isEqualTo(1);
     }
 
     private void assertBoundaryDataset() {
@@ -133,6 +186,55 @@ class QiqiharOpenBoundaryMigrationIntegrationTest {
 
     private long count(String relation) {
         return jdbc.sql("SELECT count(*) FROM " + relation).query(Long.class).single();
+    }
+
+    private int interiorRingCount(String regionCode) {
+        return jdbc.sql("""
+                SELECT ST_NumInteriorRings(ST_GeometryN(geometry,1))
+                FROM overview.administrative_boundary_render WHERE region_code=:regionCode
+                """).param("regionCode", regionCode).query(Integer.class).single();
+    }
+
+    private int geometryPartCount(String regionCode) {
+        return jdbc.sql("""
+                SELECT ST_NumGeometries(geometry)
+                FROM overview.administrative_boundary_render WHERE region_code=:regionCode
+                """).param("regionCode", regionCode).query(Integer.class).single();
+    }
+
+    private void insertTownshipRenderFixture(String regionCode) {
+        jdbc.sql("ALTER TABLE platform.region DISABLE TRIGGER USER").update();
+        try {
+            jdbc.sql("""
+                    INSERT INTO platform.region(code,name,parent_code,administrative_level,sort_order)
+                    VALUES(:regionCode,'subvisible-ring-test','230202','TOWNSHIP',990001001)
+                    """).param("regionCode", regionCode).update();
+        } finally {
+            jdbc.sql("ALTER TABLE platform.region ENABLE TRIGGER USER").update();
+        }
+        jdbc.sql("""
+                WITH fixture AS (
+                  SELECT ST_Multi(ST_MakeEnvelope(123,47,123.01,47.01,4326))
+                    ::geometry(MultiPolygon,4326) geometry
+                )
+                INSERT INTO overview.administrative_boundary(
+                  region_code,geometry,source_name,source_url,source_revision,source_license,
+                  source_feature_id,geometry_sha256)
+                SELECT :regionCode,geometry,'test fixture','urn:test:subvisible-ring','test-v1',
+                       'Test fixture','test-subvisible-ring',
+                       encode(sha256(ST_AsEWKB(geometry)),'hex')
+                FROM fixture
+                """).param("regionCode", regionCode).update();
+        jdbc.sql("""
+                INSERT INTO overview.administrative_boundary_render(
+                  region_code,geometry,geo_json,simplify_tolerance,full_point_count,
+                  render_point_count,source_geometry_sha256,source_name,source_revision,
+                  source_license)
+                SELECT region_code,geometry,ST_AsGeoJSON(geometry,7),0,ST_NPoints(geometry),
+                       ST_NPoints(geometry),geometry_sha256,source_name,source_revision,
+                       source_license
+                FROM overview.administrative_boundary WHERE region_code=:regionCode
+                """).param("regionCode", regionCode).update();
     }
 
     private void resetDatabase() throws Exception {
