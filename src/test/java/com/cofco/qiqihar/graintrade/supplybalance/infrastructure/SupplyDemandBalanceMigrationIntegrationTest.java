@@ -25,7 +25,7 @@ class SupplyDemandBalanceMigrationIntegrationTest {
     @Test
     void createsFormalProductBalanceWithUniqueKeyAndAppendOnlyHistory() throws Exception {
         resetDatabase();
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(162);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(163);
         assertThat(query("""
                 SELECT string_agg(column_name,',' ORDER BY ordinal_position)
                 FROM information_schema.columns

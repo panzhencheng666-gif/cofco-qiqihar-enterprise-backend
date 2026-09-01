@@ -36,7 +36,7 @@ class FormalSampleFieldUnificationMigrationTest {
                 .isEqualTo(160);
         seedV160FormalSampleAndResolution();
 
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(2);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(3);
 
         assertThat(query("""
                 SELECT object_type.code || ':' || object_type.name
@@ -74,6 +74,24 @@ class FormalSampleFieldUnificationMigrationTest {
                 SELECT count(*) FROM platform.access_role_permission
                 WHERE role_code='SYSTEM_ADMIN' AND permission_code='FORMAL_SAMPLE_DELETE'
                 """)).isEqualTo("1");
+        assertThat(query("""
+                SELECT count(*) FROM platform.access_role_permission
+                WHERE role_code='SYSTEM_ADMIN' AND permission_code='FORMAL_SAMPLE_MANAGE'
+                """)).isEqualTo("1");
+        assertThat(query("""
+                SELECT count(*) FROM registry.formal_sample_point_profile
+                WHERE sample_point_id='16200000-0000-0000-0000-000000000001'
+                """)).isEqualTo("0");
+        assertThat(query("""
+                SELECT has_table_privilege(
+                    'qiqihar_enterprise_runtime','registry.formal_sample_point_profile','SELECT')
+                  AND has_table_privilege(
+                    'qiqihar_enterprise_runtime','registry.formal_sample_point_profile','INSERT')
+                  AND has_table_privilege(
+                    'qiqihar_enterprise_runtime','registry.formal_sample_point_profile','UPDATE')
+                  AND NOT has_table_privilege(
+                    'qiqihar_enterprise_runtime','registry.formal_sample_point_profile','DELETE')
+                """)).isEqualTo("t");
         assertThat(query("""
                 SELECT p.prosecdef AND pg_get_userbyid(p.proowner)='qiqihar_migration_owner'
                   AND NOT has_function_privilege('public',p.oid,'EXECUTE')

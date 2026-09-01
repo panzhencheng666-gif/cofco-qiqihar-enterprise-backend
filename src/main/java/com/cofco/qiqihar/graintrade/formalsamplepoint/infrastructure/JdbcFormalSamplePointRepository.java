@@ -1,9 +1,13 @@
 package com.cofco.qiqihar.graintrade.formalsamplepoint.infrastructure;
 
+import com.cofco.qiqihar.graintrade.formalsamplepoint.application.FormalSamplePointDraft;
 import com.cofco.qiqihar.graintrade.formalsamplepoint.application.FormalSamplePointRepository;
 import com.cofco.qiqihar.graintrade.formalsamplepoint.application.FormalSamplePointView;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
+import java.math.BigDecimal;
+import java.sql.Timestamp;
 import java.time.LocalDate;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -18,6 +22,8 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
     private static final String SELECT_VIEW = """
             SELECT point.sample_point_id,point.kind_code,point.canonical_name,
                    point.region_code,point.approval_state,point.location_state,
+                   profile.object_type_code,object_type.name AS object_type_name,
+                   object_type.business_domain,profile.address,
                    ST_X(point.governed_point) longitude,
                    ST_Y(point.governed_point) latitude,
                    point.effective_from,point.effective_to,point.version,
@@ -30,6 +36,10 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
                    (SELECT count(*) FROM registry.sample_network_membership membership
                        WHERE membership.sample_point_id=point.sample_point_id) network_membership_count
             FROM registry.sample_point point
+            LEFT JOIN registry.formal_sample_point_profile profile
+              ON profile.sample_point_id=point.sample_point_id
+            LEFT JOIN platform.object_type object_type
+              ON object_type.code=profile.object_type_code
             """;
     private final JdbcClient jdbc;
 
@@ -60,6 +70,82 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
                         WHERE point.kind_code='SURVEY_SITE'
                           AND point.sample_point_id=:id
                         """).param("id", id).query((row, ignored) -> view(row)).optional();
+    }
+
+    @Override
+    public Optional<BoundaryContainment> coordinateBoundaryState(
+            String regionCode, BigDecimal longitude, BigDecimal latitude) {
+        return jdbc.sql("""
+                SELECT CASE
+                  WHEN boundary.region_code IS NULL THEN 'UNAVAILABLE'
+                  WHEN ST_Covers(boundary.geometry,
+                    ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326)) THEN 'INSIDE'
+                  ELSE 'OUTSIDE'
+                END
+                FROM platform.region region
+                LEFT JOIN overview.administrative_boundary boundary
+                  ON boundary.region_code=region.code
+                WHERE region.code=:regionCode
+                """).param("regionCode", regionCode).param("longitude", longitude)
+                .param("latitude", latitude).query(String.class).optional()
+                .map(BoundaryContainment::valueOf);
+    }
+
+    @Override
+    public boolean isSupportedObjectType(String objectTypeCode) {
+        return jdbc.sql("""
+                SELECT EXISTS(SELECT 1 FROM platform.object_type
+                  WHERE code=:code AND overview_enabled)
+                """).param("code", objectTypeCode).query(Boolean.class).single();
+    }
+
+    @Override
+    public Optional<FormalSamplePointView> insert(
+            UUID id, FormalSamplePointDraft draft, String actorSubjectId,
+            LocalDate effectiveFrom, Instant now) {
+        jdbc.sql("""
+                INSERT INTO registry.sample_point(
+                  sample_point_id,kind_code,canonical_name,region_code,approval_state,
+                  location_state,governed_point,effective_from,version,
+                  created_by,created_at,updated_by,updated_at)
+                VALUES(:id,'SURVEY_SITE',:name,:region,'APPROVED','VALID',
+                  ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326),:effectiveFrom,0,
+                  :actor,:now,:actor,:now)
+                """).param("id", id).param("name", draft.canonicalName())
+                .param("region", draft.regionCode()).param("longitude", draft.longitude())
+                .param("latitude", draft.latitude()).param("effectiveFrom", effectiveFrom)
+                .param("actor", actorSubjectId).param("now", Timestamp.from(now)).update();
+        insertProfile(id, draft, actorSubjectId, now);
+        return find(id);
+    }
+
+    @Override
+    public Optional<FormalSamplePointView> update(
+            UUID id, long expectedVersion, FormalSamplePointDraft draft,
+            String actorSubjectId, Instant now) {
+        int updated = jdbc.sql("""
+                UPDATE registry.sample_point
+                SET canonical_name=:name,region_code=:region,
+                    governed_point=ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326),
+                    version=version+1,updated_by=:actor,updated_at=:now
+                WHERE sample_point_id=:id AND kind_code='SURVEY_SITE'
+                  AND version=:expectedVersion
+                """).param("name", draft.canonicalName()).param("region", draft.regionCode())
+                .param("longitude", draft.longitude()).param("latitude", draft.latitude())
+                .param("actor", actorSubjectId).param("now", Timestamp.from(now))
+                .param("id", id).param("expectedVersion", expectedVersion).update();
+        if (updated == 0) return Optional.empty();
+        jdbc.sql("""
+                INSERT INTO registry.formal_sample_point_profile(
+                  sample_point_id,object_type_code,address,created_by,created_at,updated_by,updated_at)
+                VALUES(:id,:objectType,:address,:actor,:now,:actor,:now)
+                ON CONFLICT(sample_point_id) DO UPDATE SET
+                  object_type_code=EXCLUDED.object_type_code,address=EXCLUDED.address,
+                  updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at
+                """).param("id", id).param("objectType", draft.objectTypeCode())
+                .param("address", draft.address()).param("actor", actorSubjectId)
+                .param("now", Timestamp.from(now)).update();
+        return find(id);
     }
 
     @Override
@@ -106,13 +192,26 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
         return new FormalSamplePointView(
                 row.getObject("sample_point_id", UUID.class),
                 row.getString("kind_code"), row.getString("canonical_name"),
-                row.getString("region_code"), row.getString("approval_state"),
+                row.getString("region_code"), row.getString("object_type_code"),
+                row.getString("object_type_name"), row.getString("business_domain"),
+                row.getString("address"), row.getString("approval_state"),
                 row.getString("location_state"), row.getBigDecimal("longitude"),
                 row.getBigDecimal("latitude"),
                 row.getObject("effective_from", LocalDate.class),
                 row.getObject("effective_to", LocalDate.class),
                 row.getLong("version"), row.getLong("annual_observation_count"),
                 row.getLong("network_membership_count"));
+    }
+
+    private void insertProfile(
+            UUID id, FormalSamplePointDraft draft, String actorSubjectId, Instant now) {
+        jdbc.sql("""
+                INSERT INTO registry.formal_sample_point_profile(
+                  sample_point_id,object_type_code,address,created_by,created_at,updated_by,updated_at)
+                VALUES(:id,:objectType,:address,:actor,:now,:actor,:now)
+                """).param("id", id).param("objectType", draft.objectTypeCode())
+                .param("address", draft.address()).param("actor", actorSubjectId)
+                .param("now", Timestamp.from(now)).update();
     }
 
     private record Filter(String sql, Map<String, Object> parameters) {}
