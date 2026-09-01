@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.shared.security.interfaceadapter;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.io.IOException;
 import java.net.InetAddress;
@@ -13,7 +14,12 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -185,6 +191,27 @@ class LocalLauncherOwnershipIntegrationTest {
         awaitNotAlive(managed.listenerPid());
         awaitPortReleased(fixture.backendPort());
         assertThat(pidFile).doesNotExist();
+    }
+
+    @Test
+    void pidReaderWaitsUntilAnExistingFileContainsACompletePid() throws Exception {
+        Path pidFile = temporaryDirectory.resolve("created-before-written.pid");
+        Files.createFile(pidFile);
+        CountDownLatch readerStarted = new CountDownLatch(1);
+
+        try (ExecutorService executor = Executors.newSingleThreadExecutor()) {
+            Future<Long> read = executor.submit(() -> {
+                readerStarted.countDown();
+                return readPid(pidFile);
+            });
+            assertThat(readerStarted.await(1, TimeUnit.SECONDS)).isTrue();
+            assertThatThrownBy(() -> read.get(1, TimeUnit.SECONDS))
+                    .isInstanceOf(TimeoutException.class);
+
+            Files.writeString(pidFile, "4242\n", StandardCharsets.UTF_8);
+
+            assertThat(read.get(1, TimeUnit.SECONDS)).isEqualTo(4242L);
+        }
     }
 
     @Test
@@ -487,11 +514,14 @@ class LocalLauncherOwnershipIntegrationTest {
     private static long readPid(Path pidFile) throws Exception {
         for (int attempt = 0; attempt < 500; attempt++) {
             if (Files.exists(pidFile)) {
-                return Long.parseLong(Files.readString(pidFile).trim());
+                String contents = Files.readString(pidFile, StandardCharsets.UTF_8);
+                if (contents.matches("[0-9]+\\R")) {
+                    return Long.parseLong(contents.trim());
+                }
             }
             Thread.sleep(20);
         }
-        throw new IllegalStateException("PID file was not created: " + pidFile);
+        throw new IllegalStateException("PID file did not contain a complete PID: " + pidFile);
     }
 
     private static void awaitNotAlive(long pid) throws InterruptedException {
