@@ -9,7 +9,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 
@@ -31,7 +30,7 @@ public class ImportDraftRowExecutor {
         this.objectMapper = objectMapper;
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional
     public SubmissionResult createAndSubmit(ImportDraft draft, List<UUID> evidenceIds,
             SecurityPrincipal principal, SampleIdentityAssessment identityDecision) {
         periodRecords.lockAndRequireAvailable(draft);
@@ -45,7 +44,7 @@ public class ImportDraftRowExecutor {
                 "部分照片已由其他样本点使用，本行数据已正常导入");
     }
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional
     public SubmissionResult createPendingIdentityReview(ImportDraft draft, List<UUID> evidenceIds,
             String warningCode, String warningMessage, SecurityPrincipal principal,
             String auditDetailJson) {

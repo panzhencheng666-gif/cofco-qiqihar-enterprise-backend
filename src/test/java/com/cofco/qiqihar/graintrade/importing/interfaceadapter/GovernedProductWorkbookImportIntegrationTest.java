@@ -306,12 +306,22 @@ class GovernedProductWorkbookImportIntegrationTest {
 
         mvc.perform(multipart("/api/v1/imports/logistics")
                         .file(new MockMultipartFile("file", "物流-玉米-批量导入模板.xlsx", XLSX,
-                                BusinessImportWorkbook.create(template, List.of(rail, road, invalid))))
+                                BusinessImportWorkbook.create(template, List.of(rail, road))))
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", "logistics-transport-modes")
                         .principal(() -> "logistics-tester"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.importedRows").value(2))
+                .andExpect(jsonPath("$.data.failedRows").value(0));
+
+        mvc.perform(multipart("/api/v1/imports/logistics")
+                        .file(new MockMultipartFile("file", "物流-玉米-无效运输方式.xlsx", XLSX,
+                                BusinessImportWorkbook.create(template, List.of(invalid))))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", "logistics-invalid-transport-mode")
+                        .principal(() -> "logistics-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(0))
                 .andExpect(jsonPath("$.data.failedRows").value(1));
 
         assertThat(jdbc.sql("""
@@ -795,7 +805,7 @@ class GovernedProductWorkbookImportIntegrationTest {
     }
 
     @Test
-    void rejectsAnIdenticalSameIdentityAndPeriodRowWithinOneWorkbook() throws Exception {
+    void rollsBackEveryGovernedWorkbookWriteWhenOneRowIsAnIdenticalBatchDuplicate() throws Exception {
         byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
                         .param("format", "xlsx").param("productCode", "CORN")
                         .principal(() -> "production-tester"))
@@ -805,7 +815,7 @@ class GovernedProductWorkbookImportIntegrationTest {
         BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
                 "PRODUCTION", "产情", "CORN", null, context.contractVersion(), context.contractDigest(),
                 labels, labels, List.of());
-        List<String> row = sparse(labels, "样本点名称", "地区", "批内重复身份样本", "");
+        List<String> row = sparse(labels, "样本点名称", "地区", "批内重复身份样本", "原子批次现场.png");
         for (Map.Entry<String, String> value : completeProductionValues().entrySet()) {
             row = withValue(row, labels, value.getKey(), value.getValue());
         }
@@ -813,21 +823,45 @@ class GovernedProductWorkbookImportIntegrationTest {
         mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "产情-批内重复.xlsx", XLSX,
                                 BusinessImportWorkbook.create(template, List.of(row, row))))
+                        .file(new MockMultipartFile("photos", "原子批次现场.png", "image/png", pngBytes()))
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", "production-batch-local-duplicate")
                         .principal(() -> "production-tester"))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.importedRows").value(1))
-                .andExpect(jsonPath("$.data.failedRows").value(1));
+                .andExpect(jsonPath("$.data.importedRows").value(0))
+                .andExpect(jsonPath("$.data.failedRows").value(2));
 
         assertThat(jdbc.sql("SELECT count(*) FROM platform.business_import_draft")
-                .query(Long.class).single()).isOne();
+                .query(Long.class).single()).isZero();
         assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
-                .query(Long.class).single()).isOne();
+                .query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.business_import_draft_evidence")
+                .query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type='IMPORT_DRAFT'
+                """).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.import_row_result
+                WHERE error_code='NOT_IMPORTED_ATOMIC_BATCH'
+                """).query(Long.class).single()).isOne();
         assertThat(jdbc.sql("""
                 SELECT error_code FROM platform.import_row_result
                 WHERE error_code='IMPORT_DUPLICATE_ROW'
                 """).query(String.class).single()).isEqualTo("IMPORT_DUPLICATE_ROW");
+
+        String originalJobId = jdbc.sql("""
+                SELECT import_job_id::text FROM platform.import_job
+                WHERE idempotency_key='production-batch-local-duplicate'
+                """).query(String.class).single();
+        mvc.perform(post("/api/v1/imports/production/{id}/retries", originalJobId)
+                        .principal(() -> "production-tester"))
+                .andExpect(status().is2xxSuccessful())
+                .andExpect(jsonPath("$.data.retryOf").value(originalJobId))
+                .andExpect(jsonPath("$.data.importedRows").value(0))
+                .andExpect(jsonPath("$.data.failedRows").value(2));
+        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
+                .query(Long.class).single()).isZero();
     }
 
     @Test
@@ -862,14 +896,16 @@ class GovernedProductWorkbookImportIntegrationTest {
                         .header("Idempotency-Key", "production-batch-cross-region-identity")
                         .principal(() -> "production-tester"))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.importedRows").value(1))
-                .andExpect(jsonPath("$.data.failedRows").value(1));
+                .andExpect(jsonPath("$.data.importedRows").value(0))
+                .andExpect(jsonPath("$.data.failedRows").value(2));
 
         assertThat(jdbc.sql("""
                 SELECT error_code FROM platform.import_row_result
                 WHERE error_code IN ('IMPORT_DUPLICATE_ROW','SAMPLE_IDENTITY_RECORD_CONFLICT')
                 """).query(String.class).single())
                 .isIn("IMPORT_DUPLICATE_ROW", "SAMPLE_IDENTITY_RECORD_CONFLICT");
+        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
+                .query(Long.class).single()).isZero();
     }
 
     @Test
@@ -1122,15 +1158,27 @@ class GovernedProductWorkbookImportIntegrationTest {
 
         String importResponse = mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "产情-玉米-照片补充.xlsx", XLSX,
-                                BusinessImportWorkbook.create(template, List.of(imported, rejected))))
+                                BusinessImportWorkbook.create(template, List.of(imported))))
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", "production-photo-supplement")
                         .principal(() -> "production-tester"))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.importedRows").value(1))
-                .andExpect(jsonPath("$.data.failedRows").value(1))
+                .andExpect(jsonPath("$.data.failedRows").value(0))
                 .andReturn().getResponse().getContentAsString();
         String jobId = importResponse.replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+        String rejectedResponse = mvc.perform(multipart("/api/v1/imports/production")
+                        .file(new MockMultipartFile("file", "产情-玉米-照片补充失败.xlsx", XLSX,
+                                BusinessImportWorkbook.create(template, List.of(rejected))))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", "production-photo-supplement-rejected")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(0))
+                .andExpect(jsonPath("$.data.failedRows").value(1))
+                .andReturn().getResponse().getContentAsString();
+        String rejectedJobId = rejectedResponse.replaceFirst(
+                "(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
         Map<String, Object> before = jdbc.sql("""
                 SELECT record_id,version,status_code FROM production.production_record
                 """).query().singleRow();
@@ -1138,9 +1186,9 @@ class GovernedProductWorkbookImportIntegrationTest {
         mvc.perform(get("/api/v1/imports/production/{jobId}/photo-manifest", jobId)
                         .principal(() -> "production-tester"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.totalFileCount").value(2))
+                .andExpect(jsonPath("$.data.totalFileCount").value(1))
                 .andExpect(jsonPath("$.data.eligibleFileCount").value(1))
-                .andExpect(jsonPath("$.data.deferredFileCount").value(1))
+                .andExpect(jsonPath("$.data.deferredFileCount").value(0))
                 .andExpect(jsonPath("$.data.totalTargetAttachments").value(1))
                 .andExpect(jsonPath("$.data.attachedTargetAttachments").value(0));
 
@@ -1178,7 +1226,7 @@ class GovernedProductWorkbookImportIntegrationTest {
                 .andExpect(jsonPath("$.data.newAttachments").value(0))
                 .andExpect(jsonPath("$.data.alreadyAttached").value(1));
 
-        mvc.perform(multipart("/api/v1/imports/production/{jobId}/photos", jobId)
+        mvc.perform(multipart("/api/v1/imports/production/{jobId}/photos", rejectedJobId)
                         .file(new MockMultipartFile("file", "失败现场.png", "image/png", pngBytes()))
                         .principal(() -> "production-tester"))
                 .andExpect(status().isOk())
@@ -1236,24 +1284,24 @@ class GovernedProductWorkbookImportIntegrationTest {
     }
 
     @Test
-    void retriesOnlyTheFailedRowsFromAGovernedProductionWorkbook() throws Exception {
-        assertGovernedRetryOnlyReplaysFailedRow(
+    void retriesTheCompleteAtomicProductionBatchWithoutPartialWrites() throws Exception {
+        assertGovernedAtomicRetryReplaysCompleteBatch(
                 "production", "PRODUCTION", "产情", "production-tester",
                 "样本点名称", completeProductionValues(), "数据年份", "2201",
                 "governed-production-retry", "production.production_record", "INVALID_IMPORT_YEAR");
     }
 
     @Test
-    void retriesOnlyTheFailedRowsFromAGovernedMarketWorkbook() throws Exception {
-        assertGovernedRetryOnlyReplaysFailedRow(
+    void retriesTheCompleteAtomicMarketBatchWithoutPartialWrites() throws Exception {
+        assertGovernedAtomicRetryReplaysCompleteBatch(
                 "market", "MARKET", "市场", "market-tester",
                 "样本点名称", completeMarketValues(), "数据月份", "13",
                 "governed-market-retry", "market.market_record", "INVALID_IMPORT_MONTH");
     }
 
     @Test
-    void retriesOnlyTheFailedRowsFromAGovernedLogisticsWorkbook() throws Exception {
-        assertGovernedRetryOnlyReplaysFailedRow(
+    void retriesTheCompleteAtomicLogisticsBatchWithoutPartialWrites() throws Exception {
+        assertGovernedAtomicRetryReplaysCompleteBatch(
                 "logistics", "LOGISTICS", "物流", "logistics-tester",
                 "物流样本点名称", completeLogisticsValues(), "运输方式", "航空",
                 "governed-logistics-retry", "logistics.route_event", "IMPORT_VALUE_FORMAT_INVALID");
@@ -1261,7 +1309,7 @@ class GovernedProductWorkbookImportIntegrationTest {
 
     @Test
     void retriesLegacyGovernedSourceThatDoesNotContainAPhotoJobId() throws Exception {
-        assertGovernedRetryOnlyReplaysFailedRow(
+        assertGovernedAtomicRetryReplaysCompleteBatch(
                 "production", "PRODUCTION", "产情", "production-tester",
                 "样本点名称", completeProductionValues(), "数据年份", "2201",
                 "legacy-governed-production-retry", "production.production_record",
@@ -1563,17 +1611,17 @@ class GovernedProductWorkbookImportIntegrationTest {
                 .query(Long.class).single()).isEqualTo(3);
     }
 
-    private void assertGovernedRetryOnlyReplaysFailedRow(
+    private void assertGovernedAtomicRetryReplaysCompleteBatch(
             String route, String domainCode, String domainLabel, String principal,
             String sampleLabel, Map<String, String> completeValues,
             String invalidLabel, String invalidValue, String key,
             String formalTable, String expectedErrorCode) throws Exception {
-        assertGovernedRetryOnlyReplaysFailedRow(route, domainCode, domainLabel, principal,
+        assertGovernedAtomicRetryReplaysCompleteBatch(route, domainCode, domainLabel, principal,
                 sampleLabel, completeValues, invalidLabel, invalidValue, key,
                 formalTable, expectedErrorCode, false);
     }
 
-    private void assertGovernedRetryOnlyReplaysFailedRow(
+    private void assertGovernedAtomicRetryReplaysCompleteBatch(
             String route, String domainCode, String domainLabel, String principal,
             String sampleLabel, Map<String, String> completeValues,
             String invalidLabel, String invalidValue, String key,
@@ -1601,8 +1649,8 @@ class GovernedProductWorkbookImportIntegrationTest {
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", key).principal(() -> principal))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.importedRows").value(1))
-                .andExpect(jsonPath("$.data.failedRows").value(1));
+                .andExpect(jsonPath("$.data.importedRows").value(0))
+                .andExpect(jsonPath("$.data.failedRows").value(2));
 
         String originalJobId = jdbc.sql("""
                 SELECT import_job_id::text FROM platform.import_job WHERE idempotency_key=:key
@@ -1637,7 +1685,7 @@ class GovernedProductWorkbookImportIntegrationTest {
                 .andExpect(status().is2xxSuccessful())
                 .andExpect(jsonPath("$.data.retryOf").value(originalJobId))
                 .andExpect(jsonPath("$.data.importedRows").value(0))
-                .andExpect(jsonPath("$.data.failedRows").value(1));
+                .andExpect(jsonPath("$.data.failedRows").value(2));
 
         if (simulateLegacySource) {
             String migratedSource = jdbc.sql("""
@@ -1650,10 +1698,10 @@ class GovernedProductWorkbookImportIntegrationTest {
             assertThat(migratedJson).contains("\"photoJobId\":\"" + originalJobId + "\"");
         }
 
-        assertThat(jdbc.sql("SELECT count(*) FROM " + formalTable).query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("SELECT count(*) FROM " + formalTable).query(Long.class).single()).isZero();
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM platform.business_import_draft WHERE state_code='PROMOTED'
-                """).query(Long.class).single()).isOne();
+                """).query(Long.class).single()).isZero();
         assertThat(jdbc.sql("SELECT count(*) FROM platform.import_job").query(Long.class).single())
                 .isEqualTo(2);
     }

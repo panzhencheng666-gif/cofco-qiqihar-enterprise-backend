@@ -203,6 +203,37 @@ class QueuedBusinessImportIntegrationTest {
     }
 
     @Test
+    void rollsBackEveryGovernedWorkbookWriteWhenAQueuedRowFails() throws Exception {
+        node("ASYNC_ORIGIN", "异步始发点", "RAIL_NODE");
+        node("ASYNC_DEST", "异步到达点", "ROAD_NODE");
+        LogisticsImportDefinition definition = logistics.definition("CORN");
+        var codes = LogisticsImportTemplate.codes(definition);
+        var valid = codes.stream().map(this::logisticsValue).toList();
+        var invalid = new java.util.ArrayList<>(valid);
+        invalid.set(codes.indexOf("LOG_TRANSPORT_MODE"), "AIR");
+        byte[] workbook = BusinessImportWorkbook.create(LogisticsImportTemplate.workbook(definition),
+                java.util.List.of(valid, invalid));
+
+        String body = mvc.perform(multipart("/api/v1/imports/logistics")
+                        .file(new MockMultipartFile("file", "queued-logistics-atomic.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
+                        .param("productCode", "CORN").header("Idempotency-Key", "queued-logistics-atomic")
+                        .principal(() -> "logistics-tester"))
+                .andExpect(status().isAccepted()).andExpect(jsonPath("$.data.statusCode").value("QUEUED"))
+                .andReturn().getResponse().getContentAsString();
+        UUID jobId = id(body);
+
+        assertThat(await("logistics", jobId, "logistics-tester")).isEqualTo("COMPLETED_WITH_ERRORS");
+        assertThat(jdbc.sql("SELECT count(*) FROM logistics.route_event").query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.business_import_draft").query(Long.class).single())
+                .isZero();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.import_row_result
+                WHERE import_job_id=:id AND error_code='NOT_IMPORTED_ATOMIC_BATCH'
+                """).param("id", jobId).query(Long.class).single()).isOne();
+    }
+
+    @Test
     void rejectsBatchesBeyondTheConfiguredMaximumWithoutCreatingAJob() throws Exception {
         String header = "productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,"
                 + "yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_SURVEYOR_NAME,PROD_SURVEYOR_PHONE,PROD_SAMPLE_CONTACT,"
