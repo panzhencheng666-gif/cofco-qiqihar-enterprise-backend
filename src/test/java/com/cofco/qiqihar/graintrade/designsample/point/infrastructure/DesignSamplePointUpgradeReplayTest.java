@@ -70,11 +70,11 @@ class DesignSamplePointUpgradeReplayTest {
     }
 
     @Test
-    void upgradesFromV159ThroughV165WithoutChangingFormalSamplesOrTownshipMasterData() {
+    void upgradesFromV159ThroughV166WithoutChangingFormalSamplesOrTownshipMasterData() {
         assertThat(formalCount()).isEqualTo(1064);
         assertThat(townshipCount()).isEqualTo(232);
 
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(8);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(9);
         assertThat(formalCount()).isEqualTo(1064);
         assertThat(townshipCount()).isEqualTo(232);
 

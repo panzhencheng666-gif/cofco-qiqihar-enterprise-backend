@@ -36,7 +36,7 @@ class FormalSampleFieldUnificationMigrationTest {
                 .isEqualTo(160);
         seedV160FormalSampleAndResolution();
 
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(5);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(6);
 
         assertThat(query("""
                 SELECT object_type.code || ':' || object_type.name
@@ -82,6 +82,12 @@ class FormalSampleFieldUnificationMigrationTest {
                 SELECT count(*) FROM registry.formal_sample_point_profile
                 WHERE sample_point_id='16200000-0000-0000-0000-000000000001'
                 """)).isEqualTo("0");
+        assertThat(query("""
+                SELECT is_nullable FROM information_schema.columns
+                WHERE table_schema='registry'
+                  AND table_name='sample_point'
+                  AND column_name='maintainer_subject_id'
+                """)).isEqualTo("YES");
         assertThat(query("""
                 SELECT has_table_privilege(
                     'qiqihar_enterprise_runtime','registry.formal_sample_point_profile','SELECT')

@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade.formalsampleobservation.application;
 
+import com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.FormalSampleIdentity;
@@ -97,7 +98,8 @@ public class FormalSampleObservationService {
         SecurityPrincipal principal = accessControl.require("BUSINESS_CREATE", regionCode);
         return repository.findEligibleSamples(domain, normalizedProduct, regionCode, normalizedObjectType,
                 keywordPattern(normalizedKeyword),
-                observedAt.atZoneSameInstant(REPORTING_ZONE).toLocalDate(), principal.regionCodes());
+                observedAt.atZoneSameInstant(REPORTING_ZONE).toLocalDate(), principal.regionCodes(),
+                principal.subjectId(), principal.permits("FORMAL_SAMPLE_MANAGE"));
     }
 
     @Transactional(readOnly = true)
@@ -138,9 +140,6 @@ public class FormalSampleObservationService {
                 throw new ConflictException("FORMAL_SAMPLE_OBSERVATION_IDEMPOTENCY_CONFLICT",
                         "该幂等键已用于不同的正式样本观测，请更换后重试");
             }
-            repository.lockEligibleSample(command.domain(), command.samplePointId(), normalizedProduct,
-                    command.observedAt().atZoneSameInstant(REPORTING_ZONE).toLocalDate(),
-                    principal.regionCodes());
             return stored.result();
         }
 
@@ -153,6 +152,7 @@ public class FormalSampleObservationService {
                 command.domain(), command.samplePointId(), normalizedProduct,
                 observedOn, principal.regionCodes());
         accessControl.require("BUSINESS_CREATE", identity.regionCode());
+        boolean administratorOverride = requireMaintainer(principal, identity);
 
         String sourceRecordId;
         switch (command.domain()) {
@@ -178,7 +178,8 @@ public class FormalSampleObservationService {
 
         EligibleFormalSample refreshed = repository.findEligibleSamples(
                         command.domain(), normalizedProduct, identity.regionCode(), null, null, observedOn,
-                        principal.regionCodes()).stream()
+                        principal.regionCodes(), principal.subjectId(),
+                        principal.permits("FORMAL_SAMPLE_MANAGE")).stream()
                 .filter(sample -> sample.samplePointId().equals(identity.samplePointId()))
                 .findFirst().orElseThrow(() -> new IllegalStateException(
                         "Saved formal sample observation is missing from the effective projection"));
@@ -191,7 +192,8 @@ public class FormalSampleObservationService {
                 synchronizedModules(command.domain()), refreshed.latestValues());
         audit.record(principal, "FORMAL_SAMPLE_OBSERVATION", observationId.toString(),
                 "FORMAL_SAMPLE_OBSERVATION_SAVED", savedAt,
-                auditDetail(command.domain(), identity, sourceRecordId));
+                auditDetail(command.domain(), identity, sourceRecordId,
+                        principal.subjectId(), administratorOverride));
         repository.store(principal.subjectId(), idempotencyKey, requestSha256, sourceRecordId, result);
         return result;
     }
@@ -259,14 +261,33 @@ public class FormalSampleObservationService {
         }
     }
 
+    private static boolean requireMaintainer(
+            SecurityPrincipal principal, FormalSampleIdentity identity) {
+        if (identity.maintainerSubjectId() == null
+                || identity.maintainerSubjectId().isBlank()) {
+            throw new AccessDeniedException(
+                    "FORMAL_SAMPLE_MAINTAINER_REQUIRED",
+                    "正式样本尚未指定维护人，请联系管理员完成指派");
+        }
+        if (identity.maintainerSubjectId().equals(principal.subjectId())) return false;
+        if (principal.permits("FORMAL_SAMPLE_MANAGE")) return true;
+        throw new AccessDeniedException(
+                "FORMAL_SAMPLE_MAINTAINER_DENIED",
+                "当前账号不是该正式样本的维护人，不能更新期间数据");
+    }
+
     private String auditDetail(FormalSampleObservationDomain domain,
-            FormalSampleIdentity identity, String sourceRecordId) {
+            FormalSampleIdentity identity, String sourceRecordId,
+            String actorSubjectId, boolean administratorOverride) {
         Map<String, Object> detail = new LinkedHashMap<>();
         detail.put("domain", domain.name());
         detail.put("samplePointId", identity.samplePointId().toString());
         detail.put("regionCode", identity.regionCode());
         detail.put("productCode", identity.productCode());
         detail.put("sourceRecordId", sourceRecordId);
+        detail.put("maintainerSubjectId", identity.maintainerSubjectId());
+        detail.put("actorSubjectId", actorSubjectId);
+        detail.put("administratorOverride", administratorOverride);
         return write(detail);
     }
 

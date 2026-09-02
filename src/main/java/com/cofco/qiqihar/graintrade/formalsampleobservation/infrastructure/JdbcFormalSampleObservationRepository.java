@@ -69,7 +69,25 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
             String objectTypeCode,
             String keywordPattern,
             LocalDate observedOn,
-            Set<String> authorizedRegionCodes) {
+            Set<String> authorizedRegionCodes,
+            String actorSubjectId,
+            boolean administratorOverride) {
+        return findEligibleSamples(domain, productCode, regionCode, objectTypeCode,
+                keywordPattern, observedOn, authorizedRegionCodes, actorSubjectId,
+                administratorOverride, true);
+    }
+
+    private List<EligibleFormalSample> findEligibleSamples(
+            FormalSampleObservationDomain domain,
+            String productCode,
+            String regionCode,
+            String objectTypeCode,
+            String keywordPattern,
+            LocalDate observedOn,
+            Set<String> authorizedRegionCodes,
+            String actorSubjectId,
+            boolean administratorOverride,
+            boolean filterByMaintainer) {
         if (authorizedRegionCodes.isEmpty()) return List.of();
         Set<UUID> currentSamplePointIds = currentOverviewSamplePoints.readAtLifecycleCutoff(
                         observedOn.getYear(), productCode, regionCode, domain.name(), observedOn,
@@ -161,12 +179,16 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
         return jdbc.sql("""
                 SELECT point.sample_point_id,point.canonical_name,latest.object_type_code,
                        object_type.name object_type_name,point.region_code,region.name region_name,
+                       point.maintainer_subject_id,
+                       maintainer.display_name maintainer_display_name,
                        trim(to_char(ST_Y(point.governed_point),'FM999990.0000000')) latitude,
                        trim(to_char(ST_X(point.governed_point),'FM999990.0000000')) longitude,
                        point.effective_from,point.effective_to,
                        latest.source_record_id,latest.latest_observed_at,latest.latest_values
                 FROM registry.sample_point point
                 JOIN platform.region region ON region.code=point.region_code
+                LEFT JOIN platform.security_user maintainer
+                  ON maintainer.subject_id=point.maintainer_subject_id
                 JOIN LATERAL (
                 """ + latest + """
                 ) latest ON true
@@ -179,6 +201,9 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                   AND (point.effective_to IS NULL OR point.effective_to>=:observedOn)
                   AND point.sample_point_id IN (:currentSamplePointIds)
                   AND point.region_code IN (:authorizedRegionCodes)
+                  AND (NOT :filterByMaintainer OR
+                    (point.maintainer_subject_id IS NOT NULL AND
+                      (:administratorOverride OR point.maintainer_subject_id=:actorSubjectId)))
                   AND (CAST(:regionCode AS varchar) IS NULL OR point.region_code=:regionCode)
                   AND (CAST(:objectTypeCode AS varchar) IS NULL OR latest.object_type_code=:objectTypeCode)
                   AND (CAST(:keywordPattern AS varchar) IS NULL
@@ -191,6 +216,9 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                 .param("observedOn", observedOn)
                 .param("currentSamplePointIds", currentSamplePointIds)
                 .param("authorizedRegionCodes", authorizedRegionCodes)
+                .param("filterByMaintainer", filterByMaintainer)
+                .param("administratorOverride", administratorOverride)
+                .param("actorSubjectId", actorSubjectId, java.sql.Types.VARCHAR)
                 .param("regionCode", regionCode, java.sql.Types.VARCHAR)
                 .param("objectTypeCode", objectTypeCode, java.sql.Types.VARCHAR)
                 .param("keywordPattern", keywordPattern, java.sql.Types.VARCHAR)
@@ -199,6 +227,8 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                         row.getString("canonical_name"), row.getString("object_type_code"),
                         row.getString("object_type_name"), domain, productCode,
                         row.getString("region_code"), row.getString("region_name"),
+                        row.getString("maintainer_subject_id"),
+                        row.getString("maintainer_display_name"),
                         row.getString("latitude"), row.getString("longitude"),
                         row.getObject("effective_from", LocalDate.class),
                         row.getObject("effective_to", LocalDate.class),
@@ -393,24 +423,26 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
             Set<String> authorizedRegionCodes) {
         if (authorizedRegionCodes.isEmpty()) throw unavailable();
         String regionCode = jdbc.sql("""
-                SELECT region_code FROM registry.sample_point
-                WHERE sample_point_id=:samplePointId
-                  AND approval_state='APPROVED' AND location_state='VALID'
-                  AND governed_point IS NOT NULL
-                  AND effective_from<=:observedOn
-                  AND (effective_to IS NULL OR effective_to>=:observedOn)
-                  AND region_code IN (:authorizedRegionCodes)
+                SELECT point.region_code FROM registry.sample_point point
+                WHERE point.sample_point_id=:samplePointId
+                  AND point.approval_state='APPROVED' AND point.location_state='VALID'
+                  AND point.governed_point IS NOT NULL
+                  AND point.effective_from<=:observedOn
+                  AND (point.effective_to IS NULL OR point.effective_to>=:observedOn)
+                  AND point.region_code IN (:authorizedRegionCodes)
                 FOR UPDATE
                 """).param("samplePointId", samplePointId).param("observedOn", observedOn)
                 .param("authorizedRegionCodes", authorizedRegionCodes)
                 .query(String.class).optional().orElseThrow(JdbcFormalSampleObservationRepository::unavailable);
         EligibleFormalSample eligible = findEligibleSamples(
-                domain, productCode, regionCode, null, null, observedOn, authorizedRegionCodes).stream()
+                        domain, productCode, regionCode, null, null, observedOn,
+                        authorizedRegionCodes, null, true, false).stream()
                 .filter(sample -> sample.samplePointId().equals(samplePointId))
                 .findFirst().orElseThrow(JdbcFormalSampleObservationRepository::unavailable);
         return new FormalSampleIdentity(
                 eligible.samplePointId(), eligible.sampleName(), productCode,
-                eligible.regionCode(), eligible.latitude(), eligible.longitude(),
+                eligible.regionCode(), eligible.maintainerSubjectId(),
+                eligible.latitude(), eligible.longitude(),
                 eligible.effectiveFrom(), eligible.effectiveTo(), eligible.latestValues());
     }
 

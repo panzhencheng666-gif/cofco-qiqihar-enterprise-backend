@@ -14,6 +14,8 @@ public record EligibleFormalSample(
         String productCode,
         String regionCode,
         String regionName,
+        String maintainerSubjectId,
+        String maintainerDisplayName,
         String latitude,
         String longitude,
         LocalDate effectiveFrom,

@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.formalsamplepoint.interfaceadapter;
 
 import com.cofco.qiqihar.graintrade.formalsamplepoint.application.FormalSamplePointDraft;
+import com.cofco.qiqihar.graintrade.formalsamplepoint.application.FormalSampleMaintainerView;
 import com.cofco.qiqihar.graintrade.formalsamplepoint.application.FormalSamplePointService;
 import com.cofco.qiqihar.graintrade.formalsamplepoint.application.FormalSamplePointView;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
@@ -69,6 +70,16 @@ public class FormalSamplePointController {
                 id(id), request.expectedVersion(), request.draft()));
     }
 
+    @PutMapping("/{id}/maintainer")
+    ApiResponse<FormalSampleMaintainerView> assignMaintainer(
+            @PathVariable String id, @RequestBody MaintainerRequest request) {
+        if (request == null || request.expectedVersion() == null
+                || request.expectedVersion() < 0) throw invalid();
+        return new ApiResponse<>(service.assignMaintainer(
+                id(id), request.expectedVersion(), request.maintainerSubjectId(),
+                request.maintainerChangeReason()));
+    }
+
     @DeleteMapping("/{id}")
     ResponseEntity<Void> delete(
             @PathVariable String id,
@@ -105,12 +116,20 @@ public class FormalSamplePointController {
             BigDecimal longitude,
             BigDecimal latitude,
             String objectTypeCode,
+            String maintainerSubjectId,
+            String maintainerChangeReason,
             Long expectedVersion) {
         FormalSamplePointDraft draft() {
             return new FormalSamplePointDraft(
-                    canonicalName, regionCode, address, longitude, latitude, objectTypeCode);
+                    canonicalName, regionCode, address, longitude, latitude, objectTypeCode,
+                    maintainerSubjectId, maintainerChangeReason);
         }
     }
+
+    record MaintainerRequest(
+            String maintainerSubjectId,
+            String maintainerChangeReason,
+            Long expectedVersion) {}
 
     private static UUID id(String value) {
         try {
