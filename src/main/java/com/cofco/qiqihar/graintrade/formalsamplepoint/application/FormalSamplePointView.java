@@ -13,6 +13,8 @@ public record FormalSamplePointView(
         String objectTypeName,
         String businessDomain,
         String address,
+        String maintainerSubjectId,
+        String maintainerDisplayName,
         String approvalState,
         String locationState,
         BigDecimal longitude,

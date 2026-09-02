@@ -14,6 +14,8 @@ public record FormalSampleIdentity(
         String sampleName,
         String productCode,
         String regionCode,
+        String maintainerSubjectId,
+        String maintainerDisplayName,
         String latitude,
         String longitude,
         LocalDate effectiveFrom,

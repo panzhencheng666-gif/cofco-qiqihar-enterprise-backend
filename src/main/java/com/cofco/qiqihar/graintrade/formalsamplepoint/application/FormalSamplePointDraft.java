@@ -8,4 +8,6 @@ public record FormalSamplePointDraft(
         String address,
         BigDecimal longitude,
         BigDecimal latitude,
-        String objectTypeCode) {}
+        String objectTypeCode,
+        String maintainerSubjectId,
+        String maintainerChangeReason) {}

@@ -105,10 +105,13 @@ public class FormalSamplePointController {
             BigDecimal longitude,
             BigDecimal latitude,
             String objectTypeCode,
+            String maintainerSubjectId,
+            String maintainerChangeReason,
             Long expectedVersion) {
         FormalSamplePointDraft draft() {
             return new FormalSamplePointDraft(
-                    canonicalName, regionCode, address, longitude, latitude, objectTypeCode);
+                    canonicalName, regionCode, address, longitude, latitude, objectTypeCode,
+                    maintainerSubjectId, maintainerChangeReason);
         }
     }
 

@@ -85,6 +85,107 @@ class FormalSamplePointWriteRestIntegrationTest {
     }
 
     @Test
+    void persistsAndReassignsAnActiveMaintainerFromTheEmployeeDirectory() throws Exception {
+        MvcResult created = mvc.perform(post("/api/v1/formal-sample-points")
+                        .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content(draft("维护人样本", "230202", "龙沙区维护人地址",
+                                "123.94", "47.31", "FARMER", null, RESTRICTED)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.maintainerSubjectId").value(RESTRICTED))
+                .andExpect(jsonPath("$.data.maintainerDisplayName").value("正式样本维护受限用户"))
+                .andReturn();
+        UUID id = responseId(created);
+
+        mvc.perform(put("/api/v1/formal-sample-points/{id}", id)
+                        .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content(draft("维护人样本", "230202", "龙沙区维护人地址",
+                                "123.94", "47.31", "FARMER", 0L, ADMIN,
+                                "原维护人岗位调整")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.maintainerSubjectId").value(ADMIN))
+                .andExpect(jsonPath("$.data.maintainerDisplayName").isNotEmpty());
+
+        assertThat(jdbc.sql("""
+                SELECT action_code FROM platform.business_audit_event
+                WHERE aggregate_type='FORMAL_SAMPLE_POINT' AND aggregate_id=:id
+                ORDER BY occurred_at
+                """).param("id", id.toString()).query(String.class).list())
+                .containsExactly("FORMAL_SAMPLE_POINT_CREATED",
+                        "FORMAL_SAMPLE_POINT_MAINTAINER_REASSIGNED");
+        assertThat(jdbc.sql("""
+                SELECT detail->>'previousMaintainerSubjectId',
+                       detail->>'maintainerSubjectId', detail->>'maintainerChangeReason'
+                FROM platform.business_audit_event
+                WHERE aggregate_type='FORMAL_SAMPLE_POINT' AND aggregate_id=:id
+                  AND action_code='FORMAL_SAMPLE_POINT_MAINTAINER_REASSIGNED'
+                """).param("id", id.toString()).query((row, index) ->
+                        java.util.List.of(row.getString(1), row.getString(2), row.getString(3))).single())
+                .containsExactly(RESTRICTED, ADMIN, "原维护人岗位调整");
+    }
+
+    @Test
+    void requiresAReasonWhenTheMaintainerChanges() throws Exception {
+        MvcResult created = mvc.perform(post("/api/v1/formal-sample-points")
+                        .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content(draft("重派原因样本", "230202", "龙沙区重派原因地址",
+                                "123.94", "47.31", "FARMER", null, RESTRICTED)))
+                .andExpect(status().isCreated()).andReturn();
+        UUID id = responseId(created);
+
+        mvc.perform(put("/api/v1/formal-sample-points/{id}", id)
+                        .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content(draft("重派原因样本", "230202", "龙沙区重派原因地址",
+                                "123.94", "47.31", "FARMER", 0L, ADMIN)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_FORMAL_SAMPLE_POINT"));
+
+        mvc.perform(get("/api/v1/formal-sample-points/{id}", id)
+                        .principal(() -> ADMIN))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.maintainerSubjectId").value(RESTRICTED))
+                .andExpect(jsonPath("$.data.version").value(0));
+    }
+
+    @Test
+    void rejectsMissingInactiveOrOutOfScopeMaintainersWithoutWriting() throws Exception {
+        mvc.perform(post("/api/v1/formal-sample-points")
+                        .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content(draft("无效维护人样本", "230202", "龙沙区地址",
+                                "123.94", "47.31", "FARMER", null, "missing-maintainer")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_FORMAL_SAMPLE_MAINTAINER"));
+
+        jdbc.sql("""
+                UPDATE platform.security_user SET account_status='SUSPENDED'
+                WHERE subject_id=:subject
+                """).param("subject", RESTRICTED).update();
+        mvc.perform(post("/api/v1/formal-sample-points")
+                        .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content(draft("停用维护人样本", "230202", "龙沙区地址",
+                                "123.94", "47.31", "FARMER", null, RESTRICTED)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_FORMAL_SAMPLE_MAINTAINER"));
+
+        jdbc.sql("""
+                UPDATE platform.security_user SET account_status='ACTIVE'
+                WHERE subject_id=:subject
+                """).param("subject", RESTRICTED).update();
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id=:subject")
+                .param("subject", RESTRICTED).update();
+        mvc.perform(post("/api/v1/formal-sample-points")
+                        .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content(draft("越权维护人样本", "230202", "龙沙区地址",
+                                "123.94", "47.31", "FARMER", null, RESTRICTED)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_FORMAL_SAMPLE_MAINTAINER"));
+
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM registry.sample_point
+                WHERE canonical_name IN ('无效维护人样本','停用维护人样本','越权维护人样本')
+                """).query(Long.class).single()).isZero();
+    }
+
+    @Test
     void createsUpdatesRequeriesAndDeletesStableMasterDataWithDurableEvents()
             throws Exception {
         MvcResult created = mvc.perform(post("/api/v1/formal-sample-points")
@@ -232,7 +333,8 @@ class FormalSamplePointWriteRestIntegrationTest {
         mvc.perform(put("/api/v1/formal-sample-points/{id}", OCCUPIED_POINT_ID)
                         .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content(draft("既有正式样本", "230202", "既有样本地址",
-                                "123.931", "47.301", "FARMER", 0L)))
+                                "123.931", "47.301", "FARMER", 0L, ADMIN,
+                                "补录历史样本维护人")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.objectTypeCode").value("FARMER"))
                 .andExpect(jsonPath("$.data.approvalState").value("RETURNED"))
@@ -301,6 +403,22 @@ class FormalSamplePointWriteRestIntegrationTest {
     private static String draft(
             String canonicalName, String regionCode, String address,
             String longitude, String latitude, String objectTypeCode, Long expectedVersion) {
+        return draft(canonicalName, regionCode, address, longitude, latitude,
+                objectTypeCode, expectedVersion, ADMIN);
+    }
+
+    private static String draft(
+            String canonicalName, String regionCode, String address,
+            String longitude, String latitude, String objectTypeCode, Long expectedVersion,
+            String maintainerSubjectId) {
+        return draft(canonicalName, regionCode, address, longitude, latitude,
+                objectTypeCode, expectedVersion, maintainerSubjectId, null);
+    }
+
+    private static String draft(
+            String canonicalName, String regionCode, String address,
+            String longitude, String latitude, String objectTypeCode, Long expectedVersion,
+            String maintainerSubjectId, String maintainerChangeReason) {
         return """
                 {
                   "canonicalName":"%s",
@@ -308,10 +426,13 @@ class FormalSamplePointWriteRestIntegrationTest {
                   "address":"%s",
                   "longitude":%s,
                   "latitude":%s,
-                  "objectTypeCode":"%s"%s
+                  "objectTypeCode":"%s",
+                  "maintainerSubjectId":"%s"%s%s
                 }
                 """.formatted(canonicalName, regionCode, address, longitude, latitude,
-                objectTypeCode, expectedVersion == null
-                        ? "" : ",\n  \"expectedVersion\":" + expectedVersion);
+                objectTypeCode, maintainerSubjectId, expectedVersion == null
+                        ? "" : ",\n  \"expectedVersion\":" + expectedVersion,
+                maintainerChangeReason == null ? ""
+                        : ",\n  \"maintainerChangeReason\":\"" + maintainerChangeReason + "\"");
     }
 }
