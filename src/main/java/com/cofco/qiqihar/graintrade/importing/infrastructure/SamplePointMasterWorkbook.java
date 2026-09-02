@@ -1,6 +1,5 @@
-package com.cofco.qiqihar.graintrade.samplepoint.importing;
+package com.cofco.qiqihar.graintrade.importing.infrastructure;
 
-import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;

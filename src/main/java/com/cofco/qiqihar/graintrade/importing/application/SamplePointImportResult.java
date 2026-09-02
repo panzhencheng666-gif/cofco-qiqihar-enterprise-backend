@@ -1,4 +1,4 @@
-package com.cofco.qiqihar.graintrade.samplepoint.importing;
+package com.cofco.qiqihar.graintrade.importing.application;
 
 import java.time.Instant;
 import java.util.UUID;

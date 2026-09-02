@@ -1,4 +1,4 @@
-package com.cofco.qiqihar.graintrade.samplepoint.importing;
+package com.cofco.qiqihar.graintrade.importing.infrastructure;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;

@@ -8,7 +8,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.designsample.point.application.DesignSamplePointImportService;
-import com.cofco.qiqihar.graintrade.samplepoint.importing.SamplePointMasterWorkbook;
+import com.cofco.qiqihar.graintrade.importing.infrastructure.SamplePointMasterWorkbook;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.util.List;
 import java.util.Map;

@@ -7,7 +7,7 @@ import com.cofco.qiqihar.graintrade.designsample.point.application.DesignSampleP
 import com.cofco.qiqihar.graintrade.designsample.point.application.DesignSamplePointService;
 import com.cofco.qiqihar.graintrade.designsample.point.application.DesignSamplePointView;
 import com.cofco.qiqihar.graintrade.importing.application.ImportErrorFile;
-import com.cofco.qiqihar.graintrade.samplepoint.importing.SamplePointImportResult;
+import com.cofco.qiqihar.graintrade.importing.application.SamplePointImportResult;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
