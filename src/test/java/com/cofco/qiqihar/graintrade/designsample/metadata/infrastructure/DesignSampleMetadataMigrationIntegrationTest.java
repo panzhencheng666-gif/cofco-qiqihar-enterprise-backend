@@ -19,10 +19,10 @@ class DesignSampleMetadataMigrationIntegrationTest {
     void migratesAnImmutableDigestBoundCatalogWithRuntimeReadOnlyAccess() {
         JdbcClient jdbc = JdbcClient.create(dataSource);
 
-        assertThat(count(jdbc, "platform.design_sample_domain_definition")).isEqualTo(2);
-        assertThat(count(jdbc, "platform.design_sample_product_definition")).isEqualTo(3);
-        assertThat(count(jdbc, "platform.design_sample_object_type_definition")).isEqualTo(11);
-        assertThat(count(jdbc, "platform.design_sample_context")).isEqualTo(27);
+        assertThat(count(jdbc, "platform.design_sample_domain_definition")).isEqualTo(5);
+        assertThat(count(jdbc, "platform.design_sample_product_definition")).isEqualTo(7);
+        assertThat(count(jdbc, "platform.design_sample_object_type_definition")).isEqualTo(23);
+        assertThat(count(jdbc, "platform.design_sample_context")).isEqualTo(55);
 
         String storedDigest = jdbc.sql("""
                         SELECT contract_digest
@@ -41,14 +41,14 @@ class DesignSampleMetadataMigrationIntegrationTest {
         jdbc.sql("""
                 INSERT INTO platform.design_sample_contract(
                     contract_version, contract_digest, active, activated_at)
-                VALUES ('design-sample-fields-v2',
+                VALUES ('design-sample-fields-v3',
                         'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
                         false, CURRENT_TIMESTAMP)
                 """).update();
         jdbc.sql("""
                 INSERT INTO platform.design_sample_domain_definition(
                     contract_version, code, name, description, aliases, sort_order)
-                VALUES ('design-sample-fields-v2', 'FUTURE', '未来域', '未启用合同', '[]', 999)
+                VALUES ('design-sample-fields-v3', 'FUTURE', '未来域', '未启用合同', '[]', 999)
                 """).update();
         assertThat(jdbc.sql("SELECT platform.current_design_sample_contract_digest()")
                         .query(String.class)
