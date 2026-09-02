@@ -1,9 +1,12 @@
 package com.cofco.qiqihar.graintrade.formalsamplepoint.interfaceadapter;
 
 import com.cofco.qiqihar.graintrade.formalsamplepoint.application.FormalSamplePointDraft;
+import com.cofco.qiqihar.graintrade.formalsamplepoint.application.FormalSamplePointImportService;
 import com.cofco.qiqihar.graintrade.formalsamplepoint.application.FormalSampleMaintainerView;
 import com.cofco.qiqihar.graintrade.formalsamplepoint.application.FormalSamplePointService;
 import com.cofco.qiqihar.graintrade.formalsamplepoint.application.FormalSamplePointView;
+import com.cofco.qiqihar.graintrade.importing.application.ImportErrorFile;
+import com.cofco.qiqihar.graintrade.importing.application.SamplePointImportResult;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
@@ -14,6 +17,9 @@ import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -21,9 +27,11 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @RequestMapping("/api/v1/formal-sample-points")
@@ -31,9 +39,42 @@ public class FormalSamplePointController {
     private static final Set<String> LIST_PARAMETERS = Set.of(
             "regionCode", "keyword", "page", "pageSize");
     private final FormalSamplePointService service;
+    private final FormalSamplePointImportService imports;
 
-    public FormalSamplePointController(FormalSamplePointService service) {
+    public FormalSamplePointController(
+            FormalSamplePointService service, FormalSamplePointImportService imports) {
         this.service = service;
+        this.imports = imports;
+    }
+
+    @GetMapping("/import-template")
+    ResponseEntity<byte[]> importTemplate() {
+        return xlsx("正式样本批量新增模板.xlsx", imports.template());
+    }
+
+    @PostMapping("/imports")
+    ResponseEntity<ApiResponse<SamplePointImportResult>> importFile(
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestParam("file") MultipartFile file) throws java.io.IOException {
+        SamplePointImportResult result = imports.importFile(
+                idempotencyKey,
+                file == null ? null : file.getOriginalFilename(),
+                file == null ? null : file.getContentType(),
+                file == null ? null : file.getBytes());
+        return ResponseEntity.status(result.replayed() ? 200 : 201)
+                .body(new ApiResponse<>(result));
+    }
+
+    @GetMapping("/imports/{importId}/errors")
+    ResponseEntity<byte[]> importErrors(@PathVariable UUID importId) {
+        ImportErrorFile file = imports.errors(importId);
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("text/csv;charset=UTF-8"))
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        ContentDisposition.attachment()
+                                .filename(file.filename(), java.nio.charset.StandardCharsets.UTF_8)
+                                .build().toString())
+                .body(file.bytes());
     }
 
     @GetMapping
@@ -142,5 +183,16 @@ public class FormalSamplePointController {
     private static ClientRequestException invalid() {
         return new ClientRequestException(
                 "INVALID_FORMAL_SAMPLE_POINT", "正式样本请求参数无效");
+    }
+
+    private static ResponseEntity<byte[]> xlsx(String filename, byte[] bytes) {
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        ContentDisposition.attachment()
+                                .filename(filename, java.nio.charset.StandardCharsets.UTF_8)
+                                .build().toString())
+                .body(bytes);
     }
 }

@@ -41,6 +41,10 @@ public class DesignSampleMetadataService {
                 fields.stream().filter(field -> field.sectionCode().equals("OBSERVATION")).toList());
     }
 
+    public DesignSampleContractSnapshot activeContract() {
+        return catalog.loadActiveContract();
+    }
+
     public DesignSampleValidationResult validate(
             String contractVersion,
             String contractDigest,
