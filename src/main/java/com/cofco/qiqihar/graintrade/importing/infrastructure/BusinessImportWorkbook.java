@@ -38,6 +38,8 @@ public final class BusinessImportWorkbook {
             "LOG_SAMPLE_LATITUDE", "LOG_SAMPLE_LONGITUDE");
     private static final Map<String, String> PUBLIC_CONTEXT_VALUES = Map.ofEntries(
             Map.entry("PRODUCTION", "产情"), Map.entry("MARKET", "市场"), Map.entry("LOGISTICS", "物流"),
+            Map.entry("DESIGN_SAMPLE_POINT", "设计样本点"),
+            Map.entry("FORMAL_SAMPLE_POINT", "正式样本"),
             Map.entry("CORN", "玉米"), Map.entry("SOYBEAN", "大豆"), Map.entry("RICE", "稻谷"),
             Map.entry("FARMER", "农户"), Map.entry("VILLAGE_COMMITTEE", "村委会"),
             Map.entry("AGRICULTURAL_TECH_STATION", "农技站"), Map.entry("TRADER", "贸易商"),
@@ -73,7 +75,7 @@ public final class BusinessImportWorkbook {
             productCode = optional(productCode);
             objectTypeCode = optional(objectTypeCode);
             if ((productCode == null && objectTypeCode != null)
-                    || (productCode == null && !"LOGISTICS".equals(domainCode))) {
+                    || (productCode == null && requiresProductContext(domainCode))) {
                 throw new IllegalArgumentException("INVALID_TEMPLATE_CONTEXT");
             }
             headers = List.copyOf(headers);
@@ -110,6 +112,11 @@ public final class BusinessImportWorkbook {
 
         private static String optional(String value) {
             return value == null || value.isBlank() ? null : value.trim();
+        }
+
+        private static boolean requiresProductContext(String domainCode) {
+            return !Set.of("LOGISTICS", "DESIGN_SAMPLE_POINT", "FORMAL_SAMPLE_POINT")
+                    .contains(domainCode);
         }
     }
 
@@ -230,7 +237,7 @@ public final class BusinessImportWorkbook {
         boolean productMissing = blank(visibleContext.get("产品品种"));
         boolean objectTypeMissing = blank(visibleContext.get("对象类型"));
         if ((productMissing && !objectTypeMissing)
-                || (productMissing && !"LOGISTICS".equals(domainCode))) {
+                || (productMissing && requiresProductContext(domainCode))) {
             throw new IllegalArgumentException("INVALID_XLSX_CONTEXT");
         }
         String productCode = productMissing ? null : internalContextValue(visibleContext.get("产品品种"));
@@ -247,6 +254,11 @@ public final class BusinessImportWorkbook {
             throw new IllegalArgumentException("INVALID_XLSX_CONTRACT");
         }
         return new Context(productCode, objectTypeCode, contractVersion.trim(), contractDigest.trim());
+    }
+
+    private static boolean requiresProductContext(String domainCode) {
+        return !Set.of("LOGISTICS", "DESIGN_SAMPLE_POINT", "FORMAL_SAMPLE_POINT")
+                .contains(domainCode);
     }
 
     public static ImportSheet read(byte[] bytes, String domainCode, List<String> headers, List<String> labels) {
