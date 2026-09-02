@@ -2,9 +2,12 @@ package com.cofco.qiqihar.graintrade.designsample.point.interfaceadapter;
 
 import com.cofco.qiqihar.graintrade.designsample.metadata.domain.DesignSampleContext;
 import com.cofco.qiqihar.graintrade.designsample.point.application.DesignSamplePointDraft;
+import com.cofco.qiqihar.graintrade.designsample.point.application.DesignSamplePointImportService;
 import com.cofco.qiqihar.graintrade.designsample.point.application.DesignSamplePointRepository;
 import com.cofco.qiqihar.graintrade.designsample.point.application.DesignSamplePointService;
 import com.cofco.qiqihar.graintrade.designsample.point.application.DesignSamplePointView;
+import com.cofco.qiqihar.graintrade.importing.application.ImportErrorFile;
+import com.cofco.qiqihar.graintrade.samplepoint.importing.SamplePointImportResult;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
@@ -14,6 +17,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -26,6 +32,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.multipart.MultipartFile;
 import tools.jackson.databind.JsonNode;
 
 @RestController
@@ -35,9 +42,42 @@ public class DesignSamplePointController {
             "domainCode", "productCode", "objectTypeCode", "regionCode", "keyword",
             "page", "pageSize");
     private final DesignSamplePointService service;
+    private final DesignSamplePointImportService imports;
 
-    public DesignSamplePointController(DesignSamplePointService service) {
+    public DesignSamplePointController(
+            DesignSamplePointService service, DesignSamplePointImportService imports) {
         this.service = service;
+        this.imports = imports;
+    }
+
+    @GetMapping("/import-template")
+    ResponseEntity<byte[]> importTemplate() {
+        return xlsx("设计样本点批量新增模板.xlsx", imports.template());
+    }
+
+    @PostMapping("/imports")
+    ResponseEntity<ApiResponse<SamplePointImportResult>> importFile(
+            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestParam("file") MultipartFile file) throws java.io.IOException {
+        SamplePointImportResult result = imports.importFile(
+                idempotencyKey,
+                file == null ? null : file.getOriginalFilename(),
+                file == null ? null : file.getContentType(),
+                file == null ? null : file.getBytes());
+        return ResponseEntity.status(result.replayed() ? HttpStatus.OK : HttpStatus.CREATED)
+                .body(new ApiResponse<>(result));
+    }
+
+    @GetMapping("/imports/{importId}/errors")
+    ResponseEntity<byte[]> importErrors(@PathVariable UUID importId) {
+        ImportErrorFile file = imports.errors(importId);
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("text/csv;charset=UTF-8"))
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        ContentDisposition.attachment()
+                                .filename(file.filename(), java.nio.charset.StandardCharsets.UTF_8)
+                                .build().toString())
+                .body(file.bytes());
     }
 
     @GetMapping
@@ -127,5 +167,16 @@ public class DesignSamplePointController {
     private static ClientRequestException invalid() {
         return new ClientRequestException(
                 "INVALID_DESIGN_SAMPLE_POINT", "设计样本点请求参数无效");
+    }
+
+    private static ResponseEntity<byte[]> xlsx(String filename, byte[] bytes) {
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        ContentDisposition.attachment()
+                                .filename(filename, java.nio.charset.StandardCharsets.UTF_8)
+                                .build().toString())
+                .body(bytes);
     }
 }

@@ -85,10 +85,7 @@ public class FormalSamplePointService {
     @Transactional
     public FormalSamplePointView create(FormalSamplePointDraft submitted) {
         SecurityPrincipal actor = access.require("FORMAL_SAMPLE_MANAGE", null);
-        FormalSamplePointDraft draft = normalize(submitted);
-        access.require("FORMAL_SAMPLE_MANAGE", draft.regionCode());
-        requireValidReferences(draft);
-        coordinateGuard.lockAndRequireAvailable(null, draft.longitude(), draft.latitude());
+        FormalSamplePointDraft draft = validateForCreate(submitted);
         Instant now = clock.instant();
         UUID id = UUID.randomUUID();
         FormalSamplePointView created;
@@ -102,6 +99,14 @@ public class FormalSamplePointService {
         record(actor, created, "FORMAL_SAMPLE_POINT_CREATED", now,
                 List.of(created.regionCode()), null, null);
         return created;
+    }
+
+    FormalSamplePointDraft validateForCreate(FormalSamplePointDraft submitted) {
+        FormalSamplePointDraft draft = normalize(submitted);
+        access.require("FORMAL_SAMPLE_MANAGE", draft.regionCode());
+        requireValidReferences(draft);
+        coordinateGuard.lockAndRequireAvailable(null, draft.longitude(), draft.latitude());
+        return draft;
     }
 
     @Transactional

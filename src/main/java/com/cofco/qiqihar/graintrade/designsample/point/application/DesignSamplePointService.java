@@ -97,7 +97,7 @@ public class DesignSamplePointService {
     public DesignSamplePointRepository.CreateResult create(
             String idempotencyKey, DesignSamplePointDraft submitted) {
         String key = requiredText(idempotencyKey, 200, "INVALID_IDEMPOTENCY_KEY");
-        ValidatedDraft validated = validate(submitted);
+        ValidatedDraft validated = validateForCreate(submitted);
         SecurityPrincipal actor = access.require("BUSINESS_UPDATE", validated.regionCode());
         Instant now = clock.instant();
         try {
@@ -124,7 +124,7 @@ public class DesignSamplePointService {
             UUID id, long expectedVersion, DesignSamplePointDraft submitted) {
         if (expectedVersion < 0) throw invalidRequest();
         DesignSamplePointView current = required(id);
-        ValidatedDraft validated = validate(submitted);
+        ValidatedDraft validated = validateForCreate(submitted);
         SecurityPrincipal actor = access.require("BUSINESS_UPDATE", current.regionCode());
         access.require("BUSINESS_UPDATE", validated.regionCode());
         Instant now = clock.instant();
@@ -166,7 +166,7 @@ public class DesignSamplePointService {
                 java.util.List.of(current.regionCode()));
     }
 
-    private ValidatedDraft validate(DesignSamplePointDraft submitted) {
+    ValidatedDraft validateForCreate(DesignSamplePointDraft submitted) {
         if (submitted == null || blank(submitted.contractVersion())
                 || blank(submitted.contractDigest()) || submitted.context() == null
                 || submitted.values() == null) {
@@ -301,7 +301,7 @@ public class DesignSamplePointService {
         return new ConflictException(code, message);
     }
 
-    private record ValidatedDraft(
+    record ValidatedDraft(
             DesignSamplePointDraft draft,
             Map<String, JsonNode> values,
             String sampleName,
