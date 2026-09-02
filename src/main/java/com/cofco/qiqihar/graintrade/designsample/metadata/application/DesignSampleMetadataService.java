@@ -116,7 +116,8 @@ public class DesignSampleMetadataService {
         }
 
         validateProductionAreaRelationships(decimalValues);
-        if (!knownBusinessObservation) {
+        if (!context.equals(new DesignSampleContext("REFERENCE", "GENERAL", "REFERENCE_POINT"))
+                && !knownBusinessObservation) {
             throw error("EMPTY_OBSERVATION", "至少需要一个已知的适用业务观测值");
         }
         return new ValidatedDesignSampleValues(

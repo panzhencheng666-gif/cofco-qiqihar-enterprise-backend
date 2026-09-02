@@ -5,6 +5,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.designsample.point.application.DesignSamplePointImportService;
@@ -48,6 +49,12 @@ class DesignSamplePointImportRestIntegrationTest {
                 .andExpect(content().contentType(
                         MediaType.parseMediaType(
                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")));
+
+        assertThat(imports.templateDefinition().columns())
+                .extracting(SamplePointMasterWorkbook.Column::code)
+                .containsExactly(
+                        "DSP_NAME", "DSP_REGION_CODE", "DSP_ADDRESS",
+                        "DSP_LONGITUDE", "DSP_LATITUDE");
     }
 
     @Test
@@ -106,14 +113,10 @@ class DesignSamplePointImportRestIntegrationTest {
 
     private static Map<String, String> designRow(String name, String longitude) {
         return Map.of(
-                "domainCode", "PRODUCTION",
-                "productCode", "CORN",
-                "objectTypeCode", "FARMER",
                 "DSP_NAME", name,
                 "DSP_REGION_CODE", "230202",
+                "DSP_ADDRESS", "龙沙区验收详细地址",
                 "DSP_LONGITUDE", longitude,
-                "DSP_LATITUDE", "47.35",
-                "OBSERVED_ON", "2026-09-02",
-                "PROD_AREA_MU", "10");
+                "DSP_LATITUDE", "47.35");
     }
 }

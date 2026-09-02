@@ -64,12 +64,12 @@ class DesignSampleMetadataRestIntegrationTest {
     @Autowired ObjectMapper json;
 
     @Test
-    void exposesTwoDomainsThreeProductsElevenObjectsAndAllTwentySevenStableContexts()
+    void preservesHistoricalContextsAndAddsTheNeutralReferenceContext()
             throws Exception {
         for (Context context : LEGAL_CONTEXTS) {
             definition(context)
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.contractVersion").value("design-sample-fields-v1"))
+                    .andExpect(jsonPath("$.contractVersion").value("design-sample-fields-v2"))
                     .andExpect(jsonPath("$.contractDigest")
                             .value(matchesPattern("sha256:[a-f0-9]{64}")))
                     .andExpect(jsonPath("$.context.domainCode").value(context.domainCode()))
@@ -79,10 +79,17 @@ class DesignSampleMetadataRestIntegrationTest {
         }
 
         definition(LEGAL_CONTEXTS.getFirst())
-                .andExpect(jsonPath("$.domains", hasSize(2)))
-                .andExpect(jsonPath("$.products", hasSize(3)))
-                .andExpect(jsonPath("$.objectTypes", hasSize(11)))
-                .andExpect(jsonPath("$.supportedContexts", hasSize(27)));
+                .andExpect(jsonPath("$.domains", hasSize(3)))
+                .andExpect(jsonPath("$.products", hasSize(4)))
+                .andExpect(jsonPath("$.objectTypes", hasSize(12)))
+                .andExpect(jsonPath("$.supportedContexts", hasSize(28)));
+
+        definition(context("REFERENCE", "GENERAL", "REFERENCE_POINT"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.identityFields[*].code", containsInAnyOrder(
+                        "DSP_NAME", "DSP_REGION_CODE", "DSP_ADDRESS",
+                        "DSP_LONGITUDE", "DSP_LATITUDE")))
+                .andExpect(jsonPath("$.observationFields", hasSize(0)));
     }
 
     @Test
@@ -240,7 +247,7 @@ class DesignSampleMetadataRestIntegrationTest {
 
     private String validationRequest(Context context, String digest, String values) {
         return """
-                {"contractVersion":"design-sample-fields-v1","contractDigest":"%s",
+                {"contractVersion":"design-sample-fields-v2","contractDigest":"%s",
                  "context":{"domainCode":"%s","productCode":"%s","objectTypeCode":"%s"},
                  "values":%s}
                 """.formatted(
