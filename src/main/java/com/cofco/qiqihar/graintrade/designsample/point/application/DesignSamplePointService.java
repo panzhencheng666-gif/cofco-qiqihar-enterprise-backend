@@ -23,6 +23,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashSet;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.UUID;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -34,6 +35,8 @@ import tools.jackson.databind.ObjectMapper;
 
 @Service
 public class DesignSamplePointService {
+    private static final Set<String> PUBLIC_LOCATION_FIELDS = Set.of(
+            "DSP_NAME", "DSP_REGION_CODE", "DSP_ADDRESS", "DSP_LONGITUDE", "DSP_LATITUDE");
     private static final String AGGREGATE = "DESIGN_SAMPLE_POINT";
 
     private final DesignSamplePointRepository repository;
@@ -183,6 +186,10 @@ public class DesignSamplePointService {
         }
         BoundedInput.requireAggregateSize("INVALID_DESIGN_SAMPLE_POINT", submitted.values());
         TreeMap<String, JsonNode> values = new TreeMap<>(submitted.values());
+        if (!PUBLIC_LOCATION_FIELDS.containsAll(values.keySet())) {
+            throw new ClientRequestException(
+                    "FIELD_NOT_APPLICABLE", "设计样本点只接受必要定位字段");
+        }
         values.forEach((fieldCode, value) -> {
             BoundedInput.requireText("INVALID_DESIGN_SAMPLE_POINT", fieldCode);
             if (value != null && value.isTextual()) {
@@ -200,6 +207,10 @@ public class DesignSamplePointService {
 
         String name = requiredValue(normalizedValues, "DSP_NAME", 200);
         String region = requiredValue(normalizedValues, "DSP_REGION_CODE", 12);
+        if (!normalizedValues.containsKey("DSP_ADDRESS")) {
+            throw new ClientRequestException("REQUIRED_FIELD_MISSING", "缺少详细地址");
+        }
+        requiredValue(normalizedValues, "DSP_ADDRESS", 500);
         BigDecimal longitude = decimal(normalizedValues.get("DSP_LONGITUDE"));
         BigDecimal latitude = decimal(normalizedValues.get("DSP_LATITUDE"));
         DesignSamplePointRepository.BoundaryContainment containment = repository

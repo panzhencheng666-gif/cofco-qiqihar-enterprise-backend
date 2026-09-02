@@ -37,10 +37,10 @@ import tools.jackson.databind.JsonNode;
 
 @Service
 public class DesignSamplePointImportService {
-    private static final List<SamplePointMasterWorkbook.Column> CONTEXT_COLUMNS = List.of(
-            new SamplePointMasterWorkbook.Column("domainCode", "业务类型", true),
-            new SamplePointMasterWorkbook.Column("productCode", "产品品种", true),
-            new SamplePointMasterWorkbook.Column("objectTypeCode", "对象类型", true));
+    private static final DesignSampleContext REFERENCE_CONTEXT =
+            new DesignSampleContext("REFERENCE", "GENERAL", "REFERENCE_POINT");
+    private static final List<String> LOCATION_FIELDS = List.of(
+            "DSP_NAME", "DSP_REGION_CODE", "DSP_ADDRESS", "DSP_LONGITUDE", "DSP_LATITUDE");
 
     private final DesignSampleMetadataService metadata;
     private final AccessControl access;
@@ -74,15 +74,11 @@ public class DesignSamplePointImportService {
 
     public SamplePointMasterWorkbook.Template templateDefinition() {
         DesignSampleContractSnapshot contract = metadata.activeContract();
-        Map<String, DesignSampleFieldDefinition> editable = new LinkedHashMap<>();
-        contract.fieldsByContext().values().stream().flatMap(List::stream)
-                .filter(DesignSampleFieldDefinition::editable)
-                .sorted(java.util.Comparator.comparingInt(DesignSampleFieldDefinition::sortOrder))
-                .forEach(field -> editable.putIfAbsent(field.code(), field));
-        List<SamplePointMasterWorkbook.Column> columns = new ArrayList<>(CONTEXT_COLUMNS);
-        editable.values().forEach(field -> columns.add(new SamplePointMasterWorkbook.Column(
-                field.code(), field.unit() == null ? field.label() : field.label() + "（" + field.unit() + "）",
-                false)));
+        List<SamplePointMasterWorkbook.Column> columns = LOCATION_FIELDS.stream()
+                .map(contract.fieldsByCode()::get)
+                .map(field -> new SamplePointMasterWorkbook.Column(
+                        field.code(), publicLabel(field), true))
+                .toList();
         return new SamplePointMasterWorkbook.Template(
                 SamplePointMasterWorkbook.Kind.DESIGN,
                 contract.contractVersion(), contract.contractDigest(), columns);
@@ -113,9 +109,9 @@ public class DesignSamplePointImportService {
         Set<String> coordinates = new HashSet<>();
         for (SamplePointMasterWorkbook.Row submittedRow : submitted) {
             try {
-                DesignSampleContext context = context(submittedRow.values(), contract);
+                DesignSampleContext context = REFERENCE_CONTEXT;
                 Map<String, JsonNode> values = new LinkedHashMap<>();
-                template.columns().stream().skip(CONTEXT_COLUMNS.size()).forEach(column -> {
+                template.columns().forEach(column -> {
                     String value = submittedRow.values().get(column.code());
                     if (value != null && !value.isBlank()) {
                         values.put(column.code(), metadataNode(value));
@@ -188,30 +184,9 @@ public class DesignSamplePointImportService {
         return result(completed, false);
     }
 
-    private static DesignSampleContext context(
-            Map<String, String> values, DesignSampleContractSnapshot contract) {
-        String domain = resolve(values.get("domainCode"), contract.domains().stream()
-                .collect(java.util.stream.Collectors.toMap(
-                        DesignSampleContractSnapshot.DomainDefinition::label,
-                        DesignSampleContractSnapshot.DomainDefinition::code)));
-        String product = resolve(values.get("productCode"), contract.products().stream()
-                .collect(java.util.stream.Collectors.toMap(
-                        DesignSampleContractSnapshot.ProductDefinition::label,
-                        DesignSampleContractSnapshot.ProductDefinition::code)));
-        String objectType = resolve(values.get("objectTypeCode"), contract.objectTypes().stream()
-                .filter(option -> option.domainCode().equals(domain))
-                .collect(java.util.stream.Collectors.toMap(
-                        DesignSampleContractSnapshot.ObjectTypeDefinition::label,
-                        DesignSampleContractSnapshot.ObjectTypeDefinition::code)));
-        return new DesignSampleContext(domain, product, objectType);
-    }
-
-    private static String resolve(String submitted, Map<String, String> labels) {
-        if (submitted == null || submitted.isBlank()) {
-            throw new ClientRequestException("REQUIRED_FIELD_MISSING", "缺少必填字段");
-        }
-        String normalized = submitted.trim();
-        return labels.getOrDefault(normalized, normalized.toUpperCase(java.util.Locale.ROOT));
+    private static String publicLabel(DesignSampleFieldDefinition field) {
+        if (field.code().equals("DSP_REGION_CODE")) return "所属地区";
+        return field.unit() == null ? field.label() : field.label() + "（" + field.unit() + "）";
     }
 
     private static JsonNode metadataNode(String value) {

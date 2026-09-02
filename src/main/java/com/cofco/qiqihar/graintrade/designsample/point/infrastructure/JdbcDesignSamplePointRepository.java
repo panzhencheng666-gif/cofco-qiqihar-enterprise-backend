@@ -192,7 +192,7 @@ public class JdbcDesignSamplePointRepository implements DesignSamplePointReposit
                 UPDATE platform.design_sample_point
                 SET contract_version=:contractVersion,domain_code=:domainCode,
                     product_code=:productCode,object_type_code=:objectTypeCode,
-                    values_json=CAST(:values AS jsonb),sample_name=:sampleName,
+                    values_json=values_json || CAST(:values AS jsonb),sample_name=:sampleName,
                     region_code=:regionCode,
                     governed_point=ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326),
                     version=version+1,updated_by=:actor,updated_at=:now

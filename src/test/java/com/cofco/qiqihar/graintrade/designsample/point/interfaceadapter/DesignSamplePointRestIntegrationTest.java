@@ -12,6 +12,7 @@ import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.GovernedMasterDataFixtures;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import javax.sql.DataSource;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -44,6 +45,7 @@ class DesignSamplePointRestIntegrationTest {
     @Autowired ObjectMapper json;
     @Autowired DataSource dataSource;
     private JdbcClient jdbc;
+    private String contractVersion;
     private String contractDigest;
     private long auditBaseline;
     private long outboxBaseline;
@@ -51,6 +53,8 @@ class DesignSamplePointRestIntegrationTest {
     @BeforeEach
     void setUp() {
         jdbc = JdbcClient.create(dataSource);
+        contractVersion = jdbc.sql("SELECT contract_version FROM platform.design_sample_contract WHERE active")
+                .query(String.class).single();
         contractDigest = jdbc.sql("SELECT platform.current_design_sample_contract_digest()")
                 .query(String.class).single();
         jdbc.sql("""
@@ -112,24 +116,66 @@ class DesignSamplePointRestIntegrationTest {
                         .header("Idempotency-Key", "design-sample-canonical-values")
                         .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"contractVersion":"design-sample-fields-v1",
+                                {"contractVersion":"%s",
                                  "contractDigest":"%s",
-                                 "context":{"domainCode":"PRODUCTION","productCode":"CORN",
-                                            "objectTypeCode":"FARMER"},
+                                 "context":{"domainCode":"REFERENCE","productCode":"GENERAL",
+                                            "objectTypeCode":"REFERENCE_POINT"},
                                  "values":{"DSP_NAME":"  规范化设计样本点  ",
                                            "DSP_REGION_CODE":"230202",
+                                           "DSP_ADDRESS":"  龙沙区详细地址  ",
                                            "DSP_LONGITUDE":"123.9500000",
-                                           "DSP_LATITUDE":"47.3500000",
-                                           "OBSERVED_ON":"2026-06-01",
-                                           "PROD_AREA_MU":"10.0000",
-                                           "PROD_GROWTH_STAGE":"  拔节期  "}}
-                                """.formatted(contractDigest)))
+                                           "DSP_LATITUDE":"47.3500000"}}
+                                """.formatted(contractVersion, contractDigest)))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.values.DSP_NAME").value("规范化设计样本点"))
+                .andExpect(jsonPath("$.data.values.DSP_ADDRESS").value("龙沙区详细地址"))
                 .andExpect(jsonPath("$.data.values.DSP_LONGITUDE").value(123.95))
-                .andExpect(jsonPath("$.data.values.DSP_LATITUDE").value(47.35))
-                .andExpect(jsonPath("$.data.values.PROD_AREA_MU").value(10))
-                .andExpect(jsonPath("$.data.values.PROD_GROWTH_STAGE").value("拔节期"));
+                .andExpect(jsonPath("$.data.values.DSP_LATITUDE").value(47.35));
+    }
+
+    @Test
+    void acceptsOnlyLightweightLocationFieldsForNewDesignPoints() throws Exception {
+        String version = jdbc.sql("SELECT contract_version FROM platform.design_sample_contract WHERE active")
+                .query(String.class).single();
+
+        mvc.perform(post(ENDPOINT)
+                        .header("Idempotency-Key", "design-sample-lightweight-location")
+                        .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"contractVersion":"%s","contractDigest":"%s",
+                                 "context":{"domainCode":"REFERENCE","productCode":"GENERAL",
+                                            "objectTypeCode":"REFERENCE_POINT"},
+                                 "values":{"DSP_NAME":"轻量设计参考点",
+                                           "DSP_REGION_CODE":"230202",
+                                           "DSP_ADDRESS":"龙沙区验收详细地址",
+                                           "DSP_LONGITUDE":123.95,
+                                           "DSP_LATITUDE":47.35}}
+                                """.formatted(version, contractDigest)))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.values.DSP_ADDRESS")
+                        .value("龙沙区验收详细地址"))
+                .andExpect(jsonPath("$.data.values.OBSERVED_ON").doesNotExist());
+
+        assertThat(jdbc.sql("""
+                SELECT values_json->>'DSP_ADDRESS'
+                FROM platform.design_sample_point
+                WHERE sample_name='轻量设计参考点'
+                """).query(String.class).single()).isEqualTo("龙沙区验收详细地址");
+    }
+
+    @Test
+    void rejectsBusinessObservationFieldsFromDesignPointWritesWithoutSideEffects()
+            throws Exception {
+        long before = count("platform.design_sample_point");
+        mvc.perform(post(ENDPOINT)
+                        .header("Idempotency-Key", "design-sample-reject-observation")
+                        .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
+                        .content(request("不应写入的设计点", "10", null)
+                                .replace("\"DSP_LATITUDE\":47.35",
+                                        "\"DSP_LATITUDE\":47.35,\"OBSERVED_ON\":\"2026-06-01\"")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("FIELD_NOT_APPLICABLE"));
+        assertThat(count("platform.design_sample_point")).isEqualTo(before);
     }
 
     @Test
@@ -148,83 +194,30 @@ class DesignSamplePointRestIntegrationTest {
     }
 
     @Test
-    void switchesAgriculturalInputStoreToTraderWithoutStaleFieldsOrFailedWriteResidue()
+    void backfillsAddressWithoutDeletingHistoricalStoredValues()
             throws Exception {
-        MvcResult created = mvc.perform(post(ENDPOINT)
-                        .header("Idempotency-Key", "design-sample-object-type-switch")
-                        .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
-                        .content(agriculturalInputRequest(null)))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.context.objectTypeCode")
-                        .value("AGRICULTURAL_INPUT_STORE"))
-                .andExpect(jsonPath("$.data.values.AGRI_INPUT_SEED_SALES_VOLUME").value(1200))
-                .andExpect(jsonPath("$.data.values.AGRI_INPUT_SEED_RETAIL_PRICE").value(8.5))
-                .andExpect(jsonPath("$.data.values.AGRI_INPUT_SUPPLY_STATUS").value("SUFFICIENT"))
-                .andExpect(jsonPath("$.data.values.AGRI_INPUT_PLANTING_INTENTION_TREND")
-                        .value("STABLE"))
-                .andReturn();
-        String id = body(created).path("data").path("id").asText();
-
-        mvc.perform(get(ENDPOINT + "/{id}", id).principal(() -> READER))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.values.AGRI_INPUT_SEED_RETAIL_PRICE").value(8.5));
-
+        String id = create("design-sample-historical-values", "历史设计样本点", "旧址");
+        jdbc.sql("""
+                UPDATE platform.design_sample_point
+                SET values_json=(values_json - 'DSP_ADDRESS')
+                    || '{"OBSERVED_ON":"2025-01-01","LEGACY_INTERNAL_SOURCE":"preserve"}'::jsonb
+                WHERE design_sample_point_id=CAST(:id AS uuid)
+                """).param("id", id).update();
         mvc.perform(put(ENDPOINT + "/{id}", id)
                         .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
-                        .content(traderRequest(0L, true)))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("FIELD_NOT_APPLICABLE"));
-
-        mvc.perform(get(ENDPOINT + "/{id}", id).principal(() -> READER))
+                        .content(request("历史设计样本点", "补录详细地址", 0L)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.context.objectTypeCode")
-                        .value("AGRICULTURAL_INPUT_STORE"))
-                .andExpect(jsonPath("$.data.version").value(0));
-        assertThat(countEvents("platform.business_audit_event")).isEqualTo(auditBaseline + 1);
-        assertThat(countEvents("platform.business_event_outbox")).isEqualTo(outboxBaseline + 1);
-
-        mvc.perform(put(ENDPOINT + "/{id}", id)
-                        .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
-                        .content(traderRequest(0L, false)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.context.objectTypeCode").value("TRADER"))
-                .andExpect(jsonPath("$.data.values.MKT_PURCHASE_BASE_PRICE").value(2300))
-                .andExpect(jsonPath("$.data.values.MKT_SALE_BASE_PRICE").value(2380))
-                .andExpect(jsonPath("$.data.values.AGRI_INPUT_SEED_SALES_VOLUME").doesNotExist())
+                .andExpect(jsonPath("$.data.values.DSP_ADDRESS").value("补录详细地址"))
                 .andExpect(jsonPath("$.data.version").value(1));
-
-        mvc.perform(get(ENDPOINT + "/{id}", id).principal(() -> READER))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.values.MKT_PURCHASE_BASE_PRICE").value(2300))
-                .andExpect(jsonPath("$.data.values.MKT_SALE_BASE_PRICE").value(2380))
-                .andExpect(jsonPath("$.data.values.AGRI_INPUT_SUPPLY_STATUS").doesNotExist());
         assertThat(jdbc.sql("""
-                SELECT EXISTS (
-                  SELECT 1
-                  FROM jsonb_object_keys(values_json) field_code
-                  WHERE field_code IN (
-                    'AGRI_INPUT_SEED_SALES_VOLUME','AGRI_INPUT_SEED_RETAIL_PRICE',
-                    'AGRI_INPUT_SUPPLY_STATUS','AGRI_INPUT_PLANTING_INTENTION_TREND')
-                )
+                SELECT values_json->>'OBSERVED_ON',
+                       values_json->>'LEGACY_INTERNAL_SOURCE',
+                       values_json->>'DSP_ADDRESS'
                 FROM platform.design_sample_point
                 WHERE design_sample_point_id=CAST(:id AS uuid)
-                """).param("id", id).query(Boolean.class).single()).isFalse();
-
-        mvc.perform(delete(ENDPOINT + "/{id}", id)
-                        .principal(() -> ACTOR).queryParam("expectedVersion", "1"))
-                .andExpect(status().isNoContent());
-
-        assertThat(count("platform.design_sample_point")).isZero();
-        assertThat(jdbc.sql("""
-                SELECT action_code FROM platform.business_event_outbox
-                WHERE aggregate_type='DESIGN_SAMPLE_POINT' AND aggregate_id=:id
-                ORDER BY event_sequence
-                """).param("id", id).query(String.class).list()).containsExactly(
-                        "DESIGN_SAMPLE_POINT_CREATED",
-                        "DESIGN_SAMPLE_POINT_UPDATED",
-                        "DESIGN_SAMPLE_POINT_DELETED");
-        assertThat(countEvents("platform.business_audit_event")).isEqualTo(auditBaseline + 3);
-        assertThat(countEvents("platform.business_event_outbox")).isEqualTo(outboxBaseline + 3);
+                """).param("id", id).query((rs, rowNum) -> List.of(
+                        rs.getString(1), rs.getString(2), rs.getString(3))).single())
+                .containsExactly("2025-01-01", "preserve", "补录详细地址");
     }
 
     @Test
@@ -319,8 +312,8 @@ class DesignSamplePointRestIntegrationTest {
                         .header("Idempotency-Key", "design-sample-inapplicable")
                         .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
                         .content(request("字段越权设计样本点", "10", null)
-                                .replace("\"PROD_AREA_MU\":10",
-                                        "\"PROD_AREA_MU\":10,\"MKT_PURCHASE_BASE_PRICE\":1")))
+                                .replace("\"DSP_LATITUDE\":47.35",
+                                        "\"DSP_LATITUDE\":47.35,\"MKT_PURCHASE_BASE_PRICE\":1")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("FIELD_NOT_APPLICABLE"));
 
@@ -358,7 +351,7 @@ class DesignSamplePointRestIntegrationTest {
         mvc.perform(get(ENDPOINT).principal(() -> ACTOR)
                         .queryParam("keyword", "版本一"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items[0].values.PROD_AREA_MU").value(20))
+                .andExpect(jsonPath("$.data.items[0].values.DSP_ADDRESS").value("20"))
                 .andExpect(jsonPath("$.data.items[0].version").value(1));
         assertThat(countEvents("platform.business_audit_event")).isEqualTo(auditBaseline + 2);
         assertThat(countEvents("platform.business_event_outbox")).isEqualTo(outboxBaseline + 2);
@@ -428,9 +421,9 @@ class DesignSamplePointRestIntegrationTest {
                         .header("Idempotency-Key", "design-sample-core-lifecycle")
                         .principal(() -> ACTOR)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(request("验收设计样本点", "100", null)))
+                .content(request("验收设计样本点", "100", null)))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.context.objectTypeCode").value("FARMER"))
+                .andExpect(jsonPath("$.data.context.objectTypeCode").value("REFERENCE_POINT"))
                 .andExpect(jsonPath("$.data.values.DSP_NAME").value("验收设计样本点"))
                 .andExpect(jsonPath("$.data.regionPath").isNotEmpty())
                 .andExpect(jsonPath("$.data.version").value(0))
@@ -446,9 +439,9 @@ class DesignSamplePointRestIntegrationTest {
 
         mvc.perform(get(ENDPOINT)
                         .principal(() -> ACTOR)
-                        .queryParam("domainCode", "PRODUCTION")
-                        .queryParam("productCode", "CORN")
-                        .queryParam("objectTypeCode", "FARMER")
+                        .queryParam("domainCode", "REFERENCE")
+                        .queryParam("productCode", "GENERAL")
+                        .queryParam("objectTypeCode", "REFERENCE_POINT")
                         .queryParam("regionCode", "230202")
                         .queryParam("keyword", "验收")
                         .queryParam("page", "0")
@@ -464,7 +457,7 @@ class DesignSamplePointRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.id").value(id))
                 .andExpect(jsonPath("$.data.values.DSP_NAME").value("验收设计样本点（修改）"))
-                .andExpect(jsonPath("$.data.values.PROD_AREA_MU").value(120))
+                .andExpect(jsonPath("$.data.values.DSP_ADDRESS").value("120"))
                 .andExpect(jsonPath("$.data.version").value(1));
 
         mvc.perform(get(ENDPOINT)
@@ -498,7 +491,7 @@ class DesignSamplePointRestIntegrationTest {
                 SELECT count(*) FROM platform.business_event_outbox
                 WHERE aggregate_type='DESIGN_SAMPLE_POINT' AND aggregate_id=:id
                   AND region_codes @> ARRAY['230202']::varchar[]
-                  AND product_code='CORN'
+                  AND product_code='GENERAL'
                 """).param("id", id).query(Long.class).single()).isEqualTo(3);
     }
 
@@ -555,48 +548,14 @@ class DesignSamplePointRestIntegrationTest {
     private String request(String name, String area, Long expectedVersion) {
         String version = expectedVersion == null ? "" : ",\"expectedVersion\":" + expectedVersion;
         return """
-                {"contractVersion":"design-sample-fields-v1",
+                {"contractVersion":"%s",
                  "contractDigest":"%s",
-                 "context":{"domainCode":"PRODUCTION","productCode":"CORN",
-                            "objectTypeCode":"FARMER"},
+                 "context":{"domainCode":"REFERENCE","productCode":"GENERAL",
+                            "objectTypeCode":"REFERENCE_POINT"},
                  "values":{"DSP_NAME":"%s","DSP_REGION_CODE":"230202",
-                           "DSP_LONGITUDE":123.95,"DSP_LATITUDE":47.35,
-                           "OBSERVED_ON":"2026-06-01","PROD_AREA_MU":%s}%s}
-                """.formatted(contractDigest, name, area, version);
-    }
-
-    private String agriculturalInputRequest(Long expectedVersion) {
-        String version = expectedVersion == null ? "" : ",\"expectedVersion\":" + expectedVersion;
-        return """
-                {"contractVersion":"design-sample-fields-v1",
-                 "contractDigest":"%s",
-                 "context":{"domainCode":"MARKET","productCode":"CORN",
-                            "objectTypeCode":"AGRICULTURAL_INPUT_STORE"},
-                 "values":{"DSP_NAME":"农资店设计样本点","DSP_REGION_CODE":"230202",
-                           "DSP_LONGITUDE":"123.95","DSP_LATITUDE":"47.35",
-                           "OBSERVED_ON":"2026-06-01",
-                           "AGRI_INPUT_SEED_SALES_VOLUME":"1200",
-                           "AGRI_INPUT_SEED_RETAIL_PRICE":"8.5000",
-                           "AGRI_INPUT_SUPPLY_STATUS":"SUFFICIENT",
-                           "AGRI_INPUT_PLANTING_INTENTION_TREND":"STABLE"}%s}
-                """.formatted(contractDigest, version);
-    }
-
-    private String traderRequest(long expectedVersion, boolean retainAgriculturalInputField) {
-        String staleField = retainAgriculturalInputField
-                ? ",\"AGRI_INPUT_SEED_SALES_VOLUME\":1200" : "";
-        return """
-                {"contractVersion":"design-sample-fields-v1",
-                 "contractDigest":"%s",
-                 "context":{"domainCode":"MARKET","productCode":"CORN",
-                            "objectTypeCode":"TRADER"},
-                 "values":{"DSP_NAME":"贸易商设计样本点","DSP_REGION_CODE":"230202",
-                           "DSP_LONGITUDE":"123.95","DSP_LATITUDE":"47.35",
-                           "OBSERVED_ON":"2026-06-02",
-                           "MKT_PURCHASE_BASE_PRICE":"2300.0000",
-                           "MKT_SALE_BASE_PRICE":"2380.0000"%s},
-                 "expectedVersion":%d}
-                """.formatted(contractDigest, staleField, expectedVersion);
+                           "DSP_ADDRESS":"%s",
+                           "DSP_LONGITUDE":123.95,"DSP_LATITUDE":47.35}%s}
+                """.formatted(contractVersion, contractDigest, name, area, version);
     }
 
     private JsonNode body(MvcResult result) throws Exception {
