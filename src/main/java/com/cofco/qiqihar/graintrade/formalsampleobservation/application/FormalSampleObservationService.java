@@ -98,7 +98,8 @@ public class FormalSampleObservationService {
         SecurityPrincipal principal = accessControl.require("BUSINESS_CREATE", regionCode);
         return repository.findEligibleSamples(domain, normalizedProduct, regionCode, normalizedObjectType,
                 keywordPattern(normalizedKeyword),
-                observedAt.atZoneSameInstant(REPORTING_ZONE).toLocalDate(), principal.regionCodes());
+                observedAt.atZoneSameInstant(REPORTING_ZONE).toLocalDate(), principal.regionCodes(),
+                principal.subjectId(), principal.permits("FORMAL_SAMPLE_MANAGE"));
     }
 
     @Transactional(readOnly = true)
@@ -139,11 +140,6 @@ public class FormalSampleObservationService {
                 throw new ConflictException("FORMAL_SAMPLE_OBSERVATION_IDEMPOTENCY_CONFLICT",
                         "该幂等键已用于不同的正式样本观测，请更换后重试");
             }
-            FormalSampleIdentity replayIdentity = repository.lockEligibleSample(
-                    command.domain(), command.samplePointId(), normalizedProduct,
-                    command.observedAt().atZoneSameInstant(REPORTING_ZONE).toLocalDate(),
-                    principal.regionCodes());
-            requireMaintainer(principal, replayIdentity);
             return stored.result();
         }
 
@@ -182,7 +178,8 @@ public class FormalSampleObservationService {
 
         EligibleFormalSample refreshed = repository.findEligibleSamples(
                         command.domain(), normalizedProduct, identity.regionCode(), null, null, observedOn,
-                        principal.regionCodes()).stream()
+                        principal.regionCodes(), principal.subjectId(),
+                        principal.permits("FORMAL_SAMPLE_MANAGE")).stream()
                 .filter(sample -> sample.samplePointId().equals(identity.samplePointId()))
                 .findFirst().orElseThrow(() -> new IllegalStateException(
                         "Saved formal sample observation is missing from the effective projection"));

@@ -85,7 +85,7 @@ class FormalSampleFieldUnificationMigrationTest {
         assertThat(query("""
                 SELECT is_nullable FROM information_schema.columns
                 WHERE table_schema='registry'
-                  AND table_name='formal_sample_point_profile'
+                  AND table_name='sample_point'
                   AND column_name='maintainer_subject_id'
                 """)).isEqualTo("YES");
         assertThat(query("""

@@ -80,6 +80,10 @@ class FormalSampleObservationRestIntegrationTest {
                 INSERT INTO platform.security_user(subject_id,display_name,work_unit_code,enabled)
                 SELECT :subject,'同区域非维护人',work_unit_code,true FROM platform.security_user
                 WHERE subject_id=:actor
+                ON CONFLICT(subject_id) DO UPDATE SET
+                  display_name=EXCLUDED.display_name,work_unit_code=EXCLUDED.work_unit_code,
+                  enabled=true,account_status='ACTIVE',employment_status='ACTIVE',
+                  termination_effective_at=NULL
                 """).param("subject", SAME_REGION_ACTOR).param("actor", ACTOR).update();
         jdbc.sql("INSERT INTO platform.security_user_role(subject_id,role_code) VALUES(:subject,'BUSINESS_OPERATOR')")
                 .param("subject", SAME_REGION_ACTOR).update();
@@ -102,15 +106,15 @@ class FormalSampleObservationRestIntegrationTest {
         jdbc.sql("""
                 INSERT INTO registry.sample_point(
                   sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
-                  governed_point,effective_from,created_by,updated_by)
+                  governed_point,effective_from,maintainer_subject_id,created_by,updated_by)
                 VALUES(:samplePointId,'SURVEY_SITE','龙江县既有正式样本','230221','APPROVED','VALID',
-                  ST_SetSRID(ST_MakePoint(123.2000000,47.3000000),4326),DATE '2026-01-01',:actor,:actor)
+                  ST_SetSRID(ST_MakePoint(123.2000000,47.3000000),4326),DATE '2026-01-01',
+                  :actor,:actor,:actor)
                 """).param("samplePointId", SAMPLE_POINT_ID).param("actor", ACTOR).update();
         jdbc.sql("""
                 INSERT INTO registry.formal_sample_point_profile(
-                  sample_point_id,object_type_code,address,maintainer_subject_id,
-                  created_by,updated_by)
-                VALUES(:samplePointId,'FARMER','龙江县样本地址',:actor,:actor,:actor)
+                  sample_point_id,object_type_code,address,created_by,updated_by)
+                VALUES(:samplePointId,'FARMER','龙江县样本地址',:actor,:actor)
                 """).param("samplePointId", SAMPLE_POINT_ID).param("actor", ACTOR).update();
         jdbc.sql("""
                 INSERT INTO production.production_record(
@@ -258,9 +262,10 @@ class FormalSampleObservationRestIntegrationTest {
         jdbc.sql("""
                 INSERT INTO registry.sample_point(
                   sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
-                  governed_point,effective_from,created_by,updated_by)
+                  governed_point,effective_from,maintainer_subject_id,created_by,updated_by)
                 VALUES(:samplePointId,'SURVEY_SITE','龙江县当前正式样本','230221','APPROVED','VALID',
-                  ST_SetSRID(ST_MakePoint(123.2100000,47.3100000),4326),DATE '2026-01-01',:actor,:actor)
+                  ST_SetSRID(ST_MakePoint(123.2100000,47.3100000),4326),DATE '2026-01-01',
+                  :actor,:actor,:actor)
                 """).param("samplePointId", SHADOWED_SAMPLE_POINT_ID).param("actor", ACTOR).update();
         jdbc.sql("""
                 INSERT INTO production.production_record(
@@ -391,7 +396,7 @@ class FormalSampleObservationRestIntegrationTest {
     @Test
     void rejectsPeriodWritesWhenTheFormalSampleHasNoAssignedMaintainer() throws Exception {
         jdbc.sql("""
-                UPDATE registry.formal_sample_point_profile
+                UPDATE registry.sample_point
                 SET maintainer_subject_id=NULL WHERE sample_point_id=:samplePointId
                 """).param("samplePointId", SAMPLE_POINT_ID).update();
         String request = """
@@ -433,6 +438,16 @@ class FormalSampleObservationRestIntegrationTest {
     void rejectsSameRegionNonMaintainerWithoutBusinessOrAuditSideEffects() throws Exception {
         long recordsBefore = productionRecordCount();
 
+        mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
+                        .principal(() -> SAME_REGION_ACTOR)
+                        .queryParam("domain", "PRODUCTION")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", "230221")
+                        .queryParam("year", "2026")
+                        .queryParam("observedAt", "2026-08-28T10:15:00+08:00"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(0));
+
         mvc.perform(post("/api/v1/formal-sample-observations/observations")
                         .principal(() -> SAME_REGION_ACTOR)
                         .header("Idempotency-Key", "non-maintainer-write-1")
@@ -446,9 +461,41 @@ class FormalSampleObservationRestIntegrationTest {
     }
 
     @Test
+    void replaysTheOriginalReceiptAfterTheSampleIsReassigned() throws Exception {
+        jdbc.sql("""
+                UPDATE registry.sample_point
+                SET maintainer_subject_id=:maintainer WHERE sample_point_id=:samplePointId
+                """).param("maintainer", SAME_REGION_ACTOR)
+                .param("samplePointId", SAMPLE_POINT_ID).update();
+        String request = minimalProductionObservationRequest();
+
+        String first = mvc.perform(post("/api/v1/formal-sample-observations/observations")
+                        .principal(() -> SAME_REGION_ACTOR)
+                        .header("Idempotency-Key", "reassigned-replay-1")
+                        .contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        jdbc.sql("""
+                UPDATE registry.sample_point
+                SET maintainer_subject_id=:maintainer WHERE sample_point_id=:samplePointId
+                """).param("maintainer", ACTOR)
+                .param("samplePointId", SAMPLE_POINT_ID).update();
+
+        String replay = mvc.perform(post("/api/v1/formal-sample-observations/observations")
+                        .principal(() -> SAME_REGION_ACTOR)
+                        .header("Idempotency-Key", "reassigned-replay-1")
+                        .contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(replay).isEqualTo(first);
+        assertThat(formalObservationAuditCount()).isEqualTo(formalObservationAuditCountBefore + 1);
+    }
+
+    @Test
     void recordsAdministratorOverrideWhenAnAdministratorWritesForTheMaintainer() throws Exception {
         jdbc.sql("""
-                UPDATE registry.formal_sample_point_profile
+                UPDATE registry.sample_point
                 SET maintainer_subject_id=:maintainer WHERE sample_point_id=:samplePointId
                 """).param("maintainer", SAME_REGION_ACTOR)
                 .param("samplePointId", SAMPLE_POINT_ID).update();
@@ -917,8 +964,6 @@ class FormalSampleObservationRestIntegrationTest {
         jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id=:subject")
                 .param("subject", SAME_REGION_ACTOR).update();
         jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:subject")
-                .param("subject", SAME_REGION_ACTOR).update();
-        jdbc.sql("DELETE FROM platform.security_user WHERE subject_id=:subject")
                 .param("subject", SAME_REGION_ACTOR).update();
     }
 

@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.formalsamplepoint.infrastructure;
 
 import com.cofco.qiqihar.graintrade.formalsamplepoint.application.FormalSamplePointDraft;
+import com.cofco.qiqihar.graintrade.formalsamplepoint.application.FormalSampleMaintainerView;
 import com.cofco.qiqihar.graintrade.formalsamplepoint.application.FormalSamplePointRepository;
 import com.cofco.qiqihar.graintrade.formalsamplepoint.application.FormalSamplePointView;
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
@@ -24,7 +25,7 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
                    point.region_code,point.approval_state,point.location_state,
                    profile.object_type_code,object_type.name AS object_type_name,
                    object_type.business_domain,profile.address,
-                   profile.maintainer_subject_id,maintainer.display_name maintainer_display_name,
+                   point.maintainer_subject_id,maintainer.display_name maintainer_display_name,
                    ST_X(point.governed_point) longitude,
                    ST_Y(point.governed_point) latitude,
                    point.effective_from,point.effective_to,point.version,
@@ -42,7 +43,7 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
             LEFT JOIN platform.object_type object_type
               ON object_type.code=profile.object_type_code
             LEFT JOIN platform.security_user maintainer
-              ON maintainer.subject_id=profile.maintainer_subject_id
+              ON maintainer.subject_id=point.maintainer_subject_id
             """;
     private final JdbcClient jdbc;
 
@@ -73,6 +74,42 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
                         WHERE point.kind_code='SURVEY_SITE'
                           AND point.sample_point_id=:id
                         """).param("id", id).query((row, ignored) -> view(row)).optional();
+    }
+
+    @Override
+    public Optional<FormalSampleMaintainerView> findMaintainerTarget(UUID id) {
+        return jdbc.sql("""
+                SELECT point.sample_point_id,point.kind_code,point.canonical_name,
+                       point.region_code,point.maintainer_subject_id,
+                       maintainer.display_name maintainer_display_name,point.version
+                FROM registry.sample_point point
+                LEFT JOIN platform.security_user maintainer
+                  ON maintainer.subject_id=point.maintainer_subject_id
+                WHERE point.sample_point_id=:id
+                  AND point.kind_code IN ('SURVEY_SITE','LOGISTICS_NODE')
+                """).param("id", id).query((row, ignored) -> new FormalSampleMaintainerView(
+                        row.getObject("sample_point_id", UUID.class),
+                        row.getString("kind_code"), row.getString("canonical_name"),
+                        row.getString("region_code"), row.getString("maintainer_subject_id"),
+                        row.getString("maintainer_display_name"), row.getLong("version")))
+                .optional();
+    }
+
+    @Override
+    public Optional<FormalSampleMaintainerView> assignMaintainer(
+            UUID id, long expectedVersion, String maintainerSubjectId,
+            String actorSubjectId, Instant now) {
+        int updated = jdbc.sql("""
+                UPDATE registry.sample_point
+                SET maintainer_subject_id=:maintainer,version=version+1,
+                    updated_by=:actor,updated_at=:now
+                WHERE sample_point_id=:id
+                  AND kind_code IN ('SURVEY_SITE','LOGISTICS_NODE')
+                  AND version=:expectedVersion
+                """).param("maintainer", maintainerSubjectId)
+                .param("actor", actorSubjectId).param("now", Timestamp.from(now))
+                .param("id", id).param("expectedVersion", expectedVersion).update();
+        return updated == 0 ? Optional.empty() : findMaintainerTarget(id);
     }
 
     @Override
@@ -110,13 +147,14 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
                 INSERT INTO registry.sample_point(
                   sample_point_id,kind_code,canonical_name,region_code,approval_state,
                   location_state,governed_point,effective_from,version,
-                  created_by,created_at,updated_by,updated_at)
+                  maintainer_subject_id,created_by,created_at,updated_by,updated_at)
                 VALUES(:id,'SURVEY_SITE',:name,:region,'APPROVED','VALID',
                   ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326),:effectiveFrom,0,
-                  :actor,:now,:actor,:now)
+                  :maintainer,:actor,:now,:actor,:now)
                 """).param("id", id).param("name", draft.canonicalName())
                 .param("region", draft.regionCode()).param("longitude", draft.longitude())
                 .param("latitude", draft.latitude()).param("effectiveFrom", effectiveFrom)
+                .param("maintainer", draft.maintainerSubjectId())
                 .param("actor", actorSubjectId).param("now", Timestamp.from(now)).update();
         insertProfile(id, draft, actorSubjectId, now);
         return find(id);
@@ -130,26 +168,25 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
                 UPDATE registry.sample_point
                 SET canonical_name=:name,region_code=:region,
                     governed_point=ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326),
+                    maintainer_subject_id=:maintainer,
                     version=version+1,updated_by=:actor,updated_at=:now
                 WHERE sample_point_id=:id AND kind_code='SURVEY_SITE'
                   AND version=:expectedVersion
                 """).param("name", draft.canonicalName()).param("region", draft.regionCode())
                 .param("longitude", draft.longitude()).param("latitude", draft.latitude())
+                .param("maintainer", draft.maintainerSubjectId())
                 .param("actor", actorSubjectId).param("now", Timestamp.from(now))
                 .param("id", id).param("expectedVersion", expectedVersion).update();
         if (updated == 0) return Optional.empty();
         jdbc.sql("""
                 INSERT INTO registry.formal_sample_point_profile(
-                  sample_point_id,object_type_code,address,maintainer_subject_id,
-                  created_by,created_at,updated_by,updated_at)
-                VALUES(:id,:objectType,:address,:maintainer,:actor,:now,:actor,:now)
+                  sample_point_id,object_type_code,address,created_by,created_at,updated_by,updated_at)
+                VALUES(:id,:objectType,:address,:actor,:now,:actor,:now)
                 ON CONFLICT(sample_point_id) DO UPDATE SET
                   object_type_code=EXCLUDED.object_type_code,address=EXCLUDED.address,
-                  maintainer_subject_id=EXCLUDED.maintainer_subject_id,
                   updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at
                 """).param("id", id).param("objectType", draft.objectTypeCode())
                 .param("address", draft.address())
-                .param("maintainer", draft.maintainerSubjectId())
                 .param("actor", actorSubjectId)
                 .param("now", Timestamp.from(now)).update();
         return find(id);
@@ -215,12 +252,10 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
             UUID id, FormalSamplePointDraft draft, String actorSubjectId, Instant now) {
         jdbc.sql("""
                 INSERT INTO registry.formal_sample_point_profile(
-                  sample_point_id,object_type_code,address,maintainer_subject_id,
-                  created_by,created_at,updated_by,updated_at)
-                VALUES(:id,:objectType,:address,:maintainer,:actor,:now,:actor,:now)
+                  sample_point_id,object_type_code,address,created_by,created_at,updated_by,updated_at)
+                VALUES(:id,:objectType,:address,:actor,:now,:actor,:now)
                 """).param("id", id).param("objectType", draft.objectTypeCode())
                 .param("address", draft.address())
-                .param("maintainer", draft.maintainerSubjectId())
                 .param("actor", actorSubjectId)
                 .param("now", Timestamp.from(now)).update();
     }

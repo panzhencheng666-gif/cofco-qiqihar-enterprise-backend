@@ -36,6 +36,8 @@ class FormalSamplePointWriteRestIntegrationTest {
     private static final String RESTRICTED = "formal-sample-manage-restricted";
     private static final UUID OCCUPIED_POINT_ID =
             UUID.fromString("fa120000-0000-0000-0000-000000000001");
+    private static final UUID LOGISTICS_POINT_ID =
+            UUID.fromString("fa120000-0000-0000-0000-000000000002");
 
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
@@ -74,6 +76,13 @@ class FormalSamplePointWriteRestIntegrationTest {
                 VALUES(:id,'SURVEY_SITE','坐标占用样本','230202','APPROVED','VALID',
                   ST_SetSRID(ST_MakePoint(123.93,47.30),4326),DATE '2026-01-01',:actor,:actor)
                 """).param("id", OCCUPIED_POINT_ID).param("actor", ADMIN).update();
+        jdbc.sql("""
+                INSERT INTO registry.sample_point(
+                  sample_point_id,kind_code,canonical_name,region_code,approval_state,
+                  location_state,governed_point,effective_from,created_by,updated_by)
+                VALUES(:id,'LOGISTICS_NODE','历史物流正式样本','230202','APPROVED','VALID',
+                  ST_SetSRID(ST_MakePoint(123.95,47.32),4326),DATE '2026-01-01',:actor,:actor)
+                """).param("id", LOGISTICS_POINT_ID).param("actor", ADMIN).update();
     }
 
     @AfterEach
@@ -121,6 +130,58 @@ class FormalSamplePointWriteRestIntegrationTest {
                 """).param("id", id.toString()).query((row, index) ->
                         java.util.List.of(row.getString(1), row.getString(2), row.getString(3))).single())
                 .containsExactly(RESTRICTED, ADMIN, "原维护人岗位调整");
+    }
+
+    @Test
+    void assignsAnActiveMaintainerToAHistoricalLogisticsFormalSample() throws Exception {
+        mvc.perform(put("/api/v1/formal-sample-points/{id}/maintainer", LOGISTICS_POINT_ID)
+                        .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "maintainerSubjectId":"formal-sample-manage-restricted",
+                                  "maintainerChangeReason":"明确物流样本后续维护责任",
+                                  "expectedVersion":0
+                                }
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.kindCode").value("LOGISTICS_NODE"))
+                .andExpect(jsonPath("$.data.maintainerSubjectId").value(RESTRICTED))
+                .andExpect(jsonPath("$.data.maintainerDisplayName").value("正式样本维护受限用户"))
+                .andExpect(jsonPath("$.data.version").value(1));
+
+        assertThat(jdbc.sql("""
+                SELECT action_code FROM platform.business_audit_event
+                WHERE aggregate_type='FORMAL_SAMPLE_POINT'
+                  AND aggregate_id=:id ORDER BY occurred_at DESC LIMIT 1
+                """).param("id", LOGISTICS_POINT_ID.toString()).query(String.class).single())
+                .isEqualTo("FORMAL_SAMPLE_POINT_MAINTAINER_ASSIGNED");
+    }
+
+    @Test
+    void rejectsMaintainerAssignmentWithoutManagePermissionWithoutWriting() throws Exception {
+        mvc.perform(put("/api/v1/formal-sample-points/{id}/maintainer", LOGISTICS_POINT_ID)
+                        .principal(() -> RESTRICTED).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "maintainerSubjectId":"production-tester",
+                                  "maintainerChangeReason":"无权调整物流样本维护人",
+                                  "expectedVersion":0
+                                }
+                                """))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("ACCESS_PERMISSION_DENIED"));
+
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM registry.sample_point
+                WHERE sample_point_id=:id AND maintainer_subject_id IS NULL
+                  AND version=0 AND updated_by=:actor
+                """).param("id", LOGISTICS_POINT_ID).param("actor", ADMIN)
+                .query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type='FORMAL_SAMPLE_POINT' AND aggregate_id=:id
+                """).param("id", LOGISTICS_POINT_ID.toString())
+                .query(Long.class).single()).isZero();
     }
 
     @Test

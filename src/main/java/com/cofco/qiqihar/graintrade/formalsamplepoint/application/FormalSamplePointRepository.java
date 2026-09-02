@@ -15,6 +15,12 @@ public interface FormalSamplePointRepository {
 
     Optional<FormalSamplePointView> find(UUID id);
 
+    Optional<FormalSampleMaintainerView> findMaintainerTarget(UUID id);
+
+    Optional<FormalSampleMaintainerView> assignMaintainer(
+            UUID id, long expectedVersion, String maintainerSubjectId,
+            String actorSubjectId, Instant now);
+
     Optional<BoundaryContainment> coordinateBoundaryState(
             String regionCode, BigDecimal longitude, BigDecimal latitude);
 

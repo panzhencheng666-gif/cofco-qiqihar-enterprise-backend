@@ -17,7 +17,9 @@ public interface FormalSampleObservationRepository {
             String objectTypeCode,
             String keywordPattern,
             LocalDate observedOn,
-            Set<String> authorizedRegionCodes);
+            Set<String> authorizedRegionCodes,
+            String actorSubjectId,
+            boolean administratorOverride);
 
     Optional<String> findObjectTypeName(
             FormalSampleObservationDomain domain, String productCode, String objectTypeCode);

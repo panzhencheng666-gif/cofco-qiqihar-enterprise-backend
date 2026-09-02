@@ -142,6 +142,37 @@ public class FormalSamplePointService {
     }
 
     @Transactional
+    public FormalSampleMaintainerView assignMaintainer(
+            UUID id, long expectedVersion, String submittedMaintainerSubjectId,
+            String submittedReason) {
+        if (expectedVersion < 0) throw invalid();
+        SecurityPrincipal actor = access.require("FORMAL_SAMPLE_MANAGE", null);
+        FormalSampleMaintainerView current = repository.findMaintainerTarget(id)
+                .orElseThrow(FormalSamplePointService::notFound);
+        access.require("FORMAL_SAMPLE_MANAGE", current.regionCode());
+        if (current.version() != expectedVersion) {
+            throw new ConflictException(
+                    "FORMAL_SAMPLE_POINT_VERSION_CONFLICT",
+                    "正式样本已发生变化，请刷新后重试");
+        }
+        String maintainerSubjectId = maintainer(submittedMaintainerSubjectId);
+        requireValidMaintainer(maintainerSubjectId, current.regionCode());
+        if (Objects.equals(current.maintainerSubjectId(), maintainerSubjectId)) return current;
+        String reason = required(submittedReason, 500);
+        Instant now = clock.instant();
+        FormalSampleMaintainerView updated = repository.assignMaintainer(
+                        id, expectedVersion, maintainerSubjectId, actor.subjectId(), now)
+                .orElseThrow(() -> new ConflictException(
+                        "FORMAL_SAMPLE_POINT_VERSION_CONFLICT",
+                        "正式样本已发生变化，请刷新后重试"));
+        String action = current.maintainerSubjectId() == null
+                ? "FORMAL_SAMPLE_POINT_MAINTAINER_ASSIGNED"
+                : "FORMAL_SAMPLE_POINT_MAINTAINER_REASSIGNED";
+        recordMaintainer(actor, updated, action, now, current.maintainerSubjectId(), reason);
+        return updated;
+    }
+
+    @Transactional
     public void delete(UUID id, long expectedVersion) {
         if (expectedVersion < 0) throw invalid();
         FormalSamplePointView point = required(id);
@@ -196,12 +227,7 @@ public class FormalSamplePointService {
 
     private void requireValidReferences(FormalSamplePointDraft draft) {
         if (!repository.isSupportedObjectType(draft.objectTypeCode())) throw invalid();
-        SecurityPrincipal maintainer = principals.findEnabled(draft.maintainerSubjectId())
-                .orElseThrow(FormalSamplePointService::invalidMaintainer);
-        if (!maintainer.permits("BUSINESS_CREATE")
-                || !maintainer.includesRegion(draft.regionCode())) {
-            throw invalidMaintainer();
-        }
+        requireValidMaintainer(draft.maintainerSubjectId(), draft.regionCode());
         FormalSamplePointRepository.BoundaryContainment containment = repository
                 .coordinateBoundaryState(
                         draft.regionCode(), draft.longitude(), draft.latitude())
@@ -212,6 +238,15 @@ public class FormalSamplePointService {
             case OUTSIDE -> throw new ClientRequestException(
                     "COORDINATE_OUTSIDE_REGION", "正式样本坐标不在所选行政区范围内");
             case INSIDE -> { }
+        }
+    }
+
+    private void requireValidMaintainer(String maintainerSubjectId, String regionCode) {
+        SecurityPrincipal maintainer = principals.findEnabled(maintainerSubjectId)
+                .orElseThrow(FormalSamplePointService::invalidMaintainer);
+        if (!maintainer.permits("BUSINESS_CREATE")
+                || !maintainer.includesRegion(regionCode)) {
+            throw invalidMaintainer();
         }
     }
 
@@ -255,6 +290,23 @@ public class FormalSamplePointService {
         try {
             String detail = json.writeValueAsString(new EventDetail(
                     point.regionCode(), regionCodes, point.objectTypeCode(), point.version(),
+                    previousMaintainerSubjectId, point.maintainerSubjectId(), actor.subjectId(),
+                    maintainerChangeReason));
+            audit.record(actor, AGGREGATE, point.id().toString(), action, occurredAt, detail);
+        } catch (JacksonException exception) {
+            throw new IllegalStateException("Cannot serialize formal sample point event", exception);
+        } catch (DataIntegrityViolationException exception) {
+            throw new IllegalStateException("Cannot persist formal sample point event", exception);
+        }
+    }
+
+    private void recordMaintainer(
+            SecurityPrincipal actor, FormalSampleMaintainerView point, String action,
+            Instant occurredAt, String previousMaintainerSubjectId,
+            String maintainerChangeReason) {
+        try {
+            String detail = json.writeValueAsString(new EventDetail(
+                    point.regionCode(), List.of(point.regionCode()), null, point.version(),
                     previousMaintainerSubjectId, point.maintainerSubjectId(), actor.subjectId(),
                     maintainerChangeReason));
             audit.record(actor, AGGREGATE, point.id().toString(), action, occurredAt, detail);
