@@ -2,6 +2,8 @@ package com.cofco.qiqihar.graintrade.overview.interfaceadapter;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -24,8 +26,10 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
@@ -43,6 +47,74 @@ class OverviewSamplePointRestIntegrationTest {
     private static final String DRAFT_POINT = "94000000-0000-0000-0000-000000000004";
     private static final String DUPLICATE_POINT = "94000000-0000-0000-0000-000000000005";
     private static final String DIRECT_COUNTY_POINT = "94000000-0000-0000-0000-000000000006";
+
+    @Test
+    void designSampleReferenceChangesNeverEnterFormalListsOrSynthesizeOverviewMetrics()
+            throws Exception {
+        JsonNode formalSamplesBefore = responseData(get("/api/v1/overview/sample-points")
+                .principal(() -> "production-tester")
+                .queryParam("regionCode", COUNTY)
+                .queryParam("productCode", "CORN")
+                .queryParam("year", "2026"));
+        JsonNode indicatorsBefore = responseData(get("/api/v1/overview/indicators")
+                .principal(() -> "production-tester")
+                .queryParam("regionCode", COUNTY)
+                .queryParam("productCode", "CORN")
+                .queryParam("year", "2026"));
+        String contractVersion = jdbc.sql("""
+                SELECT contract_version FROM platform.design_sample_contract WHERE active
+                """).query(String.class).single();
+        String contractDigest = jdbc.sql("""
+                SELECT platform.current_design_sample_contract_digest()
+                """).query(String.class).single();
+        String createRequest = """
+                {"contractVersion":"%s","contractDigest":"%s",
+                 "context":{"domainCode":"REFERENCE","productCode":"GENERAL",
+                            "objectTypeCode":"REFERENCE_POINT"},
+                 "values":{"DSP_NAME":"总揽边界设计参考点",
+                           "DSP_REGION_CODE":"230202",
+                           "DSP_ADDRESS":"更新前地址",
+                           "DSP_LONGITUDE":123.9,"DSP_LATITUDE":47.3}}
+                """.formatted(contractVersion, contractDigest);
+        String designId = objectMapper.readTree(mvc.perform(post("/api/v1/design-sample-points")
+                        .header("Idempotency-Key", "overview-design-reference-boundary")
+                        .principal(() -> "production-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(createRequest))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString())
+                .path("data").path("id").asText();
+
+        mvc.perform(put("/api/v1/design-sample-points/{id}", designId)
+                        .principal(() -> "production-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"contractVersion":"%s","contractDigest":"%s","expectedVersion":0,
+                                 "context":{"domainCode":"REFERENCE","productCode":"GENERAL",
+                                            "objectTypeCode":"REFERENCE_POINT"},
+                                 "values":{"DSP_NAME":"总揽边界设计参考点",
+                                           "DSP_REGION_CODE":"230202",
+                                           "DSP_ADDRESS":"更新后参考地址",
+                                           "DSP_LONGITUDE":123.9,"DSP_LATITUDE":47.3}}
+                                """.formatted(contractVersion, contractDigest)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.values.DSP_ADDRESS").value("更新后参考地址"))
+                .andExpect(jsonPath("$.data.version").value(1));
+        mvc.perform(get("/api/v1/design-sample-points/{id}", designId)
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.values.DSP_ADDRESS").value("更新后参考地址"));
+
+        assertEquals(formalSamplesBefore, responseData(get("/api/v1/overview/sample-points")
+                .principal(() -> "production-tester")
+                .queryParam("regionCode", COUNTY)
+                .queryParam("productCode", "CORN")
+                .queryParam("year", "2026")));
+        assertEquals(indicatorsBefore, responseData(get("/api/v1/overview/indicators")
+                .principal(() -> "production-tester")
+                .queryParam("regionCode", COUNTY)
+                .queryParam("productCode", "CORN")
+                .queryParam("year", "2026")));
+    }
 
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
@@ -1714,6 +1786,7 @@ class OverviewSamplePointRestIntegrationTest {
                 TRUNCATE registry.sample_point,production.production_record,market.market_record,
                   logistics.route_event,logistics.logistics_node RESTART IDENTITY CASCADE
                 """).update();
+        jdbc.sql("DELETE FROM platform.design_sample_point").update();
         jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE region_code IN (:township,:village)")
                 .param("township", TOWNSHIP).param("village", VILLAGE).update();
         jdbc.sql("DELETE FROM platform.work_unit_region_scope WHERE region_code IN (:township,:village)")
@@ -1722,5 +1795,10 @@ class OverviewSamplePointRestIntegrationTest {
                 .param("county", COUNTY).param("township", TOWNSHIP)
                 .param("village", VILLAGE).update();
         GovernedMasterDataFixtures.deleteRegions(jdbc, java.util.List.of(VILLAGE, TOWNSHIP));
+    }
+
+    private JsonNode responseData(MockHttpServletRequestBuilder request) throws Exception {
+        return objectMapper.readTree(mvc.perform(request).andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString()).path("data");
     }
 }
