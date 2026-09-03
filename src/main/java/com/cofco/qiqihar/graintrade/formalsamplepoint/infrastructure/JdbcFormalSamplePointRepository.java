@@ -71,7 +71,8 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
     @Override
     public Optional<FormalSamplePointView> find(UUID id) {
         return jdbc.sql(SELECT_VIEW + """
-                        WHERE point.kind_code='SURVEY_SITE'
+                        WHERE point.kind_code IN ('SURVEY_SITE','LOGISTICS_NODE')
+                          AND point.deletion_state='ACTIVE'
                           AND point.sample_point_id=:id
                         """).param("id", id).query((row, ignored) -> view(row)).optional();
     }
@@ -87,6 +88,7 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
                   ON maintainer.subject_id=point.maintainer_subject_id
                 WHERE point.sample_point_id=:id
                   AND point.kind_code IN ('SURVEY_SITE','LOGISTICS_NODE')
+                  AND point.deletion_state='ACTIVE'
                 """).param("id", id).query((row, ignored) -> new FormalSampleMaintainerView(
                         row.getObject("sample_point_id", UUID.class),
                         row.getString("kind_code"), row.getString("canonical_name"),
@@ -105,6 +107,7 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
                     updated_by=:actor,updated_at=:now
                 WHERE sample_point_id=:id
                   AND kind_code IN ('SURVEY_SITE','LOGISTICS_NODE')
+                  AND deletion_state='ACTIVE'
                   AND version=:expectedVersion
                 """).param("maintainer", maintainerSubjectId)
                 .param("actor", actorSubjectId).param("now", Timestamp.from(now))
@@ -171,6 +174,7 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
                     maintainer_subject_id=:maintainer,
                     version=version+1,updated_by=:actor,updated_at=:now
                 WHERE sample_point_id=:id AND kind_code='SURVEY_SITE'
+                  AND deletion_state='ACTIVE'
                   AND version=:expectedVersion
                 """).param("name", draft.canonicalName()).param("region", draft.regionCode())
                 .param("longitude", draft.longitude()).param("latitude", draft.latitude())
@@ -206,7 +210,8 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
 
     private static Filter filter(
             String regionCode, String keyword, Set<String> authorizedRegionCodes) {
-        StringBuilder sql = new StringBuilder(" WHERE point.kind_code='SURVEY_SITE'");
+        StringBuilder sql = new StringBuilder(
+                " WHERE point.kind_code='SURVEY_SITE' AND point.deletion_state='ACTIVE'");
         Map<String, Object> parameters = new LinkedHashMap<>();
         if (!authorizedRegionCodes.contains("*")) {
             if (authorizedRegionCodes.isEmpty()) {
