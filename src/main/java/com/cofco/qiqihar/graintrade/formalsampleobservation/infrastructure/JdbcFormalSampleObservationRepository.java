@@ -177,15 +177,26 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                     """.formatted(LOGISTICS_PUBLIC_VALUES_SQL);
         };
         return jdbc.sql("""
-                SELECT point.sample_point_id,point.canonical_name,latest.object_type_code,
+                SELECT point.sample_point_id,point.canonical_name,profile.address,
+                       latest.object_type_code,
                        object_type.name object_type_name,point.region_code,region.name region_name,
                        point.maintainer_subject_id,
                        maintainer.display_name maintainer_display_name,
                        trim(to_char(ST_Y(point.governed_point),'FM999990.0000000')) latitude,
                        trim(to_char(ST_X(point.governed_point),'FM999990.0000000')) longitude,
-                       point.effective_from,point.effective_to,
+                       point.effective_from,point.effective_to,point.version,
+                       ((SELECT count(*) FROM production.production_record record
+                           WHERE record.sample_point_id=point.sample_point_id)
+                        +(SELECT count(*) FROM market.market_record record
+                           WHERE record.sample_point_id=point.sample_point_id)
+                        +(SELECT count(*) FROM logistics.route_event event
+                           WHERE event.sample_point_id=point.sample_point_id)) annual_observation_count,
+                       (SELECT count(*) FROM registry.sample_network_membership membership
+                           WHERE membership.sample_point_id=point.sample_point_id) network_membership_count,
                        latest.source_record_id,latest.latest_observed_at,latest.latest_values
                 FROM registry.sample_point point
+                LEFT JOIN registry.formal_sample_point_profile profile
+                  ON profile.sample_point_id=point.sample_point_id
                 JOIN platform.region region ON region.code=point.region_code
                 LEFT JOIN platform.security_user maintainer
                   ON maintainer.subject_id=point.maintainer_subject_id
@@ -224,7 +235,8 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                 .param("keywordPattern", keywordPattern, java.sql.Types.VARCHAR)
                 .query((row, ignored) -> new EligibleFormalSample(
                         row.getObject("sample_point_id", java.util.UUID.class),
-                        row.getString("canonical_name"), row.getString("object_type_code"),
+                        row.getString("canonical_name"), row.getString("address"),
+                        row.getString("object_type_code"),
                         row.getString("object_type_name"), domain, productCode,
                         row.getString("region_code"), row.getString("region_name"),
                         row.getString("maintainer_subject_id"),
@@ -232,6 +244,8 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                         row.getString("latitude"), row.getString("longitude"),
                         row.getObject("effective_from", LocalDate.class),
                         row.getObject("effective_to", LocalDate.class),
+                        row.getLong("version"), row.getLong("annual_observation_count"),
+                        row.getLong("network_membership_count"),
                         row.getString("source_record_id"),
                         row.getObject("latest_observed_at", OffsetDateTime.class),
                         json(row.getString("latest_values"))))

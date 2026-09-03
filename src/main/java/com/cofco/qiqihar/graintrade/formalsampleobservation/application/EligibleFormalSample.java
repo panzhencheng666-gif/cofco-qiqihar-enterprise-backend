@@ -8,6 +8,7 @@ import java.util.UUID;
 public record EligibleFormalSample(
         UUID samplePointId,
         String sampleName,
+        String address,
         String objectTypeCode,
         String objectTypeName,
         FormalSampleObservationDomain domain,
@@ -20,6 +21,9 @@ public record EligibleFormalSample(
         String longitude,
         LocalDate effectiveFrom,
         LocalDate effectiveTo,
+        long version,
+        long annualObservationCount,
+        long networkMembershipCount,
         String latestObservationId,
         OffsetDateTime latestObservedAt,
         JsonNode latestValues) {

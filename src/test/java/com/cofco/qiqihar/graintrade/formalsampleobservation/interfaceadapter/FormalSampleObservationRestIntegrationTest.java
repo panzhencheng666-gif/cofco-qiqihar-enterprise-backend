@@ -185,6 +185,12 @@ class FormalSampleObservationRestIntegrationTest {
                 .andExpect(jsonPath("$.data.length()").value(1))
                 .andExpect(jsonPath("$.data[0].samplePointId").value(SAMPLE_POINT_ID.toString()))
                 .andExpect(jsonPath("$.data[0].sampleName").value("龙江县既有正式样本"))
+                .andExpect(jsonPath("$.data[0].address").value("龙江县样本地址"))
+                .andExpect(jsonPath("$.data[0].maintainerSubjectId").value(ACTOR))
+                .andExpect(jsonPath("$.data[0].maintainerDisplayName").value("产情测试员"))
+                .andExpect(jsonPath("$.data[0].version").value(0))
+                .andExpect(jsonPath("$.data[0].annualObservationCount").value(3))
+                .andExpect(jsonPath("$.data[0].networkMembershipCount").value(0))
                 .andExpect(jsonPath("$.data[0].objectTypeCode").value("FARMER"))
                 .andExpect(jsonPath("$.data[0].objectTypeName").isNotEmpty())
                 .andExpect(jsonPath("$.data[0].regionCode").value("230221"))
@@ -521,6 +527,15 @@ class FormalSampleObservationRestIntegrationTest {
 
     @Test
     void savesOneOfficialProductionObservationAndReplaysTheSameIdempotentResult() throws Exception {
+        long formalObservationOutboxCountBefore = jdbc.sql("""
+                SELECT count(*) FROM platform.business_event_outbox
+                WHERE aggregate_type='FORMAL_SAMPLE_OBSERVATION'
+                  AND action_code='FORMAL_SAMPLE_OBSERVATION_SAVED'
+                  AND detail->>'samplePointId'=:samplePointId
+                  AND detail->>'regionCode'='230221'
+                  AND detail->>'productCode'='CORN'
+                """).param("samplePointId", SAMPLE_POINT_ID.toString())
+                .query(Long.class).single();
         String request = """
                 {
                   "domain":"PRODUCTION",
@@ -590,6 +605,15 @@ class FormalSampleObservationRestIntegrationTest {
                   AND action_code='FORMAL_SAMPLE_OBSERVATION_SAVED'
                 """).query(Long.class).single())
                 .isEqualTo(formalObservationAuditCountBefore + 1);
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_event_outbox
+                WHERE aggregate_type='FORMAL_SAMPLE_OBSERVATION'
+                  AND action_code='FORMAL_SAMPLE_OBSERVATION_SAVED'
+                  AND detail->>'samplePointId'=:samplePointId
+                  AND detail->>'regionCode'='230221'
+                  AND detail->>'productCode'='CORN'
+                """).param("samplePointId", SAMPLE_POINT_ID.toString())
+                .query(Long.class).single()).isEqualTo(formalObservationOutboxCountBefore + 1);
 
         mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
                         .principal(() -> ACTOR)
@@ -745,17 +769,32 @@ class FormalSampleObservationRestIntegrationTest {
     void savesMarketAndLogisticsObservationsDirectlyAsOfficialRecords() throws Exception {
         jdbc.sql("UPDATE market.market_record SET object_type_code='FEED_MILL' WHERE record_id=:id")
                 .param("id", MARKET_RECORD_ID).update();
+        String previousPrice = jdbc.sql("""
+                SELECT purchase_base_price::text FROM market.market_record WHERE record_id=:id
+                """).param("id", MARKET_RECORD_ID).query(String.class).single();
+        String updatedPrice = new java.math.BigDecimal(previousPrice)
+                .add(new java.math.BigDecimal("17")).stripTrailingZeros().toPlainString();
+        assertThat(updatedPrice).isNotEqualTo(new java.math.BigDecimal(previousPrice)
+                .stripTrailingZeros().toPlainString());
+        mvc.perform(get("/api/v1/overview/indicators").principal(() -> ACTOR)
+                        .queryParam("productCode", "CORN").queryParam("regionCode", "230221")
+                        .queryParam("year", "2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.code == 'MARKET_AVERAGE_PURCHASE_PRICE')].value")
+                        .value(org.hamcrest.Matchers.hasItem(
+                                new java.math.BigDecimal(previousPrice).stripTrailingZeros()
+                                        .toPlainString())));
         String market = """
                 {"domain":"MARKET","samplePointId":"%s","productCode":"CORN",
                  "observedAt":"2026-08-28T10:15:00+08:00","payload":{"productCode":"CORN",
                  "coreValues":{"MKT_OBJECT_TYPE":"TRADER","MKT_REGION":"230202",
-                 "MKT_TRADE_DATE":"2026-08-01","MKT_PURCHASE_BASE_PRICE":"2310",
+                 "MKT_TRADE_DATE":"2026-08-01","MKT_PURCHASE_BASE_PRICE":"%s",
                  "MKT_CARRIAGE_BOARD_AMOUNT":"36",
                  "MKT_PACKAGING_AMOUNT":"12","MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",
                  "MKT_SAMPLE_NAME":"伪造样本","MKT_SAMPLE_CONTACT":"19900000000",
                  "MKT_SAMPLE_LATITUDE":"1","MKT_SAMPLE_LONGITUDE":"2"},
                  "facts":{"PURCHASE_VOLUME":"12"},"evidencePhotoIds":[]}}
-                """.formatted(SAMPLE_POINT_ID);
+                """.formatted(SAMPLE_POINT_ID, updatedPrice);
         mvc.perform(post("/api/v1/formal-sample-observations/observations").principal(() -> ACTOR)
                         .header("Idempotency-Key", "market-observation-1")
                         .contentType(MediaType.APPLICATION_JSON).content(market))
@@ -768,8 +807,9 @@ class FormalSampleObservationRestIntegrationTest {
         mvc.perform(post("/api/v1/formal-sample-observations/observations").principal(() -> ACTOR)
                         .header("Idempotency-Key", "market-observation-injected-sale")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(market.replace("\"MKT_PURCHASE_BASE_PRICE\":\"2310\"",
-                                "\"MKT_PURCHASE_BASE_PRICE\":\"2310\",\"MKT_SALE_BASE_PRICE\":\"2390\"")))
+                        .content(market.replace("\"MKT_PURCHASE_BASE_PRICE\":\"" + updatedPrice + "\"",
+                                "\"MKT_PURCHASE_BASE_PRICE\":\"" + updatedPrice
+                                        + "\",\"MKT_SALE_BASE_PRICE\":\"2390\"")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("INVALID_MARKET_RECORD"));
 
@@ -787,14 +827,14 @@ class FormalSampleObservationRestIntegrationTest {
                         .queryParam("surveyYear", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.market.metrics[?(@.code == 'AVERAGE_PURCHASE_PRICE')].value")
-                        .value(org.hamcrest.Matchers.hasItem("2310.0000")))
+                        .value(org.hamcrest.Matchers.hasItem(updatedPrice + ".0000")))
                 .andExpect(jsonPath("$.data.market.metrics[?(@.code == 'AVERAGE_SALE_PRICE')]").isEmpty());
         mvc.perform(get("/api/v1/overview/indicators").principal(() -> ACTOR)
                         .queryParam("productCode", "CORN").queryParam("regionCode", "230221")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.code == 'MARKET_AVERAGE_PURCHASE_PRICE')].value")
-                        .value(org.hamcrest.Matchers.hasItem("2310")));
+                        .value(org.hamcrest.Matchers.hasItem(updatedPrice)));
 
         String logistics = """
                 {"domain":"LOGISTICS","samplePointId":"%s","productCode":"CORN",
