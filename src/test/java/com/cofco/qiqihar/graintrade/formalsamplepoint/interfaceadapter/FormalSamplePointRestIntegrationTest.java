@@ -78,7 +78,7 @@ class FormalSamplePointRestIntegrationTest {
     }
 
     @Test
-    void readsAuthorizedFormalSamplesAndRetiresReferencedDataWithAuditAndOutbox()
+    void readsAuthorizedFormalSamplesAndPhysicallyDeletesReferencedDataWithAuditAndOutbox()
             throws Exception {
         mvc.perform(get("/api/v1/formal-sample-points").principal(() -> ADMIN)
                         .queryParam("regionCode", "230202")
@@ -108,18 +108,15 @@ class FormalSamplePointRestIntegrationTest {
                         .queryParam("page", "0").queryParam("pageSize", "20"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.totalElements").value(0));
-        assertThat(directReferenceCount()).isEqualTo(4);
+        assertThat(directReferenceCount()).isZero();
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM registry.sample_point WHERE sample_point_id=:id
-                  AND deletion_state='DELETED' AND approval_state='RETURNED'
-                  AND deleted_at IS NOT NULL AND deleted_by=:actor AND version=1
-                """).param("id", POINT_ID).param("actor", ADMIN)
-                .query(Long.class).single()).isOne();
+                """).param("id", POINT_ID).query(Long.class).single()).isZero();
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM platform.business_audit_event
                 WHERE aggregate_type='FORMAL_SAMPLE_POINT' AND aggregate_id=:id
                   AND action_code='FORMAL_SAMPLE_POINT_DELETED'
-                  AND detail->>'deletionMode'='RETIRED'
+                  AND detail->>'deletionMode'='PHYSICAL'
                 """).param("id", POINT_ID.toString()).query(Long.class).single()).isOne();
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM platform.business_event_outbox
@@ -130,22 +127,22 @@ class FormalSamplePointRestIntegrationTest {
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM registry.sample_point_subject_identity
                 WHERE sample_point_id=:id
-                """).param("id", POINT_ID).query(Long.class).single()).isOne();
+                """).param("id", POINT_ID).query(Long.class).single()).isZero();
         assertThat(retiredRevisionCount()).isEqualTo(retiredRevisionCountBefore);
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM registry.sample_subject_resolution_item
                 WHERE batch_id=:batchId AND target_sample_point_id=:id
                 """).param("batchId", RESOLUTION_BATCH_ID).param("id", POINT_ID)
-                .query(Long.class).single()).isOne();
+                .query(Long.class).single()).isZero();
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM registry.sample_subject_resolution_revision
                 WHERE resolution_revision_id=:revisionId AND target_sample_point_id=:id
                 """).param("revisionId", RESOLUTION_REVISION_ID).param("id", POINT_ID)
-                .query(Long.class).single()).isOne();
+                .query(Long.class).single()).isZero();
     }
 
     @Test
-    void deniesMissingPermissionAndStaleDeletionButRetiresNetworkReferencedSamples()
+    void deniesMissingPermissionAndStaleDeletionButPhysicallyDeletesNetworkReferencedSamples()
             throws Exception {
         mvc.perform(delete("/api/v1/formal-sample-points/{id}", POINT_ID)
                         .principal(() -> RESTRICTED).queryParam("expectedVersion", "0"))
@@ -210,18 +207,15 @@ class FormalSamplePointRestIntegrationTest {
                         .principal(() -> ADMIN))
                 .andExpect(status().isNotFound());
         assertThat(jdbc.sql("""
-                SELECT count(*) FROM registry.sample_point point
-                JOIN registry.sample_network_membership membership USING(sample_point_id)
-                WHERE point.sample_point_id=:id AND point.deletion_state='DELETED'
-                  AND membership.status_code='REMOVED'
-                  AND membership.decided_by=:actor
-                  AND membership.decision_reason='正式样本已由有权用户删除'
-                """).param("id", POINT_ID).param("actor", ADMIN)
-                .query(Long.class).single()).isOne();
+                SELECT count(*) FROM registry.sample_network_membership
+                WHERE sample_point_id=:id
+                """).param("id", POINT_ID).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM registry.sample_point WHERE sample_point_id=:id")
+                .param("id", POINT_ID).query(Long.class).single()).isZero();
     }
 
     @Test
-    void retiresWithoutRemovingDurableImportHistory()
+    void physicallyDeletesBusinessFactsWithoutLeavingImportHistoryInBusinessQueries()
             throws Exception {
         UUID importJobId = UUID.fromString("fa110000-0000-0000-0000-000000000020");
         jdbc.sql("""
@@ -245,13 +239,14 @@ class FormalSamplePointRestIntegrationTest {
                   ON record.record_id=result.business_record_id
                 JOIN registry.sample_point point USING(sample_point_id)
                 WHERE result.import_job_id=:jobId AND point.sample_point_id=:pointId
-                  AND point.deletion_state='DELETED'
                 """).param("jobId", importJobId).param("pointId", POINT_ID)
-                .query(Long.class).single()).isOne();
+                .query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record WHERE record_id=:id")
+                .param("id", RECORD_ID).query(Long.class).single()).isZero();
     }
 
     @Test
-    void unexpectedRetirementFailureRollsBackPointReferencesAndAudit() throws Exception {
+    void unexpectedPhysicalDeletionFailureRollsBackPointReferencesAndAudit() throws Exception {
         jdbc.sql("""
                 CREATE FUNCTION registry.reject_formal_sample_retirement_for_test()
                 RETURNS trigger LANGUAGE plpgsql AS $function$
@@ -260,8 +255,8 @@ class FormalSamplePointRestIntegrationTest {
                 """).update();
         jdbc.sql("""
                 CREATE TRIGGER reject_formal_sample_retirement_for_test
-                BEFORE UPDATE ON registry.sample_point
-                FOR EACH ROW WHEN (NEW.deletion_state='DELETED')
+                BEFORE DELETE ON registry.sample_point
+                FOR EACH ROW
                 EXECUTE FUNCTION registry.reject_formal_sample_retirement_for_test()
                 """).update();
 

@@ -943,14 +943,19 @@ class FormalSampleObservationRestIntegrationTest {
                         .value(org.hamcrest.Matchers.contains(0)));
 
         assertThat(jdbc.sql("""
+                SELECT count(*) FROM registry.sample_point
+                WHERE sample_point_id=:id
+                """).param("id", SAMPLE_POINT_ID)
+                .query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("""
                 SELECT count(*) FROM registry.sample_network_membership
-                WHERE sample_point_id=:id AND status_code='REMOVED' AND decided_by=:actor
-                """).param("id", SAMPLE_POINT_ID).param("actor", ACTOR)
-                .query(Long.class).single()).isOne();
+                WHERE sample_point_id=:id
+                """).param("id", SAMPLE_POINT_ID)
+                .query(Long.class).single()).isZero();
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM market.market_record
-                WHERE sample_point_id=:id AND status_code='APPROVED'
-                """).param("id", SAMPLE_POINT_ID).query(Long.class).single()).isOne();
+                WHERE sample_point_id=:id
+                """).param("id", SAMPLE_POINT_ID).query(Long.class).single()).isZero();
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM platform.business_audit_event
                 WHERE aggregate_type='FORMAL_SAMPLE_POINT' AND aggregate_id=:id

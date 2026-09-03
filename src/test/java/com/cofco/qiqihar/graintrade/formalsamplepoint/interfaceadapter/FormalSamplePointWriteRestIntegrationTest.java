@@ -158,7 +158,7 @@ class FormalSamplePointWriteRestIntegrationTest {
     }
 
     @Test
-    void retiresAReferencedLogisticsSampleFromActiveUse() throws Exception {
+    void physicallyDeletesAReferencedLogisticsSampleAndDetachesItsNode() throws Exception {
         jdbc.sql("""
                 INSERT INTO logistics.logistics_node(
                   node_code,node_name,node_type_code,region_code,sample_point_id)
@@ -174,10 +174,11 @@ class FormalSamplePointWriteRestIntegrationTest {
                 .andExpect(status().isNotFound());
 
         assertThat(jdbc.sql("""
-                SELECT count(*) FROM logistics.logistics_node node
-                JOIN registry.sample_point point USING(sample_point_id)
-                WHERE node.sample_point_id=:id AND point.deletion_state='DELETED'
-                """).param("id", LOGISTICS_POINT_ID).query(Long.class).single()).isOne();
+                SELECT count(*) FROM logistics.logistics_node
+                WHERE node_code='formal-delete-logistics-node' AND sample_point_id IS NULL
+                """).query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("SELECT count(*) FROM registry.sample_point WHERE sample_point_id=:id")
+                .param("id", LOGISTICS_POINT_ID).query(Long.class).single()).isZero();
     }
 
     @Test
@@ -361,7 +362,7 @@ class FormalSamplePointWriteRestIntegrationTest {
     }
 
     @Test
-    void retiresAReferencedSampleFromActiveUseWhilePreservingItsHistory()
+    void physicallyDeletesAReferencedSampleAndItsBusinessFacts()
             throws Exception {
         MvcResult created = mvc.perform(post("/api/v1/formal-sample-points")
                         .principal(() -> ADMIN)
@@ -391,17 +392,17 @@ class FormalSamplePointWriteRestIntegrationTest {
 
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM registry.sample_point WHERE sample_point_id=:id
-                """).param("id", id).query(Long.class).single()).isOne();
+                """).param("id", id).query(Long.class).single()).isZero();
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM production.production_record
                 WHERE record_id=:recordId AND sample_point_id=:id
                 """).param("recordId", recordId).param("id", id)
-                .query(Long.class).single()).isOne();
+                .query(Long.class).single()).isZero();
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM platform.business_audit_event
                 WHERE aggregate_type='FORMAL_SAMPLE_POINT' AND aggregate_id=:id
                   AND action_code='FORMAL_SAMPLE_POINT_DELETED'
-                  AND detail->>'deletionMode'='RETIRED'
+                  AND detail->>'deletionMode'='PHYSICAL'
                 """).param("id", id.toString()).query(Long.class).single()).isOne();
     }
 
