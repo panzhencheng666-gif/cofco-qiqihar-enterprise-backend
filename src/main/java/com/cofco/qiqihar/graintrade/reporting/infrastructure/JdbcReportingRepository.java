@@ -280,6 +280,11 @@ public class JdbcReportingRepository implements ReportingRepository {
                   AND record.region_code IN (SELECT code FROM selected_regions)
                   AND record.status_code='APPROVED'
                   AND record.survey_period_governance_state='CONFIRMED'
+                  AND (record.sample_point_id IS NULL OR EXISTS (
+                    SELECT 1 FROM registry.sample_point sample
+                    WHERE sample.sample_point_id=record.sample_point_id
+                      AND sample.deletion_state='ACTIVE'
+                      AND sample.approval_state='APPROVED'))
                   AND record.survey_date BETWEEN %s
                   AND (CAST(:cultivar AS varchar) IS NULL OR record.cultivar_code=:cultivar OR EXISTS (
                     SELECT 1 FROM production.production_record_submission_metadata metadata
@@ -302,23 +307,89 @@ public class JdbcReportingRepository implements ReportingRepository {
                       FROM market.market_record_fact fact
                       WHERE fact.record_id=record.record_id),'[]'),'UTF8')),'hex'))
                   ORDER BY record.record_id),'[]'::jsonb)::text AS source_manifest,
-                  avg(record.purchase_base_price) AS average_purchase_price,
-                  count(record.purchase_base_price) AS purchase_price_count,
-                  avg(record.sale_base_price) AS average_sale_price,
-                  count(record.sale_base_price) AS sale_price_count,
-                  avg(record.actual_trade_price) AS average_trade_price,
-                  count(record.actual_trade_price) AS trade_price_count,
+                  avg(CASE WHEN NOT EXISTS (
+                    SELECT 1 FROM platform.market_core_field_object_exclusion exclusion
+                    WHERE exclusion.product_code=record.product_code
+                      AND exclusion.object_type_code=record.object_type_code
+                      AND exclusion.field_code='MKT_PURCHASE_BASE_PRICE')
+                    THEN record.purchase_base_price END) AS average_purchase_price,
+                  count(CASE WHEN NOT EXISTS (
+                    SELECT 1 FROM platform.market_core_field_object_exclusion exclusion
+                    WHERE exclusion.product_code=record.product_code
+                      AND exclusion.object_type_code=record.object_type_code
+                      AND exclusion.field_code='MKT_PURCHASE_BASE_PRICE')
+                    THEN record.purchase_base_price END) AS purchase_price_count,
+                  avg(CASE WHEN NOT EXISTS (
+                    SELECT 1 FROM platform.market_core_field_object_exclusion exclusion
+                    WHERE exclusion.product_code=record.product_code
+                      AND exclusion.object_type_code=record.object_type_code
+                      AND exclusion.field_code='MKT_SALE_BASE_PRICE')
+                    THEN record.sale_base_price END) AS average_sale_price,
+                  count(CASE WHEN NOT EXISTS (
+                    SELECT 1 FROM platform.market_core_field_object_exclusion exclusion
+                    WHERE exclusion.product_code=record.product_code
+                      AND exclusion.object_type_code=record.object_type_code
+                      AND exclusion.field_code='MKT_SALE_BASE_PRICE')
+                    THEN record.sale_base_price END) AS sale_price_count,
+                  avg(CASE
+                    WHEN EXISTS (SELECT 1 FROM platform.market_core_field_object_exclusion exclusion
+                      WHERE exclusion.product_code=record.product_code
+                        AND exclusion.object_type_code=record.object_type_code
+                        AND exclusion.field_code='MKT_SALE_BASE_PRICE')
+                      THEN record.purchase_base_price
+                    WHEN EXISTS (SELECT 1 FROM platform.market_core_field_object_exclusion exclusion
+                      WHERE exclusion.product_code=record.product_code
+                        AND exclusion.object_type_code=record.object_type_code
+                        AND exclusion.field_code='MKT_PURCHASE_BASE_PRICE')
+                      THEN record.sale_base_price
+                    ELSE record.actual_trade_price END) AS average_trade_price,
+                  count(CASE
+                    WHEN EXISTS (SELECT 1 FROM platform.market_core_field_object_exclusion exclusion
+                      WHERE exclusion.product_code=record.product_code
+                        AND exclusion.object_type_code=record.object_type_code
+                        AND exclusion.field_code='MKT_SALE_BASE_PRICE')
+                      THEN record.purchase_base_price
+                    WHEN EXISTS (SELECT 1 FROM platform.market_core_field_object_exclusion exclusion
+                      WHERE exclusion.product_code=record.product_code
+                        AND exclusion.object_type_code=record.object_type_code
+                        AND exclusion.field_code='MKT_PURCHASE_BASE_PRICE')
+                      THEN record.sale_base_price
+                    ELSE record.actual_trade_price END) AS trade_price_count,
                   sum((SELECT fact.value FROM market.market_record_fact fact
+                    JOIN platform.market_fact_applicability applicability
+                      ON applicability.product_code=record.product_code
+                     AND applicability.object_type_code=record.object_type_code
+                     AND applicability.fact_code=fact.fact_code
                     WHERE fact.record_id=record.record_id AND fact.fact_code='PURCHASE_VOLUME')) AS purchase_volume,
                   count((SELECT fact.value FROM market.market_record_fact fact
+                    JOIN platform.market_fact_applicability applicability
+                      ON applicability.product_code=record.product_code
+                     AND applicability.object_type_code=record.object_type_code
+                     AND applicability.fact_code=fact.fact_code
                     WHERE fact.record_id=record.record_id AND fact.fact_code='PURCHASE_VOLUME')) AS purchase_volume_count,
                   sum((SELECT fact.value FROM market.market_record_fact fact
+                    JOIN platform.market_fact_applicability applicability
+                      ON applicability.product_code=record.product_code
+                     AND applicability.object_type_code=record.object_type_code
+                     AND applicability.fact_code=fact.fact_code
                     WHERE fact.record_id=record.record_id AND fact.fact_code='SALES_VOLUME')) AS sales_volume,
                   count((SELECT fact.value FROM market.market_record_fact fact
+                    JOIN platform.market_fact_applicability applicability
+                      ON applicability.product_code=record.product_code
+                     AND applicability.object_type_code=record.object_type_code
+                     AND applicability.fact_code=fact.fact_code
                     WHERE fact.record_id=record.record_id AND fact.fact_code='SALES_VOLUME')) AS sales_volume_count,
                   sum((SELECT fact.value FROM market.market_record_fact fact
+                    JOIN platform.market_fact_applicability applicability
+                      ON applicability.product_code=record.product_code
+                     AND applicability.object_type_code=record.object_type_code
+                     AND applicability.fact_code=fact.fact_code
                     WHERE fact.record_id=record.record_id AND fact.fact_code='ENDING_INVENTORY')) AS ending_inventory,
                   count((SELECT fact.value FROM market.market_record_fact fact
+                    JOIN platform.market_fact_applicability applicability
+                      ON applicability.product_code=record.product_code
+                     AND applicability.object_type_code=record.object_type_code
+                     AND applicability.fact_code=fact.fact_code
                     WHERE fact.record_id=record.record_id AND fact.fact_code='ENDING_INVENTORY')) AS ending_inventory_count
                 FROM market.market_record record
                 JOIN market.effective_approved_market_record effective
@@ -327,6 +398,11 @@ public class JdbcReportingRepository implements ReportingRepository {
                   AND record.region_code IN (SELECT code FROM selected_regions)
                   AND record.status_code='APPROVED'
                   AND record.survey_period_governance_state='CONFIRMED'
+                  AND (record.sample_point_id IS NULL OR EXISTS (
+                    SELECT 1 FROM registry.sample_point sample
+                    WHERE sample.sample_point_id=record.sample_point_id
+                      AND sample.deletion_state='ACTIVE'
+                      AND sample.approval_state='APPROVED'))
                   AND record.trade_date BETWEEN %s
                   AND (CAST(:cultivar AS varchar) IS NULL OR EXISTS (
                     SELECT 1 FROM market.market_record_core_value value
@@ -351,6 +427,11 @@ public class JdbcReportingRepository implements ReportingRepository {
                     OR event.destination_region_code IN (SELECT code FROM selected_regions))
                   AND event.status_code='APPROVED'
                   AND event.survey_period_governance_state='CONFIRMED'
+                  AND (event.sample_point_id IS NULL OR EXISTS (
+                    SELECT 1 FROM registry.sample_point sample
+                    WHERE sample.sample_point_id=event.sample_point_id
+                      AND sample.deletion_state='ACTIVE'
+                      AND sample.approval_state='APPROVED'))
                   AND event.collection_date BETWEEN %s
                   AND CAST(:cultivar AS varchar) IS NULL
                 """.formatted(period);

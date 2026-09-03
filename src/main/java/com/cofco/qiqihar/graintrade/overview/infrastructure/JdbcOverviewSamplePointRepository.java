@@ -495,6 +495,7 @@ public class JdbcOverviewSamplePointRepository
                   resolution.target_sample_point_id,source.sample_point_id)
                 WHERE source.sample_point_id IS NOT NULL
                   AND resolution.resolution_action IS DISTINCT FROM 'VOID'
+                  AND point.deletion_state='ACTIVE'
                   AND point.approval_state='APPROVED'
                   AND point.location_state='VALID'
                 ORDER BY point.sample_point_id,source.category_code,source.product_code
@@ -716,6 +717,7 @@ public class JdbcOverviewSamplePointRepository
                   AND (:allProducts OR source.product_code=:product)
                   AND (:allPoints OR point.sample_point_id IN (:samplePointIds))
                   AND source.unresolved_reason IS NULL
+                  AND point.deletion_state='ACTIVE'
                   AND point.approval_state='APPROVED'
                   AND point.location_state='VALID'
                   AND (:includePeriodHistory OR (

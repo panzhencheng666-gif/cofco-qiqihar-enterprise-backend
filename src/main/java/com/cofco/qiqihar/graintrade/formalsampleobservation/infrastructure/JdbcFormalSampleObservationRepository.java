@@ -206,6 +206,7 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                 LEFT JOIN platform.object_type object_type ON object_type.code=latest.object_type_code
                 WHERE point.kind_code=CASE WHEN :domain='LOGISTICS' THEN point.kind_code ELSE 'SURVEY_SITE' END
                   AND (:domain<>'LOGISTICS' OR point.kind_code IN ('SURVEY_SITE','LOGISTICS_NODE'))
+                  AND point.deletion_state='ACTIVE'
                   AND point.approval_state='APPROVED' AND point.location_state='VALID'
                   AND point.governed_point IS NOT NULL
                   AND point.effective_from<=:observedOn
@@ -439,6 +440,7 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
         String regionCode = jdbc.sql("""
                 SELECT point.region_code FROM registry.sample_point point
                 WHERE point.sample_point_id=:samplePointId
+                  AND point.deletion_state='ACTIVE'
                   AND point.approval_state='APPROVED' AND point.location_state='VALID'
                   AND point.governed_point IS NOT NULL
                   AND point.effective_from<=:observedOn

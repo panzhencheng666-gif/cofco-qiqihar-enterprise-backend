@@ -2228,6 +2228,27 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
+    void historicalInapplicableScalarValuesNeverReappearInDetailOrList() throws Exception {
+        String id = create("CORN", "DEEP_PROCESSOR", "MOISTURE");
+        JdbcClient.create(dataSource).sql("""
+                UPDATE market.market_record
+                SET sale_base_price=9876.5432
+                WHERE record_id=:id
+                """).param("id", id).update();
+
+        mockMvc.perform(get("/api/v1/market-records/{id}", id))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.coreValues.MKT_SALE_BASE_PRICE").doesNotExist());
+        mockMvc.perform(get("/api/v1/market-records")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("pageKind", "MONITORING")
+                        .queryParam("pageNumber", "0").queryParam("pageSize", "100")
+                        .queryParam("filter.objectTypeCode", "DEEP_PROCESSOR"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].values.MKT_SALE_BASE_PRICE").doesNotExist());
+    }
+
+    @Test
     void stateTransitionsKeepReportedAtAndUseTheApplicationClockForUpdatedAt() throws Exception {
         String approvedId = create("CORN", "FEED_MILL", "MOISTURE");
         resetTransitionTimes(approvedId);

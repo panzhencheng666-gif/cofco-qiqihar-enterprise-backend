@@ -213,7 +213,11 @@ class FormalSamplePointRestIntegrationTest {
                 SELECT count(*) FROM registry.sample_point point
                 JOIN registry.sample_network_membership membership USING(sample_point_id)
                 WHERE point.sample_point_id=:id AND point.deletion_state='DELETED'
-                """).param("id", POINT_ID).query(Long.class).single()).isOne();
+                  AND membership.status_code='REMOVED'
+                  AND membership.decided_by=:actor
+                  AND membership.decision_reason='正式样本已由有权用户删除'
+                """).param("id", POINT_ID).param("actor", ADMIN)
+                .query(Long.class).single()).isOne();
     }
 
     @Test
