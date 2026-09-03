@@ -158,6 +158,29 @@ class FormalSamplePointWriteRestIntegrationTest {
     }
 
     @Test
+    void retiresAReferencedLogisticsSampleFromActiveUse() throws Exception {
+        jdbc.sql("""
+                INSERT INTO logistics.logistics_node(
+                  node_code,node_name,node_type_code,region_code,sample_point_id)
+                VALUES('formal-delete-logistics-node','历史物流正式样本',
+                  'ROAD_NODE','230202',:id)
+                """).param("id", LOGISTICS_POINT_ID).update();
+
+        mvc.perform(delete("/api/v1/formal-sample-points/{id}", LOGISTICS_POINT_ID)
+                        .principal(() -> ADMIN).queryParam("expectedVersion", "0"))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/api/v1/formal-sample-points/{id}", LOGISTICS_POINT_ID)
+                        .principal(() -> ADMIN))
+                .andExpect(status().isNotFound());
+
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM logistics.logistics_node node
+                JOIN registry.sample_point point USING(sample_point_id)
+                WHERE node.sample_point_id=:id AND point.deletion_state='DELETED'
+                """).param("id", LOGISTICS_POINT_ID).query(Long.class).single()).isOne();
+    }
+
+    @Test
     void rejectsMaintainerAssignmentWithoutManagePermissionWithoutWriting() throws Exception {
         mvc.perform(put("/api/v1/formal-sample-points/{id}/maintainer", LOGISTICS_POINT_ID)
                         .principal(() -> RESTRICTED).contentType(MediaType.APPLICATION_JSON)
@@ -326,6 +349,60 @@ class FormalSamplePointWriteRestIntegrationTest {
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM registry.formal_sample_point_profile WHERE sample_point_id=:id
                 """).param("id", id).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM registry.sample_point WHERE sample_point_id=:id
+                """).param("id", id).query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type='FORMAL_SAMPLE_POINT' AND aggregate_id=:id
+                  AND action_code='FORMAL_SAMPLE_POINT_DELETED'
+                  AND detail->>'deletionMode'='PHYSICAL'
+                """).param("id", id.toString()).query(Long.class).single()).isOne();
+    }
+
+    @Test
+    void retiresAReferencedSampleFromActiveUseWhilePreservingItsHistory()
+            throws Exception {
+        MvcResult created = mvc.perform(post("/api/v1/formal-sample-points")
+                        .principal(() -> ADMIN)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(draft("有历史正式样本", "230202", "龙沙区历史样本地址",
+                                "123.94", "47.31", "FARMER", null)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        UUID id = responseId(created);
+        String recordId = "formal-sample-retire-record";
+        jdbc.sql("""
+                INSERT INTO production.production_record(
+                  record_id,product_code,object_type_code,region_code,survey_date,reported_at,
+                  cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,
+                  survey_year,survey_period_precision,survey_period_governance_state,sample_point_id)
+                VALUES(:recordId,'CORN','FARMER','230202',DATE '2026-09-03',
+                  TIMESTAMPTZ '2026-09-03 09:30:00+08',320,500,'APPROVED',:actor,
+                  2026,'YEAR','CONFIRMED',:pointId)
+                """).param("recordId", recordId).param("actor", ADMIN)
+                .param("pointId", id).update();
+
+        mvc.perform(delete("/api/v1/formal-sample-points/{id}", id)
+                        .principal(() -> ADMIN).queryParam("expectedVersion", "0"))
+                .andExpect(status().isNoContent());
+        mvc.perform(get("/api/v1/formal-sample-points/{id}", id).principal(() -> ADMIN))
+                .andExpect(status().isNotFound());
+
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM registry.sample_point WHERE sample_point_id=:id
+                """).param("id", id).query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM production.production_record
+                WHERE record_id=:recordId AND sample_point_id=:id
+                """).param("recordId", recordId).param("id", id)
+                .query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type='FORMAL_SAMPLE_POINT' AND aggregate_id=:id
+                  AND action_code='FORMAL_SAMPLE_POINT_DELETED'
+                  AND detail->>'deletionMode'='RETIRED'
+                """).param("id", id.toString()).query(Long.class).single()).isOne();
     }
 
     @Test
