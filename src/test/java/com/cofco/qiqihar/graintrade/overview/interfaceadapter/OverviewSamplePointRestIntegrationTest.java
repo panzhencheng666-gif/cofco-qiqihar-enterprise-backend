@@ -473,6 +473,12 @@ class OverviewSamplePointRestIntegrationTest {
                         .value("14.2"))
                 .andExpect(jsonPath("$.data.associations[0].businessValues.MOISTURE.unitCode")
                         .value("%"))
+                .andExpect(jsonPath("$.data.associations[0].businessValues.PROD_HARVEST_AREA_MU.label")
+                        .value("预计收获面积"))
+                .andExpect(jsonPath("$.data.associations[0].businessValues.PROD_HARVEST_AREA_MU.value")
+                        .value("9.5"))
+                .andExpect(jsonPath("$.data.associations[0].businessValues.PROD_GROWTH_STATUS.value")
+                        .value("长势良好"))
                 .andExpect(jsonPath("$.data.associations[?(@.productCode == 'SOYBEAN')]").isEmpty())
                 .andExpect(jsonPath("$.data.associations[0].businessValues.PROD_CULTIVAR_NAME").doesNotExist())
                 .andExpect(jsonPath("$.data.associations[0].businessValues.PROD_REPORTER_PHONE").doesNotExist());
@@ -1717,7 +1723,9 @@ class OverviewSamplePointRestIntegrationTest {
                 INSERT INTO production.production_record_submission_metadata(record_id,field_code,value)
                 VALUES('94000000-0000-0000-0000-000000000101','PROD_SAMPLE_CONTACT','13900000000'),
                       ('94000000-0000-0000-0000-000000000101','PROD_SURVEYOR_NAME','王雷'),
-                      ('94000000-0000-0000-0000-000000000101','PROD_SURVEYOR_PHONE','13800000000')
+                      ('94000000-0000-0000-0000-000000000101','PROD_SURVEYOR_PHONE','13800000000'),
+                      ('94000000-0000-0000-0000-000000000101','PROD_HARVEST_AREA_MU','9.5'),
+                      ('94000000-0000-0000-0000-000000000101','PROD_GROWTH_STATUS','长势良好')
                 """).update();
         jdbc.sql("""
                 INSERT INTO production.production_record_quality(record_id,quality_code,value)

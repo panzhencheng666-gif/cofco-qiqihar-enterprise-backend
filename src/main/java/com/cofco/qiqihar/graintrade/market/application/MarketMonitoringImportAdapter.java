@@ -26,7 +26,7 @@ final class MarketMonitoringImportAdapter implements MarketImportPort {
                                         option.value(), option.label())).toList())).toList(),
                 definition.groups().stream().flatMap(group -> group.fields().stream())
                         .map(field -> new MarketImportDefinition.Field(
-                                field.code(), field.label(), field.valueType(), field.unit(), true,
+                                field.code(), field.label(), field.valueType(), field.unit(), false,
                                 field.precision(), field.scale(), java.util.List.of()))
                         .toList());
     }

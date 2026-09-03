@@ -81,6 +81,22 @@ public class ProductionImportService implements QueuedImportProcessor {
         return ProductionImportTemplate.productWorkbook(productCode, definitions, objectTypes);
     }
 
+    public byte[] productWorkbookBytes(String productCode) {
+        accessControl.require("BUSINESS_IMPORT", null);
+        return com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook
+                .createSheets(workbookSheets(productCode));
+    }
+
+    private List<com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook.WorkbookSheet>
+            workbookSheets(String productCode) {
+        return templateCatalog.objectTypes(ProductionImportTemplate.DOMAIN, productCode).stream()
+                .map(option -> new com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook
+                        .WorkbookSheet(option.label(),
+                                ProductionImportTemplate.workbook(
+                                        production.importDefinition(productCode, option.code()))))
+                .toList();
+    }
+
     public ImportJobView importProductWorkbook(String idempotencyKey, String productCode,
             String filename, String mediaType, byte[] bytes,
             List<BusinessImportPhotoPackage.PhotoPart> photoParts) {
@@ -94,6 +110,12 @@ public class ProductionImportService implements QueuedImportProcessor {
             var objectTypes = templateCatalog.objectTypes(ProductionImportTemplate.DOMAIN, productCode);
             var definitions = objectTypes.stream()
                     .map(option -> production.importDefinition(productCode, option.code())).toList();
+            var context = com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook
+                    .context(bytes, ProductionImportTemplate.DOMAIN);
+            if (context.contractVersion().endsWith("-multi")) {
+                return importMultiSheetWorkbook(idempotencyKey, productCode, filename, mediaType,
+                        bytes, photoParts);
+            }
             var template = ProductionImportTemplate.productWorkbook(productCode, definitions, objectTypes);
             var sheet = com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook
                     .readDraft(bytes, template,
@@ -122,6 +144,28 @@ public class ProductionImportService implements QueuedImportProcessor {
             }
             throw new ClientRequestException("INVALID_IMPORT_FORMAT", "XLSX 模板或填写内容无效");
         }
+    }
+
+    private ImportJobView importMultiSheetWorkbook(String idempotencyKey, String productCode,
+            String filename, String mediaType, byte[] bytes,
+            List<BusinessImportPhotoPackage.PhotoPart> photoParts) {
+        List<com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook.LocatedImportSheet>
+                sheets = com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook
+                        .readDraftSheets(bytes, workbookSheets(productCode), limits.maximumRows());
+        List<GovernedDraftImportService.DraftWorkbookRow> rows = new ArrayList<>();
+        int rowNumberOffset = 0;
+        for (var located : sheets) {
+            var template = located.template();
+            var definition = production.importDefinition(productCode, template.objectTypeCode());
+            rows.addAll(DraftWorkbookRows.map(located.sheet(), template, ProductionImportTemplate.codes(definition),
+                    null, Map.of(), template.objectTypeCode(), Map.of(),
+                    "PROD_SAMPLE_NAME", "regionCode", Set.of("PROD_REPORTER_NAME"),
+                    located.name(), rowNumberOffset));
+            rowNumberOffset += located.sheet().rows().size();
+        }
+        if (rows.isEmpty()) throw invalid();
+        return draftImports.submit(idempotencyKey, ProductionImportTemplate.DOMAIN, "产情", productCode,
+                filename, mediaType, bytes, photoParts, List.copyOf(rows));
     }
 
     @Transactional
@@ -431,8 +475,6 @@ public class ProductionImportService implements QueuedImportProcessor {
             }
             BoundedInput.requireMapText("IMPORT_ROW_VALUE_FORMAT", values);
             if (required(values, "regionCode") || required(values, "surveyYear")
-                    || required(values, "cultivatedAreaMu")
-                    || required(values, "yieldPerMuKilograms")
                     || ProductionImportTemplate.REQUIRED_SUBMISSION_METADATA_HEADERS.stream()
                             .anyMatch(header -> required(values, header))) {
                 return ParsedRow.error(number, values,
@@ -473,8 +515,8 @@ public class ProductionImportService implements QueuedImportProcessor {
             return ParsedRow.valid(number, values, new ProductionDraft(
                     definition.productCode(), definition.objectTypeCode(), regionCode,
                     null, surveyDate(values),
-                    PlainDecimal.parse(values.get("cultivatedAreaMu"), 14, 4, "IMPORT_ROW_VALUE_FORMAT"),
-                    PlainDecimal.parse(values.get("yieldPerMuKilograms"), 14, 4, "IMPORT_ROW_VALUE_FORMAT"),
+                    optionalDecimal(values.get("cultivatedAreaMu"), 14, 4),
+                    optionalDecimal(values.get("yieldPerMuKilograms"), 14, 4),
                     Map.copyOf(quality), Map.copyOf(costs), Map.copyOf(insurance), Map.copyOf(subsidies),
                     submissionMetadata, evidenceIds(values), Integer.parseInt(values.get("surveyYear")),
                     values.get("surveyMonth") == null || values.get("surveyMonth").isBlank()
@@ -491,8 +533,7 @@ public class ProductionImportService implements QueuedImportProcessor {
         try {
             BoundedInput.requireMapText("IMPORT_ROW_VALUE_FORMAT", values);
             if (required(values, "productCode") || required(values, "objectTypeCode") || required(values, "regionCode")
-                    || required(values, "surveyDate") || required(values, "cultivatedAreaMu")
-                    || required(values, "yieldPerMuKilograms") || required(values, "evidencePhotoId")
+                    || required(values, "surveyDate") || required(values, "evidencePhotoId")
                     || ProductionImportTemplate.REQUIRED_SUBMISSION_METADATA_HEADERS.stream()
                             .anyMatch(header -> required(values, header))) {
                 return ParsedRow.error(number, values, "IMPORT_ROW_REQUIRED_VALUE", "Required production import value is blank");
@@ -507,8 +548,8 @@ public class ProductionImportService implements QueuedImportProcessor {
             PlainDecimal.parse(values.get("PROD_SAMPLE_LONGITUDE"), 3, 7, "IMPORT_ROW_VALUE_FORMAT");
             return ParsedRow.valid(number, values, new ProductionDraft(values.get("productCode"), values.get("objectTypeCode"),
                     regionCode, null, LocalDate.parse(values.get("surveyDate")),
-                    PlainDecimal.parse(values.get("cultivatedAreaMu"), 14, 4, "IMPORT_ROW_VALUE_FORMAT"),
-                    PlainDecimal.parse(values.get("yieldPerMuKilograms"), 14, 4, "IMPORT_ROW_VALUE_FORMAT"),
+                    optionalDecimal(values.get("cultivatedAreaMu"), 14, 4),
+                    optionalDecimal(values.get("yieldPerMuKilograms"), 14, 4),
                     decimalValues(values, ProductionImportTemplate.QUALITY_HEADERS),
                     decimalValues(values, ProductionImportTemplate.COST_HEADERS),
                     decimalValues(values, List.of("INSURANCE_AMOUNT")),
@@ -524,6 +565,11 @@ public class ProductionImportService implements QueuedImportProcessor {
     private static boolean required(Map<String, String> values, String name) {
         String value = values.get(name);
         return value == null || value.isBlank();
+    }
+
+    private static BigDecimal optionalDecimal(String value, int integerDigits, int scale) {
+        return value == null || value.isBlank() ? null
+                : PlainDecimal.parse(value, integerDigits, scale, "IMPORT_ROW_VALUE_FORMAT");
     }
     private static LocalDate surveyDate(Map<String, String> values) {
         int year = Integer.parseInt(values.get("surveyYear"));

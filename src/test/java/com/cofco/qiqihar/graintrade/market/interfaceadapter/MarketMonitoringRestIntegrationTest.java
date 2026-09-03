@@ -336,7 +336,7 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_TRADE_DIRECTION')]").isEmpty())
                 .andExpect(jsonPath("$.data.coreFields[?(@.code == 'MKT_ACTUAL_TRADE_PRICE')]").isEmpty())
                 .andExpect(jsonPath(
-                        "$.data.coreFields[?(@.code == 'MKT_PURCHASE_BASE_PRICE' && @.required == true)]").exists())
+                        "$.data.coreFields[?(@.code == 'MKT_PURCHASE_BASE_PRICE' && @.required == false)]").exists())
                 .andExpect(jsonPath(
                         "$.data.coreFields[?(@.code == 'MKT_SALE_BASE_PRICE')]").isEmpty())
                 .andExpect(jsonPath(
@@ -386,7 +386,7 @@ class MarketMonitoringRestIntegrationTest {
                         .queryParam("objectTypeCode", "TRADER"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath(
-                        "$.data.coreFields[?(@.code == 'MKT_SALE_BASE_PRICE' && @.required == true)]").exists());
+                        "$.data.coreFields[?(@.code == 'MKT_SALE_BASE_PRICE' && @.required == false)]").exists());
     }
 
     @Test void exposesOnlyApplicableFeedMillDefinitionsAndRejectsUnauthenticatedWrites() throws Exception {

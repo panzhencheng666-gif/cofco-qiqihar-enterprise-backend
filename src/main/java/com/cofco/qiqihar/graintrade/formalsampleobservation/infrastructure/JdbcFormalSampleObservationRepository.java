@@ -212,10 +212,8 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                   AND point.effective_from<=:observedOn
                   AND (point.effective_to IS NULL OR point.effective_to>=:observedOn)
                   AND point.sample_point_id IN (:currentSamplePointIds)
-                  AND point.region_code IN (:authorizedRegionCodes)
-                  AND (NOT :filterByMaintainer OR
-                    (point.maintainer_subject_id IS NOT NULL AND
-                      (:administratorOverride OR point.maintainer_subject_id=:actorSubjectId)))
+                  AND (NOT :filterByMaintainer OR point.maintainer_subject_id IS NULL OR :administratorOverride
+                    OR point.maintainer_subject_id=:actorSubjectId)
                   AND (CAST(:regionCode AS varchar) IS NULL OR point.region_code=:regionCode)
                   AND (CAST(:objectTypeCode AS varchar) IS NULL OR latest.object_type_code=:objectTypeCode)
                   AND (CAST(:keywordPattern AS varchar) IS NULL
@@ -227,7 +225,6 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                 .param("domain", domain.name())
                 .param("observedOn", observedOn)
                 .param("currentSamplePointIds", currentSamplePointIds)
-                .param("authorizedRegionCodes", authorizedRegionCodes)
                 .param("filterByMaintainer", filterByMaintainer)
                 .param("administratorOverride", administratorOverride)
                 .param("actorSubjectId", actorSubjectId, java.sql.Types.VARCHAR)
@@ -478,6 +475,18 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                 eligible.regionCode(), eligible.maintainerSubjectId(),
                 eligible.latitude(), eligible.longitude(),
                 eligible.effectiveFrom(), eligible.effectiveTo(), eligible.latestValues());
+    }
+
+    @Override
+    public void claimMaintainer(UUID samplePointId, String actorSubjectId) {
+        int updated = jdbc.sql("""
+                UPDATE registry.sample_point
+                SET maintainer_subject_id=:actor,updated_by=:actor,updated_at=now(),version=version+1
+                WHERE sample_point_id=:samplePointId AND maintainer_subject_id IS NULL
+                """).param("actor", actorSubjectId).param("samplePointId", samplePointId).update();
+        if (updated != 1) {
+            throw new IllegalStateException("Locked formal sample could not be claimed");
+        }
     }
 
     @Override

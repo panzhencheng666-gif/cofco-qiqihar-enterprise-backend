@@ -937,7 +937,8 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                        record.actual_trade_price,record.carriage_board_amount,
                        record.packaging_amount,record.freight_amount,record.packaging_form,
                        COALESCE(approval.approved_at,record.updated_at,record.reported_at) approved_at,
-                       fact.fact_code,fact.value fact_value
+                       business_value.value_kind,business_value.field_code,
+                       business_value.field_value
                 FROM market.market_record record
                 LEFT JOIN registry.current_sample_subject_resolution resolution
                   ON resolution.source_domain='MARKET'
@@ -951,7 +952,27 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                 JOIN platform.region region ON region.code=record.region_code
                 JOIN platform.object_type object_type ON object_type.code=record.object_type_code
                 LEFT JOIN market.business_party party ON party.party_id=record.party_id
-                LEFT JOIN market.market_record_fact fact ON fact.record_id=record.record_id
+                LEFT JOIN LATERAL (
+                  SELECT 'FACT'::varchar value_kind,fact.fact_code field_code,
+                         fact.value::text field_value
+                  FROM market.market_record_fact fact
+                  WHERE fact.record_id=record.record_id
+                  UNION ALL
+                  SELECT 'CORE',value.field_code,value.value
+                  FROM market.market_record_core_value value
+                  JOIN platform.market_core_field_applicability applicability
+                    ON applicability.product_code=record.product_code
+                   AND applicability.business_domain='MARKET'
+                   AND applicability.page_kind='MONITORING'
+                   AND applicability.field_code=value.field_code
+                  WHERE value.record_id=record.record_id
+                    AND value.field_code LIKE 'AGRI_INPUT_%'
+                    AND NOT EXISTS(
+                      SELECT 1 FROM platform.market_core_field_object_exclusion exclusion
+                      WHERE exclusion.product_code=record.product_code
+                        AND exclusion.object_type_code=record.object_type_code
+                        AND exclusion.field_code=value.field_code)
+                ) business_value ON true
                 LEFT JOIN LATERAL (
                   SELECT
                     max(value.value) FILTER (WHERE value.field_code='MKT_SAMPLE_NAME') sample_name,
@@ -976,7 +997,7 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                   AND (:subjectType IS NULL OR record.object_type_code=:subjectType)
                   AND (COALESCE(resolution.target_sample_point_id,record.sample_point_id) IS NOT NULL
                     OR record.region_code IN(SELECT code FROM scope))
-                ORDER BY record.record_id,fact.fact_code
+                ORDER BY record.record_id,business_value.value_kind,business_value.field_code
                 """, scope, authorizedRegions).query((result, ignored) -> {
                     String id = result.getString("record_id");
                     MarketRowBuilder row = rows.get(id);
@@ -999,8 +1020,12 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                                 result.getObject("approved_at", OffsetDateTime.class));
                         rows.put(id, row);
                     }
-                    String code = result.getString("fact_code");
-                    if (code != null) row.fact(code, result.getBigDecimal("fact_value"));
+                    String code = result.getString("field_code");
+                    if (code != null && "FACT".equals(result.getString("value_kind"))) {
+                        row.fact(code, new BigDecimal(result.getString("field_value")));
+                    } else if (code != null) {
+                        row.coreValue(code, result.getString("field_value"));
+                    }
                     return id;
                 }).list();
         return rows.values().stream().map(MarketRowBuilder::build).toList();
@@ -1211,7 +1236,115 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                 enterpriseInventorySourceCount);
         addPackagingMetrics(metrics, rows);
         addMarketQualityMetrics(metrics, rows);
+        addMarketContractMetrics(metrics, rows);
         return List.copyOf(metrics);
+    }
+
+    private void addMarketContractMetrics(List<ObservableMetric> metrics, List<MarketRow> rows) {
+        if (rows.isEmpty()) return;
+        List<String> recordIds = rows.stream().map(MarketRow::recordId).toList();
+        jdbc.sql("""
+                SELECT DISTINCT definition.code,definition.label,definition.unit,
+                       'DECIMAL'::varchar control_type,category.sort_order,applicability.sort_order
+                FROM market.market_record record
+                JOIN platform.market_fact_applicability applicability
+                  ON applicability.product_code=record.product_code
+                 AND applicability.object_type_code=record.object_type_code
+                JOIN platform.market_fact_definition definition
+                  ON definition.code=applicability.fact_code
+                JOIN platform.market_fact_category category ON category.code=definition.category
+                WHERE record.record_id IN (:recordIds)
+                  AND category.code IN ('PROCESSING','INVENTORY')
+                ORDER BY category.sort_order,applicability.sort_order,definition.code
+                """).param("recordIds", recordIds)
+                .query((result, ignored) -> new ContractMetricDefinition(
+                        result.getString("code"), result.getString("label"),
+                        result.getString("unit"), result.getString("control_type")))
+                .list().stream().distinct().forEach(definition -> addMetric(
+                        metrics, definition.code(), definition.label(),
+                        sumMarketFact(rows, definition.code()), unitOrCount(definition.unit()),
+                        "SUM", countMarketFact(rows, definition.code())));
+
+        jdbc.sql("""
+                SELECT DISTINCT definition.code,definition.label,definition.unit,
+                       definition.control_type,mounted.sort_order
+                FROM market.market_record record
+                JOIN platform.market_core_field_applicability applicability
+                  ON applicability.product_code=record.product_code
+                 AND applicability.business_domain='MARKET'
+                 AND applicability.page_kind='MONITORING'
+                JOIN platform.market_core_field_definition definition
+                  ON definition.code=applicability.field_code
+                JOIN platform.page_definition_field mounted
+                  ON mounted.product_code=record.product_code
+                 AND mounted.business_domain='MARKET'
+                 AND mounted.page_kind='MONITORING'
+                 AND mounted.field_code=definition.code
+                WHERE record.record_id IN (:recordIds)
+                  AND definition.code LIKE 'AGRI_INPUT_%'
+                  AND NOT EXISTS(
+                    SELECT 1 FROM platform.market_core_field_object_exclusion exclusion
+                    WHERE exclusion.product_code=record.product_code
+                      AND exclusion.object_type_code=record.object_type_code
+                      AND exclusion.field_code=definition.code)
+                ORDER BY mounted.sort_order,definition.code
+                """).param("recordIds", recordIds)
+                .query((result, ignored) -> new ContractMetricDefinition(
+                        result.getString("code"), result.getString("label"),
+                        result.getString("unit"), result.getString("control_type")))
+                .list().stream().distinct().forEach(definition -> {
+                    List<String> values = rows.stream().map(row -> row.coreValue(definition.code()))
+                            .filter(java.util.Objects::nonNull).toList();
+                    if ("DECIMAL".equals(definition.controlType())) {
+                        List<BigDecimal> decimals = values.stream().map(BigDecimal::new).toList();
+                        BigDecimal value = definition.code().endsWith("_PRICE")
+                                ? averageDecimals(decimals) : sumDecimals(decimals);
+                        addMetric(metrics, definition.code(), definition.label(), value,
+                                unitOrCount(definition.unit()),
+                                definition.code().endsWith("_PRICE") ? "AVERAGE" : "SUM",
+                                decimals.size());
+                    } else {
+                        addCategoricalMetric(metrics, definition, values);
+                    }
+                });
+    }
+
+    private void addCategoricalMetric(
+            List<ObservableMetric> metrics,
+            ContractMetricDefinition definition,
+            List<String> values) {
+        if (values.isEmpty()) return;
+        Map<String, Long> counts = values.stream().collect(java.util.stream.Collectors.groupingBy(
+                Function.identity(), LinkedHashMap::new, java.util.stream.Collectors.counting()));
+        Map<String, String> labels = jdbc.sql("""
+                SELECT value,label FROM platform.market_core_field_option
+                WHERE field_code=:fieldCode ORDER BY sort_order,value
+                """).param("fieldCode", definition.code())
+                .query((result, ignored) -> Map.entry(
+                        result.getString("value"), result.getString("label")))
+                .list().stream().collect(java.util.stream.Collectors.toMap(
+                        Map.Entry::getKey, Map.Entry::getValue,
+                        (left, right) -> left, LinkedHashMap::new));
+        String summary = counts.entrySet().stream()
+                .sorted(Comparator.comparingInt(entry -> new ArrayList<>(labels.keySet())
+                        .indexOf(entry.getKey())))
+                .map(entry -> labels.getOrDefault(entry.getKey(), entry.getKey()) + " " + entry.getValue())
+                .collect(java.util.stream.Collectors.joining("，"));
+        metrics.add(new ObservableMetric(
+                definition.code(), definition.label(), summary, "条", "DISTRIBUTION",
+                values.size(), null));
+    }
+
+    private static String unitOrCount(String unit) {
+        return unit == null || unit.isBlank() ? "条" : unit;
+    }
+
+    private static BigDecimal sumDecimals(List<BigDecimal> values) {
+        return sum(values, Function.identity());
+    }
+
+    private static BigDecimal averageDecimals(List<BigDecimal> values) {
+        return average(values, Function.identity());
     }
 
     private List<ObservableMetric> logisticsMetrics(List<LogisticsRow> rows) {
@@ -1794,7 +1927,7 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
             BigDecimal saleBasePrice, BigDecimal actualTradePrice,
             BigDecimal carriageBoardAmount, BigDecimal packagingAmount,
             BigDecimal freightAmount, String packagingForm, OffsetDateTime approvedAt,
-            Map<String, BigDecimal> facts) {
+            Map<String, BigDecimal> facts, Map<String, String> coreValues) {
         String subjectKey() {
             return businessIdentity;
         }
@@ -1803,6 +1936,7 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                     surveyMonth == null ? "0" : surveyMonth.toString());
         }
         BigDecimal fact(String code) { return facts.get(code); }
+        String coreValue(String code) { return coreValues.get(code); }
         boolean has(String code) { return facts.containsKey(code); }
         InventoryPositionObservation inventoryObservation(String factCode) {
             BigDecimal value = fact(factCode);
@@ -1818,6 +1952,7 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                     .filter(code -> !"OPENING_INVENTORY".equals(code))
                     .filter(code -> !"ENDING_INVENTORY".equals(code))
                     .collect(java.util.stream.Collectors.toCollection(LinkedHashSet::new));
+            codes.addAll(coreValues.keySet());
             if (purchaseBasePrice != null) codes.add("MKT_PURCHASE_BASE_PRICE");
             if (saleBasePrice != null) codes.add("MKT_SALE_BASE_PRICE");
             if (carriageBoardAmount != null) codes.add("MKT_CARRIAGE_BOARD_AMOUNT");
@@ -1867,6 +2002,7 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
         private final String packagingForm;
         private final OffsetDateTime approvedAt;
         private final Map<String, BigDecimal> facts = new LinkedHashMap<>();
+        private final Map<String, String> coreValues = new LinkedHashMap<>();
 
         MarketRowBuilder(String recordId, long version, String regionCode, String regionLabel,
                 String objectTypeCode, String objectTypeLabel, String partyId, String partyLabel,
@@ -1906,6 +2042,7 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
             this.approvedAt = approvedAt;
         }
         void fact(String code, BigDecimal value) { facts.put(code, value); }
+        void coreValue(String code, String value) { coreValues.put(code, value); }
         MarketRow build() {
             return new MarketRow(recordId, version, regionCode, regionLabel, objectTypeCode,
                     objectTypeLabel, partyId, partyLabel, samplePointId,
@@ -1913,11 +2050,15 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                     tradeDate, surveyYear,
                     surveyMonth, periodPrecision, direction, purchaseBasePrice, saleBasePrice,
                     actualTradePrice, carriageBoardAmount, packagingAmount,
-                    freightAmount, packagingForm, approvedAt, Map.copyOf(facts));
+                    freightAmount, packagingForm, approvedAt,
+                    Map.copyOf(facts), Map.copyOf(coreValues));
         }
     }
 
     private record FactMetricDefinition(String code, String label, String unit) { }
+
+    private record ContractMetricDefinition(
+            String code, String label, String unit, String controlType) { }
 
     private record MarketInventorySelection(
             InventoryPositionSelection selection,

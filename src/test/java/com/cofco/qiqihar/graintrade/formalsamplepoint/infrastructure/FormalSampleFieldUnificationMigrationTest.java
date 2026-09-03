@@ -36,7 +36,7 @@ class FormalSampleFieldUnificationMigrationTest {
                 .isEqualTo(160);
         seedV160FormalSampleAndResolution();
 
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(13);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(15);
 
         assertThat(query("""
                 SELECT object_type.code || ':' || object_type.name
@@ -116,7 +116,9 @@ class FormalSampleFieldUnificationMigrationTest {
                 VALUES('invalid-trader-observation','CORN','TRADER','230200',DATE '2026-08-01',
                   now(),'OBSERVATION','DRAFT','migration-test')
                 """);
-        assertSqlRejected("""
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute("""
                 INSERT INTO market.market_record(
                   record_id,product_code,object_type_code,region_code,trade_date,reported_at,
                   purchase_base_price,trade_direction,carriage_board_amount,packaging_amount,
@@ -124,7 +126,10 @@ class FormalSampleFieldUnificationMigrationTest {
                 VALUES('invalid-agri-price','CORN','AGRICULTURAL_INPUT_STORE','230200',
                   DATE '2026-08-01',now(),10,'PURCHASE',0,0,0,'BULK','DRAFT','migration-test')
                 """);
-        assertSqlRejected("""
+        }
+        try (Connection connection = DATABASE.openConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute("""
                 INSERT INTO market.market_record(
                   record_id,product_code,object_type_code,region_code,trade_date,reported_at,
                   purchase_base_price,trade_direction,carriage_board_amount,packaging_amount,
@@ -132,6 +137,7 @@ class FormalSampleFieldUnificationMigrationTest {
                 VALUES('invalid-null-price-component','CORN','TRADER','230200',
                   DATE '2026-08-01',now(),10,'PURCHASE',NULL,0,0,'BULK','DRAFT','migration-test')
                 """);
+        }
 
         String v161 = Files.readString(Path.of(
                 "src/main/resources/db/migration/V161__unify_formal_market_object_fields.sql"));

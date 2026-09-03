@@ -5,6 +5,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
+import com.cofco.qiqihar.graintrade.importing.application.BusinessImportTemplateCatalog;
 import com.cofco.qiqihar.graintrade.importing.application.LogisticsImportTemplate;
 import com.cofco.qiqihar.graintrade.importing.application.MarketImportTemplate;
 import com.cofco.qiqihar.graintrade.importing.application.ProductionImportTemplate;
@@ -46,6 +47,7 @@ class BusinessImportTemplateMatrixIntegrationTest {
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
     @Autowired ProductionImportPort production;
+    @Autowired BusinessImportTemplateCatalog templateCatalog;
     @Autowired MarketImportPort market;
     @Autowired LogisticsImportPort logistics;
     private JdbcClient jdbc;
@@ -94,7 +96,21 @@ class BusinessImportTemplateMatrixIntegrationTest {
                         .doesNotContain("模板版本", "契约摘要", "sha256:",
                                 "PRODUCTION", "MARKET", "LOGISTICS", "CORN", "SOYBEAN", "RICE",
                                 "FARMER", "TRADER", "ROUTE_EVENT", "version", "digest", "test");
-                if ("production".equals(domain)) assertThat(labels).contains("样本点类型");
+                if ("production".equals(domain)) {
+                    assertThat(labels).doesNotContain("样本点类型");
+                    List<String> expectedObjectSheets = jdbc.sql("""
+                                    SELECT object_type.name
+                                    FROM platform.product_object_type applicability
+                                    JOIN platform.object_type object_type
+                                      ON object_type.code=applicability.object_type_code
+                                    WHERE applicability.product_code=:product
+                                      AND object_type.business_domain='PRODUCTION'
+                                    ORDER BY object_type.sort_order,object_type.code
+                                    """).param("product", product).query(String.class).list();
+                    assertThat(worksheetNames).containsExactlyElementsOf(
+                            java.util.stream.Stream.concat(expectedObjectSheets.stream(),
+                                    java.util.stream.Stream.of("填报说明")).toList());
+                }
                 if ("market".equals(domain)) {
                     assertThat(labels).doesNotContain("样本点类型");
                     List<String> expectedObjectSheets = jdbc.sql("""
@@ -142,12 +158,18 @@ class BusinessImportTemplateMatrixIntegrationTest {
                     .map(header -> productionValue(header, key + "-1")).toList();
             List<String> second = template.headers().stream()
                     .map(header -> productionValue(header, key + "-2")).toList();
-            byte[] workbook = BusinessImportWorkbook.create(template, List.of(first, second));
-            assertThat(BusinessImportWorkbook.read(workbook, template).rows()).as(key).hasSize(2);
+            byte[] workbook = BusinessImportWorkbook.createSheets(
+                    templateCatalog.objectTypes("PRODUCTION", context.productCode()).stream()
+                            .map(option -> {
+                                var objectTemplate = ProductionImportTemplate.workbook(
+                                        production.importDefinition(context.productCode(), option.code()));
+                                return new BusinessImportWorkbook.WorkbookSheet(option.label(), objectTemplate,
+                                        option.code().equals(context.objectTypeCode())
+                                                ? List.of(first, second) : List.of());
+                            }).toList());
             assertImported(mvc.perform(multipart("/api/v1/imports/production")
                             .file(file(key + ".xlsx", workbook))
                             .param("productCode", context.productCode())
-                            .param("objectTypeCode", context.objectTypeCode())
                             .header("Idempotency-Key", "matrix-production-" + key)
                             .principal(() -> "production-tester"))
                     .andReturn().getResponse(), key);

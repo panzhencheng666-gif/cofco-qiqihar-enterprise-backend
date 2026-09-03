@@ -27,16 +27,17 @@ public record MarketMonitoringRecord(
         saleBasePrice = optional(saleBasePrice, "sale base price");
         boolean observationOnly = direction == MarketTradeDirection.OBSERVATION;
         carriageBoardAmount = observationOnly ? absent(carriageBoardAmount, "carriage-board amount")
-                : MarketPricing.amount(carriageBoardAmount, "carriage-board amount");
+                : optional(carriageBoardAmount, "carriage-board amount");
         packagingAmount = observationOnly ? absent(packagingAmount, "packaging amount")
-                : MarketPricing.amount(packagingAmount, "packaging amount");
+                : optional(packagingAmount, "packaging amount");
         freightAmount = observationOnly ? absent(freightAmount, "freight amount")
-                : MarketPricing.amount(freightAmount, "freight amount");
+                : optional(freightAmount, "freight amount");
         if (observationOnly) {
             if (packagingForm != null) throw invalid("packaging form is not applicable");
         } else {
-            text(packagingForm, "packaging form");
-            if (!packagingForm.equals("BULK") && !packagingForm.equals("BAGGED")) throw invalid("packaging form is invalid");
+            if (packagingForm != null && !packagingForm.equals("BULK") && !packagingForm.equals("BAGGED")) {
+                throw invalid("packaging form is invalid");
+            }
         }
         if (direction == MarketTradeDirection.PURCHASE && purchaseBasePrice == null) throw invalid("purchase base price is required");
         if (direction == MarketTradeDirection.SALE && saleBasePrice == null) throw invalid("sale base price is required");

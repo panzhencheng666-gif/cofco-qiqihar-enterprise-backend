@@ -818,6 +818,27 @@ public class JdbcOverviewSamplePointRepository
                     return initialValues;
                 }).single();
         jdbc.sql("""
+                SELECT metadata.field_code code,definition.label,definition.unit,metadata.value
+                FROM production.production_record_submission_metadata metadata
+                JOIN production.production_record record ON record.record_id=metadata.record_id
+                JOIN platform.production_fact_definition definition
+                  ON definition.code=metadata.field_code
+                JOIN platform.production_fact_applicability applicability
+                  ON applicability.fact_code=metadata.field_code
+                 AND applicability.product_code=record.product_code
+                 AND applicability.business_domain='PRODUCTION'
+                 AND applicability.page_kind='MONITORING'
+                 AND (applicability.object_type_code IS NULL
+                   OR applicability.object_type_code=record.object_type_code)
+                JOIN platform.production_fact_category category ON category.code=definition.category
+                WHERE metadata.record_id=:recordId
+                  AND metadata.field_code<>'PROD_SAMPLE_NAME'
+                ORDER BY category.sort_order,applicability.sort_order,metadata.field_code
+                """).param("recordId", recordId).query((row, index) -> new DirectoryValue(
+                        row.getString("code"), row.getString("label"), row.getString("unit"),
+                        row.getString("value")))
+                .list().forEach(value -> put(values, value.code(), value.label(), value.value(), value.unit()));
+        jdbc.sql("""
                 WITH facts AS (
                   SELECT quality_code code,value FROM production.production_record_quality
                   WHERE record_id=:recordId

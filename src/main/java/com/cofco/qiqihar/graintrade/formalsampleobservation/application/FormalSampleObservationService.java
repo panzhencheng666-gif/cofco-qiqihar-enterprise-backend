@@ -148,10 +148,15 @@ public class FormalSampleObservationService {
             throw invalidCommand("实际观测时间不能晚于当前时间");
         }
         var observedOn = command.observedAt().atZoneSameInstant(REPORTING_ZONE).toLocalDate();
-        FormalSampleIdentity identity = repository.lockEligibleSample(
+        FormalSampleIdentity lockedIdentity = repository.lockEligibleSample(
                 command.domain(), command.samplePointId(), normalizedProduct,
                 observedOn, principal.regionCodes());
-        accessControl.require("BUSINESS_CREATE", identity.regionCode());
+        accessControl.require("BUSINESS_CREATE", lockedIdentity.regionCode());
+        FormalSampleIdentity identity;
+        if (lockedIdentity.maintainerSubjectId() == null || lockedIdentity.maintainerSubjectId().isBlank()) {
+            repository.claimMaintainer(lockedIdentity.samplePointId(), principal.subjectId());
+            identity = withMaintainer(lockedIdentity, principal.subjectId());
+        } else identity = lockedIdentity;
         boolean administratorOverride = requireMaintainer(principal, identity);
 
         String sourceRecordId;
@@ -263,17 +268,19 @@ public class FormalSampleObservationService {
 
     private static boolean requireMaintainer(
             SecurityPrincipal principal, FormalSampleIdentity identity) {
-        if (identity.maintainerSubjectId() == null
-                || identity.maintainerSubjectId().isBlank()) {
-            throw new AccessDeniedException(
-                    "FORMAL_SAMPLE_MAINTAINER_REQUIRED",
-                    "正式样本尚未指定维护人，请联系管理员完成指派");
-        }
         if (identity.maintainerSubjectId().equals(principal.subjectId())) return false;
         if (principal.permits("FORMAL_SAMPLE_MANAGE")) return true;
         throw new AccessDeniedException(
                 "FORMAL_SAMPLE_MAINTAINER_DENIED",
                 "当前账号不是该正式样本的维护人，不能更新期间数据");
+    }
+
+    private static FormalSampleIdentity withMaintainer(
+            FormalSampleIdentity identity, String maintainerSubjectId) {
+        return new FormalSampleIdentity(identity.samplePointId(), identity.sampleName(),
+                identity.productCode(), identity.regionCode(), maintainerSubjectId,
+                identity.latitude(), identity.longitude(), identity.effectiveFrom(),
+                identity.effectiveTo(), identity.lockedValues());
     }
 
     private String auditDetail(FormalSampleObservationDomain domain,

@@ -499,13 +499,13 @@ public class MarketMonitoringService {
                 case "REPORTED_AT" -> matches(
                         definition, "READONLY_DATETIME", "GENERIC", false);
                 case "PURCHASE_BASE_PRICE" -> matches(
-                        definition, "DECIMAL", "PURCHASE_BASE_PRICE", true);
+                        definition, "DECIMAL", "PURCHASE_BASE_PRICE", false);
                 case "SALE_BASE_PRICE" -> matches(
-                        definition, "DECIMAL", "SALE_BASE_PRICE", true);
+                        definition, "DECIMAL", "SALE_BASE_PRICE", false);
                 case "CARRIAGE_BOARD_AMOUNT", "PACKAGING_AMOUNT", "FREIGHT_AMOUNT" ->
-                        matches(definition, "DECIMAL", "PRICE_COMPONENT", true);
+                        matches(definition, "DECIMAL", "PRICE_COMPONENT", false);
                 case "PACKAGING_FORM" -> matches(
-                        definition, "SELECT", "GENERIC", true);
+                        definition, "SELECT", "GENERIC", false);
                 case "EXTENSION" -> "GENERIC".equals(definition.capability())
                         && Set.of("TEXT", "DECIMAL", "SELECT", "REGION_HIERARCHY", "DATE")
                                 .contains(definition.controlType());
@@ -565,10 +565,6 @@ public class MarketMonitoringService {
                 return;
             }
             if (value == null || value.isBlank()) {
-                if (definition.code().equals("MKT_PACKAGING_AMOUNT")) {
-                    normalized.put(definition.code(), "0");
-                    return;
-                }
                 if (SYSTEM_MANAGED_OR_RETIRED_INPUT_CODES.contains(definition.code())) return;
                 if (definition.required()) throw invalid(definition.label() + " is required");
                 return;
@@ -593,20 +589,21 @@ public class MarketMonitoringService {
         });
 
         try {
-            boolean observationOnly = !byBinding.containsKey("PURCHASE_BASE_PRICE");
+            BigDecimal purchasePrice = optionalDecimal(byBinding.get("PURCHASE_BASE_PRICE"));
+            BigDecimal salePrice = optionalDecimal(byBinding.get("SALE_BASE_PRICE"));
+            MarketTradeDirection direction = purchasePrice == null
+                    ? salePrice == null ? MarketTradeDirection.OBSERVATION : MarketTradeDirection.SALE
+                    : salePrice == null ? MarketTradeDirection.PURCHASE : MarketTradeDirection.BOTH;
+            boolean observationOnly = direction == MarketTradeDirection.OBSERVATION;
             return new ParsedDraft(
                     draft.productCode(), requiredBinding(byBinding, "OBJECT_TYPE"),
                     requiredBinding(byBinding, "REGION"),
                     LocalDate.parse(requiredBinding(byBinding, "TRADE_DATE")),
-                    observationOnly ? MarketTradeDirection.OBSERVATION
-                            : byBinding.containsKey("SALE_BASE_PRICE")
-                                    ? MarketTradeDirection.BOTH : MarketTradeDirection.PURCHASE,
-                    observationOnly ? null : requiredDecimal(byBinding, "PURCHASE_BASE_PRICE"),
-                    optionalDecimal(byBinding.get("SALE_BASE_PRICE")),
-                    observationOnly ? null : requiredDecimal(byBinding, "CARRIAGE_BOARD_AMOUNT"),
-                    observationOnly ? null : requiredDecimal(byBinding, "PACKAGING_AMOUNT"),
-                    observationOnly ? null : requiredDecimal(byBinding, "FREIGHT_AMOUNT"),
-                    observationOnly ? null : requiredBinding(byBinding, "PACKAGING_FORM"),
+                    direction, purchasePrice, salePrice,
+                    observationOnly ? null : optionalDecimal(byBinding.get("CARRIAGE_BOARD_AMOUNT")),
+                    observationOnly ? null : optionalDecimal(byBinding.get("PACKAGING_AMOUNT")),
+                    observationOnly ? null : optionalDecimal(byBinding.get("FREIGHT_AMOUNT")),
+                    observationOnly ? null : byBinding.get("PACKAGING_FORM"),
                     draft.facts(), extensions);
         } catch (DateTimeException | NumberFormatException exception) {
             throw invalid("Market core field value is invalid");

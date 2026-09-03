@@ -244,7 +244,7 @@ public class ProductionRecordController {
                     view.evidencePhotos().stream().map(EvidencePhotoResponse::from).toList(),
                     view.allowedActions(), record.version());
         }
-        private static String decimal(BigDecimal value) { return value.toPlainString(); }
+        private static String decimal(BigDecimal value) { return value == null ? null : value.toPlainString(); }
         private static Map<String, String> values(Map<String, BigDecimal> values) {
             Map<String, String> response = new LinkedHashMap<>();
             values.forEach((code, value) -> response.put(code, decimal(value)));

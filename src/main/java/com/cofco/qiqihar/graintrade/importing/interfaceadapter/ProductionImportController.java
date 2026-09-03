@@ -40,7 +40,7 @@ public class ProductionImportController {
                                     @RequestParam(required = false) String productCode,
                                     @RequestParam(required = false) String objectTypeCode) {
         if ("xlsx".equalsIgnoreCase(format)) {
-            byte[] bytes = BusinessImportWorkbook.create(service.productWorkbook(productCode));
+            byte[] bytes = service.productWorkbookBytes(productCode);
             return xlsx("产情-" + BusinessImportWorkbook.businessLabel(productCode)
                     + "-批量导入模板.xlsx", bytes);
         }

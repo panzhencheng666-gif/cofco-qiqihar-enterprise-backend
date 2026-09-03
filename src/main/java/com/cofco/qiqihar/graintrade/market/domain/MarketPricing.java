@@ -36,10 +36,14 @@ public final class MarketPricing {
         };
         if (base == null) return null;
         return base
-                .add(amount(carriageBoardAmount, "carriage-board amount"))
-                .add(amount(packagingAmount, "packaging amount"))
-                .add(amount(freightAmount, "freight amount"))
+                .add(optionalAmount(carriageBoardAmount, "carriage-board amount"))
+                .add(optionalAmount(packagingAmount, "packaging amount"))
+                .add(optionalAmount(freightAmount, "freight amount"))
                 .setScale(SCALE, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal optionalAmount(BigDecimal value, String description) {
+        return value == null ? BigDecimal.ZERO.setScale(SCALE) : amount(value, description);
     }
 
     public static BigDecimal amount(BigDecimal value, String description) {

@@ -7,9 +7,9 @@ import java.util.Set;
 
 /** Builds the only field catalogue used by production XLSX, APIs and browser entry points. */
 public final class ProductionSurveyFieldContract {
-    public static final String VERSION = "production-survey-fields-v4";
+    public static final String VERSION = "production-survey-fields-v5";
     public static final String DIGEST =
-            "sha256:07806fbda70354ee29b243020cd5508db52271f8d7c88ac540379a7c1c3297fe";
+            "sha256:b18e705dbf3da916aeb03df93d7e2ab4ea54c0ef23786de8bbe204a3cdca2031";
     private static final Set<String> FIXED_CODES = Set.of(
             "objectTypeCode", "regionCode", "PROD_CULTIVAR_NAME", "surveyYear", "surveyMonth", "surveyDate",
             "PROD_SAMPLE_SUBJECT_CODE", "PROD_SURPLUS_SUBJECT_CODE", "PROD_SURPLUS_CUTOFF_DATE",
@@ -56,9 +56,9 @@ public final class ProductionSurveyFieldContract {
                 "DECIMAL", "DECIMAL", "度", true, false, false, true, true, 9, 6, "范围 -180 至 180"));
 
         fields.add(fixed("cultivatedAreaMu", "播种面积", "OUTPUT", "产量信息", 30, 10,
-                "DECIMAL", "DECIMAL", "亩", true, false, false, true, true, 18, 4, null));
+                "DECIMAL", "DECIMAL", "亩", false, false, false, true, true, 18, 4, null));
         fields.add(fixed("yieldPerMuKilograms", "预计单产", "OUTPUT", "产量信息", 30, 20,
-                "DECIMAL", "DECIMAL", "公斤/亩", true, false, false, true, true, 18, 4, null));
+                "DECIMAL", "DECIMAL", "公斤/亩", false, false, false, true, true, 18, 4, null));
         fields.add(fixed("estimatedOutputKilograms", "预计总产", "OUTPUT", "产量信息", 30, 30,
                 "DECIMAL", "READONLY_DECIMAL", "公斤", false, true, true, false, true, 18, 4,
                 "播种面积与预计单产的计算值"));
