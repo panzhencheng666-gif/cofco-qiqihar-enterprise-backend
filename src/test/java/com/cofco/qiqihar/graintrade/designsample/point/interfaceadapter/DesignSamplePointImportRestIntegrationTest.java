@@ -44,17 +44,31 @@ class DesignSamplePointImportRestIntegrationTest {
     @Test
     void publishesARealXlsxTemplate() throws Exception {
         mvc.perform(get("/api/v1/design-sample-points/import-template")
+                        .queryParam("domain", "PRODUCTION")
                         .principal(() -> "production-tester"))
                 .andExpect(status().isOk())
                 .andExpect(content().contentType(
                         MediaType.parseMediaType(
-                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")));
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")))
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header()
+                        .string("Content-Disposition", org.hamcrest.Matchers.containsString(
+                                "%E4%BA%A7%E6%83%85%E7%B1%BB%E8%AE%BE%E8%AE%A1%E5%8F%82%E8%80%83%E7%82%B9")));
+
+        mvc.perform(get("/api/v1/design-sample-points/import-template")
+                        .queryParam("domain", "MARKET")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header()
+                        .string("Content-Disposition", org.hamcrest.Matchers.containsString(
+                                "%E5%B8%82%E5%9C%BA%E7%B1%BB%E8%AE%BE%E8%AE%A1%E5%8F%82%E8%80%83%E7%82%B9")));
 
         assertThat(imports.templateDefinition().columns())
                 .extracting(SamplePointMasterWorkbook.Column::code)
                 .containsExactly(
+                        "DOMAIN_CODE", "PRODUCT_CODE", "OBJECT_TYPE_CODE",
                         "DSP_NAME", "DSP_REGION_CODE", "DSP_ADDRESS",
-                        "DSP_LONGITUDE", "DSP_LATITUDE");
+                        "DSP_LONGITUDE", "DSP_LATITUDE",
+                        "DSP_MAINTAINER_NAME", "DSP_MAINTAINER_UNIT");
     }
 
     @Test
@@ -113,6 +127,9 @@ class DesignSamplePointImportRestIntegrationTest {
 
     private static Map<String, String> designRow(String name, String longitude) {
         return Map.of(
+                "DOMAIN_CODE", "产情",
+                "PRODUCT_CODE", "玉 米",
+                "OBJECT_TYPE_CODE", "农户",
                 "DSP_NAME", name,
                 "DSP_REGION_CODE", "230202",
                 "DSP_ADDRESS", "龙沙区验收详细地址",

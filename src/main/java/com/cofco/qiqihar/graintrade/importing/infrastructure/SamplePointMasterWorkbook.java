@@ -28,7 +28,11 @@ public final class SamplePointMasterWorkbook {
         }
     }
 
-    public record Template(Kind kind, String version, String digest, List<Column> columns) {
+    public record Template(Kind kind, String version, String digest, List<Column> columns, String sheetLabel) {
+        public Template(Kind kind, String version, String digest, List<Column> columns) {
+            this(kind, version, digest, columns, kind == null ? null : kind.label);
+        }
+
         public Template {
             if (kind == null || version == null || version.isBlank()
                     || digest == null || !digest.startsWith("sha256:")
@@ -38,6 +42,10 @@ public final class SamplePointMasterWorkbook {
             version = version.trim();
             digest = digest.trim();
             columns = List.copyOf(columns);
+            if (sheetLabel == null || sheetLabel.isBlank()) {
+                throw new IllegalArgumentException("INVALID_SAMPLE_POINT_IMPORT_TEMPLATE");
+            }
+            sheetLabel = sheetLabel.trim();
         }
     }
 
@@ -62,7 +70,7 @@ public final class SamplePointMasterWorkbook {
                 .toList();
         return BusinessImportWorkbook.create(workbook, values,
                 new BusinessImportWorkbook.WorkbookOptions(
-                        template.kind().label + "批量新增", null, null, java.util.Set.of(),
+                        template.sheetLabel() + "批量新增", null, null, java.util.Set.of(),
                         List.of(List.of("处理规则", "一次自动校验；任一行错误则本次零条入库"))));
     }
 

@@ -72,7 +72,6 @@ public class DesignSampleMetadataService {
         Map<String, ValueState> states = new LinkedHashMap<>();
         Map<String, JsonNode> normalizedValues = new LinkedHashMap<>();
         Map<String, BigDecimal> decimalValues = new LinkedHashMap<>();
-        boolean knownBusinessObservation = false;
 
         for (Map.Entry<String, JsonNode> entry : values.entrySet()) {
             String code = entry.getKey();
@@ -101,9 +100,6 @@ public class DesignSampleMetadataService {
                 decimalValues.put(code, normalized.decimalValue());
             }
             states.put(code, ValueState.KNOWN);
-            if (field.sectionCode().equals("OBSERVATION") && !field.code().equals("OBSERVED_ON")) {
-                knownBusinessObservation = true;
-            }
         }
 
         boolean missingRequired = applicable.stream()
@@ -116,10 +112,6 @@ public class DesignSampleMetadataService {
         }
 
         validateProductionAreaRelationships(decimalValues);
-        if (!context.equals(new DesignSampleContext("REFERENCE", "GENERAL", "REFERENCE_POINT"))
-                && !knownBusinessObservation) {
-            throw error("EMPTY_OBSERVATION", "至少需要一个已知的适用业务观测值");
-        }
         return new ValidatedDesignSampleValues(
                 snapshot.contractVersion(), snapshot.contractDigest(), context,
                 normalizedValues, states);

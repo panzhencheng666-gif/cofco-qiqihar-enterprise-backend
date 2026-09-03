@@ -583,19 +583,26 @@ class FormalSampleObservationRestIntegrationTest {
                 .andExpect(jsonPath("$.error.code")
                         .value("FORMAL_SAMPLE_OBSERVATION_IDEMPOTENCY_CONFLICT"));
 
+        String replacement = request.replace("\"125\"", "\"126\"");
+        mvc.perform(post("/api/v1/formal-sample-observations/observations")
+                        .principal(() -> ACTOR).header("Idempotency-Key", "production-observation-2")
+                        .contentType(MediaType.APPLICATION_JSON).content(replacement))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.values.cultivatedAreaMu").value("126.0000"));
+
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM production.production_record
                 WHERE sample_point_id=:samplePointId AND product_code='CORN'
                   AND status_code='APPROVED' AND survey_period_governance_state='CONFIRMED'
-                """).param("samplePointId", SAMPLE_POINT_ID).query(Long.class).single()).isEqualTo(2);
+                """).param("samplePointId", SAMPLE_POINT_ID).query(Long.class).single()).isEqualTo(1);
         assertThat(jdbc.sql("""
                 SELECT cultivated_area_mu::text FROM production.production_record
-                WHERE sample_point_id=:samplePointId AND record_id<>:legacyId
+                WHERE sample_point_id=:samplePointId AND record_id=:legacyId
                 """).param("samplePointId", SAMPLE_POINT_ID).param("legacyId", RECORD_ID)
-                .query(String.class).single()).isEqualTo("125.0000");
+                .query(String.class).single()).isEqualTo("126.0000");
         assertThat(jdbc.sql("""
                 SELECT value FROM production.production_record_submission_metadata
-                WHERE record_id<>:legacyId AND field_code='PROD_SAMPLE_NAME'
+                WHERE record_id=:legacyId AND field_code='PROD_SAMPLE_NAME'
                   AND record_id IN (SELECT record_id FROM production.production_record
                     WHERE sample_point_id=:samplePointId)
                 """).param("legacyId", RECORD_ID).param("samplePointId", SAMPLE_POINT_ID)
@@ -605,7 +612,7 @@ class FormalSampleObservationRestIntegrationTest {
                 WHERE aggregate_type='FORMAL_SAMPLE_OBSERVATION'
                   AND action_code='FORMAL_SAMPLE_OBSERVATION_SAVED'
                 """).query(Long.class).single())
-                .isEqualTo(formalObservationAuditCountBefore + 1);
+                .isEqualTo(formalObservationAuditCountBefore + 2);
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM platform.business_event_outbox
                 WHERE aggregate_type='FORMAL_SAMPLE_OBSERVATION'
@@ -614,7 +621,7 @@ class FormalSampleObservationRestIntegrationTest {
                   AND detail->>'regionCode'='230221'
                   AND detail->>'productCode'='CORN'
                 """).param("samplePointId", SAMPLE_POINT_ID.toString())
-                .query(Long.class).single()).isEqualTo(formalObservationOutboxCountBefore + 1);
+                .query(Long.class).single()).isEqualTo(formalObservationOutboxCountBefore + 2);
 
         mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
                         .principal(() -> ACTOR)
@@ -624,6 +631,7 @@ class FormalSampleObservationRestIntegrationTest {
                         .queryParam("year", "2026")
                         .queryParam("observedAt", "2026-08-28T10:16:00+08:00"))
                 .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].latestValues.cultivatedAreaMu").value("126.0000"))
                 .andExpect(jsonPath("$.data[0].latestValues.MOISTURE").value("13.5000"))
                 .andExpect(jsonPath("$.data[0].latestValues.LAND_RENT").value("80.0000"))
                 .andExpect(jsonPath("$.data[0].latestValues.INSURANCE_AMOUNT").value("15.0000"))
@@ -636,20 +644,16 @@ class FormalSampleObservationRestIntegrationTest {
                         .queryParam("productCode", "CORN")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.totalElements").value(2))
-                .andExpect(jsonPath("$.data.items.length()").value(2))
+                .andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items.length()").value(1))
                 .andExpect(jsonPath("$.data.items[0].observationId").exists())
                 .andExpect(jsonPath("$.data.items[0].observedAt").value("2026-08-28T02:15:00Z"))
                 .andExpect(jsonPath("$.data.items[0].officialSavedAt").exists())
                 .andExpect(jsonPath("$.data.items[0].actorDisplayName").isNotEmpty())
                 .andExpect(jsonPath("$.data.items[0].actorDisplayName").value("产情测试员"))
                 .andExpect(jsonPath("$.data.items[0].latest").value(true))
-                .andExpect(jsonPath("$.data.items[0].values.cultivatedAreaMu").value("125.0000"))
-                .andExpect(jsonPath("$.data.items[0].synchronizedModules[0]").value("OVERVIEW"))
-                .andExpect(jsonPath("$.data.items[1].observationId").doesNotExist())
-                .andExpect(jsonPath("$.data.items[1].actorDisplayName").value("产情测试员"))
-                .andExpect(jsonPath("$.data.items[1].latest").value(false))
-                .andExpect(jsonPath("$.data.items[1].values.cultivatedAreaMu").value("100.0000"));
+                .andExpect(jsonPath("$.data.items[0].values.cultivatedAreaMu").value("126.0000"))
+                .andExpect(jsonPath("$.data.items[0].synchronizedModules[0]").value("OVERVIEW"));
 
         mvc.perform(get("/api/v1/formal-sample-observations/observations")
                         .principal(() -> ACTOR)
@@ -660,7 +664,7 @@ class FormalSampleObservationRestIntegrationTest {
                         .queryParam("pageNumber", "1")
                         .queryParam("pageSize", "20"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.totalElements").value(2))
+                .andExpect(jsonPath("$.data.totalElements").value(1))
                 .andExpect(jsonPath("$.data.items.length()").value(0));
 
         mvc.perform(get("/api/v1/formal-sample-observations/observations")
@@ -679,7 +683,7 @@ class FormalSampleObservationRestIntegrationTest {
                         .queryParam("surveyYear", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.production.metrics[?(@.code == 'CULTIVATED_AREA')].value")
-                        .value(org.hamcrest.Matchers.hasItem("125.0000")))
+                        .value(org.hamcrest.Matchers.hasItem("126.0000")))
                 .andExpect(jsonPath("$.data.production.metrics[?(@.code == 'CULTIVATED_AREA')].sourceCount")
                         .value(org.hamcrest.Matchers.hasItem(1)));
         mvc.perform(get("/api/v1/overview/indicators").principal(() -> ACTOR)
@@ -687,7 +691,7 @@ class FormalSampleObservationRestIntegrationTest {
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].value")
-                        .value(org.hamcrest.Matchers.hasItem("125")))
+                        .value(org.hamcrest.Matchers.hasItem("126")))
                 .andExpect(jsonPath("$.data[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].sourceCount")
                         .value(org.hamcrest.Matchers.hasItem(1)));
         mvc.perform(post("/api/v1/reports/previews").principal(() -> ACTOR)
@@ -748,11 +752,11 @@ class FormalSampleObservationRestIntegrationTest {
                   AND carriage_board_amount IS NULL AND packaging_amount IS NULL
                   AND freight_amount IS NULL AND packaging_form IS NULL
                 """).param("samplePointId", SAMPLE_POINT_ID).query(Long.class).single())
-                .isEqualTo(2);
+                .isEqualTo(1);
         assertThat(jdbc.sql("""
                 SELECT field_code || '=' || value
                 FROM market.market_record_core_value
-                WHERE record_id<>:legacyId
+                WHERE record_id=:legacyId
                   AND record_id IN (SELECT record_id FROM market.market_record
                     WHERE sample_point_id=:samplePointId)
                   AND field_code LIKE 'AGRI_INPUT_%'
@@ -812,6 +816,14 @@ class FormalSampleObservationRestIntegrationTest {
                 .andExpect(jsonPath("$.data.values.MKT_OBJECT_TYPE").value("FEED_MILL"))
                 .andExpect(jsonPath("$.data.values.MKT_SALE_BASE_PRICE").doesNotExist())
                 .andExpect(jsonPath("$.data.synchronizedModules[1]").value("MARKET_ANALYSIS"));
+
+        assertThat(jdbc.sql("""
+                SELECT record_id::text FROM market.market_record
+                WHERE sample_point_id=:samplePointId AND product_code='CORN'
+                  AND survey_year=2026 AND survey_month=8
+                  AND status_code='APPROVED' AND survey_period_governance_state='CONFIRMED'
+                """).param("samplePointId", SAMPLE_POINT_ID).query(String.class).single())
+                .isEqualTo(MARKET_RECORD_ID);
 
         mvc.perform(post("/api/v1/formal-sample-observations/observations").principal(() -> ACTOR)
                         .header("Idempotency-Key", "market-observation-injected-sale")
@@ -873,7 +885,7 @@ class FormalSampleObservationRestIntegrationTest {
                 .andExpect(jsonPath("$.data.synchronizedModules[1]").value("LOGISTICS_ANALYSIS"));
 
         assertThat(jdbc.sql("SELECT count(*) FROM market.market_record WHERE sample_point_id=:id AND status_code='APPROVED'")
-                .param("id", SAMPLE_POINT_ID).query(Long.class).single()).isEqualTo(2);
+                .param("id", SAMPLE_POINT_ID).query(Long.class).single()).isEqualTo(1);
         assertThat(jdbc.sql("SELECT count(*) FROM logistics.route_event WHERE sample_point_id=:id AND status_code='APPROVED'")
                 .param("id", SAMPLE_POINT_ID).query(Long.class).single()).isEqualTo(2);
     }

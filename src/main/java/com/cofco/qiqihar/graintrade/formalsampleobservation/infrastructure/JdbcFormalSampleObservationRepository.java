@@ -312,8 +312,14 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                              record.record_id DESC)=1 latest
                     FROM production.production_record record
                     JOIN registry.sample_point point ON point.sample_point_id=record.sample_point_id
-                    LEFT JOIN platform.formal_sample_observation receipt
-                      ON receipt.source_domain='PRODUCTION' AND receipt.source_record_id=record.record_id::text
+                    LEFT JOIN LATERAL (
+                      SELECT observation_id,official_saved_at,projection_version
+                      FROM platform.formal_sample_observation receipt
+                      WHERE receipt.source_domain='PRODUCTION'
+                        AND receipt.source_record_id=record.record_id::text
+                      ORDER BY receipt.official_saved_at DESC,receipt.observation_id DESC
+                      LIMIT 1
+                    ) receipt ON true
                     LEFT JOIN platform.security_user actor ON actor.subject_id=record.last_modified_by
                     WHERE record.sample_point_id=:samplePointId AND record.product_code=:productCode
                       AND record.status_code='APPROVED'
@@ -344,8 +350,14 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                              record.record_id DESC)=1 latest
                     FROM market.market_record record
                     JOIN registry.sample_point point ON point.sample_point_id=record.sample_point_id
-                    LEFT JOIN platform.formal_sample_observation receipt
-                      ON receipt.source_domain='MARKET' AND receipt.source_record_id=record.record_id::text
+                    LEFT JOIN LATERAL (
+                      SELECT observation_id,official_saved_at,projection_version
+                      FROM platform.formal_sample_observation receipt
+                      WHERE receipt.source_domain='MARKET'
+                        AND receipt.source_record_id=record.record_id::text
+                      ORDER BY receipt.official_saved_at DESC,receipt.observation_id DESC
+                      LIMIT 1
+                    ) receipt ON true
                     LEFT JOIN platform.security_user actor ON actor.subject_id=record.last_modified_by
                     WHERE record.sample_point_id=:samplePointId AND record.product_code=:productCode
                       AND record.status_code='APPROVED'
@@ -362,8 +374,14 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                              event.event_id DESC)=1 latest
                     FROM logistics.route_event event
                     JOIN registry.sample_point point ON point.sample_point_id=event.sample_point_id
-                    LEFT JOIN platform.formal_sample_observation receipt
-                      ON receipt.source_domain='LOGISTICS' AND receipt.source_record_id=event.event_id::text
+                    LEFT JOIN LATERAL (
+                      SELECT observation_id,official_saved_at,projection_version
+                      FROM platform.formal_sample_observation receipt
+                      WHERE receipt.source_domain='LOGISTICS'
+                        AND receipt.source_record_id=event.event_id::text
+                      ORDER BY receipt.official_saved_at DESC,receipt.observation_id DESC
+                      LIMIT 1
+                    ) receipt ON true
                     LEFT JOIN platform.security_user actor ON actor.subject_id=event.last_modified_by
                     WHERE event.sample_point_id=:samplePointId AND event.product_code=:productCode
                       AND event.status_code='APPROVED'

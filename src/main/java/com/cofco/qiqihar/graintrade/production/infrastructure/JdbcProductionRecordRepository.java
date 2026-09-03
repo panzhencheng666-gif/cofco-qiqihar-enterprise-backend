@@ -293,6 +293,44 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
     @Override
     public ProductionRecord insertOfficialObservation(
             ProductionRecord record, UUID samplePointId, String actorId, Instant officialSavedAt) {
+        jdbc.sql("SELECT 1 FROM (SELECT pg_advisory_xact_lock(hashtextextended(:lockKey, 0))) locked")
+                .param("lockKey", "FORMAL:PRODUCTION:" + samplePointId + ":" + record.productCode()
+                        + ":" + record.surveyYear() + ":" + record.surveyMonth())
+                .query(Long.class).single();
+        var current = jdbc.sql("""
+                SELECT record_id,version
+                FROM production.production_record
+                WHERE sample_point_id=:samplePointId AND product_code=:productCode
+                  AND survey_year=:surveyYear
+                  AND survey_month IS NOT DISTINCT FROM :surveyMonth
+                  AND status_code='APPROVED'
+                  AND survey_period_governance_state='CONFIRMED'
+                FOR UPDATE
+                """).param("samplePointId", samplePointId)
+                .param("productCode", record.productCode())
+                .param("surveyYear", record.surveyYear())
+                .param("surveyMonth", record.surveyMonth(), java.sql.Types.INTEGER)
+                .query((row, ignored) -> new ExistingOfficialRecord(
+                        row.getString("record_id"), row.getLong("version")))
+                .optional();
+        if (current.isPresent()) {
+            ExistingOfficialRecord existing = current.orElseThrow();
+            ProductionRecord replacement = new ProductionRecord(
+                    existing.id(), record.productCode(), record.objectTypeCode(), record.regionCode(),
+                    record.cultivarCode(), record.surveyDate(), record.surveyYear(), record.surveyMonth(),
+                    record.reportedAt(), record.cultivatedAreaMu(), record.yieldPerMuKilograms(),
+                    record.estimatedOutputKilograms(), record.status(), record.returnReason(),
+                    record.quality(), record.costs(), record.insurance(), record.subsidies(),
+                    record.submissionMetadata(), existing.version());
+            ProductionRecord persisted = updateFacts(replacement, existing.version(), actorId);
+            jdbc.sql("""
+                    UPDATE production.production_record
+                    SET submitted_at=:savedAt,updated_at=:savedAt
+                    WHERE record_id=:recordId
+                    """).param("savedAt", OffsetDateTime.ofInstant(officialSavedAt, ZoneOffset.UTC))
+                    .param("recordId", existing.id()).update();
+            return persisted;
+        }
         ProductionRecord persisted = insert(record, actorId);
         int linked = jdbc.sql("""
                 UPDATE production.production_record
@@ -305,6 +343,8 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         requireUpdated(linked);
         return persisted;
     }
+
+    private record ExistingOfficialRecord(String id, long version) {}
 
     @Override
     public ProductionRecord updateFacts(ProductionRecord record, long expectedVersion, String actorId) {
