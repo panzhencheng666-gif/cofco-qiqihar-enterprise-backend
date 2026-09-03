@@ -21,6 +21,7 @@ import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.text.Normalizer;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -29,6 +30,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -37,10 +39,11 @@ import tools.jackson.databind.JsonNode;
 
 @Service
 public class DesignSamplePointImportService {
-    private static final DesignSampleContext REFERENCE_CONTEXT =
-            new DesignSampleContext("REFERENCE", "GENERAL", "REFERENCE_POINT");
-    private static final List<String> LOCATION_FIELDS = List.of(
-            "DSP_NAME", "DSP_REGION_CODE", "DSP_ADDRESS", "DSP_LONGITUDE", "DSP_LATITUDE");
+    private static final List<String> CONTEXT_FIELDS = List.of(
+            "DOMAIN_CODE", "PRODUCT_CODE", "OBJECT_TYPE_CODE");
+    private static final List<String> PLANNING_FIELDS = List.of(
+            "DSP_NAME", "DSP_REGION_CODE", "DSP_ADDRESS", "DSP_LONGITUDE", "DSP_LATITUDE",
+            "DSP_MAINTAINER_NAME", "DSP_MAINTAINER_UNIT");
 
     private final DesignSampleMetadataService metadata;
     private final AccessControl access;
@@ -67,29 +70,45 @@ public class DesignSamplePointImportService {
         this.clock = clock;
     }
 
-    public byte[] template() {
+    public byte[] template(String domainCode) {
         access.require("BUSINESS_UPDATE", null);
-        return SamplePointMasterWorkbook.create(templateDefinition());
+        return SamplePointMasterWorkbook.create(templateDefinition(domainCode));
     }
 
     public SamplePointMasterWorkbook.Template templateDefinition() {
+        return templateDefinition("PRODUCTION");
+    }
+
+    public SamplePointMasterWorkbook.Template templateDefinition(String requestedDomain) {
         DesignSampleContractSnapshot contract = metadata.activeContract();
-        List<SamplePointMasterWorkbook.Column> columns = LOCATION_FIELDS.stream()
+        String domain = resolveDomain(contract, requestedDomain);
+        List<SamplePointMasterWorkbook.Column> contextColumns = CONTEXT_FIELDS.stream()
                 .map(contract.fieldsByCode()::get)
                 .map(field -> new SamplePointMasterWorkbook.Column(
                         field.code(), publicLabel(field), true))
                 .toList();
+        List<SamplePointMasterWorkbook.Column> planningColumns = PLANNING_FIELDS.stream()
+                .map(contract.fieldsByCode()::get)
+                .map(field -> new SamplePointMasterWorkbook.Column(
+                        field.code(), publicLabel(field),
+                        !field.code().startsWith("DSP_MAINTAINER_")))
+                .toList();
+        List<SamplePointMasterWorkbook.Column> columns = new ArrayList<>(contextColumns);
+        columns.addAll(planningColumns);
         return new SamplePointMasterWorkbook.Template(
                 SamplePointMasterWorkbook.Kind.DESIGN,
-                contract.contractVersion(), contract.contractDigest(), columns);
+                contract.contractVersion(), contract.contractDigest(), columns,
+                domain.equals("PRODUCTION") ? "产情类设计参考点" : "市场类设计参考点");
     }
 
     @Transactional
     public SamplePointImportResult importFile(
-            String idempotencyKey, String filename, String mediaType, byte[] bytes) {
+            String requestedDomain, String idempotencyKey, String filename, String mediaType, byte[] bytes) {
         requireUpload(idempotencyKey, filename, mediaType, bytes);
         SecurityPrincipal principal = access.require("BUSINESS_UPDATE", null);
-        SamplePointMasterWorkbook.Template template = templateDefinition();
+        DesignSampleContractSnapshot contract = metadata.activeContract();
+        String domain = resolveDomain(contract, requestedDomain);
+        SamplePointMasterWorkbook.Template template = templateDefinition(domain);
         List<SamplePointMasterWorkbook.Row> submitted;
         try {
             submitted = SamplePointMasterWorkbook.parse(bytes, template, limits.synchronousRows());
@@ -103,15 +122,22 @@ public class DesignSamplePointImportService {
                 principal.workUnitCode(), clock.instant());
         if (!reservation.owner()) return result(reservation.stored().job(), true);
 
-        DesignSampleContractSnapshot contract = metadata.activeContract();
         List<Row> rows = new ArrayList<>();
         Set<String> names = new HashSet<>();
         Set<String> coordinates = new HashSet<>();
         for (SamplePointMasterWorkbook.Row submittedRow : submitted) {
             try {
-                DesignSampleContext context = REFERENCE_CONTEXT;
+                String rowDomain = resolveDomain(contract, submittedRow.values().get("DOMAIN_CODE"));
+                if (!domain.equals(rowDomain)) {
+                    throw new ClientRequestException(
+                            "DESIGN_SAMPLE_DOMAIN_MISMATCH", "业务分类与所用模板不一致");
+                }
+                String product = resolveProduct(contract, submittedRow.values().get("PRODUCT_CODE"));
+                String objectType = resolveObjectType(
+                        contract, domain, submittedRow.values().get("OBJECT_TYPE_CODE"));
+                DesignSampleContext context = new DesignSampleContext(domain, product, objectType);
                 Map<String, JsonNode> values = new LinkedHashMap<>();
-                template.columns().forEach(column -> {
+                template.columns().stream().filter(column -> PLANNING_FIELDS.contains(column.code())).forEach(column -> {
                     String value = submittedRow.values().get(column.code());
                     if (value != null && !value.isBlank()) {
                         values.put(column.code(), metadataNode(value));
@@ -129,7 +155,8 @@ public class DesignSamplePointImportService {
                 }
                 rows.add(Row.valid(submittedRow, draft));
             } catch (RuntimeException exception) {
-                rows.add(Row.error(submittedRow, errorCode(exception), errorMessage(exception)));
+                rows.add(Row.error(submittedRow, errorCode(exception),
+                        locatedError(template, submittedRow, exception)));
             }
         }
         return complete(reservation.stored().job(), idempotencyKey, digest, principal, rows);
@@ -144,7 +171,94 @@ public class DesignSamplePointImportService {
                         "IMPORT_JOB_NOT_FOUND", "导入记录不存在"))
                 .job();
         requireOwner(job, principal);
-        return errorFile(job, templateDefinition(), "design-sample-point-import-errors-");
+        String domain = job.rows().stream().map(row -> row.values().get("DOMAIN_CODE"))
+                .filter(value -> value != null && !value.isBlank()).findFirst()
+                .map(value -> resolveDomain(metadata.activeContract(), value)).orElse("PRODUCTION");
+        return errorFile(job, templateDefinition(domain), "design-sample-point-import-errors-");
+    }
+
+    private static String resolveDomain(DesignSampleContractSnapshot contract, String value) {
+        String token = token(value);
+        if (Set.of("产情", "产情类", "产情域").contains(token)) return "PRODUCTION";
+        if (Set.of("市场", "市场类", "市场域").contains(token)) return "MARKET";
+        return contract.domains().stream()
+                .filter(item -> item.code().equals("PRODUCTION") || item.code().equals("MARKET"))
+                .filter(item -> matches(token, item.code(), item.label(), item.aliases()))
+                .map(DesignSampleContractSnapshot.DomainDefinition::code)
+                .findFirst().orElseThrow(() -> new ClientRequestException(
+                        "INVALID_DESIGN_SAMPLE_DOMAIN", "业务分类应填写产情或市场"));
+    }
+
+    private static String resolveProduct(DesignSampleContractSnapshot contract, String value) {
+        String token = token(value);
+        return contract.products().stream()
+                .filter(item -> !item.code().equals("GENERAL"))
+                .filter(item -> matches(token, item.code(), item.label(), item.aliases()))
+                .map(DesignSampleContractSnapshot.ProductDefinition::code)
+                .findFirst().orElseThrow(() -> new ClientRequestException(
+                        "INVALID_DESIGN_SAMPLE_PRODUCT", "品种名称或代码不在合同中"));
+    }
+
+    private static String resolveObjectType(
+            DesignSampleContractSnapshot contract, String domain, String value) {
+        String token = token(value);
+        return contract.objectTypes().stream().filter(item -> item.domainCode().equals(domain))
+                .filter(item -> matches(token, item.code(), item.label(), item.aliases()))
+                .map(DesignSampleContractSnapshot.ObjectTypeDefinition::code)
+                .findFirst().orElseThrow(() -> new ClientRequestException(
+                        "INVALID_DESIGN_SAMPLE_OBJECT_TYPE", "参考对象类型不适用于当前业务分类"));
+    }
+
+    private static boolean matches(String token, String code, String label, List<String> aliases) {
+        return token.equals(token(code)) || token.equals(token(label))
+                || aliases.stream().anyMatch(alias -> token.equals(token(alias)));
+    }
+
+    private static String token(String value) {
+        if (value == null) return "";
+        return Normalizer.normalize(value, Normalizer.Form.NFKC)
+                .replaceAll("[\\s\\u3000]+", "").toUpperCase(Locale.ROOT);
+    }
+
+    private static String locatedError(
+            SamplePointMasterWorkbook.Template template,
+            SamplePointMasterWorkbook.Row row,
+            RuntimeException exception) {
+        String column = firstInvalidColumn(row);
+        if (column == null) column = switch (errorCode(exception)) {
+            case "INVALID_DESIGN_SAMPLE_DOMAIN", "DESIGN_SAMPLE_DOMAIN_MISMATCH" -> "业务分类";
+            case "INVALID_DESIGN_SAMPLE_PRODUCT" -> "品种";
+            case "INVALID_DESIGN_SAMPLE_OBJECT_TYPE", "INVALID_DESIGN_SAMPLE_CONTEXT" -> "参考对象类型";
+            case "COORDINATE_OUTSIDE_REGION", "ADMIN_BOUNDARY_UNAVAILABLE" -> "经纬度";
+            default -> "点位名称";
+        };
+        return "工作表“" + template.sheetLabel() + "”第" + row.rowNumber()
+                + "行“" + column + "”列：" + errorMessage(exception);
+    }
+
+    private static String firstInvalidColumn(SamplePointMasterWorkbook.Row row) {
+        for (var field : List.of(
+                Map.entry("DOMAIN_CODE", "业务分类"),
+                Map.entry("PRODUCT_CODE", "品种"),
+                Map.entry("OBJECT_TYPE_CODE", "参考对象类型"),
+                Map.entry("DSP_NAME", "点位名称"),
+                Map.entry("DSP_REGION_CODE", "所属地区"),
+                Map.entry("DSP_ADDRESS", "详细地址"),
+                Map.entry("DSP_LONGITUDE", "经度"),
+                Map.entry("DSP_LATITUDE", "纬度"))) {
+            if (row.values().getOrDefault(field.getKey(), "").isBlank()) return field.getValue();
+        }
+        try {
+            new java.math.BigDecimal(row.values().get("DSP_LONGITUDE"));
+        } catch (RuntimeException invalid) {
+            return "经度";
+        }
+        try {
+            new java.math.BigDecimal(row.values().get("DSP_LATITUDE"));
+        } catch (RuntimeException invalid) {
+            return "纬度";
+        }
+        return null;
     }
 
     private SamplePointImportResult complete(
@@ -185,6 +299,9 @@ public class DesignSamplePointImportService {
     }
 
     private static String publicLabel(DesignSampleFieldDefinition field) {
+        if (field.code().equals("DOMAIN_CODE")) return "业务分类";
+        if (field.code().equals("PRODUCT_CODE")) return "品种";
+        if (field.code().equals("OBJECT_TYPE_CODE")) return "参考对象类型";
         if (field.code().equals("DSP_REGION_CODE")) return "所属地区";
         return field.unit() == null ? field.label() : field.label() + "（" + field.unit() + "）";
     }

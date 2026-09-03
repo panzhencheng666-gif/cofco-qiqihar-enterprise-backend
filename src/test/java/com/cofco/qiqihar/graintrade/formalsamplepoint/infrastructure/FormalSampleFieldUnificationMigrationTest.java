@@ -36,7 +36,7 @@ class FormalSampleFieldUnificationMigrationTest {
                 .isEqualTo(160);
         seedV160FormalSampleAndResolution();
 
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(9);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(13);
 
         assertThat(query("""
                 SELECT object_type.code || ':' || object_type.name

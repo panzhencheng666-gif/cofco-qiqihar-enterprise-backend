@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.importing.domain;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.cofco.qiqihar.graintrade.importing.application.LogisticsImportTemplate;
@@ -27,7 +28,7 @@ import org.junit.jupiter.api.Test;
 class BusinessImportWorkbookTest {
 
     @Test
-    void removesOnlySpreadsheetFloatingPointResidueWithoutRoundingRealBusinessPrecision() {
+    void normalizesHumanDecimalsToTheAuthoritativeScaleUsingHalfUpRounding() {
         BusinessImportWorkbook.ColumnRule decimalRule = new BusinessImportWorkbook.ColumnRule(
                 "预计单产（公斤/亩）", "DECIMAL", "DECIMAL", true, List.of(), 18, 4, null);
 
@@ -36,10 +37,11 @@ class BusinessImportWorkbookTest {
         assertThat(BusinessImportWorkbook.normalizeCell("65.09999999999999", decimalRule))
                 .isEqualTo("65.1");
         assertThat(BusinessImportWorkbook.normalizeCell("69.40001", decimalRule))
-                .isEqualTo("69.40001");
-        assertThatThrownBy(() -> BusinessImportWorkbook.validateCell("69.40001", decimalRule))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("XLSX_VALUE_FORMAT");
+                .isEqualTo("69.4");
+        assertThat(BusinessImportWorkbook.normalizeCell("69.40006 公斤/亩", decimalRule))
+                .isEqualTo("69.4001");
+        assertThatCode(() -> BusinessImportWorkbook.validateCell("69.40001", decimalRule))
+                .doesNotThrowAnyException();
     }
 
     @Test

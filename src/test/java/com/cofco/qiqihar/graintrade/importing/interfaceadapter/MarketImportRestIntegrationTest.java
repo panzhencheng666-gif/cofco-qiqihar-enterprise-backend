@@ -10,15 +10,19 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.importing.application.MarketImportTemplate;
+import com.cofco.qiqihar.graintrade.importing.application.BusinessImportTemplateCatalog;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
 import com.cofco.qiqihar.graintrade.market.importing.MarketImportPort;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.awt.Color;
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.zip.ZipInputStream;
 import javax.imageio.ImageIO;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
@@ -41,6 +45,7 @@ class MarketImportRestIntegrationTest {
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
     @Autowired MarketImportPort market;
+    @Autowired BusinessImportTemplateCatalog templateCatalog;
     private JdbcClient jdbc;
 
     @BeforeEach
@@ -297,7 +302,7 @@ class MarketImportRestIntegrationTest {
     }
 
     @Test
-    void workbookFieldsExactlyFollowTheActiveReserveEnterpriseDefinition() throws Exception {
+    void selectedObjectWorkbookIsLockedToTheActiveReserveEnterpriseDefinition() throws Exception {
         var response = mvc.perform(get("/api/v1/imports/market/template")
                         .param("format", "xlsx")
                         .param("productCode", "CORN")
@@ -313,12 +318,156 @@ class MarketImportRestIntegrationTest {
                 com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
                         .parseWorksheet(workbook, 1, 256).getFirst());
         assertThat(labels)
-                .startsWith("样本点类型", "数据年份", "数据月份", "样本点名称", "地区")
+                .startsWith("数据年份", "数据月份", "样本点名称", "地区")
                 .contains("采购量（吨）", "销售量（吨）", "现有库存（吨）")
                 .endsWith(BusinessImportWorkbook.PHOTO_FILENAMES_LABEL)
                 .doesNotContain("库存持有人代码", "货权人代码", "内部治理截止日期");
         assertThat(BusinessImportWorkbook.context(workbook, "MARKET").productCode()).isEqualTo("CORN");
-        assertThat(BusinessImportWorkbook.context(workbook, "MARKET").objectTypeCode()).isNull();
+        assertThat(BusinessImportWorkbook.context(workbook, "MARKET").objectTypeCode())
+                .isEqualTo("RESERVE_ENTERPRISE");
+    }
+
+    @Test
+    void deepProcessorWorkbookOmitsSalesFieldsWhileTraderKeepsThem() throws Exception {
+        byte[] deepProcessor = marketWorkbook("CORN", "DEEP_PROCESSOR");
+        byte[] trader = marketWorkbook("CORN", "TRADER");
+
+        List<String> deepProcessorLabels = withoutTrailingBlanks(
+                com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
+                        .parseWorksheet(deepProcessor, 1, 256).getFirst());
+        List<String> traderLabels = withoutTrailingBlanks(
+                com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
+                        .parseWorksheet(trader, 1, 256).getFirst());
+
+        assertThat(deepProcessorLabels)
+                .doesNotContain("采集对象销售价格（元/吨）", "销售量（吨）");
+        assertThat(traderLabels)
+                .contains("采集对象销售价格（元/吨）", "销售量（吨）");
+    }
+
+    @Test
+    void allObjectTypesDownloadAsSeparateLockedWorksheets() throws Exception {
+        byte[] workbook = mvc.perform(get("/api/v1/imports/market/template")
+                        .param("format", "xlsx").param("productCode", "CORN")
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+
+        String workbookXml = zipEntry(workbook, "xl/workbook.xml");
+        assertThat(workbookXml)
+                .contains("name=\"贸易商\"", "name=\"深加工企业\"", "name=\"农资店\"")
+                .doesNotContain("name=\"市场填报\"");
+        assertThat(withoutTrailingBlanks(
+                com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
+                        .parseWorksheet(workbook, 2, 256).getFirst()))
+                .doesNotContain("采集对象销售价格（元/吨）", "销售量（吨）");
+    }
+
+    @Test
+    void importsHumanEnteredMultiSheetValuesAndReportsInvalidCellsBySheetRowAndColumn() throws Exception {
+        var trader = internalTemplate("CORN", "TRADER");
+        java.util.Map<String, String> validFields = new java.util.HashMap<>();
+        validFields.put("surveyYear", "２０２６");
+        validFields.put("surveyMonth", " 8 ");
+        validFields.put("MKT_SAMPLE_NAME", "　多表贸易样本　");
+        validFields.put("MKT_REGION", " 230200 ");
+        validFields.put("MKT_SAMPLE_CONTACT", "13800000000");
+        validFields.put("MKT_SAMPLE_LATITUDE", "47.35");
+        validFields.put("MKT_SAMPLE_LONGITUDE", "123.91");
+        validFields.put("MKT_TRADE_DATE", "2026年8月3日");
+        validFields.put("MKT_PURCHASE_BASE_PRICE", "2，300.12345 元/吨");
+        validFields.put("MKT_SALE_BASE_PRICE", "2400.55555元/吨");
+        validFields.put("MKT_CARRIAGE_BOARD_AMOUNT", "36元");
+        validFields.put("MKT_PACKAGING_AMOUNT", "12 元");
+        validFields.put("MKT_FREIGHT_AMOUNT", "72元");
+        validFields.put("MKT_PACKAGING_FORM", "　散装　");
+        validFields.put("PURCHASE_VOLUME", "12.34567吨");
+        validFields.put("SALES_VOLUME", "8.76543 吨");
+        validFields.put("ENDING_INVENTORY", "20.00009吨");
+        byte[] validWorkbook = cornWorkbook(Map.of("TRADER", List.of(values(trader, validFields))));
+
+        mvc.perform(multipart("/api/v1/imports/market")
+                        .file(new MockMultipartFile("file", "市场-玉米-批量导入模板.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                validWorkbook))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", "market-multi-human-valid")
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.statusCode").value("COMPLETED"))
+                .andExpect(jsonPath("$.data.importedRows").value(1));
+
+        String recordId = jdbc.sql("SELECT record_id FROM market.market_record")
+                .query(String.class).single();
+        assertThat(jdbc.sql("SELECT purchase_base_price FROM market.market_record WHERE record_id=:id")
+                .param("id", recordId).query(java.math.BigDecimal.class).single())
+                .isEqualByComparingTo("2300.1235");
+        assertThat(jdbc.sql("SELECT sale_base_price FROM market.market_record WHERE record_id=:id")
+                .param("id", recordId).query(java.math.BigDecimal.class).single())
+                .isEqualByComparingTo("2400.5556");
+        assertThat(jdbc.sql("SELECT value FROM market.market_record_fact WHERE record_id=:id AND fact_code='SALES_VOLUME'")
+                .param("id", recordId).query(java.math.BigDecimal.class).single())
+                .isEqualByComparingTo("8.7654");
+        mvc.perform(get("/api/v1/market-records/{id}", recordId).principal(() -> "market-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.coreValues.MKT_SAMPLE_NAME").value("多表贸易样本"))
+                .andExpect(jsonPath("$.data.facts.SALES_VOLUME").value(8.7654));
+
+        var deep = internalTemplate("CORN", "DEEP_PROCESSOR");
+        java.util.Map<String, String> invalidFields = new java.util.HashMap<>();
+        invalidFields.put("surveyYear", "2026");
+        invalidFields.put("MKT_SAMPLE_NAME", "多表非法深加工样本");
+        invalidFields.put("MKT_REGION", "230200");
+        invalidFields.put("MKT_PURCHASE_BASE_PRICE", "价格待定");
+        byte[] invalidWorkbook = cornWorkbook(
+                Map.of("DEEP_PROCESSOR", List.of(values(deep, invalidFields))));
+        String response = mvc.perform(multipart("/api/v1/imports/market")
+                        .file(new MockMultipartFile("file", "市场-玉米-批量导入模板.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                invalidWorkbook))
+                        .param("productCode", "CORN")
+                        .header("Idempotency-Key", "market-multi-human-invalid")
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.failedRows").value(1))
+                .andReturn().getResponse().getContentAsString();
+        String jobId = response.replaceFirst("(?s).*?\"id\":\"([^\"]+)\".*", "$1");
+        mvc.perform(get("/api/v1/imports/market/{jobId}/errors", jobId)
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("深加工企业")))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("工作表行号")))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("错误列")))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("采集对象收购价格")));
+    }
+
+    private byte[] cornWorkbook(Map<String, List<List<String>>> rowsByObjectType) {
+        return BusinessImportWorkbook.createSheets(templateCatalog.objectTypes("MARKET", "CORN").stream()
+                .map(option -> new BusinessImportWorkbook.WorkbookSheet(option.label(),
+                        internalTemplate("CORN", option.code()),
+                        rowsByObjectType.getOrDefault(option.code(), List.of())))
+                .toList());
+    }
+
+    private static List<String> values(BusinessImportWorkbook.Template template, Map<String, String> fields) {
+        return template.headers().stream().map(code -> fields.getOrDefault(code, "")).toList();
+    }
+
+    private byte[] marketWorkbook(String productCode, String objectTypeCode) throws Exception {
+        return mvc.perform(get("/api/v1/imports/market/template")
+                        .param("format", "xlsx").param("productCode", productCode)
+                        .param("objectTypeCode", objectTypeCode).principal(() -> "market-tester"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+    }
+
+    private static String zipEntry(byte[] bytes, String expectedName) throws Exception {
+        try (ZipInputStream zip = new ZipInputStream(new ByteArrayInputStream(bytes), StandardCharsets.UTF_8)) {
+            for (java.util.zip.ZipEntry entry; (entry = zip.getNextEntry()) != null;) {
+                if (expectedName.equals(entry.getName())) {
+                    return new String(zip.readAllBytes(), StandardCharsets.UTF_8);
+                }
+            }
+        }
+        throw new AssertionError("missing XLSX entry " + expectedName);
     }
 
     private BusinessImportWorkbook.Template internalTemplate(

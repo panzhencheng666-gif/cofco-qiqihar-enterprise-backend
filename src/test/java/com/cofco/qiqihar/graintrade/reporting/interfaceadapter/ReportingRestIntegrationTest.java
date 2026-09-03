@@ -240,16 +240,27 @@ class ReportingRestIntegrationTest {
 
     @Test void exposesMarketBusinessMetricsFromApprovedEffectiveRowsOnly() throws Exception {
         jdbc.sql("""
+                INSERT INTO registry.sample_point(
+                  sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
+                  effective_from,created_by,updated_by,deletion_state,deleted_at,deleted_by)
+                VALUES('f6200000-0000-0000-0000-000000000001','SURVEY_SITE','已删除历史样本',
+                  '230202','RETURNED','MISSING',DATE '2026-01-01','reporter','reporter',
+                  'DELETED',now(),'reporter')
+                """).update();
+        jdbc.sql("""
                 INSERT INTO market.market_record(
                     record_id,product_code,object_type_code,region_code,trade_date,reported_at,
                     purchase_base_price,sale_base_price,trade_direction,packaging_form,
-                    status_code,last_modified_by)
+                    status_code,last_modified_by,sample_point_id)
                 VALUES('report-market-approved','CORN','TRADER','230202',DATE '2026-08-09',
                          TIMESTAMPTZ '2026-08-09 12:34:56+08',2200,2400,'BOTH','BULK',
-                         'APPROVED','report-test'),
+                         'APPROVED','report-test',NULL),
+                      ('report-market-historical-deep','CORN','DEEP_PROCESSOR','230202',DATE '2026-08-09',
+                         TIMESTAMPTZ '2026-08-09 13:34:56+08',2300,9999,'BOTH','BULK',
+                         'APPROVED','report-test','f6200000-0000-0000-0000-000000000001'),
                       ('report-market-pending','CORN','TRADER','230202',DATE '2026-08-10',
                          TIMESTAMPTZ '2026-08-10 12:34:56+08',9200,9400,'BOTH','BULK',
-                         'PENDING_REVIEW','report-test')
+                         'PENDING_REVIEW','report-test',NULL)
                 """).update();
         jdbc.sql("""
                 INSERT INTO market.market_record_fact(

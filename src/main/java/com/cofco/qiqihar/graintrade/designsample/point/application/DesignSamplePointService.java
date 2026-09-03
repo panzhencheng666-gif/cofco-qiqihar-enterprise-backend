@@ -36,7 +36,8 @@ import tools.jackson.databind.ObjectMapper;
 @Service
 public class DesignSamplePointService {
     private static final Set<String> PUBLIC_LOCATION_FIELDS = Set.of(
-            "DSP_NAME", "DSP_REGION_CODE", "DSP_ADDRESS", "DSP_LONGITUDE", "DSP_LATITUDE");
+            "DSP_NAME", "DSP_REGION_CODE", "DSP_ADDRESS", "DSP_LONGITUDE", "DSP_LATITUDE",
+            "DSP_MAINTAINER_NAME", "DSP_MAINTAINER_UNIT");
     private static final String AGGREGATE = "DESIGN_SAMPLE_POINT";
 
     private final DesignSamplePointRepository repository;

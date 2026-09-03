@@ -86,14 +86,35 @@ class BusinessImportTemplateMatrixIntegrationTest {
                 labels = labels.stream().takeWhile(label -> !label.isBlank()).toList();
                 assertThat(labels).as(domain + " " + product)
                         .endsWith(BusinessImportWorkbook.PHOTO_FILENAMES_LABEL);
+                List<String> worksheetNames = com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
+                        .parseWorksheetNames(response.getContentAsByteArray());
                 String instructions = com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
-                        .parseWorksheet(response.getContentAsByteArray(), 2, 2).toString();
+                        .parseWorksheet(response.getContentAsByteArray(), worksheetNames.size(), 2).toString();
                 assertThat(instructions).as(domain + " " + product)
                         .doesNotContain("模板版本", "契约摘要", "sha256:",
                                 "PRODUCTION", "MARKET", "LOGISTICS", "CORN", "SOYBEAN", "RICE",
                                 "FARMER", "TRADER", "ROUTE_EVENT", "version", "digest", "test");
                 if ("production".equals(domain)) assertThat(labels).contains("样本点类型");
-                if ("market".equals(domain)) assertThat(labels).contains("样本点类型");
+                if ("market".equals(domain)) {
+                    assertThat(labels).doesNotContain("样本点类型");
+                    List<String> expectedObjectSheets = jdbc.sql("""
+                                    SELECT object_type.name
+                                    FROM platform.product_object_type applicability
+                                    JOIN platform.object_type object_type
+                                      ON object_type.code=applicability.object_type_code
+                                    WHERE applicability.product_code=:product
+                                      AND object_type.business_domain='MARKET'
+                                    ORDER BY object_type.sort_order,object_type.code
+                                    """).param("product", product).query(String.class).list();
+                    assertThat(worksheetNames)
+                            .containsExactlyElementsOf(java.util.stream.Stream.concat(
+                                    expectedObjectSheets.stream(), java.util.stream.Stream.of("填报说明")).toList());
+                    assertThat(worksheetNames).containsOnlyOnce("填报说明");
+                    for (int sheetIndex = 0; sheetIndex < expectedObjectSheets.size(); sheetIndex++) {
+                        assertThat(instructions).contains(
+                                "工作表" + (sheetIndex + 1), expectedObjectSheets.get(sheetIndex) + "｜");
+                    }
+                }
             }
         }
 

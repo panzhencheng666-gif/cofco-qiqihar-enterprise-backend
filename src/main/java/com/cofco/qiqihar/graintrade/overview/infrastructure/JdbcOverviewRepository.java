@@ -62,7 +62,8 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 ON boundary.region_code=point.region_code
                AND boundary.geometry_sha256=point.containment_boundary_sha256
                AND boundary.source_revision=point.containment_boundary_revision
-              WHERE point.approval_state='APPROVED'
+              WHERE point.deletion_state='ACTIVE'
+                AND point.approval_state='APPROVED'
                 AND point.location_state='VALID'
                 AND point.governed_point IS NOT NULL
                 AND ST_Covers(boundary.geometry,point.governed_point)
@@ -278,7 +279,8 @@ public class JdbcOverviewRepository implements OverviewRepository {
                     ON boundary.region_code=point.region_code
                    AND boundary.geometry_sha256=point.containment_boundary_sha256
                    AND boundary.source_revision=point.containment_boundary_revision
-                  WHERE point.approval_state='APPROVED' AND point.location_state='VALID'
+                  WHERE point.deletion_state='ACTIVE'
+                    AND point.approval_state='APPROVED' AND point.location_state='VALID'
                     AND point.governed_point IS NOT NULL
                     AND ST_Covers(boundary.geometry,point.governed_point)
                   UNION ALL SELECT '00000000-0000-0000-0000-000000000000'::uuid
@@ -394,7 +396,8 @@ public class JdbcOverviewRepository implements OverviewRepository {
                     ON boundary.region_code=point.region_code
                    AND boundary.geometry_sha256=point.containment_boundary_sha256
                    AND boundary.source_revision=point.containment_boundary_revision
-                  WHERE point.approval_state='APPROVED' AND point.location_state='VALID'
+                  WHERE point.deletion_state='ACTIVE'
+                    AND point.approval_state='APPROVED' AND point.location_state='VALID'
                     AND point.governed_point IS NOT NULL
                     AND ST_Covers(boundary.geometry,point.governed_point)
                   UNION ALL SELECT '00000000-0000-0000-0000-000000000000'::uuid
@@ -702,7 +705,8 @@ public class JdbcOverviewRepository implements OverviewRepository {
                     ON boundary.region_code=point.region_code
                    AND boundary.geometry_sha256=point.containment_boundary_sha256
                    AND boundary.source_revision=point.containment_boundary_revision
-                  WHERE point.approval_state='APPROVED'
+                  WHERE point.deletion_state='ACTIVE'
+                    AND point.approval_state='APPROVED'
                     AND point.location_state='VALID'
                     AND point.governed_point IS NOT NULL
                     AND ST_Covers(boundary.geometry,point.governed_point)

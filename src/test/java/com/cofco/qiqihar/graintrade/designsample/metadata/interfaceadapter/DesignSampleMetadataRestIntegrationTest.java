@@ -64,18 +64,24 @@ class DesignSampleMetadataRestIntegrationTest {
     @Autowired ObjectMapper json;
 
     @Test
-    void preservesHistoricalContextsAndAddsTheNeutralReferenceContext()
+    void exposesEveryDesignContextAsPlanningReferenceOnly()
             throws Exception {
         for (Context context : LEGAL_CONTEXTS) {
             definition(context)
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.contractVersion").value("design-sample-fields-v2"))
+                    .andExpect(jsonPath("$.contractVersion").value("design-sample-fields-v3"))
                     .andExpect(jsonPath("$.contractDigest")
                             .value(matchesPattern("sha256:[a-f0-9]{64}")))
                     .andExpect(jsonPath("$.context.domainCode").value(context.domainCode()))
                     .andExpect(jsonPath("$.context.productCode").value(context.productCode()))
                     .andExpect(jsonPath("$.context.objectTypeCode")
-                            .value(context.objectTypeCode()));
+                            .value(context.objectTypeCode()))
+                    .andExpect(jsonPath("$.identityFields[*].code", containsInAnyOrder(
+                            "DOMAIN_CODE", "PRODUCT_CODE", "OBJECT_TYPE_CODE",
+                            "DSP_NAME", "DSP_REGION_CODE", "DSP_ADDRESS",
+                            "DSP_LONGITUDE", "DSP_LATITUDE",
+                            "DSP_MAINTAINER_NAME", "DSP_MAINTAINER_UNIT")))
+                    .andExpect(jsonPath("$.observationFields", hasSize(0)));
         }
 
         definition(LEGAL_CONTEXTS.getFirst())
@@ -87,57 +93,22 @@ class DesignSampleMetadataRestIntegrationTest {
         definition(context("REFERENCE", "GENERAL", "REFERENCE_POINT"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.identityFields[*].code", containsInAnyOrder(
+                        "DOMAIN_CODE", "PRODUCT_CODE", "OBJECT_TYPE_CODE",
                         "DSP_NAME", "DSP_REGION_CODE", "DSP_ADDRESS",
-                        "DSP_LONGITUDE", "DSP_LATITUDE")))
+                        "DSP_LONGITUDE", "DSP_LATITUDE",
+                        "DSP_MAINTAINER_NAME", "DSP_MAINTAINER_UNIT")))
                 .andExpect(jsonPath("$.observationFields", hasSize(0)));
     }
 
     @Test
-    void fixesObjectSpecificFieldsTraderPricesAndAgriculturalInputStoreIsolation()
+    void neverExposesBusinessObservationFieldsForDesignSamples()
             throws Exception {
-        for (Context context : LEGAL_CONTEXTS.stream()
-                .filter(candidate -> candidate.objectTypeCode().equals("TRADER"))
-                .toList()) {
+        for (Context context : LEGAL_CONTEXTS) {
             definition(context)
-                    .andExpect(jsonPath("$.observationFields[*].code")
-                            .value(hasItem("MKT_PURCHASE_BASE_PRICE")))
-                    .andExpect(jsonPath("$.observationFields[*].code")
-                            .value(hasItem("MKT_SALE_BASE_PRICE")));
-        }
-
-        for (Context context : LEGAL_CONTEXTS.stream()
-                .filter(candidate -> candidate.domainCode().equals("MARKET"))
-                .filter(candidate -> !candidate.objectTypeCode().equals("TRADER"))
-                .filter(candidate -> !candidate.objectTypeCode().equals("AGRICULTURAL_INPUT_STORE"))
-                .toList()) {
-            definition(context)
-                    .andExpect(jsonPath("$.observationFields[*].code")
-                            .value(hasItem("MKT_PURCHASE_BASE_PRICE")))
-                    .andExpect(jsonPath("$.observationFields[*].code")
-                            .value(not(hasItem("MKT_SALE_BASE_PRICE"))));
-        }
-
-        for (String productCode : List.of("CORN", "SOYBEAN", "RICE")) {
-            definition(context("MARKET", productCode, "AGRICULTURAL_INPUT_STORE"))
-                    .andExpect(jsonPath("$.observationFields[*].code").value(containsInAnyOrder(
-                            "OBSERVED_ON",
-                            "AGRI_INPUT_SEED_SALES_VOLUME",
-                            "AGRI_INPUT_SEED_RETAIL_PRICE",
-                            "AGRI_INPUT_SUPPLY_STATUS",
-                            "AGRI_INPUT_PLANTING_INTENTION_TREND")))
                     .andExpect(jsonPath("$.observationFields[*].code")
                             .value(not(hasItem("MKT_PURCHASE_BASE_PRICE"))))
-                    .andExpect(jsonPath("$.observationFields[*].code")
-                            .value(not(hasItem("MKT_SALE_BASE_PRICE"))))
-                    .andExpect(jsonPath("$.observationFields[*].code")
-                            .value(not(hasItem("MOISTURE"))));
+                    .andExpect(jsonPath("$.observationFields", hasSize(0)));
         }
-
-        definition(context("PRODUCTION", "CORN", "VILLAGE_COMMITTEE"))
-                .andExpect(jsonPath("$.observationFields[*].code")
-                        .value(not(hasItem("PROD_OPENING_INVENTORY"))))
-                .andExpect(jsonPath("$.observationFields[*].code")
-                        .value(not(hasItem("MOISTURE"))));
     }
 
     @Test
@@ -155,11 +126,11 @@ class DesignSampleMetadataRestIntegrationTest {
                                 digest,
                                 "{\"MKT_SALE_BASE_PRICE\":null}")))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("FIELD_NOT_APPLICABLE"));
+                .andExpect(jsonPath("$.error.code").value("UNKNOWN_FIELD_CODE"));
     }
 
     @Test
-    void distinguishesUnknownFromRealZeroWithoutManufacturingNotApplicableValues()
+    void validatesPlanningValuesWithoutManufacturingBusinessValues()
             throws Exception {
         Context context = context("MARKET", "CORN", "TRADER");
         String digest = digest(context);
@@ -169,11 +140,10 @@ class DesignSampleMetadataRestIntegrationTest {
                         .content(validationRequest(
                                 context,
                                 digest,
-                                requiredValues("\"MKT_PURCHASE_BASE_PRICE\":0,\"MOISTURE\":null"))))
+                                requiredValues("\"DSP_MAINTAINER_NAME\":\"张三\""))))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.valueStates.MKT_PURCHASE_BASE_PRICE").value("KNOWN"))
-                .andExpect(jsonPath("$.valueStates.MOISTURE").value("UNKNOWN"))
-                .andExpect(jsonPath("$.valueStates.MKT_SALE_BASE_PRICE").doesNotExist());
+                .andExpect(jsonPath("$.valueStates.DSP_MAINTAINER_NAME").value("KNOWN"))
+                .andExpect(jsonPath("$.valueStates.MKT_PURCHASE_BASE_PRICE").doesNotExist());
     }
 
     @Test
@@ -186,7 +156,7 @@ class DesignSampleMetadataRestIntegrationTest {
                         .content(validationRequest(
                                 context,
                                 digest,
-                                "{\"OBSERVED_ON\":\"2026-08-30\",\"MKT_PURCHASE_BASE_PRICE\":1}")))
+                                "{\"DSP_NAME\":\"验收点\"}")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("REQUIRED_FIELD_MISSING"));
 
@@ -195,7 +165,7 @@ class DesignSampleMetadataRestIntegrationTest {
                         .content(validationRequest(
                                 context,
                                 digest,
-                                requiredValues("\"MKT_PURCHASE_BASE_PRICE\":1e18"))))
+                                requiredValues("\"DSP_LONGITUDE\":1e18"))))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("FIELD_VALUE_INVALID"));
     }
@@ -247,7 +217,7 @@ class DesignSampleMetadataRestIntegrationTest {
 
     private String validationRequest(Context context, String digest, String values) {
         return """
-                {"contractVersion":"design-sample-fields-v2","contractDigest":"%s",
+                {"contractVersion":"design-sample-fields-v3","contractDigest":"%s",
                  "context":{"domainCode":"%s","productCode":"%s","objectTypeCode":"%s"},
                  "values":%s}
                 """.formatted(
@@ -262,7 +232,7 @@ class DesignSampleMetadataRestIntegrationTest {
         return """
                 {"DSP_NAME":"验收点","DSP_REGION_CODE":"230200",
                  "DSP_LONGITUDE":123.95,"DSP_LATITUDE":47.35,
-                 "OBSERVED_ON":"2026-08-30",%s}
+                 %s}
                 """.formatted(additionalValues);
     }
 
