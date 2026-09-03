@@ -21,6 +21,10 @@ public final class XlsxTable {
                 bytes, worksheetNumber, expectedColumns);
     }
 
+    public static List<String> parseWorksheetNames(byte[] bytes) {
+        return com.cofco.qiqihar.graintrade.shared.spreadsheet.XlsxTable.parseWorksheetNames(bytes);
+    }
+
     public static List<List<String>> parseWorksheet(
             byte[] bytes, int worksheetNumber, int expectedColumns, int maxRows) {
         return com.cofco.qiqihar.graintrade.shared.spreadsheet.XlsxTable.parseWorksheet(

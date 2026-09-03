@@ -71,6 +71,27 @@ public final class XlsxTable {
         return Map.copyOf(values);
     }
 
+    public static List<String> parseWorksheetNames(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) throw invalid();
+        Map<String, byte[]> entries = unzip(bytes);
+        byte[] workbook = entries.get("xl/workbook.xml");
+        if (workbook == null) throw invalid();
+        var document = document(workbook);
+        var sheets = document.getElementsByTagNameNS("*", "sheet");
+        if (sheets.getLength() < 1 || sheets.getLength() > 64) throw invalid();
+        List<String> names = new ArrayList<>(sheets.getLength());
+        for (int index = 0; index < sheets.getLength(); index++) {
+            Element sheet = (Element) sheets.item(index);
+            String name = sheet.getAttribute("name");
+            String relationship = sheet.getAttributeNS(
+                    "http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id");
+            if (name.isBlank() || name.length() > 31 || !relationship.equals("rId" + (index + 1))
+                    || names.contains(name)) throw invalid();
+            names.add(name);
+        }
+        return List.copyOf(names);
+    }
+
     private static String definedNameString(String formula) {
         if (formula.length() < 2 || formula.charAt(0) != '"'
                 || formula.charAt(formula.length() - 1) != '"') throw invalid();

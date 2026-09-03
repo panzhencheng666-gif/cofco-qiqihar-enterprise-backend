@@ -3,6 +3,7 @@ package com.cofco.qiqihar.graintrade.importing.application;
 import com.cofco.qiqihar.graintrade.importing.domain.CsvTable;
 import com.cofco.qiqihar.graintrade.importing.domain.ImportJob;
 import com.cofco.qiqihar.graintrade.importing.domain.ImportRowOutcome;
+import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
 import com.cofco.qiqihar.graintrade.market.importing.MarketImportPort;
 import com.cofco.qiqihar.graintrade.market.importing.MarketImportDefinition;
 import com.cofco.qiqihar.graintrade.market.importing.MarketImportRow;
@@ -70,6 +71,18 @@ public class MarketImportService implements QueuedImportProcessor {
         return MarketImportTemplate.productWorkbook(productCode, definitions, objectTypes);
     }
 
+    public byte[] productWorkbookBytes(String productCode) {
+        access.require("BUSINESS_IMPORT", null);
+        return BusinessImportWorkbook.createSheets(workbookSheets(productCode));
+    }
+
+    private List<BusinessImportWorkbook.WorkbookSheet> workbookSheets(String productCode) {
+        return templateCatalog.objectTypes(MarketImportTemplate.DOMAIN, productCode).stream()
+                .map(option -> new BusinessImportWorkbook.WorkbookSheet(option.label(),
+                        MarketImportTemplate.workbook(market.definition(productCode, option.code()))))
+                .toList();
+    }
+
     public ImportJobView importProductWorkbook(String idempotencyKey, String productCode,
             String filename, String mediaType, byte[] bytes,
             List<BusinessImportPhotoPackage.PhotoPart> photoParts) {
@@ -83,9 +96,13 @@ public class MarketImportService implements QueuedImportProcessor {
             var objectTypes = templateCatalog.objectTypes(MarketImportTemplate.DOMAIN, productCode);
             var definitions = objectTypes.stream()
                     .map(option -> market.definition(productCode, option.code())).toList();
+            var context = BusinessImportWorkbook.context(bytes, MarketImportTemplate.DOMAIN);
+            if (context.contractVersion().endsWith("-multi")) {
+                return importMultiSheetWorkbook(idempotencyKey, productCode, filename, mediaType, bytes,
+                        photoParts, definitions);
+            }
             var template = MarketImportTemplate.productWorkbook(productCode, definitions, objectTypes);
-            var sheet = com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook
-                    .readDraft(bytes, template,
+            var sheet = BusinessImportWorkbook.readDraft(bytes, template,
                             MarketImportTemplate.compatiblePriorProductWorkbooks(template),
                             limits.maximumRows());
             if (sheet.rows().isEmpty()) throw invalid();
@@ -93,21 +110,7 @@ public class MarketImportService implements QueuedImportProcessor {
                     java.util.stream.Collectors.toMap(
                             BusinessImportTemplateCatalog.ObjectTypeOption::label,
                             BusinessImportTemplateCatalog.ObjectTypeOption::code));
-            Map<String, Map<String, String>> valueCodesByLabel = definitions.stream()
-                    .flatMap(definition -> definition.coreFields().stream())
-                    .filter(field -> !field.options().isEmpty())
-                    .collect(java.util.stream.Collectors.toMap(
-                            MarketImportDefinition.Field::code,
-                            field -> field.options().stream().collect(java.util.stream.Collectors.toMap(
-                                    MarketImportDefinition.Option::label,
-                                    MarketImportDefinition.Option::value)),
-                            (left, right) -> left));
-            Map<String, String> packagingCodes = new LinkedHashMap<>(
-                    valueCodesByLabel.getOrDefault("MKT_PACKAGING_FORM", Map.of()));
-            packagingCodes.put("散装", "BULK");
-            packagingCodes.put("吨包", "BAGGED");
-            packagingCodes.put("编织袋", "BAGGED");
-            valueCodesByLabel.put("MKT_PACKAGING_FORM", Map.copyOf(packagingCodes));
+            Map<String, Map<String, String>> valueCodesByLabel = valueCodesByLabel(definitions);
             var rows = DraftWorkbookRows.map(sheet, template,
                     MarketImportTemplate.productCodes(productCode, definitions),
                     "objectTypeCode", objectTypeByLabel, fallbackObjectTypeCode,
@@ -120,6 +123,50 @@ public class MarketImportService implements QueuedImportProcessor {
         } catch (IllegalArgumentException exception) {
             throw new ClientRequestException("INVALID_IMPORT_FORMAT", "XLSX 模板或填写内容无效");
         }
+    }
+
+    private ImportJobView importMultiSheetWorkbook(String idempotencyKey, String productCode,
+            String filename, String mediaType, byte[] bytes,
+            List<BusinessImportPhotoPackage.PhotoPart> photoParts,
+            List<MarketImportDefinition> definitions) {
+        List<BusinessImportWorkbook.LocatedImportSheet> sheets = BusinessImportWorkbook.readDraftSheets(
+                bytes, workbookSheets(productCode), limits.maximumRows());
+        Map<String, Map<String, String>> valueCodes = valueCodesByLabel(definitions);
+        List<GovernedDraftImportService.DraftWorkbookRow> rows = new ArrayList<>();
+        int rowNumberOffset = 0;
+        for (BusinessImportWorkbook.LocatedImportSheet located : sheets) {
+            var template = located.template();
+            rows.addAll(DraftWorkbookRows.map(located.sheet(), template, template.headers(),
+                    null, Map.of(), template.objectTypeCode(), valueCodes,
+                    "MKT_SAMPLE_NAME", "MKT_REGION", java.util.Set.of("MKT_REPORTER_NAME"),
+                    located.name(), rowNumberOffset));
+            rowNumberOffset += located.sheet().rows().size();
+        }
+        if (rows.isEmpty()) throw invalid();
+        return draftImports.submit(idempotencyKey, MarketImportTemplate.DOMAIN, "市场", productCode,
+                filename, mediaType, bytes, photoParts, List.copyOf(rows));
+    }
+
+    private static Map<String, Map<String, String>> valueCodesByLabel(
+            List<MarketImportDefinition> definitions) {
+        Map<String, Map<String, String>> valueCodesByLabel = definitions.stream()
+                .flatMap(definition -> definition.coreFields().stream())
+                .filter(field -> !field.options().isEmpty())
+                .collect(java.util.stream.Collectors.toMap(
+                        MarketImportDefinition.Field::code,
+                        field -> field.options().stream().collect(java.util.stream.Collectors.toMap(
+                                option -> java.text.Normalizer.normalize(
+                                        option.label(), java.text.Normalizer.Form.NFKC).trim(),
+                                MarketImportDefinition.Option::value)),
+                        (left, right) -> left,
+                        LinkedHashMap::new));
+        Map<String, String> packagingCodes = new LinkedHashMap<>(
+                valueCodesByLabel.getOrDefault("MKT_PACKAGING_FORM", Map.of()));
+        packagingCodes.put("散装", "BULK");
+        packagingCodes.put("吨包", "BAGGED");
+        packagingCodes.put("编织袋", "BAGGED");
+        valueCodesByLabel.put("MKT_PACKAGING_FORM", Map.copyOf(packagingCodes));
+        return valueCodesByLabel;
     }
 
     @Transactional

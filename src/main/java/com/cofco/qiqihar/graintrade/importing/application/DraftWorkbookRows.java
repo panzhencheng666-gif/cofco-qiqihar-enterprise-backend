@@ -16,6 +16,16 @@ final class DraftWorkbookRows {
             String objectTypeField, Map<String, String> objectTypeByLabel, String fixedObjectType,
             Map<String, Map<String, String>> valueCodesByLabel,
             String sampleCode, String regionCode, Set<String> systemGeneratedCodes) {
+        return map(sheet, template, codes, objectTypeField, objectTypeByLabel, fixedObjectType,
+                valueCodesByLabel, sampleCode, regionCode, systemGeneratedCodes, null, 0);
+    }
+
+    static List<DraftWorkbookRow> map(BusinessImportWorkbook.ImportSheet sheet,
+            BusinessImportWorkbook.Template template, List<String> codes,
+            String objectTypeField, Map<String, String> objectTypeByLabel, String fixedObjectType,
+            Map<String, Map<String, String>> valueCodesByLabel,
+            String sampleCode, String regionCode, Set<String> systemGeneratedCodes,
+            String worksheetName, int rowNumberOffset) {
         if (template.headers().size() != codes.size() || template.labels().size() != codes.size()) {
             throw new IllegalArgumentException("INVALID_DRAFT_WORKBOOK_MAPPING");
         }
@@ -29,6 +39,10 @@ final class DraftWorkbookRows {
             }
             systemGeneratedCodes.forEach(values::remove);
             systemGeneratedCodes.forEach(normalizedValues::remove);
+            if (worksheetName != null) {
+                values.put("工作表", worksheetName);
+                values.put("工作表行号", Integer.toString(rowIndex + 2));
+            }
             String objectType = fixedObjectType;
             String errorCode = null;
             String errorMessage = null;
@@ -51,14 +65,24 @@ final class DraftWorkbookRows {
                 String code = codes.get(column);
                 if (systemGeneratedCodes.contains(code)) continue;
                 String supplied = values.getOrDefault(code, "").trim();
-                if (supplied.isBlank()) continue;
+                if (supplied.isBlank()) {
+                    if (template.rules().get(column).required()) {
+                        errorCode = "IMPORT_ROW_REQUIRED_VALUE";
+                        errorMessage = "“" + template.labels().get(column) + "”为必填项";
+                        if (worksheetName != null) values.put("错误列", template.labels().get(column));
+                    }
+                    continue;
+                }
                 Map<String, String> translations = valueCodesByLabel.get(code);
                 if (translations != null) {
-                    String normalized = translations.get(supplied);
+                    String normalizedSupplied = java.text.Normalizer.normalize(
+                            supplied, java.text.Normalizer.Form.NFKC).trim();
+                    String normalized = translations.get(normalizedSupplied);
                     if (normalized == null) {
                         errorCode = "IMPORT_VALUE_FORMAT_INVALID";
                         errorMessage = "“" + template.labels().get(column) + "”不在受控选项内；可填写："
                                 + String.join("、", translations.keySet());
+                        if (worksheetName != null) values.put("错误列", template.labels().get(column));
                     } else {
                         normalizedValues.put(code, normalized);
                     }
@@ -70,6 +94,7 @@ final class DraftWorkbookRows {
                     errorCode = "IMPORT_VALUE_FORMAT_INVALID";
                     errorMessage = "“" + template.labels().get(column) + "”填写不正确："
                             + BusinessImportWorkbook.validationHint(template.rules().get(column));
+                    if (worksheetName != null) values.put("错误列", template.labels().get(column));
                     continue;
                 }
             }
@@ -85,12 +110,13 @@ final class DraftWorkbookRows {
                 if (value.isBlank()) missing.add(template.labels().get(column));
                 else filled++;
             }
-            String year = values.getOrDefault("surveyYear", "").trim();
-            String month = values.getOrDefault("surveyMonth", "").trim();
+            String year = normalizedValues.getOrDefault("surveyYear", "").trim();
+            String month = normalizedValues.getOrDefault("surveyMonth", "").trim();
             String period = year.isBlank() ? null : month.isBlank() ? year : year + "-" + padMonth(month);
             int completeness = total == 0 ? 100 : (int) Math.round(filled * 100.0d / total);
-            result.add(new DraftWorkbookRow(rowIndex + 2, objectType,
-                    values.getOrDefault(sampleCode, ""), values.getOrDefault(regionCode, ""), period,
+            result.add(new DraftWorkbookRow(rowNumberOffset + rowIndex + 2, objectType,
+                    normalizedValues.getOrDefault(sampleCode, ""),
+                    normalizedValues.getOrDefault(regionCode, ""), period,
                     values, normalizedValues, missing, completeness,
                     values.getOrDefault(BusinessImportWorkbook.PHOTO_FILENAMES_CODE, ""),
                     sampleCode, regionCode, BusinessImportWorkbook.PHOTO_FILENAMES_CODE,
