@@ -97,7 +97,23 @@ class BusinessImportTemplateMatrixIntegrationTest {
                 if ("production".equals(domain)) assertThat(labels).contains("样本点类型");
                 if ("market".equals(domain)) {
                     assertThat(labels).doesNotContain("样本点类型");
-                    assertThat(worksheetNames).hasSizeGreaterThan(2).endsWith("填报说明");
+                    List<String> expectedObjectSheets = jdbc.sql("""
+                                    SELECT object_type.name
+                                    FROM platform.product_object_type applicability
+                                    JOIN platform.object_type object_type
+                                      ON object_type.code=applicability.object_type_code
+                                    WHERE applicability.product_code=:product
+                                      AND object_type.business_domain='MARKET'
+                                    ORDER BY object_type.sort_order,object_type.code
+                                    """).param("product", product).query(String.class).list();
+                    assertThat(worksheetNames)
+                            .containsExactlyElementsOf(java.util.stream.Stream.concat(
+                                    expectedObjectSheets.stream(), java.util.stream.Stream.of("填报说明")).toList());
+                    assertThat(worksheetNames).containsOnlyOnce("填报说明");
+                    for (int sheetIndex = 0; sheetIndex < expectedObjectSheets.size(); sheetIndex++) {
+                        assertThat(instructions).contains(
+                                "工作表" + (sheetIndex + 1), expectedObjectSheets.get(sheetIndex) + "｜");
+                    }
                 }
             }
         }
