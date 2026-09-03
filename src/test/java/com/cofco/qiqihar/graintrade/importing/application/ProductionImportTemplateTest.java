@@ -67,8 +67,12 @@ class ProductionImportTemplateTest {
         assertThat(impurity.scale()).isEqualTo(4);
         assertThatCode(() -> BusinessImportWorkbook.validateCell("1.2345", impurity))
                 .doesNotThrowAnyException();
-        assertThatThrownBy(() -> BusinessImportWorkbook.validateCell("1.23456", impurity))
-                .isInstanceOf(IllegalArgumentException.class);
+        assertThatCode(() -> BusinessImportWorkbook.validateCell("1.23456", impurity))
+                .doesNotThrowAnyException();
+        assertThat(BusinessImportWorkbook.normalizeCell("1.23456", impurity))
+                .isEqualTo("1.2346");
+        assertThat(BusinessImportWorkbook.normalizeCell("1.23445", impurity))
+                .isEqualTo("1.2345");
     }
 
     @Test

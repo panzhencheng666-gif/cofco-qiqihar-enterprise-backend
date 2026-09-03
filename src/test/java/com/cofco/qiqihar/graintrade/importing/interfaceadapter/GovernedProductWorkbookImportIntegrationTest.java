@@ -9,10 +9,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.importing.application.BusinessPeriodRecordGuard;
+import com.cofco.qiqihar.graintrade.importing.application.BusinessImportTemplateCatalog;
+import com.cofco.qiqihar.graintrade.importing.application.MarketImportTemplate;
 import com.cofco.qiqihar.graintrade.importing.domain.ImportDraft;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.JdbcBusinessPeriodRecordGuard;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable;
+import com.cofco.qiqihar.graintrade.market.importing.MarketImportPort;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.awt.Color;
 import java.awt.image.BufferedImage;
@@ -57,6 +60,8 @@ class GovernedProductWorkbookImportIntegrationTest {
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
     @Autowired CoordinatingBusinessPeriodRecordGuard coordinatingPeriodGuard;
+    @Autowired BusinessImportTemplateCatalog templateCatalog;
+    @Autowired MarketImportPort market;
     private JdbcClient jdbc;
 
     @BeforeEach
@@ -306,7 +311,7 @@ class GovernedProductWorkbookImportIntegrationTest {
 
         mvc.perform(multipart("/api/v1/imports/logistics")
                         .file(new MockMultipartFile("file", "物流-玉米-批量导入模板.xlsx", XLSX,
-                                BusinessImportWorkbook.create(template, List.of(rail, road))))
+                                createCurrentWorkbook(template, List.of(rail, road))))
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", "logistics-transport-modes")
                         .principal(() -> "logistics-tester"))
@@ -316,7 +321,7 @@ class GovernedProductWorkbookImportIntegrationTest {
 
         mvc.perform(multipart("/api/v1/imports/logistics")
                         .file(new MockMultipartFile("file", "物流-玉米-无效运输方式.xlsx", XLSX,
-                                BusinessImportWorkbook.create(template, List.of(invalid))))
+                                createCurrentWorkbook(template, List.of(invalid))))
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", "logistics-invalid-transport-mode")
                         .principal(() -> "logistics-tester"))
@@ -386,16 +391,16 @@ class GovernedProductWorkbookImportIntegrationTest {
                 .andExpect(jsonPath("$.data.importedRows").value(1))
                 .andExpect(jsonPath("$.data.failedRows").value(0));
 
-        byte[] marketDownloaded = mvc.perform(get("/api/v1/imports/market/template")
-                        .param("format", "xlsx").param("productCode", "CORN")
-                        .principal(() -> "market-tester"))
-                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
-        List<String> marketLabels = withoutTrailingBlanks(
-                XlsxTable.parseWorksheet(marketDownloaded, 1, 256).getFirst());
+        var marketObjectTypes = templateCatalog.objectTypes("MARKET", "CORN");
+        var marketDefinitions = marketObjectTypes.stream()
+                .map(option -> market.definition("CORN", option.code())).toList();
+        BusinessImportWorkbook.Template currentMarket = MarketImportTemplate.productWorkbook(
+                "CORN", marketDefinitions, marketObjectTypes);
+        List<String> marketLabels = currentMarket.labels();
         BusinessImportWorkbook.Template priorMarket = new BusinessImportWorkbook.Template(
                 "MARKET", "市场", "CORN", null, "2026.08.17-2",
                 "sha256:5fc9a7e9a33f66ca596e021c232d6f74da2dbd812e3e60bbb5f0a296f853ef70",
-                marketLabels, marketLabels, List.of());
+                currentMarket.headers(), marketLabels, currentMarket.rules());
         List<String> marketRow = sparse(marketLabels, "样本点名称", "地区", "旧模板市场样本", "");
         for (Map.Entry<String, String> value : completeMarketValues().entrySet()) {
             marketRow = withValue(marketRow, marketLabels, value.getKey(), value.getValue());
@@ -436,7 +441,7 @@ class GovernedProductWorkbookImportIntegrationTest {
 
         mvc.perform(multipart("/api/v1/imports/market")
                         .file(new MockMultipartFile("file", "市场-玉米-批量导入模板.xlsx", XLSX,
-                                BusinessImportWorkbook.create(template, rows)))
+                                createCurrentWorkbook(template, rows)))
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", "market-packaging-aliases")
                         .principal(() -> "market-tester"))
@@ -451,7 +456,7 @@ class GovernedProductWorkbookImportIntegrationTest {
     }
 
     @Test
-    void explainsTheExactAllowedPrecisionWhenAProductionDecimalIsInvalid() throws Exception {
+    void roundsProductionDecimalsToTheExactAllowedPrecision() throws Exception {
         byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
                         .param("format", "xlsx").param("productCode", "CORN")
                         .principal(() -> "production-tester"))
@@ -469,20 +474,17 @@ class GovernedProductWorkbookImportIntegrationTest {
 
         mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "产情-玉米-错误提示.xlsx", XLSX,
-                                BusinessImportWorkbook.create(template, List.of(row))))
+                                createCurrentWorkbook(template, List.of(row))))
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", "production-precision-error-message")
                         .principal(() -> "production-tester"))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.importedRows").value(0))
-                .andExpect(jsonPath("$.data.failedRows").value(1));
+                .andExpect(jsonPath("$.data.importedRows").value(1))
+                .andExpect(jsonPath("$.data.failedRows").value(0));
 
         assertThat(jdbc.sql("""
-                SELECT result.error_message FROM platform.import_row_result result
-                JOIN platform.import_job job ON job.import_job_id=result.import_job_id
-                WHERE job.idempotency_key='production-precision-error-message'
-                """).query(String.class).single())
-                .contains("杂质（%）", "小数位不超过 4");
+                SELECT value FROM production.production_record_quality WHERE quality_code='IMPURITY'
+                """).query(java.math.BigDecimal.class).single()).isEqualByComparingTo("1.2346");
     }
 
     @Test
@@ -537,7 +539,7 @@ class GovernedProductWorkbookImportIntegrationTest {
 
         mvc.perform(multipart("/api/v1/imports/market")
                         .file(new MockMultipartFile("file", "市场-玉米-业务小数.xlsx", XLSX,
-                                BusinessImportWorkbook.create(marketTemplate, List.of(marketRow))))
+                                createCurrentWorkbook(marketTemplate, List.of(marketRow))))
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", "market-human-decimals")
                         .principal(() -> "market-tester"))
@@ -609,7 +611,7 @@ class GovernedProductWorkbookImportIntegrationTest {
 
         mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "产情-玉米-越界提示.xlsx", XLSX,
-                                BusinessImportWorkbook.create(template, List.of(row))))
+                                createCurrentWorkbook(template, List.of(row))))
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", "production-out-of-scope-message")
                         .principal(() -> "governed-limited-importer"))
@@ -657,7 +659,7 @@ class GovernedProductWorkbookImportIntegrationTest {
         }
         mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "产情-玉米-批量导入模板.xlsx", XLSX,
-                                BusinessImportWorkbook.create(template, List.of(first, second))))
+                                createCurrentWorkbook(template, List.of(first, second))))
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", "persistent-corn-drafts")
                         .principal(() -> "production-tester"))
@@ -730,7 +732,7 @@ class GovernedProductWorkbookImportIntegrationTest {
 
         mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "产情-身份待核验.xlsx", XLSX,
-                                BusinessImportWorkbook.create(template, List.of(row))))
+                                createCurrentWorkbook(template, List.of(row))))
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", "production-identity-review-required")
                 .principal(() -> "production-tester"))
@@ -822,7 +824,7 @@ class GovernedProductWorkbookImportIntegrationTest {
 
         mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "产情-批内重复.xlsx", XLSX,
-                                BusinessImportWorkbook.create(template, List.of(row, row))))
+                                createCurrentWorkbook(template, List.of(row, row))))
                         .file(new MockMultipartFile("photos", "原子批次现场.png", "image/png", pngBytes()))
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", "production-batch-local-duplicate")
@@ -891,7 +893,7 @@ class GovernedProductWorkbookImportIntegrationTest {
 
         mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "产情-批内跨地区身份.xlsx", XLSX,
-                                BusinessImportWorkbook.create(template, List.of(first, second))))
+                                createCurrentWorkbook(template, List.of(first, second))))
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", "production-batch-cross-region-identity")
                         .principal(() -> "production-tester"))
@@ -1158,7 +1160,7 @@ class GovernedProductWorkbookImportIntegrationTest {
 
         String importResponse = mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "产情-玉米-照片补充.xlsx", XLSX,
-                                BusinessImportWorkbook.create(template, List.of(imported))))
+                                createCurrentWorkbook(template, List.of(imported))))
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", "production-photo-supplement")
                         .principal(() -> "production-tester"))
@@ -1169,7 +1171,7 @@ class GovernedProductWorkbookImportIntegrationTest {
         String jobId = importResponse.replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
         String rejectedResponse = mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "产情-玉米-照片补充失败.xlsx", XLSX,
-                                BusinessImportWorkbook.create(template, List.of(rejected))))
+                                createCurrentWorkbook(template, List.of(rejected))))
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", "production-photo-supplement-rejected")
                         .principal(() -> "production-tester"))
@@ -1265,7 +1267,7 @@ class GovernedProductWorkbookImportIntegrationTest {
 
         mvc.perform(multipart("/api/v1/imports/market")
                         .file(new MockMultipartFile("file", "市场-稻谷-批量导入模板.xlsx", XLSX,
-                                BusinessImportWorkbook.create(template, List.of(row))))
+                                createCurrentWorkbook(template, List.of(row))))
                         .param("productCode", "RICE")
                         .header("Idempotency-Key", "invalid-market-month")
                         .principal(() -> "market-tester"))
@@ -1340,7 +1342,7 @@ class GovernedProductWorkbookImportIntegrationTest {
 
         mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "产情-玉米-批量导入模板.xlsx", XLSX,
-                                BusinessImportWorkbook.create(template, List.of(first, second))))
+                                createCurrentWorkbook(template, List.of(first, second))))
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", "batch-review-corn")
                         .principal(() -> "production-tester"))
@@ -1395,7 +1397,7 @@ class GovernedProductWorkbookImportIntegrationTest {
 
         mvc.perform(multipart("/api/v1/imports/market")
                         .file(new MockMultipartFile("file", "市场-玉米-批量导入模板.xlsx", XLSX,
-                                BusinessImportWorkbook.create(template, List.of(first, second))))
+                                createCurrentWorkbook(template, List.of(first, second))))
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", "batch-review-market-inventory")
                         .principal(() -> "market-tester"))
@@ -1645,7 +1647,7 @@ class GovernedProductWorkbookImportIntegrationTest {
 
         mvc.perform(multipart("/api/v1/imports/" + route)
                         .file(new MockMultipartFile("file", domainLabel + "-玉米-批量导入模板.xlsx", XLSX,
-                                BusinessImportWorkbook.create(template, List.of(valid, invalid))))
+                                createCurrentWorkbook(template, List.of(valid, invalid))))
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", key).principal(() -> principal))
                 .andExpect(status().isCreated())
@@ -1736,7 +1738,7 @@ class GovernedProductWorkbookImportIntegrationTest {
         mvc.perform(multipart("/api/v1/imports/" + route)
                         .file(new MockMultipartFile("file", domainLabel + "-"
                                 + BusinessImportWorkbook.businessLabel(productCode) + "-批量导入模板.xlsx", XLSX,
-                                BusinessImportWorkbook.create(template, List.of(row))))
+                                createCurrentWorkbook(template, List.of(row))))
                         .param("productCode", productCode)
                         .header("Idempotency-Key", "formal-" + route + "-" + productCode)
                         .principal(() -> operator))
@@ -1776,7 +1778,7 @@ class GovernedProductWorkbookImportIntegrationTest {
         for (Map.Entry<String, String> value : supplied.entrySet()) {
             row = withValue(row, fixture.labels(), value.getKey(), value.getValue());
         }
-        return BusinessImportWorkbook.create(fixture.template(), List.of(row));
+        return createCurrentWorkbook(fixture.template(), List.of(row));
     }
 
     private MvcResult performImport(String route, String principal, String idempotencyKey, byte[] workbook)
@@ -1975,7 +1977,7 @@ class GovernedProductWorkbookImportIntegrationTest {
                 labels, labels, List.of());
         List<String> first = sparse(labels, sampleLabel, regionLabel, domainLabel + "样本一", "");
         List<String> second = sparse(labels, sampleLabel, regionLabel, domainLabel + "样本二", "不可用照片.jpg");
-        byte[] workbook = BusinessImportWorkbook.create(template, List.of(first, second));
+        byte[] workbook = createCurrentWorkbook(template, List.of(first, second));
         MockMultipartFile file = new MockMultipartFile("file", domainLabel + "-稻谷-批量导入模板.xlsx",
                 XLSX, workbook);
         MockMultipartFile invalidPhoto = new MockMultipartFile(
@@ -2002,22 +2004,31 @@ class GovernedProductWorkbookImportIntegrationTest {
     private void importOnePublicWorkbookWithLegacyObjectTypeParameter(
             String route, String domainCode, String domainLabel, String principal,
             String sampleLabel, String sampleName, String objectTypeCode) throws Exception {
-        byte[] downloaded = mvc.perform(get("/api/v1/imports/" + route + "/template")
-                        .param("format", "xlsx").param("productCode", "CORN")
-                        .param("objectTypeCode", objectTypeCode).principal(() -> principal))
-                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
-        List<String> labels = withoutTrailingBlanks(XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
-        BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, domainCode);
-        BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
-                domainCode, domainLabel, "CORN", null, context.contractVersion(), context.contractDigest(),
-                labels, labels, List.of());
+        BusinessImportWorkbook.Template template;
+        if ("MARKET".equals(domainCode)) {
+            var objectTypes = templateCatalog.objectTypes("MARKET", "CORN");
+            var definitions = objectTypes.stream()
+                    .map(option -> market.definition("CORN", option.code())).toList();
+            template = MarketImportTemplate.productWorkbook("CORN", definitions, objectTypes);
+        } else {
+            byte[] downloaded = mvc.perform(get("/api/v1/imports/" + route + "/template")
+                            .param("format", "xlsx").param("productCode", "CORN")
+                            .param("objectTypeCode", objectTypeCode).principal(() -> principal))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+            List<String> downloadedLabels = withoutTrailingBlanks(
+                    XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
+            BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, domainCode);
+            template = new BusinessImportWorkbook.Template(
+                    domainCode, domainLabel, "CORN", null,
+                    context.contractVersion(), context.contractDigest(),
+                    downloadedLabels, downloadedLabels, List.of());
+        }
+        List<String> labels = template.labels();
         List<String> row = sparse(labels, sampleLabel, "地区", sampleName, "");
         Map<String, String> supplied = "PRODUCTION".equals(domainCode)
                 ? completeProductionValues() : completeMarketValues();
         for (Map.Entry<String, String> value : supplied.entrySet()) {
-            if (!"样本点类型".equals(value.getKey())) {
-                row = withValue(row, labels, value.getKey(), value.getValue());
-            }
+            row = withValue(row, labels, value.getKey(), value.getValue());
         }
 
         mvc.perform(multipart("/api/v1/imports/" + route)
@@ -2027,6 +2038,26 @@ class GovernedProductWorkbookImportIntegrationTest {
                         .header("Idempotency-Key", "legacy-client-" + route).principal(() -> principal))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.importedRows").value(1));
+    }
+
+    private byte[] createCurrentWorkbook(
+            BusinessImportWorkbook.Template template, List<List<String>> rows) {
+        if (!"MARKET".equals(template.domainCode())
+                || !template.contractVersion().endsWith("-multi")) {
+            return BusinessImportWorkbook.create(template, rows);
+        }
+        String targetObjectType = template.objectTypeCode() == null
+                ? "TRADER" : template.objectTypeCode();
+        List<BusinessImportWorkbook.WorkbookSheet> sheets = templateCatalog
+                .objectTypes("MARKET", template.productCode()).stream()
+                .map(option -> new BusinessImportWorkbook.WorkbookSheet(option.label(),
+                        MarketImportTemplate.workbook(
+                                market.definition(template.productCode(), option.code())),
+                        option.code().equals(targetObjectType) ? rows : List.of()))
+                .toList();
+        byte[] workbook = BusinessImportWorkbook.createSheets(sheets);
+        BusinessImportWorkbook.readDraftSheets(workbook, sheets, 5_000);
+        return workbook;
     }
 
     private static List<String> sparse(List<String> labels, String sampleLabel, String regionLabel,
@@ -2040,6 +2071,7 @@ class GovernedProductWorkbookImportIntegrationTest {
 
     private static List<String> withValue(List<String> source, List<String> labels,
             String label, String value) {
+        if ("样本点类型".equals(label) && !labels.contains(label)) return source;
         ArrayList<String> row = new ArrayList<>(source);
         row.set(labels.indexOf(label), value);
         return List.copyOf(row);
