@@ -24,6 +24,18 @@ class ProductionRecordTest {
     }
 
     @Test
+    void allowsBusinessOutputValuesToRemainBlank() {
+        ProductionRecord record = ProductionRecord.draft(
+                "record-optional", "CORN", "FARMER", "230202", null,
+                LocalDate.of(2026, 8, 1), OffsetDateTime.parse("2026-08-02T08:00:00+08:00"),
+                null, null, Map.of());
+
+        assertThat(record.cultivatedAreaMu()).isNull();
+        assertThat(record.yieldPerMuKilograms()).isNull();
+        assertThat(record.estimatedOutputKilograms()).isNull();
+    }
+
+    @Test
     void rejectsBlankObjectTypesAndFutureSurveyDates() {
         assertThatThrownBy(() -> ProductionRecord.draft(
                 "record-1", "CORN", "", "230202", null,

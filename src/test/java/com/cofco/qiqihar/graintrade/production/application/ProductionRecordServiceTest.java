@@ -54,7 +54,7 @@ class ProductionRecordServiceTest {
         assertThat(result.groups().get(1).fields()).isEmpty();
         assertThat(result.groups().get(2).fields()).extracting(ProductionFactDefinition::code)
                 .containsExactly("PHOTO_COUNT");
-        assertThat(result.contractVersion()).isEqualTo("production-survey-fields-v4");
+        assertThat(result.contractVersion()).isEqualTo("production-survey-fields-v5");
         assertThat(result.fields()).extracting(ProductionSurveyField::code)
                 .startsWith("objectTypeCode", "regionCode", "surveyYear",
                         "surveyMonth", "surveyDate", "PROD_SAMPLE_NAME")

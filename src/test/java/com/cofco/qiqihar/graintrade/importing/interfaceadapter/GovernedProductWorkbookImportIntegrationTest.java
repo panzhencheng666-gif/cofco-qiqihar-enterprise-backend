@@ -11,11 +11,13 @@ import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.importing.application.BusinessPeriodRecordGuard;
 import com.cofco.qiqihar.graintrade.importing.application.BusinessImportTemplateCatalog;
 import com.cofco.qiqihar.graintrade.importing.application.MarketImportTemplate;
+import com.cofco.qiqihar.graintrade.importing.application.ProductionImportTemplate;
 import com.cofco.qiqihar.graintrade.importing.domain.ImportDraft;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.JdbcBusinessPeriodRecordGuard;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable;
 import com.cofco.qiqihar.graintrade.market.importing.MarketImportPort;
+import com.cofco.qiqihar.graintrade.production.application.ProductionImportPort;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
 import java.awt.Color;
 import java.awt.image.BufferedImage;
@@ -62,6 +64,7 @@ class GovernedProductWorkbookImportIntegrationTest {
     @Autowired CoordinatingBusinessPeriodRecordGuard coordinatingPeriodGuard;
     @Autowired BusinessImportTemplateCatalog templateCatalog;
     @Autowired MarketImportPort market;
+    @Autowired ProductionImportPort production;
     private JdbcClient jdbc;
 
     @BeforeEach
@@ -363,16 +366,16 @@ class GovernedProductWorkbookImportIntegrationTest {
 
     @Test
     void previouslyDownloadedProductTemplatesRemainUsableAfterInputRulesBroaden() throws Exception {
-        byte[] productionDownloaded = mvc.perform(get("/api/v1/imports/production/template")
-                        .param("format", "xlsx").param("productCode", "CORN")
-                        .principal(() -> "production-tester"))
-                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
-        List<String> productionLabels = withoutTrailingBlanks(
-                XlsxTable.parseWorksheet(productionDownloaded, 1, 256).getFirst());
+        var productionObjectTypes = templateCatalog.objectTypes("PRODUCTION", "CORN");
+        var productionDefinitions = productionObjectTypes.stream()
+                .map(option -> production.importDefinition("CORN", option.code())).toList();
+        BusinessImportWorkbook.Template currentProduction = ProductionImportTemplate.productWorkbook(
+                "CORN", productionDefinitions, productionObjectTypes);
+        List<String> productionLabels = currentProduction.labels();
         BusinessImportWorkbook.Template priorProduction = new BusinessImportWorkbook.Template(
                 "PRODUCTION", "产情", "CORN", null, "2026.08.17-2",
                 "sha256:6694ba15e979c57c01abf1151711f998e0e2e3826ec781af3b9cd61f18ff2544",
-                productionLabels, productionLabels, List.of());
+                currentProduction.headers(), productionLabels, currentProduction.rules());
         List<String> productionRow = sparse(
                 productionLabels, "样本点名称", "地区", "旧模板产情样本", "");
         for (Map.Entry<String, String> value : completeProductionValues().entrySet()) {
@@ -512,7 +515,7 @@ class GovernedProductWorkbookImportIntegrationTest {
 
         mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "产情-玉米-业务小数.xlsx", XLSX,
-                                BusinessImportWorkbook.create(productionTemplate, List.of(productionRow))))
+                                createCurrentWorkbook(productionTemplate, List.of(productionRow))))
                         .param("productCode", "CORN")
                         .header("Idempotency-Key", "production-human-decimals")
                         .principal(() -> "production-tester"))
@@ -2011,17 +2014,10 @@ class GovernedProductWorkbookImportIntegrationTest {
                     .map(option -> market.definition("CORN", option.code())).toList();
             template = MarketImportTemplate.productWorkbook("CORN", definitions, objectTypes);
         } else {
-            byte[] downloaded = mvc.perform(get("/api/v1/imports/" + route + "/template")
-                            .param("format", "xlsx").param("productCode", "CORN")
-                            .param("objectTypeCode", objectTypeCode).principal(() -> principal))
-                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
-            List<String> downloadedLabels = withoutTrailingBlanks(
-                    XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
-            BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, domainCode);
-            template = new BusinessImportWorkbook.Template(
-                    domainCode, domainLabel, "CORN", null,
-                    context.contractVersion(), context.contractDigest(),
-                    downloadedLabels, downloadedLabels, List.of());
+            var objectTypes = templateCatalog.objectTypes("PRODUCTION", "CORN");
+            var definitions = objectTypes.stream()
+                    .map(option -> production.importDefinition("CORN", option.code())).toList();
+            template = ProductionImportTemplate.productWorkbook("CORN", definitions, objectTypes);
         }
         List<String> labels = template.labels();
         List<String> row = sparse(labels, sampleLabel, "地区", sampleName, "");
@@ -2042,19 +2038,38 @@ class GovernedProductWorkbookImportIntegrationTest {
 
     private byte[] createCurrentWorkbook(
             BusinessImportWorkbook.Template template, List<List<String>> rows) {
-        if (!"MARKET".equals(template.domainCode())
-                || !template.contractVersion().endsWith("-multi")) {
+        if (!List.of("MARKET", "PRODUCTION").contains(template.domainCode())) {
             return BusinessImportWorkbook.create(template, rows);
         }
-        String targetObjectType = template.objectTypeCode() == null
-                ? "TRADER" : template.objectTypeCode();
-        List<BusinessImportWorkbook.WorkbookSheet> sheets = templateCatalog
-                .objectTypes("MARKET", template.productCode()).stream()
-                .map(option -> new BusinessImportWorkbook.WorkbookSheet(option.label(),
-                        MarketImportTemplate.workbook(
-                                market.definition(template.productCode(), option.code())),
-                        option.code().equals(targetObjectType) ? rows : List.of()))
-                .toList();
+        List<BusinessImportWorkbook.WorkbookSheet> sheets;
+        if ("MARKET".equals(template.domainCode())) {
+            String targetObjectType = template.objectTypeCode() == null
+                    ? "TRADER" : template.objectTypeCode();
+            sheets = templateCatalog.objectTypes("MARKET", template.productCode()).stream()
+                    .map(option -> new BusinessImportWorkbook.WorkbookSheet(option.label(),
+                            MarketImportTemplate.workbook(
+                                    market.definition(template.productCode(), option.code())),
+                            option.code().equals(targetObjectType) ? rows : List.of()))
+                    .toList();
+        } else {
+            int objectTypeIndex = template.labels().indexOf("样本点类型");
+            var objectTypes = templateCatalog.objectTypes("PRODUCTION", template.productCode());
+            String defaultObjectType = objectTypes.getFirst().code();
+            sheets = objectTypes.stream()
+                    .map(option -> {
+                        var objectTemplate = ProductionImportTemplate.workbook(
+                                production.importDefinition(template.productCode(), option.code()));
+                        List<List<String>> objectRows = objectTypeIndex < 0
+                                ? (option.code().equals(defaultObjectType) ? rows : List.of())
+                                : rows.stream()
+                                        .filter(row -> option.label().equals(row.get(objectTypeIndex)))
+                                        .map(row -> objectTemplate.labels().stream()
+                                                .map(label -> row.get(template.labels().indexOf(label))).toList())
+                                        .toList();
+                        return new BusinessImportWorkbook.WorkbookSheet(
+                                option.label(), objectTemplate, objectRows);
+                    }).toList();
+        }
         byte[] workbook = BusinessImportWorkbook.createSheets(sheets);
         BusinessImportWorkbook.readDraftSheets(workbook, sheets, 5_000);
         return workbook;

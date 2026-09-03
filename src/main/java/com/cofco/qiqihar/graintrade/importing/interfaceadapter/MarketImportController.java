@@ -36,9 +36,7 @@ public class MarketImportController {
                                     @RequestParam(required = false) String productCode,
                                     @RequestParam(required = false) String objectTypeCode) {
         if ("xlsx".equalsIgnoreCase(format)) {
-            byte[] bytes = objectTypeCode == null || objectTypeCode.isBlank()
-                    ? service.productWorkbookBytes(productCode)
-                    : BusinessImportWorkbook.create(service.workbook(productCode, objectTypeCode));
+            byte[] bytes = service.productWorkbookBytes(productCode);
             return ResponseEntity.ok().contentType(MediaType.parseMediaType(
                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
                     .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()

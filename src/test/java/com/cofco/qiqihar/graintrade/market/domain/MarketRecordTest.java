@@ -25,6 +25,26 @@ class MarketRecordTest {
     }
 
     @Test
+    void allowsIndividualBusinessPriceComponentsToRemainBlank() {
+        MarketMonitoringRecord purchase = MarketMonitoringRecord.draft(
+                "record-optional", "CORN", "TRADER", "230200", LocalDate.of(2026, 8, 7),
+                OffsetDateTime.parse("2026-08-07T08:00:00+08:00"), MarketTradeDirection.PURCHASE,
+                new BigDecimal("2100"), null, null, null, null, null, Map.of());
+
+        assertThat(purchase.carriageBoardAmount()).isNull();
+        assertThat(purchase.packagingAmount()).isNull();
+        assertThat(purchase.freightAmount()).isNull();
+        assertThat(purchase.packagingForm()).isNull();
+        assertThat(purchase.actualTradePrice()).isEqualByComparingTo("2100.0000");
+
+        MarketMonitoringRecord observation = MarketMonitoringRecord.draft(
+                "record-observation", "CORN", "TRADER", "230200", LocalDate.of(2026, 8, 7),
+                OffsetDateTime.parse("2026-08-07T08:00:00+08:00"), MarketTradeDirection.OBSERVATION,
+                null, null, null, null, null, null, Map.of());
+        assertThat(observation.actualTradePrice()).isNull();
+    }
+
+    @Test
     void acceptsOnlyStringNumberAndNullCellValues() {
         Map<String, Object> values = new LinkedHashMap<>();
         values.put("label", "北安");

@@ -37,6 +37,8 @@ public interface FormalSampleObservationRepository {
             FormalSampleObservationDomain domain, UUID samplePointId,
             String productCode, LocalDate observedOn, Set<String> authorizedRegionCodes);
 
+    void claimMaintainer(UUID samplePointId, String actorSubjectId);
+
     void store(
             String actorSubjectId, String idempotencyKey, String requestSha256,
             String sourceRecordId, FormalSampleObservationResult result);

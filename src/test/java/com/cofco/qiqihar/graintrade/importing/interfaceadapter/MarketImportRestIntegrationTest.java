@@ -212,6 +212,43 @@ class MarketImportRestIntegrationTest {
     }
 
     @Test
+    void importsAndRequeriesIndividuallyBlankMarketBusinessValues() throws Exception {
+        var template = internalTemplate("CORN", "TRADER");
+        java.util.Map<String, String> fields = new java.util.HashMap<>();
+        fields.put("surveyYear", "2026");
+        fields.put("surveyMonth", "8");
+        fields.put("MKT_REGION", "230200");
+        fields.put("MKT_TRADE_DATE", "2026-08-01");
+        fields.put("MKT_SAMPLE_NAME", "市场业务字段留空样本");
+        fields.put("MKT_SAMPLE_CONTACT", "13900000000");
+        fields.put("MKT_SAMPLE_LATITUDE", "47.3543");
+        fields.put("MKT_SAMPLE_LONGITUDE", "123.9182");
+        List<String> values = template.headers().stream()
+                .map(header -> fields.getOrDefault(header, "")).toList();
+        byte[] workbook = BusinessImportWorkbook.create(template, List.of(values));
+
+        mvc.perform(multipart("/api/v1/imports/market")
+                        .file(new MockMultipartFile("file", "optional-market.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
+                        .param("productCode", "CORN").param("objectTypeCode", "TRADER")
+                        .header("Idempotency-Key", "optional-market")
+                        .principal(() -> "market-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(1))
+                .andExpect(jsonPath("$.data.failedRows").value(0));
+
+        String recordId = jdbc.sql("SELECT record_id FROM market.market_record")
+                .query(String.class).single();
+        mvc.perform(get("/api/v1/market-records/{id}", recordId).principal(() -> "market-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.coreValues.MKT_PURCHASE_BASE_PRICE").doesNotExist())
+                .andExpect(jsonPath("$.data.coreValues.MKT_SALE_BASE_PRICE").doesNotExist())
+                .andExpect(jsonPath("$.data.coreValues.MKT_CARRIAGE_BOARD_AMOUNT").doesNotExist())
+                .andExpect(jsonPath("$.data.coreValues.MKT_PACKAGING_AMOUNT").doesNotExist())
+                .andExpect(jsonPath("$.data.coreValues.MKT_FREIGHT_AMOUNT").doesNotExist());
+    }
+
+    @Test
     void importsPublicInventoryFieldsDirectlyIntoPendingReviewWithoutHiddenContracts() throws Exception {
         byte[] downloaded = mvc.perform(get("/api/v1/imports/market/template")
                         .param("format", "xlsx")
@@ -302,7 +339,7 @@ class MarketImportRestIntegrationTest {
     }
 
     @Test
-    void selectedObjectWorkbookIsLockedToTheActiveReserveEnterpriseDefinition() throws Exception {
+    void selectedObjectQueryStillDownloadsTheUnifiedMultiSheetWorkbook() throws Exception {
         var response = mvc.perform(get("/api/v1/imports/market/template")
                         .param("format", "xlsx")
                         .param("productCode", "CORN")
@@ -314,17 +351,10 @@ class MarketImportRestIntegrationTest {
                 .isEqualTo("市场-玉米-批量导入模板.xlsx");
         byte[] workbook = response.getContentAsByteArray();
 
-        List<String> labels = withoutTrailingBlanks(
-                com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
-                        .parseWorksheet(workbook, 1, 256).getFirst());
-        assertThat(labels)
-                .startsWith("数据年份", "数据月份", "样本点名称", "地区")
-                .contains("采购量（吨）", "销售量（吨）", "现有库存（吨）")
-                .endsWith(BusinessImportWorkbook.PHOTO_FILENAMES_LABEL)
-                .doesNotContain("库存持有人代码", "货权人代码", "内部治理截止日期");
+        assertThat(com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
+                .parseWorksheetNames(workbook)).contains("贸易商", "深加工企业", "农资店", "填报说明");
         assertThat(BusinessImportWorkbook.context(workbook, "MARKET").productCode()).isEqualTo("CORN");
-        assertThat(BusinessImportWorkbook.context(workbook, "MARKET").objectTypeCode())
-                .isEqualTo("RESERVE_ENTERPRISE");
+        assertThat(BusinessImportWorkbook.context(workbook, "MARKET").objectTypeCode()).isNull();
     }
 
     @Test
@@ -332,12 +362,14 @@ class MarketImportRestIntegrationTest {
         byte[] deepProcessor = marketWorkbook("CORN", "DEEP_PROCESSOR");
         byte[] trader = marketWorkbook("CORN", "TRADER");
 
+        List<String> names = com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
+                .parseWorksheetNames(deepProcessor);
         List<String> deepProcessorLabels = withoutTrailingBlanks(
                 com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
-                        .parseWorksheet(deepProcessor, 1, 256).getFirst());
+                        .parseWorksheet(deepProcessor, names.indexOf("深加工企业") + 1, 256).getFirst());
         List<String> traderLabels = withoutTrailingBlanks(
                 com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
-                        .parseWorksheet(trader, 1, 256).getFirst());
+                        .parseWorksheet(trader, names.indexOf("贸易商") + 1, 256).getFirst());
 
         assertThat(deepProcessorLabels)
                 .doesNotContain("采集对象销售价格（元/吨）", "销售量（吨）");
@@ -360,6 +392,13 @@ class MarketImportRestIntegrationTest {
                 com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
                         .parseWorksheet(workbook, 2, 256).getFirst()))
                 .doesNotContain("采集对象销售价格（元/吨）", "销售量（吨）");
+        List<String> names = com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
+                .parseWorksheetNames(workbook);
+        int agriculturalInputSheet = names.indexOf("农资店") + 1;
+        assertThat(withoutTrailingBlanks(
+                com.cofco.qiqihar.graintrade.importing.infrastructure.XlsxTable
+                        .parseWorksheet(workbook, agriculturalInputSheet, 256).getFirst()))
+                .contains("种子销售量（公斤）", "种子零售价（元/公斤）", "供货状态", "种植意向趋势");
     }
 
     @Test

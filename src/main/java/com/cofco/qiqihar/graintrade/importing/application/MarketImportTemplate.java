@@ -18,13 +18,9 @@ public final class MarketImportTemplate {
             "freightAmount", "packagingForm", "reporterName", "reporterPhone", "sampleName",
             "sampleContact", "latitude", "longitude", "purchaseVolume", "moisture", "evidencePhotoId");
     public static final String EVIDENCE_PHOTO_ID = "evidencePhotoId";
-    private static final List<String> BUSINESS_CODES = List.of(
-            "MKT_SAMPLE_NAME", "MKT_REGION", "MKT_SURVEYOR_NAME", "MKT_SURVEYOR_PHONE",
-            "MKT_SAMPLE_CONTACT", "MKT_SAMPLE_LATITUDE", "MKT_SAMPLE_LONGITUDE",
-            "MKT_PURCHASE_BASE_PRICE", "MKT_SALE_BASE_PRICE",
-            "PURCHASE_VOLUME", "SALES_VOLUME", "MKT_CARRIAGE_BOARD_AMOUNT", "MKT_FREIGHT_AMOUNT",
-            "MKT_PACKAGING_FORM", "MOISTURE", "TEST_WEIGHT", "TOXIN", "IMPURITY", "IMPERFECT_GRAIN",
-            "MILDEW", "PROTEIN", "OIL_YIELD", "MILLING_YIELD", "BROWN_RICE_YIELD", "ENDING_INVENTORY");
+    private static final java.util.Set<String> CONTEXT_OR_SERVER_OWNED_CODES = java.util.Set.of(
+            "MKT_OBJECT_TYPE", "MKT_TRADE_DATE", "MKT_REPORTED_AT", "MKT_FILLING_AT",
+            "MKT_STATUS", "MKT_REPORTER_NAME");
     private static final java.util.Map<String, String> LABELS = java.util.Map.ofEntries(
             java.util.Map.entry("MKT_SAMPLE_NAME", "样本点名称"),
             java.util.Map.entry("MKT_REGION", "地区"),
@@ -148,11 +144,11 @@ public final class MarketImportTemplate {
     }
 
     public static List<MarketImportDefinition.Field> editableFields(MarketImportDefinition definition) {
-        java.util.Map<String, MarketImportDefinition.Field> byCode = java.util.stream.Stream
+        return java.util.stream.Stream
                 .concat(definition.coreFields().stream(), definition.factFields().stream())
-                .collect(java.util.stream.Collectors.toMap(MarketImportDefinition.Field::code, field -> field));
-        return BUSINESS_CODES.stream().map(byCode::get).filter(java.util.Objects::nonNull)
-                .filter(field -> !field.readOnly()).toList();
+                .filter(field -> !field.readOnly())
+                .filter(field -> !CONTEXT_OR_SERVER_OWNED_CODES.contains(field.code()))
+                .toList();
     }
 
     private static List<MarketImportDefinition.Field> productFields(
@@ -164,7 +160,7 @@ public final class MarketImportTemplate {
         java.util.Map<String, MarketImportDefinition.Field> fields = new java.util.LinkedHashMap<>();
         definitions.forEach(definition -> editableFields(definition).forEach(field ->
                 fields.putIfAbsent(field.code(), field)));
-        return BUSINESS_CODES.stream().map(fields::get).filter(java.util.Objects::nonNull).toList();
+        return List.copyOf(fields.values());
     }
 
     private static String displayLabel(MarketImportDefinition.Field field) {

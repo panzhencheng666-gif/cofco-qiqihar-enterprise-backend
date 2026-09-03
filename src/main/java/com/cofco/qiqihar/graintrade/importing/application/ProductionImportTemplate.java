@@ -226,7 +226,7 @@ public final class ProductionImportTemplate {
                     field.options(), field.precision(), field.scale(),
                     "由当前登录人员自动记录；模板中可留空，导入值不会覆盖登录身份");
         }
-        boolean required = field.required()
+        boolean required = "surveyYear".equals(field.code())
                 || "PROD_SAMPLE_NAME".equals(field.code()) || "regionCode".equals(field.code());
         return new BusinessImportWorkbook.ColumnRule(publicColumnName, field.valueType(), field.controlType(),
                 required, field.options(), field.precision(), field.scale(), field.description());

@@ -34,6 +34,12 @@ class FormalSamplePointRestIntegrationTest {
             UUID.fromString("fa110000-0000-0000-0000-000000000003");
     private static final UUID RESOLUTION_REVISION_ID =
             UUID.fromString("fa110000-0000-0000-0000-000000000004");
+    private static final UUID IMPORT_JOB_ID =
+            UUID.fromString("fa110000-0000-0000-0000-000000000020");
+    private static final UUID CROSS_DOMAIN_IMPORT_JOB_ID =
+            UUID.fromString("fa110000-0000-0000-0000-000000000022");
+    private static final UUID EVIDENCE_PHOTO_ID =
+            UUID.fromString("fa110000-0000-0000-0000-000000000021");
 
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
@@ -43,6 +49,18 @@ class FormalSamplePointRestIntegrationTest {
     @BeforeEach
     void setUp() throws Exception {
         jdbc = JdbcClient.create(dataSource);
+        jdbc.sql("DELETE FROM platform.import_row_result WHERE import_job_id=:id")
+                .param("id", CROSS_DOMAIN_IMPORT_JOB_ID).update();
+        jdbc.sql("DELETE FROM platform.import_job WHERE import_job_id=:id")
+                .param("id", CROSS_DOMAIN_IMPORT_JOB_ID).update();
+        jdbc.sql("DELETE FROM platform.import_job_photo WHERE import_job_id=:id")
+                .param("id", IMPORT_JOB_ID).update();
+        jdbc.sql("DELETE FROM platform.import_row_result WHERE import_job_id=:id")
+                .param("id", IMPORT_JOB_ID).update();
+        jdbc.sql("DELETE FROM platform.import_job WHERE import_job_id=:id")
+                .param("id", IMPORT_JOB_ID).update();
+        jdbc.sql("DELETE FROM evidence.evidence_photo WHERE photo_id=:id")
+                .param("id", EVIDENCE_PHOTO_ID).update();
         jdbc.sql("""
                 TRUNCATE platform.business_event_outbox,platform.business_audit_event,
                   registry.sample_network_year,registry.sample_subject_resolution_batch,
@@ -215,32 +233,80 @@ class FormalSamplePointRestIntegrationTest {
     }
 
     @Test
-    void physicallyDeletesBusinessFactsWithoutLeavingImportHistoryInBusinessQueries()
+    void physicallyDeletesBusinessFactsAndActiveImportAndEvidenceAssociations()
             throws Exception {
-        UUID importJobId = UUID.fromString("fa110000-0000-0000-0000-000000000020");
         jdbc.sql("""
                 INSERT INTO platform.import_job(
                   import_job_id,domain_code,idempotency_key,content_sha256,source_content,
                   requested_by,work_unit_code,status_code,created_at,completed_at)
                 VALUES(:id,'PRODUCTION','formal-delete-history',repeat('a',64),'retained source',
                   :actor,'TEST','COMPLETED',now(),now())
-                """).param("id", importJobId).param("actor", ADMIN).update();
+                """).param("id", IMPORT_JOB_ID).param("actor", ADMIN).update();
         jdbc.sql("""
                 INSERT INTO platform.import_row_result(
                   import_job_id,row_number,outcome_code,business_record_id,row_data)
                 VALUES(:id,2,'IMPORTED',:recordId,'{}'::jsonb)
-                """).param("id", importJobId).param("recordId", RECORD_ID).update();
+                """).param("id", IMPORT_JOB_ID).param("recordId", RECORD_ID).update();
+        jdbc.sql("""
+                INSERT INTO platform.import_job(
+                  import_job_id,domain_code,idempotency_key,content_sha256,source_content,
+                  requested_by,work_unit_code,status_code,created_at,completed_at)
+                VALUES(:id,'MARKET','same-record-id-other-domain',repeat('b',64),'retained market source',
+                  :actor,'TEST','COMPLETED',now(),now())
+                """).param("id", CROSS_DOMAIN_IMPORT_JOB_ID).param("actor", ADMIN).update();
+        jdbc.sql("""
+                INSERT INTO platform.import_row_result(
+                  import_job_id,row_number,outcome_code,business_record_id,row_data)
+                VALUES(:id,2,'IMPORTED',:recordId,'{}'::jsonb)
+                """).param("id", CROSS_DOMAIN_IMPORT_JOB_ID).param("recordId", RECORD_ID).update();
+        jdbc.sql("""
+                INSERT INTO evidence.evidence_photo(
+                  photo_id,state_code,original_filename,media_type,original_bytes,
+                  watermarked_bytes,byte_length,sha256,captured_at,capture_latitude,
+                  capture_longitude,watermark_text,uploaded_by,uploaded_at,
+                  attached_domain,attached_record_id,attached_region_code)
+                VALUES(:id,'ATTACHED','formal-delete.png','image/png',decode('00','hex'),
+                  decode('01','hex'),1,encode(sha256(decode('00','hex')),'hex'),now(),
+                  47.3543,123.9182,'正式样本删除测试水印',:actor,now(),
+                  'PRODUCTION',:recordId,'230202')
+                """).param("id", EVIDENCE_PHOTO_ID).param("actor", ADMIN)
+                .param("recordId", RECORD_ID).update();
+        jdbc.sql("""
+                INSERT INTO platform.import_job_photo(
+                  import_job_id,photo_id,original_filename,normalized_filename,created_at)
+                VALUES(:jobId,:photoId,'formal-delete.png','formal-delete.png',now())
+                """).param("jobId", IMPORT_JOB_ID).param("photoId", EVIDENCE_PHOTO_ID).update();
         mvc.perform(delete("/api/v1/formal-sample-points/{id}", POINT_ID)
                         .principal(() -> ADMIN).queryParam("expectedVersion", "0"))
                 .andExpect(status().isNoContent());
         assertThat(jdbc.sql("""
-                SELECT count(*) FROM platform.import_row_result result
-                JOIN production.production_record record
-                  ON record.record_id=result.business_record_id
-                JOIN registry.sample_point point USING(sample_point_id)
-                WHERE result.import_job_id=:jobId AND point.sample_point_id=:pointId
-                """).param("jobId", importJobId).param("pointId", POINT_ID)
+                SELECT count(*) FROM platform.import_row_result
+                WHERE import_job_id=:jobId AND business_record_id=:recordId
+                """).param("jobId", IMPORT_JOB_ID).param("recordId", RECORD_ID)
                 .query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.import_row_result
+                WHERE import_job_id=:jobId AND business_record_id=:recordId
+                """).param("jobId", CROSS_DOMAIN_IMPORT_JOB_ID).param("recordId", RECORD_ID)
+                .query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.import_job_photo
+                WHERE import_job_id=:jobId AND photo_id=:photoId
+                """).param("jobId", IMPORT_JOB_ID).param("photoId", EVIDENCE_PHOTO_ID)
+                .query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM evidence.evidence_photo
+                WHERE photo_id=:photoId AND state_code='ATTACHED'
+                  AND attached_domain='PRODUCTION' AND attached_record_id=:recordId
+                """).param("photoId", EVIDENCE_PHOTO_ID).param("recordId", RECORD_ID)
+                .query(Long.class).single()).isZero();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM evidence.evidence_photo
+                WHERE photo_id=:photoId AND state_code='STAGED'
+                  AND attached_domain IS NULL AND attached_record_id IS NULL
+                  AND attached_region_code IS NULL
+                """).param("photoId", EVIDENCE_PHOTO_ID)
+                .query(Long.class).single()).isOne();
         assertThat(jdbc.sql("SELECT count(*) FROM production.production_record WHERE record_id=:id")
                 .param("id", RECORD_ID).query(Long.class).single()).isZero();
     }

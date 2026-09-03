@@ -316,6 +316,69 @@ class JdbcObservableAnalysisRepositoryTest {
     }
 
     @Test
+    void consumesApplicableProcessingFeedAgriculturalInputAndInventoryFields() {
+        jdbc.sql("""
+                INSERT INTO market.market_record(
+                    record_id,product_code,object_type_code,region_code,trade_date,reported_at,
+                    purchase_base_price,trade_direction,carriage_board_amount,packaging_amount,
+                    freight_amount,packaging_form,status_code,last_modified_by,version,
+                    survey_year,survey_month,survey_period_precision,survey_period_governance_state)
+                VALUES
+                  (:deep,'CORN','DEEP_PROCESSOR',:region,DATE '2026-08-10',
+                    TIMESTAMPTZ '2026-08-11 08:00:00+08',2500,'PURCHASE',0,0,0,'BULK',
+                    'APPROVED','analysis-test',1,2026,8,'YEAR_MONTH','CONFIRMED'),
+                  (:feed,'CORN','FEED_MILL',:region,DATE '2026-08-10',
+                    TIMESTAMPTZ '2026-08-11 08:00:00+08',2500,'PURCHASE',0,0,0,'BULK',
+                    'APPROVED','analysis-test',1,2026,8,'YEAR_MONTH','CONFIRMED'),
+                  (:input,'CORN','AGRICULTURAL_INPUT_STORE',:region,DATE '2026-08-10',
+                    TIMESTAMPTZ '2026-08-11 08:00:00+08',NULL,'OBSERVATION',NULL,NULL,NULL,NULL,
+                    'APPROVED','analysis-test',1,2026,8,'YEAR_MONTH','CONFIRMED')
+                """).param("deep", PREFIX + "market-deep")
+                .param("feed", PREFIX + "market-feed")
+                .param("input", PREFIX + "market-input")
+                .param("region", REGION).update();
+        jdbc.sql("""
+                INSERT INTO market.market_record_fact(
+                    record_id,fact_code,value,product_code,object_type_code)
+                VALUES
+                  (:deep,'PROCESSING_INPUT',10,'CORN','DEEP_PROCESSOR'),
+                  (:deep,'MAIN_OUTPUT',8,'CORN','DEEP_PROCESSOR'),
+                  (:deep,'BYPRODUCT_OUTPUT',1,'CORN','DEEP_PROCESSOR'),
+                  (:deep,'PROCESSING_LOSS',1,'CORN','DEEP_PROCESSOR'),
+                  (:deep,'OPENING_INVENTORY',100,'CORN','DEEP_PROCESSOR'),
+                  (:deep,'STOCK_OUTFLOW',20,'CORN','DEEP_PROCESSOR'),
+                  (:deep,'ENDING_INVENTORY',80,'CORN','DEEP_PROCESSOR'),
+                  (:feed,'PROCESSING_INPUT',30,'CORN','FEED_MILL')
+                """).param("deep", PREFIX + "market-deep")
+                .param("feed", PREFIX + "market-feed").update();
+        jdbc.sql("""
+                INSERT INTO market.market_record_core_value(
+                    record_id,product_code,field_code,domain_binding,value)
+                VALUES
+                  (:id,'CORN','AGRI_INPUT_SEED_SALES_VOLUME','EXTENSION','1200'),
+                  (:id,'CORN','AGRI_INPUT_SEED_RETAIL_PRICE','EXTENSION','6.5'),
+                  (:id,'CORN','AGRI_INPUT_SUPPLY_STATUS','EXTENSION','SUFFICIENT'),
+                  (:id,'CORN','AGRI_INPUT_PLANTING_INTENTION_TREND','EXTENSION','INCREASE')
+                """).param("id", PREFIX + "market-input").update();
+
+        var metrics = repository.load(
+                new ObservableAnalysisScope("CORN", "230200", 2026, 8, null, null),
+                Set.of("230200", REGION)).market().metrics();
+
+        assertMetric(metrics, "PROCESSING_INPUT", "40.0000");
+        assertMetric(metrics, "MAIN_OUTPUT", "8.0000");
+        assertMetric(metrics, "BYPRODUCT_OUTPUT", "1.0000");
+        assertMetric(metrics, "PROCESSING_LOSS", "1.0000");
+        assertMetric(metrics, "OPENING_INVENTORY", "100.0000");
+        assertMetric(metrics, "STOCK_OUTFLOW", "20.0000");
+        assertMetric(metrics, "ENDING_INVENTORY", "80.0000");
+        assertMetric(metrics, "AGRI_INPUT_SEED_SALES_VOLUME", "1200.0000");
+        assertMetric(metrics, "AGRI_INPUT_SEED_RETAIL_PRICE", "6.5000");
+        assertMetric(metrics, "AGRI_INPUT_SUPPLY_STATUS", "充足 1");
+        assertMetric(metrics, "AGRI_INPUT_PLANTING_INTENTION_TREND", "增加 1");
+    }
+
+    @Test
     void keepsAnnualAndMonthlyProductionObservationsFromBeingAddedTogether() {
         productionAnnual("annual", 3, "600", "龙江县调查户", REGION);
 

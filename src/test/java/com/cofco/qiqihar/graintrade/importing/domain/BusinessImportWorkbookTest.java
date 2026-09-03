@@ -267,11 +267,6 @@ class BusinessImportWorkbookTest {
         put(sparse, template.headers(), "地区", "230208");
         put(sparse, template.headers(), "数据年份", "2026");
         put(sparse, template.headers(), "样本点名称", "最小可导入样本");
-        put(sparse, template.headers(), "样本点联系方式", "13900000000");
-        put(sparse, template.headers(), "纬度（度）", "47.3543");
-        put(sparse, template.headers(), "经度（度）", "123.9182");
-        put(sparse, template.headers(), "播种面积（亩）", "100.25");
-        put(sparse, template.headers(), "预计单产（公斤/亩）", "500");
         assertThat(BusinessImportWorkbook.read(
                 BusinessImportWorkbook.create(template, List.of(sparse)), template).rows())
                 .containsExactly(sparse);
@@ -302,7 +297,7 @@ class BusinessImportWorkbookTest {
     }
 
     @Test
-    void derivesTheAuditedMarketColumnsAndKeepsGovernanceFieldsInternal() {
+    void derivesEveryEditableMarketDefinitionColumnAndKeepsServerFieldsInternal() {
         MarketImportDefinition.Field objectType = marketField(
                 "MKT_OBJECT_TYPE", "对象类型", "SELECT");
         MarketImportDefinition.Field reporter = marketField(
@@ -350,20 +345,20 @@ class BusinessImportWorkbookTest {
 
         BusinessImportWorkbook.Template template = MarketImportTemplate.workbook(definition);
         assertThat(template.headers())
-                .containsExactly("surveyYear", "surveyMonth", "MKT_SAMPLE_NAME", "MKT_REGION",
+                .containsExactly("surveyYear", "surveyMonth", "MKT_REGION", "MKT_CULTIVAR_NAME", "MKT_SAMPLE_NAME",
                         "MKT_SURVEYOR_NAME", "MKT_SURVEYOR_PHONE", "MKT_SAMPLE_CONTACT", "MKT_SAMPLE_LATITUDE",
-                        "MKT_SAMPLE_LONGITUDE",
+                        "MKT_SAMPLE_LONGITUDE", "MKT_STORAGE_REGION_CODE",
                         "MKT_PURCHASE_BASE_PRICE", "MKT_SALE_BASE_PRICE", "MKT_PACKAGING_FORM",
-                        "ENDING_INVENTORY",
+                        "ENDING_INVENTORY", "STOCK_OUTFLOW", "PROCESSING_INPUT",
                         BusinessImportWorkbook.PHOTO_FILENAMES_CODE)
-                .doesNotContain("MKT_REPORTER_NAME", "MKT_CULTIVAR_NAME", "MKT_STORAGE_REGION_CODE", "STOCK_OUTFLOW",
-                        "PROCESSING_INPUT", "MKT_ACTUAL_TRADE_PRICE", "evidencePhotoId");
+                .doesNotContain("MKT_REPORTER_NAME", "MKT_ACTUAL_TRADE_PRICE", "evidencePhotoId");
         assertThat(template.labels())
-                .containsExactly("数据年份", "数据月份", "样本点名称", "地区",
+                .containsExactly("数据年份", "数据月份", "地区", "具体品种", "样本点名称",
                         "调研人", "调研人联系方式", "样本点联系方式", "纬度（度）", "经度（度）",
-                        "采集对象收购价格（元/吨）", "采集对象销售价格（元/吨）", "包装形态", "现有库存",
+                        "库存存放地区", "采集对象收购价格（元/吨）", "采集对象销售价格（元/吨）",
+                        "包装形态", "现有库存", "出库量", "加工投入量",
                         BusinessImportWorkbook.PHOTO_FILENAMES_LABEL)
-                .doesNotContain("填报人", "具体品种", "库存量", "期末库存", "库存存放地", "出库量");
+                .doesNotContain("填报人", "库存量", "期末库存");
 
         BusinessImportWorkbook.Template productTemplate = MarketImportTemplate.productWorkbook(
                 "CORN", List.of(definition), List.of(new com.cofco.qiqihar.graintrade.importing.application

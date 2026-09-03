@@ -128,9 +128,9 @@ class ProductionRecordRestIntegrationTest {
         mockMvc.perform(get("/api/v1/production-record-definitions")
                         .queryParam("productCode", "CORN").queryParam("objectTypeCode", "FARMER"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.contractVersion").value("production-survey-fields-v4"))
+                .andExpect(jsonPath("$.data.contractVersion").value("production-survey-fields-v5"))
                 .andExpect(jsonPath("$.data.contractDigest").value(
-                        "sha256:07806fbda70354ee29b243020cd5508db52271f8d7c88ac540379a7c1c3297fe"))
+                        "sha256:b18e705dbf3da916aeb03df93d7e2ab4ea54c0ef23786de8bbe204a3cdca2031"))
                 .andExpect(jsonPath("$.data.fields[0].code").value("objectTypeCode"))
                 .andExpect(jsonPath("$.data.fields[1].code").value("regionCode"))
                 .andExpect(jsonPath("$.data.fields[?(@.code == 'PROD_CULTIVAR_NAME')]").isEmpty())
@@ -937,9 +937,9 @@ class ProductionRecordRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.productCode").value(product))
                 .andExpect(jsonPath("$.data.objectTypeCode").value(objectType))
-                .andExpect(jsonPath("$.data.contractVersion").value("production-survey-fields-v4"))
+                .andExpect(jsonPath("$.data.contractVersion").value("production-survey-fields-v5"))
                 .andExpect(jsonPath("$.data.contractDigest").value(
-                        "sha256:07806fbda70354ee29b243020cd5508db52271f8d7c88ac540379a7c1c3297fe"))
+                        "sha256:b18e705dbf3da916aeb03df93d7e2ab4ea54c0ef23786de8bbe204a3cdca2031"))
                 .andExpect(jsonPath("$.data.groups[0].category").value("DETAIL"))
                 .andExpect(jsonPath("$.data.groups[0].fields[*].code").value(hasItem("PROD_SAMPLE_NAME")))
                 .andExpect(jsonPath("$.data.groups[1].fields[*].code").value(hasItem(qualityCode)));

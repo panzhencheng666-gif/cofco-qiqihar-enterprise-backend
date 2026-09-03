@@ -56,15 +56,16 @@ public record ProductionRecord(
         if (surveyDate.isAfter(reportedAt.atZoneSameInstant(REPORTING_ZONE).toLocalDate())) {
             throw invalid("survey date cannot be after reported at date");
         }
-        cultivatedAreaMu = input(cultivatedAreaMu, "cultivated area");
-        yieldPerMuKilograms = input(yieldPerMuKilograms, "yield per mu");
-        BigDecimal calculated = cultivatedAreaMu.multiply(yieldPerMuKilograms)
-                .setScale(INPUT_SCALE, RoundingMode.HALF_UP);
-        if (calculated.compareTo(MAX_OUTPUT) > 0) {
+        cultivatedAreaMu = optionalInput(cultivatedAreaMu, "cultivated area");
+        yieldPerMuKilograms = optionalInput(yieldPerMuKilograms, "yield per mu");
+        BigDecimal calculated = estimatedOutput(cultivatedAreaMu, yieldPerMuKilograms);
+        if (calculated != null && calculated.compareTo(MAX_OUTPUT) > 0) {
             throw invalid("estimated output exceeds database precision");
         }
-        estimatedOutputKilograms = decimal(estimatedOutputKilograms, MAX_OUTPUT, "estimated output");
-        if (calculated.compareTo(estimatedOutputKilograms) != 0) {
+        estimatedOutputKilograms = optionalDecimal(
+                estimatedOutputKilograms, MAX_OUTPUT, "estimated output");
+        if (calculated == null ? estimatedOutputKilograms != null
+                : estimatedOutputKilograms == null || calculated.compareTo(estimatedOutputKilograms) != 0) {
             throw invalid("estimated output must equal normalized area multiplied by normalized yield");
         }
         quality = facts(quality, "quality");
@@ -109,11 +110,11 @@ public record ProductionRecord(
             BigDecimal cultivatedAreaMu, BigDecimal yieldPerMuKilograms, Map<String, BigDecimal> quality,
             Map<String, BigDecimal> costs, Map<String, BigDecimal> insurance, Map<String, BigDecimal> subsidies,
             Map<String, String> submissionMetadata) {
-        BigDecimal area = input(cultivatedAreaMu, "cultivated area");
-        BigDecimal yield = input(yieldPerMuKilograms, "yield per mu");
+        BigDecimal area = optionalInput(cultivatedAreaMu, "cultivated area");
+        BigDecimal yield = optionalInput(yieldPerMuKilograms, "yield per mu");
         return new ProductionRecord(id, productCode, objectTypeCode, regionCode, cultivarCode, surveyDate,
                 surveyYear, surveyMonth,
-                reportedAt, area, yield, area.multiply(yield).setScale(INPUT_SCALE, RoundingMode.HALF_UP),
+                reportedAt, area, yield, estimatedOutput(area, yield),
                 ProductionStatus.DRAFT, null, quality, costs, insurance, subsidies, submissionMetadata, 0);
     }
 
@@ -147,11 +148,11 @@ public record ProductionRecord(
         if (status != ProductionStatus.DRAFT && status != ProductionStatus.RETURNED) {
             throw new IllegalStateException("Only DRAFT or RETURNED records may be revised");
         }
-        BigDecimal area = input(nextArea, "cultivated area");
-        BigDecimal yield = input(nextYield, "yield per mu");
+        BigDecimal area = optionalInput(nextArea, "cultivated area");
+        BigDecimal yield = optionalInput(nextYield, "yield per mu");
         return new ProductionRecord(id, nextProductCode, nextObjectTypeCode, nextRegionCode, nextCultivarCode,
                 nextSurveyDate, nextSurveyYear, nextSurveyMonth, nextReportedAt, area, yield,
-                area.multiply(yield).setScale(INPUT_SCALE, RoundingMode.HALF_UP), status, returnReason,
+                estimatedOutput(area, yield), status, returnReason,
                 nextQuality, nextCosts, nextInsurance, nextSubsidies, nextSubmissionMetadata, version);
     }
 
@@ -198,6 +199,19 @@ public record ProductionRecord(
 
     private static BigDecimal input(BigDecimal value, String description) {
         return decimal(value, MAX_INPUT, description);
+    }
+
+    private static BigDecimal optionalInput(BigDecimal value, String description) {
+        return optionalDecimal(value, MAX_INPUT, description);
+    }
+
+    private static BigDecimal optionalDecimal(BigDecimal value, BigDecimal maximum, String description) {
+        return value == null ? null : decimal(value, maximum, description);
+    }
+
+    private static BigDecimal estimatedOutput(BigDecimal area, BigDecimal yield) {
+        return area == null || yield == null ? null
+                : area.multiply(yield).setScale(INPUT_SCALE, RoundingMode.HALF_UP);
     }
 
     private static BigDecimal decimal(BigDecimal value, BigDecimal maximum, String description) {
