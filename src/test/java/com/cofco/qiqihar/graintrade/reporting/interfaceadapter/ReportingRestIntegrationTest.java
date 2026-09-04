@@ -36,7 +36,7 @@ class ReportingRestIntegrationTest {
 
     @BeforeEach void clean() {
         jdbc = JdbcClient.create(dataSource);
-        jdbc.sql("TRUNCATE platform.business_audit_event,reporting.report_audit_event,reporting.report_publication,reporting.report_export_task,reporting.report_preview,reporting.approved_dataset,production.production_record,market.market_record,logistics.route_event,supply.calculation_run,supply.source_adoption_set,registry.sample_point RESTART IDENTITY CASCADE").update();
+        jdbc.sql("TRUNCATE workflow.work_item,platform.business_audit_event,reporting.report_audit_event,reporting.report_publication,reporting.report_export_task,reporting.report_preview,reporting.approved_dataset,production.production_record,market.market_record,logistics.route_event,supply.calculation_run,supply.source_adoption_set,registry.sample_point RESTART IDENTITY CASCADE").update();
         jdbc.sql("DELETE FROM platform.security_user_region_scope").update();
         jdbc.sql("DELETE FROM platform.security_user_role").update();
         jdbc.sql("DELETE FROM platform.security_user").update();

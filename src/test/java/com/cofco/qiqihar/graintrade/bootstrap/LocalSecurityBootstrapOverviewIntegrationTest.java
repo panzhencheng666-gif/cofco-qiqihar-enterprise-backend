@@ -73,8 +73,17 @@ class LocalSecurityBootstrapOverviewIntegrationTest {
                 WHERE code IN (
                   'QIQIHAR_BUSINESS','NEHE_DEPOT','KESHAN_DEPOT',
                   'KEDONG_DEPOT','LONGZHEN_DEPOT','CHENGJISIHAN_DEPOT')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM platform.security_user
+                    WHERE security_user.work_unit_code=work_unit.code)
                 """).update();
-        jdbc.sql("DELETE FROM platform.work_unit WHERE code = 'LOCAL_DEV'").update();
+        jdbc.sql("""
+                DELETE FROM platform.work_unit
+                WHERE code='LOCAL_DEV'
+                  AND NOT EXISTS (
+                    SELECT 1 FROM platform.security_user
+                    WHERE security_user.work_unit_code=work_unit.code)
+                """).update();
         jdbc.sql("UPDATE platform.work_unit SET active = true WHERE code = 'DATABASE_AUTOMATION'").update();
         GovernedMasterDataFixtures.deleteRegions(jdbc, java.util.List.of("230281997"));
     }

@@ -1853,8 +1853,9 @@ class OverviewSamplePointRestIntegrationTest {
 
     private void clean() {
         jdbc.sql("""
-                TRUNCATE registry.sample_point,production.production_record,market.market_record,
-                  logistics.route_event,logistics.logistics_node RESTART IDENTITY CASCADE
+                TRUNCATE workflow.work_item,registry.sample_point,production.production_record,
+                  market.market_record,logistics.route_event,logistics.logistics_node
+                  RESTART IDENTITY CASCADE
                 """).update();
         jdbc.sql("DELETE FROM platform.design_sample_point").update();
         jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE region_code IN (:township,:village)")
