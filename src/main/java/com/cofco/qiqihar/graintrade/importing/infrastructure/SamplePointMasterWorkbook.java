@@ -18,13 +18,21 @@ public final class SamplePointMasterWorkbook {
         }
     }
 
-    public record Column(String code, String label, boolean required) {
+    public record Column(String code, String label, boolean required, List<String> options) {
+        public Column(String code, String label, boolean required) {
+            this(code, label, required, List.of());
+        }
+
         public Column {
             if (code == null || code.isBlank() || label == null || label.isBlank()) {
                 throw new IllegalArgumentException("INVALID_SAMPLE_POINT_IMPORT_TEMPLATE");
             }
             code = code.trim();
             label = label.trim();
+            options = options == null ? List.of() : List.copyOf(options);
+            if (options.stream().anyMatch(option -> option == null || option.isBlank())) {
+                throw new IllegalArgumentException("INVALID_SAMPLE_POINT_IMPORT_TEMPLATE");
+            }
         }
     }
 
@@ -114,7 +122,8 @@ public final class SamplePointMasterWorkbook {
         List<String> labels = template.columns().stream().map(Column::label).toList();
         List<BusinessImportWorkbook.ColumnRule> rules = template.columns().stream()
                 .map(column -> new BusinessImportWorkbook.ColumnRule(
-                        column.code(), "TEXT", "TEXT", column.required(), List.of(), 0, 0,
+                        column.code(), "TEXT", column.options().isEmpty() ? "TEXT" : "SELECT",
+                        column.required(), column.options(), 0, 0,
                         column.required() ? "必填" : "可选"))
                 .toList();
         return new BusinessImportWorkbook.Template(
