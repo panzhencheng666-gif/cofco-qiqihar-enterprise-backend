@@ -65,6 +65,38 @@ public class OverviewSamplePointService {
     }
 
     @Transactional(readOnly = true)
+    public List<OverviewSamplePointIcon> historicalIcons(
+            Integer year, String productCode, String regionCode,
+            String categoryCode, String typeCode, String query) {
+        int effectiveYear = effectiveYear(year);
+        validateProduct(productCode);
+        validateFilter(regionCode, categoryCode, typeCode);
+        if (!iconRegionLevel(samplePoints.regionLevel(regionCode))) throw invalid();
+        String normalizedQuery = normalizeQuery(query);
+        AuthorizedReadScope scope = accessControl.requireReadScope();
+        authorizeNavigation(regionCode, scope);
+        return samplePoints.historicalIcons(effectiveYear, productCode, regionCode,
+                categoryCode, typeCode, normalizedQuery, scope.regionCodes());
+    }
+
+    @Transactional(readOnly = true)
+    public OverviewHistoricalSamplePointDetail historicalDetail(
+            Integer retirementYear, String productCode, UUID samplePointId,
+            String regionCode, String categoryCode, String typeCode) {
+        int effectiveYear = effectiveYear(retirementYear);
+        validateProduct(productCode);
+        validateFilter(regionCode, categoryCode, typeCode);
+        if (samplePointId == null) throw invalid();
+        AuthorizedReadScope scope = accessControl.requireReadScope();
+        authorizeNavigation(regionCode, scope);
+        return samplePoints.historicalDetail(effectiveYear, productCode, samplePointId,
+                        regionCode, categoryCode, typeCode, scope.regionCodes())
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "OVERVIEW_HISTORICAL_SAMPLE_POINT_NOT_FOUND",
+                        "Historical sample point was not found"));
+    }
+
+    @Transactional(readOnly = true)
     public OverviewSamplePointSnapshot snapshot(Integer year, String productCode, String regionCode,
             String categoryCode, String typeCode, String query) {
         int effectiveYear = effectiveYear(year);

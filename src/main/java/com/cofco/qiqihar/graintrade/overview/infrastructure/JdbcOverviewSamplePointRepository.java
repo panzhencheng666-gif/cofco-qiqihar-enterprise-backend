@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.overview.infrastructure;
 
 import com.cofco.qiqihar.graintrade.overview.application.OverviewSamplePointAggregate;
+import com.cofco.qiqihar.graintrade.overview.application.OverviewHistoricalSamplePointDetail;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewSamplePointDetail;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewSamplePointExportRow;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewSamplePointIcon;
@@ -11,6 +12,7 @@ import com.cofco.qiqihar.graintrade.overview.api.CurrentOverviewSamplePoint;
 import com.cofco.qiqihar.graintrade.overview.api.CurrentOverviewSamplePointReader;
 import java.math.BigDecimal;
 import java.time.Clock;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -432,6 +434,175 @@ public class JdbcOverviewSamplePointRepository
         return iconsFromProjection(projection(
                 year, productCode, regionCode, categoryCode, typeCode, query, authorizedRegionCodes),
                 productCode);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<OverviewSamplePointIcon> historicalIcons(
+            int retirementYear, String productCode, String regionCode,
+            String categoryCode, String typeCode, String query,
+            Set<String> authorizedRegionCodes) {
+        List<HistoricalAssociation> associations = historicalAssociations(
+                retirementYear, productCode, regionCode, categoryCode, typeCode,
+                query, authorizedRegionCodes);
+        return associations.stream()
+                .collect(Collectors.groupingBy(HistoricalAssociation::samplePointId,
+                        LinkedHashMap::new, Collectors.toList()))
+                .values().stream().map(this::historicalIcon).toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Optional<OverviewHistoricalSamplePointDetail> historicalDetail(
+            int retirementYear, String productCode, UUID samplePointId,
+            String regionCode, String categoryCode, String typeCode,
+            Set<String> authorizedRegionCodes) {
+        List<HistoricalAssociation> rows = historicalAssociations(
+                retirementYear, productCode, regionCode, categoryCode, typeCode,
+                null, authorizedRegionCodes).stream()
+                .filter(row -> row.samplePointId().equals(samplePointId)).toList();
+        if (rows.isEmpty()) return Optional.empty();
+        OverviewSamplePointIcon icon = historicalIcon(rows);
+        Map<String, HistoricalAssociation> latest = rows.stream().collect(Collectors.toMap(
+                row -> row.categoryCode() + "\u0000" + row.typeCode() + "\u0000" + row.productCode(),
+                Function.identity(),
+                (left, right) -> left.occurrenceDate().isAfter(right.occurrenceDate())
+                        || (left.occurrenceDate().equals(right.occurrenceDate())
+                        && left.sourceVersion() > right.sourceVersion()) ? left : right,
+                LinkedHashMap::new));
+        List<OverviewSamplePointDetail.Association> lastBusinessData = latest.values().stream()
+                .map(row -> new OverviewSamplePointDetail.Association(
+                        row.categoryCode(), categoryName(row.categoryCode()), row.sourceRole(),
+                        row.typeCode(), row.typeName(), row.productCode(), row.productName(),
+                        row.occurrenceDate(), row.sourceVersion(), switch (row.categoryCode()) {
+                            case "PRODUCTION" -> productionValues(row.sourceRecordId());
+                            case "MARKET" -> marketValues(row.sourceRecordId());
+                            case "LOGISTICS" -> logisticsValues(row.sourceRecordId());
+                            default -> Map.of();
+                        }))
+                .toList();
+        HistoricalAssociation identity = rows.getFirst();
+        return Optional.of(new OverviewHistoricalSamplePointDetail(
+                identity.samplePointId(), identity.name(), identity.regionCode(),
+                identity.retiredAt(), identity.retirementYear(), identity.retirementReason(),
+                identity.retiredBy(), icon.roles(), lastBusinessData));
+    }
+
+    private List<HistoricalAssociation> historicalAssociations(
+            int retirementYear, String productCode, String regionCode,
+            String categoryCode, String typeCode, String query,
+            Set<String> authorizedRegionCodes) {
+        return jdbc.sql("""
+                WITH RECURSIVE descendants(code) AS (
+                  SELECT code FROM platform.region WHERE code=:region
+                  UNION ALL
+                  SELECT child.code FROM platform.region child
+                  JOIN descendants parent ON child.parent_code=parent.code
+                ), business_association AS (
+                  SELECT record.sample_point_id,'PRODUCTION' category_code,
+                         record.object_type_code type_code,record.record_id::text source_record_id,
+                         'PRODUCTION' source_role,record.product_code,record.survey_date occurrence_date,
+                         record.version source_version
+                  FROM production.production_record record
+                  WHERE record.status_code='APPROVED' AND record.product_code=:product
+                  UNION
+                  SELECT record.sample_point_id,'MARKET',record.object_type_code,
+                         record.record_id::text,'MARKET',record.product_code,record.trade_date,
+                         record.version
+                  FROM market.market_record record
+                  WHERE record.status_code='APPROVED' AND record.product_code=:product
+                  UNION
+                  SELECT node.sample_point_id,'LOGISTICS',node.node_type_code,
+                         event.event_id::text,'LOGISTICS',event.product_code,event.collection_date,
+                         event.version
+                  FROM logistics.logistics_node node
+                  JOIN logistics.route_event event
+                    ON event.origin_node_code=node.node_code
+                    OR event.destination_node_code=node.node_code
+                  WHERE event.status_code='APPROVED' AND event.product_code=:product
+                )
+                SELECT point.sample_point_id,point.canonical_name,point.region_code,
+                       association.category_code,object_type.code type_code,
+                       object_type.name type_name,object_type.overview_icon_key,
+                       association.source_record_id,association.source_role,
+                       association.product_code,product.name product_name,
+                       association.occurrence_date,association.source_version,
+                       point.retired_at,point.retired_reason,point.retired_by,
+                       ST_X(point.governed_point) longitude,
+                       ST_Y(point.governed_point) latitude
+                FROM registry.sample_point point
+                JOIN business_association association
+                  ON association.sample_point_id=point.sample_point_id
+                JOIN platform.object_type object_type
+                  ON object_type.business_domain=association.category_code
+                 AND object_type.code=association.type_code
+                 AND object_type.overview_enabled
+                JOIN platform.product product ON product.code=association.product_code
+                JOIN platform.region region ON region.code=point.region_code
+                WHERE point.deletion_state='RETIRED'
+                  AND point.approval_state='APPROVED'
+                  AND point.location_state='VALID'
+                  AND EXTRACT(YEAR FROM point.retired_at AT TIME ZONE 'Asia/Shanghai')=:retirementYear
+                  AND association.occurrence_date<=point.effective_to
+                  AND point.region_code IN (SELECT code FROM descendants)
+                  AND (:category='' OR association.category_code=:category)
+                  AND (:type='' OR association.type_code=:type)
+                  AND (:query='' OR lower(point.canonical_name) LIKE :queryPattern
+                    OR lower(region.name) LIKE :queryPattern)
+                  AND (:unrestricted OR point.region_code IN (
+                    SELECT unnest(string_to_array(:authorizedRegionList,','))))
+                ORDER BY point.canonical_name,point.sample_point_id,
+                         association.category_code,object_type.sort_order,object_type.code
+                """).param("region", regionCode).param("product", productCode)
+                .param("retirementYear", retirementYear)
+                .param("category", categoryCode == null ? "" : categoryCode)
+                .param("type", typeCode == null ? "" : typeCode)
+                .param("query", query == null ? "" : query)
+                .param("queryPattern", query == null ? "" : "%" + query.toLowerCase(Locale.ROOT) + "%")
+                .param("unrestricted", unrestricted(authorizedRegionCodes))
+                .param("authorizedRegionList", authorizedRegionList(authorizedRegionCodes))
+                .query((row, ignored) -> new HistoricalAssociation(
+                        row.getObject("sample_point_id", UUID.class),
+                        row.getString("canonical_name"), row.getString("region_code"),
+                        row.getString("category_code"), row.getString("type_code"),
+                        row.getString("type_name"), row.getString("overview_icon_key"),
+                        row.getString("source_record_id"), row.getString("source_role"),
+                        row.getString("product_code"), row.getString("product_name"),
+                        row.getObject("occurrence_date", LocalDate.class),
+                        row.getLong("source_version"),
+                        row.getTimestamp("retired_at").toInstant(), retirementYear,
+                        row.getString("retired_reason"), row.getString("retired_by"),
+                        row.getDouble("longitude"), row.getDouble("latitude")))
+                .list();
+    }
+
+    private OverviewSamplePointIcon historicalIcon(List<HistoricalAssociation> associations) {
+        HistoricalAssociation identity = associations.getFirst();
+        List<OverviewSamplePointIcon.RoleRef> roles = associations.stream()
+                .collect(Collectors.toMap(HistoricalAssociation::categoryCode,
+                        association -> new OverviewSamplePointIcon.RoleRef(
+                                association.categoryCode(),
+                                categoryName(association.categoryCode()), association.iconKey()),
+                        (left, right) -> left, LinkedHashMap::new))
+                .values().stream().toList();
+        List<OverviewSamplePointIcon.TypeRef> types = associations.stream()
+                .collect(Collectors.toMap(HistoricalAssociation::typeCode,
+                        association -> new OverviewSamplePointIcon.TypeRef(
+                                association.typeCode(), association.typeName(), association.iconKey()),
+                        (left, right) -> left, LinkedHashMap::new))
+                .values().stream().toList();
+        return new OverviewSamplePointIcon(identity.samplePointId(), identity.name(),
+                identity.regionCode(), roles.getFirst().iconKey(), roles, types,
+                identity.longitude(), identity.latitude(), null);
+    }
+
+    private static String categoryName(String categoryCode) {
+        return switch (categoryCode) {
+            case "PRODUCTION" -> "产情类";
+            case "MARKET" -> "市场类";
+            case "LOGISTICS" -> "物流类";
+            default -> categoryCode;
+        };
     }
 
     @Override
@@ -1505,6 +1676,27 @@ public class JdbcOverviewSamplePointRepository
             return longitude >= -180 && longitude <= 180 && latitude >= -90 && latitude <= 90;
         }
     }
+
+    private record HistoricalAssociation(
+            UUID samplePointId,
+            String name,
+            String regionCode,
+            String categoryCode,
+            String typeCode,
+            String typeName,
+            String iconKey,
+            String sourceRecordId,
+            String sourceRole,
+            String productCode,
+            String productName,
+            LocalDate occurrenceDate,
+            long sourceVersion,
+            Instant retiredAt,
+            int retirementYear,
+            String retirementReason,
+            String retiredBy,
+            double longitude,
+            double latitude) {}
 
     private record SourceRow(
             UUID samplePointId,

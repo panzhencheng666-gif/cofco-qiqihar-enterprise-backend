@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.overview.interfaceadapter;
 
 import com.cofco.qiqihar.graintrade.overview.application.OverviewSamplePointAggregate;
+import com.cofco.qiqihar.graintrade.overview.application.OverviewHistoricalSamplePointDetail;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewSamplePointDetail;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewSamplePointIcon;
 import com.cofco.qiqihar.graintrade.overview.application.OverviewSamplePointList;
@@ -67,6 +68,30 @@ public class OverviewSamplePointController {
             @RequestParam(required = false) String typeCode,
             @RequestParam(required = false) String query) {
         return new ApiResponse<>(service.icons(year, productCode, regionCode, categoryCode, typeCode, query));
+    }
+
+    @GetMapping("/api/v1/overview/historical-sample-point-icons")
+    ApiResponse<List<OverviewSamplePointIcon>> historicalIcons(
+            @RequestParam(required = false) Integer year,
+            @RequestParam(required = false) String productCode,
+            @RequestParam String regionCode,
+            @RequestParam(required = false) String categoryCode,
+            @RequestParam(required = false) String typeCode,
+            @RequestParam(required = false) String query) {
+        return new ApiResponse<>(service.historicalIcons(
+                year, productCode, regionCode, categoryCode, typeCode, query));
+    }
+
+    @GetMapping("/api/v1/overview/historical-sample-points/{samplePointId}")
+    ApiResponse<OverviewHistoricalSamplePointDetail> historicalDetail(
+            @PathVariable UUID samplePointId,
+            @RequestParam Integer year,
+            @RequestParam String productCode,
+            @RequestParam String regionCode,
+            @RequestParam(required = false) String categoryCode,
+            @RequestParam(required = false) String typeCode) {
+        return new ApiResponse<>(service.historicalDetail(
+                year, productCode, samplePointId, regionCode, categoryCode, typeCode));
     }
 
     @GetMapping("/api/v1/overview/sample-point-snapshot")

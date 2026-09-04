@@ -34,6 +34,10 @@ public interface FormalSamplePointRepository {
             UUID id, long expectedVersion, FormalSamplePointDraft draft,
             String actorSubjectId, Instant now);
 
+    boolean retire(
+            UUID id, long expectedVersion, String expectedRegionCode, String actorSubjectId,
+            String reason, LocalDate retiredOn);
+
     DeleteResult delete(
             UUID id, long expectedVersion, String expectedRegionCode, String actorSubjectId);
 

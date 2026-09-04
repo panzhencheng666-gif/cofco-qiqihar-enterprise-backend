@@ -197,6 +197,19 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
     }
 
     @Override
+    public boolean retire(
+            UUID id, long expectedVersion, String expectedRegionCode, String actorSubjectId,
+            String reason, LocalDate retiredOn) {
+        return "RETIRED".equals(jdbc.sql("""
+                SELECT registry.retire_formal_sample_point(
+                  :id,:expectedVersion,:expectedRegion,:actor,:reason,:retiredOn)
+                """).param("id", id).param("expectedVersion", expectedVersion)
+                .param("expectedRegion", expectedRegionCode).param("actor", actorSubjectId)
+                .param("reason", reason).param("retiredOn", retiredOn)
+                .query(String.class).single());
+    }
+
+    @Override
     public DeleteResult delete(
             UUID id, long expectedVersion, String expectedRegionCode, String actorSubjectId) {
         String result = jdbc.sql("""

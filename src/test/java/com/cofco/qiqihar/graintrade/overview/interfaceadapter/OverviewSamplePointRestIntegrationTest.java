@@ -141,6 +141,68 @@ class OverviewSamplePointRestIntegrationTest {
     }
 
     @Test
+    void listsRetiredSamplesOnlyInTheHistoricalLayerForTheirRetirementYear() throws Exception {
+        jdbc.sql("""
+                UPDATE registry.sample_point
+                SET deletion_state='RETIRED',effective_to=DATE '2027-02-04',
+                    retired_at=TIMESTAMPTZ '2027-02-04 09:30:00+08',
+                    retired_by='production-tester',retired_reason='年度样本调整'
+                WHERE sample_point_id=CAST(:id AS uuid)
+                """).param("id", SURVEY_POINT).update();
+
+        mvc.perform(get("/api/v1/overview/sample-point-icons")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
+                        .queryParam("year", "2026")
+                        .queryParam("categoryCode", "PRODUCTION"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.samplePointId == '" + SURVEY_POINT + "')]").isEmpty());
+
+        mvc.perform(get("/api/v1/overview/historical-sample-point-icons")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
+                        .queryParam("year", "2027")
+                        .queryParam("categoryCode", "PRODUCTION"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].samplePointId").value(SURVEY_POINT))
+                .andExpect(jsonPath("$.data[0].name").value("同一跨产品样本点"))
+                .andExpect(jsonPath("$.data[0].roles[0].code").value("PRODUCTION"))
+                .andExpect(jsonPath("$.data[0].types[0].code").value("FARMER"));
+
+        mvc.perform(get("/api/v1/overview/historical-sample-points/{samplePointId}", SURVEY_POINT)
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
+                        .queryParam("year", "2027")
+                        .queryParam("categoryCode", "PRODUCTION"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.retirementYear").value(2027))
+                .andExpect(jsonPath("$.data.retirementReason").value("年度样本调整"))
+                .andExpect(jsonPath("$.data.retiredBy").value("production-tester"))
+                .andExpect(jsonPath("$.data.lastBusinessData.length()").value(1))
+                .andExpect(jsonPath("$.data.lastBusinessData[0].occurrenceDate").value("2026-08-05"))
+                .andExpect(jsonPath("$.data.lastBusinessData[0].businessValues.CULTIVATED_AREA_MU.value")
+                        .value("10"));
+
+        mvc.perform(get("/api/v1/overview/historical-sample-point-icons")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
+                        .queryParam("year", "2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(0));
+
+        assertEquals(1L, jdbc.sql("""
+                SELECT count(*) FROM production.production_record
+                WHERE sample_point_id=CAST(:id AS uuid) AND product_code='CORN'
+                  AND status_code='APPROVED'
+                """).param("id", SURVEY_POINT).query(Long.class).single());
+    }
+
+    @Test
     void exportsOnlyTheSameFormalStableSampleIdentitiesShownByOverviewLists() throws Exception {
         byte[] bytes = mvc.perform(get("/api/v1/overview/sample-points/export")
                         .principal(() -> "production-tester")
@@ -1791,8 +1853,9 @@ class OverviewSamplePointRestIntegrationTest {
 
     private void clean() {
         jdbc.sql("""
-                TRUNCATE registry.sample_point,production.production_record,market.market_record,
-                  logistics.route_event,logistics.logistics_node RESTART IDENTITY CASCADE
+                TRUNCATE workflow.work_item,registry.sample_point,production.production_record,
+                  market.market_record,logistics.route_event,logistics.logistics_node
+                  RESTART IDENTITY CASCADE
                 """).update();
         jdbc.sql("DELETE FROM platform.design_sample_point").update();
         jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE region_code IN (:township,:village)")
