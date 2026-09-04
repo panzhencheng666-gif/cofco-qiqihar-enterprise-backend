@@ -178,6 +178,28 @@ public class FormalSamplePointService {
     }
 
     @Transactional
+    public void retire(UUID id, long expectedVersion, String submittedReason) {
+        if (expectedVersion < 0) throw invalid();
+        FormalSamplePointView point = required(id);
+        SecurityPrincipal actor = access.require(
+                "FORMAL_SAMPLE_DELETE", point.regionCode());
+        if (point.version() != expectedVersion) {
+            throw new ConflictException(
+                    "FORMAL_SAMPLE_POINT_VERSION_CONFLICT",
+                    "正式样本已发生变化，请刷新后重试");
+        }
+        String reason = required(submittedReason, 500);
+        Instant now = clock.instant();
+        LocalDate retiredOn = LocalDate.now(clock);
+        if (!repository.retire(id, expectedVersion, actor.subjectId(), reason, retiredOn, now)) {
+            throw new ConflictException(
+                    "FORMAL_SAMPLE_POINT_VERSION_CONFLICT",
+                    "正式样本已发生变化，请刷新后重试");
+        }
+        recordRetirement(actor, point, reason, retiredOn, now);
+    }
+
+    @Transactional
     public void delete(UUID id, long expectedVersion) {
         if (expectedVersion < 0) throw invalid();
         FormalSamplePointView point = required(id);
@@ -322,6 +344,22 @@ public class FormalSamplePointService {
         }
     }
 
+    private void recordRetirement(
+            SecurityPrincipal actor, FormalSamplePointView point, String reason,
+            LocalDate retiredOn, Instant occurredAt) {
+        try {
+            String detail = json.writeValueAsString(new RetirementEventDetail(
+                    point.regionCode(), List.of(point.regionCode()), point.objectTypeCode(),
+                    point.version() + 1, retiredOn.getYear(), reason, actor.subjectId()));
+            audit.record(actor, AGGREGATE, point.id().toString(),
+                    "FORMAL_SAMPLE_POINT_RETIRED", occurredAt, detail);
+        } catch (JacksonException exception) {
+            throw new IllegalStateException("Cannot serialize formal sample retirement event", exception);
+        } catch (DataIntegrityViolationException exception) {
+            throw new IllegalStateException("Cannot persist formal sample retirement event", exception);
+        }
+    }
+
     private static ResourceNotFoundException notFound() {
         return new ResourceNotFoundException(
                 "FORMAL_SAMPLE_POINT_NOT_FOUND", "正式样本不存在");
@@ -372,5 +410,14 @@ public class FormalSamplePointService {
             String maintainerSubjectId,
             String actorSubjectId,
             String maintainerChangeReason) {}
+
+    private record RetirementEventDetail(
+            String regionCode,
+            List<String> regionCodes,
+            String objectTypeCode,
+            long version,
+            int retirementYear,
+            String retirementReason,
+            String actorSubjectId) {}
 
 }

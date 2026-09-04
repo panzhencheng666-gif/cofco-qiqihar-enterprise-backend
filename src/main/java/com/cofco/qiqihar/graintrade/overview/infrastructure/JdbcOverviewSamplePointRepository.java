@@ -436,6 +436,111 @@ public class JdbcOverviewSamplePointRepository
 
     @Override
     @Transactional(readOnly = true)
+    public List<OverviewSamplePointIcon> historicalIcons(
+            int retirementYear, String productCode, String regionCode,
+            String categoryCode, String typeCode, String query,
+            Set<String> authorizedRegionCodes) {
+        List<HistoricalAssociation> associations = jdbc.sql("""
+                WITH RECURSIVE descendants(code) AS (
+                  SELECT code FROM platform.region WHERE code=:region
+                  UNION ALL
+                  SELECT child.code FROM platform.region child
+                  JOIN descendants parent ON child.parent_code=parent.code
+                ), business_association AS (
+                  SELECT record.sample_point_id,'PRODUCTION' category_code,
+                         record.object_type_code type_code
+                  FROM production.production_record record
+                  WHERE record.status_code='APPROVED' AND record.product_code=:product
+                  UNION
+                  SELECT record.sample_point_id,'MARKET',record.object_type_code
+                  FROM market.market_record record
+                  WHERE record.status_code='APPROVED' AND record.product_code=:product
+                  UNION
+                  SELECT node.sample_point_id,'LOGISTICS',node.node_type_code
+                  FROM logistics.logistics_node node
+                  JOIN logistics.route_event event
+                    ON event.origin_node_code=node.node_code
+                    OR event.destination_node_code=node.node_code
+                  WHERE event.status_code='APPROVED' AND event.product_code=:product
+                )
+                SELECT point.sample_point_id,point.canonical_name,point.region_code,
+                       association.category_code,object_type.code type_code,
+                       object_type.name type_name,object_type.overview_icon_key,
+                       ST_X(point.governed_point) longitude,
+                       ST_Y(point.governed_point) latitude
+                FROM registry.sample_point point
+                JOIN business_association association
+                  ON association.sample_point_id=point.sample_point_id
+                JOIN platform.object_type object_type
+                  ON object_type.business_domain=association.category_code
+                 AND object_type.code=association.type_code
+                 AND object_type.overview_enabled
+                JOIN platform.region region ON region.code=point.region_code
+                WHERE point.deletion_state='RETIRED'
+                  AND point.approval_state='APPROVED'
+                  AND point.location_state='VALID'
+                  AND EXTRACT(YEAR FROM point.retired_at)=:retirementYear
+                  AND point.region_code IN (SELECT code FROM descendants)
+                  AND (:category='' OR association.category_code=:category)
+                  AND (:type='' OR association.type_code=:type)
+                  AND (:query='' OR lower(point.canonical_name) LIKE :queryPattern
+                    OR lower(region.name) LIKE :queryPattern)
+                  AND (:unrestricted OR point.region_code IN (
+                    SELECT unnest(string_to_array(:authorizedRegionList,','))))
+                ORDER BY point.canonical_name,point.sample_point_id,
+                         association.category_code,object_type.sort_order,object_type.code
+                """).param("region", regionCode).param("product", productCode)
+                .param("retirementYear", retirementYear)
+                .param("category", categoryCode == null ? "" : categoryCode)
+                .param("type", typeCode == null ? "" : typeCode)
+                .param("query", query == null ? "" : query)
+                .param("queryPattern", query == null ? "" : "%" + query.toLowerCase(Locale.ROOT) + "%")
+                .param("unrestricted", unrestricted(authorizedRegionCodes))
+                .param("authorizedRegionList", authorizedRegionList(authorizedRegionCodes))
+                .query((row, ignored) -> new HistoricalAssociation(
+                        row.getObject("sample_point_id", UUID.class),
+                        row.getString("canonical_name"), row.getString("region_code"),
+                        row.getString("category_code"), row.getString("type_code"),
+                        row.getString("type_name"), row.getString("overview_icon_key"),
+                        row.getDouble("longitude"), row.getDouble("latitude")))
+                .list();
+        return associations.stream()
+                .collect(Collectors.groupingBy(HistoricalAssociation::samplePointId,
+                        LinkedHashMap::new, Collectors.toList()))
+                .values().stream().map(this::historicalIcon).toList();
+    }
+
+    private OverviewSamplePointIcon historicalIcon(List<HistoricalAssociation> associations) {
+        HistoricalAssociation identity = associations.getFirst();
+        List<OverviewSamplePointIcon.RoleRef> roles = associations.stream()
+                .collect(Collectors.toMap(HistoricalAssociation::categoryCode,
+                        association -> new OverviewSamplePointIcon.RoleRef(
+                                association.categoryCode(),
+                                categoryName(association.categoryCode()), association.iconKey()),
+                        (left, right) -> left, LinkedHashMap::new))
+                .values().stream().toList();
+        List<OverviewSamplePointIcon.TypeRef> types = associations.stream()
+                .collect(Collectors.toMap(HistoricalAssociation::typeCode,
+                        association -> new OverviewSamplePointIcon.TypeRef(
+                                association.typeCode(), association.typeName(), association.iconKey()),
+                        (left, right) -> left, LinkedHashMap::new))
+                .values().stream().toList();
+        return new OverviewSamplePointIcon(identity.samplePointId(), identity.name(),
+                identity.regionCode(), roles.getFirst().iconKey(), roles, types,
+                identity.longitude(), identity.latitude(), null);
+    }
+
+    private static String categoryName(String categoryCode) {
+        return switch (categoryCode) {
+            case "PRODUCTION" -> "产情类";
+            case "MARKET" -> "市场类";
+            case "LOGISTICS" -> "物流类";
+            default -> categoryCode;
+        };
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public List<CurrentOverviewSamplePoint> read(
             int year, String productCode, String regionCode, String categoryCode,
             Set<String> authorizedRegionCodes) {
@@ -1505,6 +1610,17 @@ public class JdbcOverviewSamplePointRepository
             return longitude >= -180 && longitude <= 180 && latitude >= -90 && latitude <= 90;
         }
     }
+
+    private record HistoricalAssociation(
+            UUID samplePointId,
+            String name,
+            String regionCode,
+            String categoryCode,
+            String typeCode,
+            String typeName,
+            String iconKey,
+            double longitude,
+            double latitude) {}
 
     private record SourceRow(
             UUID samplePointId,

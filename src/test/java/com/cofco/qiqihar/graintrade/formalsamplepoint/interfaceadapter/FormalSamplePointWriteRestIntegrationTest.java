@@ -407,6 +407,57 @@ class FormalSamplePointWriteRestIntegrationTest {
     }
 
     @Test
+    void retiresAnExistingSampleWhilePreservingItsLastBusinessDataAndPublishingTheChange()
+            throws Exception {
+        MvcResult created = mvc.perform(post("/api/v1/formal-sample-points")
+                        .principal(() -> ADMIN)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(draft("待淘汰正式样本", "230202", "龙沙区历史样本地址",
+                                "123.94", "47.31", "FARMER", null)))
+                .andExpect(status().isCreated())
+                .andReturn();
+        UUID id = responseId(created);
+        jdbc.sql("""
+                INSERT INTO production.production_record(
+                  record_id,product_code,object_type_code,region_code,survey_date,reported_at,
+                  cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,
+                  survey_year,survey_period_precision,survey_period_governance_state,sample_point_id)
+                VALUES('formal-sample-history-record','CORN','FARMER','230202',
+                  DATE '2026-09-03',TIMESTAMPTZ '2026-09-03 09:30:00+08',320,500,
+                  'APPROVED',:actor,2026,'YEAR','CONFIRMED',:pointId)
+                """).param("actor", ADMIN).param("pointId", id).update();
+
+        mvc.perform(put("/api/v1/formal-sample-points/{id}/retirement", id)
+                        .principal(() -> ADMIN)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "expectedVersion":0,
+                                  "reason":"该样本点已停止经营"
+                                }
+                                """))
+                .andExpect(status().isNoContent());
+
+        mvc.perform(get("/api/v1/formal-sample-points/{id}", id).principal(() -> ADMIN))
+                .andExpect(status().isNotFound());
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM registry.sample_point
+                WHERE sample_point_id=:id AND deletion_state='RETIRED'
+                  AND retired_by=:actor AND retired_reason='该样本点已停止经营'
+                """).param("id", id).param("actor", ADMIN).query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM production.production_record
+                WHERE record_id='formal-sample-history-record' AND sample_point_id=:id
+                """).param("id", id).query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_event_outbox
+                WHERE aggregate_type='FORMAL_SAMPLE_POINT' AND aggregate_id=:id
+                  AND action_code='FORMAL_SAMPLE_POINT_RETIRED'
+                  AND detail->>'retirementReason'='该样本点已停止经营'
+                """).param("id", id.toString()).query(Long.class).single()).isOne();
+    }
+
+    @Test
     void requiresManagePermissionAndBothOldAndNewRegionScopes() throws Exception {
         mvc.perform(put("/api/v1/formal-sample-points/{id}", UUID.randomUUID())
                         .contentType(MediaType.APPLICATION_JSON)

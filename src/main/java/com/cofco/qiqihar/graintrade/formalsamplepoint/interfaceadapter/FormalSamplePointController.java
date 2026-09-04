@@ -121,6 +121,15 @@ public class FormalSamplePointController {
                 request.maintainerChangeReason()));
     }
 
+    @PutMapping("/{id}/retirement")
+    ResponseEntity<Void> retire(
+            @PathVariable String id, @RequestBody RetirementRequest request) {
+        if (request == null || request.expectedVersion() == null
+                || request.expectedVersion() < 0) throw invalid();
+        service.retire(id(id), request.expectedVersion(), request.reason());
+        return ResponseEntity.noContent().build();
+    }
+
     @DeleteMapping("/{id}")
     ResponseEntity<Void> delete(
             @PathVariable String id,
@@ -171,6 +180,8 @@ public class FormalSamplePointController {
             String maintainerSubjectId,
             String maintainerChangeReason,
             Long expectedVersion) {}
+
+    record RetirementRequest(Long expectedVersion, String reason) {}
 
     private static UUID id(String value) {
         try {

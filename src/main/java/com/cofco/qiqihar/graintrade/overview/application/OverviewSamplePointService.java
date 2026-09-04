@@ -65,6 +65,21 @@ public class OverviewSamplePointService {
     }
 
     @Transactional(readOnly = true)
+    public List<OverviewSamplePointIcon> historicalIcons(
+            Integer year, String productCode, String regionCode,
+            String categoryCode, String typeCode, String query) {
+        int effectiveYear = effectiveYear(year);
+        validateProduct(productCode);
+        validateFilter(regionCode, categoryCode, typeCode);
+        if (!iconRegionLevel(samplePoints.regionLevel(regionCode))) throw invalid();
+        String normalizedQuery = normalizeQuery(query);
+        AuthorizedReadScope scope = accessControl.requireReadScope();
+        authorizeNavigation(regionCode, scope);
+        return samplePoints.historicalIcons(effectiveYear, productCode, regionCode,
+                categoryCode, typeCode, normalizedQuery, scope.regionCodes());
+    }
+
+    @Transactional(readOnly = true)
     public OverviewSamplePointSnapshot snapshot(Integer year, String productCode, String regionCode,
             String categoryCode, String typeCode, String query) {
         int effectiveYear = effectiveYear(year);

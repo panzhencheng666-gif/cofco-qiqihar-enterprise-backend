@@ -69,6 +69,18 @@ public class OverviewSamplePointController {
         return new ApiResponse<>(service.icons(year, productCode, regionCode, categoryCode, typeCode, query));
     }
 
+    @GetMapping("/api/v1/overview/historical-sample-point-icons")
+    ApiResponse<List<OverviewSamplePointIcon>> historicalIcons(
+            @RequestParam(required = false) Integer year,
+            @RequestParam(required = false) String productCode,
+            @RequestParam String regionCode,
+            @RequestParam(required = false) String categoryCode,
+            @RequestParam(required = false) String typeCode,
+            @RequestParam(required = false) String query) {
+        return new ApiResponse<>(service.historicalIcons(
+                year, productCode, regionCode, categoryCode, typeCode, query));
+    }
+
     @GetMapping("/api/v1/overview/sample-point-snapshot")
     ApiResponse<OverviewSamplePointSnapshot> snapshot(
             @RequestParam(required = false) Integer year,
