@@ -67,8 +67,17 @@ class DesignSamplePointImportRestIntegrationTest {
                 .containsExactly(
                         "DOMAIN_CODE", "PRODUCT_CODE", "OBJECT_TYPE_CODE",
                         "DSP_NAME", "DSP_REGION_CODE", "DSP_ADDRESS",
-                        "DSP_LONGITUDE", "DSP_LATITUDE",
-                        "DSP_MAINTAINER_NAME", "DSP_MAINTAINER_UNIT");
+                        "DSP_LONGITUDE", "DSP_LATITUDE");
+        assertThat(imports.templateDefinition("PRODUCTION").columns().get(0).options())
+                .containsExactly("产情");
+        assertThat(imports.templateDefinition("PRODUCTION").columns().get(1).options())
+                .contains("玉米", "大豆", "稻谷");
+        assertThat(imports.templateDefinition("PRODUCTION").columns().get(2).options())
+                .contains("农户", "村委会", "农技站");
+        assertThat(imports.templateDefinition("MARKET").columns().get(0).options())
+                .containsExactly("市场");
+        assertThat(imports.templateDefinition("MARKET").columns().get(2).options())
+                .contains("贸易商", "深加工", "养殖厂", "饲料厂", "农资店");
     }
 
     @Test
@@ -91,6 +100,12 @@ class DesignSamplePointImportRestIntegrationTest {
         org.assertj.core.api.Assertions.assertThat(jdbc.sql(
                         "SELECT count(*) FROM platform.design_sample_point")
                 .query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("""
+                        SELECT values_json->>'DSP_MAINTAINER_NAME',
+                               values_json->>'DSP_MAINTAINER_UNIT'
+                        FROM platform.design_sample_point
+                        """).query((row, index) -> List.of(row.getString(1), row.getString(2))).single())
+                .containsExactly("产情测试员", "自动化测试工作单位");
     }
 
     @Test
@@ -122,6 +137,36 @@ class DesignSamplePointImportRestIntegrationTest {
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("REQUIRED_FIELD_MISSING")));
         org.assertj.core.api.Assertions.assertThat(jdbc.sql(
                         "SELECT count(*) FROM platform.design_sample_point")
+                .query(Long.class).single()).isZero();
+    }
+
+    @Test
+    void rejectsAProductAndObjectTypeCombinationThatIsNotInTheContract() throws Exception {
+        byte[] workbook = SamplePointMasterWorkbook.create(
+                imports.templateDefinition("MARKET"), List.of(Map.of(
+                        "DOMAIN_CODE", "市场",
+                        "PRODUCT_CODE", "稻谷",
+                        "OBJECT_TYPE_CODE", "饲料厂",
+                        "DSP_NAME", "不合法组合设计点",
+                        "DSP_REGION_CODE", "230202",
+                        "DSP_ADDRESS", "龙沙区验收详细地址",
+                        "DSP_LONGITUDE", "123.95",
+                        "DSP_LATITUDE", "47.35")));
+
+        mvc.perform(multipart("/api/v1/design-sample-points/imports")
+                        .file(new MockMultipartFile(
+                                "file", "design-market.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                workbook))
+                        .queryParam("domain", "MARKET")
+                        .header("Idempotency-Key", "design-import-invalid-context")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.statusCode").value("COMPLETED_WITH_ERRORS"))
+                .andExpect(jsonPath("$.data.importedRows").value(0))
+                .andExpect(jsonPath("$.data.failedRows").value(1));
+
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.design_sample_point")
                 .query(Long.class).single()).isZero();
     }
 

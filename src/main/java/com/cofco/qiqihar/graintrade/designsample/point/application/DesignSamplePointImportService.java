@@ -11,6 +11,7 @@ import com.cofco.qiqihar.graintrade.importing.domain.CsvTable;
 import com.cofco.qiqihar.graintrade.importing.domain.ImportJob;
 import com.cofco.qiqihar.graintrade.importing.domain.ImportRowOutcome;
 import com.cofco.qiqihar.graintrade.importing.application.SamplePointImportResult;
+import com.cofco.qiqihar.graintrade.importing.infrastructure.BusinessImportWorkbook;
 import com.cofco.qiqihar.graintrade.importing.infrastructure.SamplePointMasterWorkbook;
 import com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
@@ -42,8 +43,7 @@ public class DesignSamplePointImportService {
     private static final List<String> CONTEXT_FIELDS = List.of(
             "DOMAIN_CODE", "PRODUCT_CODE", "OBJECT_TYPE_CODE");
     private static final List<String> PLANNING_FIELDS = List.of(
-            "DSP_NAME", "DSP_REGION_CODE", "DSP_ADDRESS", "DSP_LONGITUDE", "DSP_LATITUDE",
-            "DSP_MAINTAINER_NAME", "DSP_MAINTAINER_UNIT");
+            "DSP_NAME", "DSP_REGION_CODE", "DSP_ADDRESS", "DSP_LONGITUDE", "DSP_LATITUDE");
 
     private final DesignSampleMetadataService metadata;
     private final AccessControl access;
@@ -85,13 +85,13 @@ public class DesignSamplePointImportService {
         List<SamplePointMasterWorkbook.Column> contextColumns = CONTEXT_FIELDS.stream()
                 .map(contract.fieldsByCode()::get)
                 .map(field -> new SamplePointMasterWorkbook.Column(
-                        field.code(), publicLabel(field), true))
+                        field.code(), publicLabel(field), true,
+                        contextOptions(contract, domain, field.code())))
                 .toList();
         List<SamplePointMasterWorkbook.Column> planningColumns = PLANNING_FIELDS.stream()
                 .map(contract.fieldsByCode()::get)
                 .map(field -> new SamplePointMasterWorkbook.Column(
-                        field.code(), publicLabel(field),
-                        !field.code().startsWith("DSP_MAINTAINER_")))
+                        field.code(), publicLabel(field), true))
                 .toList();
         List<SamplePointMasterWorkbook.Column> columns = new ArrayList<>(contextColumns);
         columns.addAll(planningColumns);
@@ -143,6 +143,8 @@ public class DesignSamplePointImportService {
                         values.put(column.code(), metadataNode(value));
                     }
                 });
+                values.put("DSP_MAINTAINER_NAME", metadataNode(principal.displayName()));
+                values.put("DSP_MAINTAINER_UNIT", metadataNode(principal.workUnitName()));
                 DesignSamplePointDraft draft = new DesignSamplePointDraft(
                         contract.contractVersion(), contract.contractDigest(), context, values);
                 DesignSamplePointService.ValidatedDraft validated = points.validateForCreate(draft);
@@ -304,6 +306,29 @@ public class DesignSamplePointImportService {
         if (field.code().equals("OBJECT_TYPE_CODE")) return "参考对象类型";
         if (field.code().equals("DSP_REGION_CODE")) return "所属地区";
         return field.unit() == null ? field.label() : field.label() + "（" + field.unit() + "）";
+    }
+
+    private static List<String> contextOptions(
+            DesignSampleContractSnapshot contract, String domain, String fieldCode) {
+        if (fieldCode.equals("DOMAIN_CODE")) {
+            return List.of(domain.equals("PRODUCTION") ? "产情" : "市场");
+        }
+        Set<String> supportedCodes = contract.supportedContexts().stream()
+                .filter(context -> context.domainCode().equals(domain))
+                .map(context -> fieldCode.equals("PRODUCT_CODE")
+                        ? context.productCode() : context.objectTypeCode())
+                .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
+        if (fieldCode.equals("PRODUCT_CODE")) {
+            return contract.products().stream()
+                    .filter(item -> supportedCodes.contains(item.code()))
+                    .map(item -> BusinessImportWorkbook.businessLabel(item.code()))
+                    .toList();
+        }
+        return contract.objectTypes().stream()
+                .filter(item -> item.domainCode().equals(domain))
+                .filter(item -> supportedCodes.contains(item.code()))
+                .map(item -> BusinessImportWorkbook.businessLabel(item.code()))
+                .toList();
     }
 
     private static JsonNode metadataNode(String value) {
