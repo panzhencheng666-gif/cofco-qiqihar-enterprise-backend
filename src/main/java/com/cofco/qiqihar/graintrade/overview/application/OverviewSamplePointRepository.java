@@ -20,6 +20,10 @@ public interface OverviewSamplePointRepository {
     List<OverviewSamplePointIcon> historicalIcons(int retirementYear, String productCode,
             String regionCode, String categoryCode, String typeCode, String query,
             Set<String> authorizedRegionCodes);
+    Optional<OverviewHistoricalSamplePointDetail> historicalDetail(
+            int retirementYear, String productCode, UUID samplePointId,
+            String regionCode, String categoryCode, String typeCode,
+            Set<String> authorizedRegionCodes);
     OverviewSamplePointSnapshot snapshot(int year, String productCode, String regionCode,
             String categoryCode, String typeCode, String query,
             Set<String> authorizedRegionCodes);

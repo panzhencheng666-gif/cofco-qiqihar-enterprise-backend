@@ -198,31 +198,15 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
 
     @Override
     public boolean retire(
-            UUID id, long expectedVersion, String actorSubjectId,
-            String reason, LocalDate retiredOn, Instant now) {
-        int updated = jdbc.sql("""
-                UPDATE registry.sample_point
-                SET deletion_state='RETIRED',effective_to=:retiredOn,
-                    retired_at=:now,retired_by=:actor,retired_reason=:reason,
-                    version=version+1,updated_by=:actor,updated_at=:now
-                WHERE sample_point_id=:id
-                  AND kind_code IN ('SURVEY_SITE','LOGISTICS_NODE')
-                  AND deletion_state='ACTIVE' AND version=:expectedVersion
-                """).param("retiredOn", retiredOn).param("now", Timestamp.from(now))
-                .param("actor", actorSubjectId).param("reason", reason)
-                .param("id", id).param("expectedVersion", expectedVersion).update();
-        if (updated == 1) {
-            jdbc.sql("""
-                    UPDATE registry.sample_network_membership
-                    SET status_code='REMOVED',decision_reason=:reason,
-                        decided_by=:actor,decided_at=:now,version=version+1
-                    WHERE sample_point_id=:id AND network_year>=:retirementYear
-                      AND status_code<>'REMOVED'
-                    """).param("reason", reason).param("actor", actorSubjectId)
-                    .param("now", Timestamp.from(now)).param("id", id)
-                    .param("retirementYear", retiredOn.getYear()).update();
-        }
-        return updated == 1;
+            UUID id, long expectedVersion, String expectedRegionCode, String actorSubjectId,
+            String reason, LocalDate retiredOn) {
+        return "RETIRED".equals(jdbc.sql("""
+                SELECT registry.retire_formal_sample_point(
+                  :id,:expectedVersion,:expectedRegion,:actor,:reason,:retiredOn)
+                """).param("id", id).param("expectedVersion", expectedVersion)
+                .param("expectedRegion", expectedRegionCode).param("actor", actorSubjectId)
+                .param("reason", reason).param("retiredOn", retiredOn)
+                .query(String.class).single());
     }
 
     @Override

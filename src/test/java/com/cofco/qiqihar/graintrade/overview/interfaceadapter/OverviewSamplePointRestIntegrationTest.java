@@ -172,6 +172,21 @@ class OverviewSamplePointRestIntegrationTest {
                 .andExpect(jsonPath("$.data[0].roles[0].code").value("PRODUCTION"))
                 .andExpect(jsonPath("$.data[0].types[0].code").value("FARMER"));
 
+        mvc.perform(get("/api/v1/overview/historical-sample-points/{samplePointId}", SURVEY_POINT)
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", VILLAGE)
+                        .queryParam("productCode", "CORN")
+                        .queryParam("year", "2027")
+                        .queryParam("categoryCode", "PRODUCTION"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.retirementYear").value(2027))
+                .andExpect(jsonPath("$.data.retirementReason").value("年度样本调整"))
+                .andExpect(jsonPath("$.data.retiredBy").value("production-tester"))
+                .andExpect(jsonPath("$.data.lastBusinessData.length()").value(1))
+                .andExpect(jsonPath("$.data.lastBusinessData[0].occurrenceDate").value("2026-08-05"))
+                .andExpect(jsonPath("$.data.lastBusinessData[0].businessValues.CULTIVATED_AREA_MU.value")
+                        .value("10"));
+
         mvc.perform(get("/api/v1/overview/historical-sample-point-icons")
                         .principal(() -> "production-tester")
                         .queryParam("regionCode", VILLAGE)

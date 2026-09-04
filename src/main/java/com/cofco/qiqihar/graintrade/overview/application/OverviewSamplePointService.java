@@ -80,6 +80,23 @@ public class OverviewSamplePointService {
     }
 
     @Transactional(readOnly = true)
+    public OverviewHistoricalSamplePointDetail historicalDetail(
+            Integer retirementYear, String productCode, UUID samplePointId,
+            String regionCode, String categoryCode, String typeCode) {
+        int effectiveYear = effectiveYear(retirementYear);
+        validateProduct(productCode);
+        validateFilter(regionCode, categoryCode, typeCode);
+        if (samplePointId == null) throw invalid();
+        AuthorizedReadScope scope = accessControl.requireReadScope();
+        authorizeNavigation(regionCode, scope);
+        return samplePoints.historicalDetail(effectiveYear, productCode, samplePointId,
+                        regionCode, categoryCode, typeCode, scope.regionCodes())
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "OVERVIEW_HISTORICAL_SAMPLE_POINT_NOT_FOUND",
+                        "Historical sample point was not found"));
+    }
+
+    @Transactional(readOnly = true)
     public OverviewSamplePointSnapshot snapshot(Integer year, String productCode, String regionCode,
             String categoryCode, String typeCode, String query) {
         int effectiveYear = effectiveYear(year);

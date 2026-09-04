@@ -191,7 +191,8 @@ public class FormalSamplePointService {
         String reason = required(submittedReason, 500);
         Instant now = clock.instant();
         LocalDate retiredOn = LocalDate.now(clock);
-        if (!repository.retire(id, expectedVersion, actor.subjectId(), reason, retiredOn, now)) {
+        if (!repository.retire(id, expectedVersion, point.regionCode(),
+                actor.subjectId(), reason, retiredOn)) {
             throw new ConflictException(
                     "FORMAL_SAMPLE_POINT_VERSION_CONFLICT",
                     "正式样本已发生变化，请刷新后重试");
