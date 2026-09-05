@@ -81,6 +81,7 @@ public class SupplyBalanceService {
             throw invalid("SUPPLY_BALANCE_VERSION_INVALID", "数据版本无效");
         }
         SecurityPrincipal principal = access.require("BUSINESS_UPDATE", regionCode);
+        access.requireCountyReporter(principal,regionCode);
         Instant now = clock.instant();
         repository.upsert(regionCode, surveyYear, product, values, safeNotes,
                         expectedVersion, principal.subjectId(), now)

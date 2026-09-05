@@ -359,7 +359,8 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
                 ORDER BY region_code
                 """).param("subject",subject).query(String.class).list();
         return new EmployeeProfile(subject,name,unit,unitName,accountStatus,employmentStatus,
-                roles,positions,regions,version);
+                roles,positions,regions,version,jdbc.sql("SELECT region_code FROM platform.region_responsibility WHERE subject_id=:subject ORDER BY region_code")
+                        .param("subject",subject).query(String.class).list());
     }
 
     private void replaceAssignments(String subject,EmployeeAssignment value,String actor) {

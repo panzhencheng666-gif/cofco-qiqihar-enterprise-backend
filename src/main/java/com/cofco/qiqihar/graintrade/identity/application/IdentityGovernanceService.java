@@ -298,7 +298,7 @@ public class IdentityGovernanceService {
                 : new EmployeeProfile.Grant(REPORTER_ROLE,"填报员");
         return new EmployeeProfile(profile.subjectId(),profile.displayName(),profile.workUnitCode(),
                 profile.workUnitName(),profile.accountStatus(),profile.employmentStatus(),List.of(role),
-                profile.positions(),profile.regionCodes(),profile.version());
+                profile.positions(),profile.regionCodes(),profile.version(),profile.responsibilityRegionCodes());
     }
     private static AccessDeniedException roleDenied(){return new AccessDeniedException(
             "ACCESS_ROLE_ASSIGNMENT_DENIED","当前账号不能授予系统管理员角色");}

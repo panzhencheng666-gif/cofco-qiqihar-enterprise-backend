@@ -51,6 +51,23 @@ public class AccessControl {
         if (regionCode != null && !regionCode.isBlank() && !principal.includesRegion(regionCode)) {
             throw new AccessDeniedException("ACCESS_REGION_DENIED", "Data region is outside the assigned scope");
         }
+        if (regionCode != null && !regionCode.isBlank()
+                && (permissionCode.equals("BUSINESS_CREATE") || permissionCode.equals("BUSINESS_UPDATE"))) {
+            requireResponsible(principal,regionCode,false);
+        }
         return principal;
+    }
+
+    public void requireCountyReporter(SecurityPrincipal principal,String regionCode) {
+        requireResponsible(principal,regionCode,true);
+    }
+
+    private void requireResponsible(SecurityPrincipal principal,String regionCode,boolean countyReporting) {
+        var owner=principals.responsibleSubject(regionCode,countyReporting);
+        if(owner.isPresent() && !owner.get().equals(principal.subjectId())
+                && !principal.permits("FORMAL_SAMPLE_MANAGE")) {
+            throw new AccessDeniedException("REGION_RESPONSIBILITY_DENIED",
+                    "该地区由指定负责人填报；整县分属多人时请由县级管理员办理地区填报");
+        }
     }
 }

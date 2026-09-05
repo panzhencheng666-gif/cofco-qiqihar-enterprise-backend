@@ -18,6 +18,16 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
     }
 
     @Override
+    public Optional<String> responsibleSubject(String regionCode, boolean countyReporting) {
+        // Hold until the business write commits, including when no responsibility row exists yet.
+        if(!org.springframework.transaction.support.TransactionSynchronizationManager.isCurrentTransactionReadOnly())
+            jdbc.sql("LOCK TABLE platform.region_responsibility IN SHARE MODE").update();
+        String function=countyReporting?"county_reporting_subject":"region_responsible_subject";
+        return jdbc.sql("SELECT platform."+function+"(:region)").param("region",regionCode)
+                .query((row,index)->row.getString(1)).optional();
+    }
+
+    @Override
     public Optional<SecurityPrincipal> findEnabled(String subjectId) {
         return jdbc.sql("""
                 SELECT security_user.subject_id,security_user.display_name,security_user.work_unit_code,
@@ -96,7 +106,13 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
                     FROM platform.region child
                     JOIN covered parent ON parent.region_code = child.parent_code
                 )
-                SELECT region_code FROM covered ORDER BY region_code
+                SELECT region_code FROM covered
+                UNION
+                SELECT county.code FROM platform.region county
+                JOIN unit_authorized unit ON unit.region_code=county.code
+                WHERE county.administrative_level='COUNTY'
+                  AND platform.county_reporting_subject(county.code)=:subjectId
+                ORDER BY region_code
                 """).param("subjectId", subjectId).param("workUnitCode", workUnitCode).query(String.class).list());
     }
 
