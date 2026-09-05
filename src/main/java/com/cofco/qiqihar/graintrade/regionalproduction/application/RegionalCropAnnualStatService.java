@@ -47,7 +47,7 @@ public class RegionalCropAnnualStatService {
         if (!"PREFECTURE".equals(prefecture.administrativeLevel())) {
             throw invalid("REGIONAL_ANNUAL_STAT_PREFECTURE_INVALID", "查询地区必须为地级市");
         }
-        SecurityPrincipal principal = access.require("BUSINESS_READ", prefectureCode);
+        SecurityPrincipal principal = access.require("BUSINESS_READ", null);
         return repository.findAll(year, product, prefectureCode, principal.regionCodes());
     }
 
@@ -67,6 +67,7 @@ public class RegionalCropAnnualStatService {
             throw invalid("REGIONAL_ANNUAL_STAT_VERSION_INVALID", "数据版本无效");
         }
         SecurityPrincipal principal = access.require("BUSINESS_UPDATE", regionCode);
+        access.requireCountyReporter(principal,regionCode);
         Instant now = clock.instant();
         RegionalCropAnnualStat saved = repository.upsert(
                         regionCode, year, product, area, yield,

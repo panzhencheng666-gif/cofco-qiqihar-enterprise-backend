@@ -55,3 +55,33 @@ $function$;
 CREATE TRIGGER sample_region_responsibility_guard
 BEFORE INSERT OR UPDATE OF region_code,maintainer_subject_id,deletion_state
 ON registry.sample_point FOR EACH ROW EXECUTE FUNCTION registry.apply_region_responsibility();
+
+CREATE FUNCTION platform.region_responsible_subject(requested_region varchar) RETURNS varchar
+LANGUAGE sql STABLE SET search_path=pg_catalog AS $function$
+    WITH RECURSIVE ancestors(code,parent_code) AS (
+        SELECT code,parent_code FROM platform.region WHERE code=requested_region
+        UNION ALL SELECT r.code,r.parent_code FROM platform.region r JOIN ancestors a ON r.code=a.parent_code
+    )
+    SELECT responsibility.subject_id FROM platform.region_responsibility responsibility
+    JOIN ancestors ON ancestors.code=responsibility.region_code WHERE responsibility.subject_id IS NOT NULL
+$function$;
+
+-- County totals are writable by an ordinary employee only when every township has that owner.
+-- NULL means no responsibility has been assigned; empty string means a partial or split county.
+CREATE FUNCTION platform.county_reporting_subject(requested_county varchar) RETURNS varchar
+LANGUAGE sql STABLE SET search_path=pg_catalog AS $function$
+    WITH RECURSIVE descendants(code,administrative_level) AS (
+        SELECT code,administrative_level FROM platform.region WHERE parent_code=requested_county
+        UNION ALL SELECT r.code,r.administrative_level FROM platform.region r JOIN descendants d ON r.parent_code=d.code
+    ), townships AS (
+        SELECT code,platform.region_responsible_subject(code) AS subject FROM descendants WHERE administrative_level='TOWNSHIP'
+    )
+    SELECT CASE WHEN count(*)=0 THEN platform.region_responsible_subject(requested_county)
+        WHEN count(subject)=0 THEN NULL
+        WHEN count(subject)=count(*) AND count(DISTINCT subject)=1 THEN min(subject)
+        ELSE '' END FROM townships
+$function$;
+ALTER FUNCTION platform.region_responsible_subject(varchar) OWNER TO qiqihar_migration_owner;
+ALTER FUNCTION platform.county_reporting_subject(varchar) OWNER TO qiqihar_migration_owner;
+REVOKE ALL ON FUNCTION platform.region_responsible_subject(varchar),platform.county_reporting_subject(varchar) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION platform.region_responsible_subject(varchar),platform.county_reporting_subject(varchar) TO qiqihar_enterprise_runtime;

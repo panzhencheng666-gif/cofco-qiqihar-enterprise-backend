@@ -25,6 +25,8 @@ class RegionResponsibilityRestIntegrationTest {
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
     @Autowired ObjectMapper json;
+    @Autowired com.cofco.qiqihar.graintrade.shared.security.application.SecurityPrincipalRepository principals;
+    @Autowired org.springframework.transaction.PlatformTransactionManager transactions;
     JdbcClient jdbc;
     String subject;
     static final String REGION="230202996";
@@ -45,6 +47,8 @@ class RegionResponsibilityRestIntegrationTest {
         mvc.perform(put(path()).principal(()->"production-tester").contentType(MediaType.APPLICATION_JSON)
             .content(json.writeValueAsString(java.util.Map.of("regionCodes",java.util.List.of(REGION),"previewToken",token,"reason","岗位分工"))))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.regionCodes[0]").value(REGION));
+        mvc.perform(get("/api/v1/identity/employees/"+subject).principal(()->"production-tester"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.responsibilityRegionCodes[0]").value(REGION));
         assertThat(owner(first)).isEqualTo(subject);
         assertThat(owner(sample())).isEqualTo(subject);
         mvc.perform(get(path()).principal(()->"production-tester"))
@@ -118,6 +122,66 @@ class RegionResponsibilityRestIntegrationTest {
             .content(json.writeValueAsString(java.util.Map.of("regionCodes",java.util.List.of(),"previewToken",token,"reason","撤销地区分工"))))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.regionCodes").isEmpty());
         assertThat(owner(id)).isEmpty();assertThat(owner(sample())).isEmpty();
+    }
+    @Test void formerResponsibleEmployeeCannotUseLegacyBusinessWriteWithOverlappingAccess() throws Exception {
+        String former=subject;save(token()).andExpect(status().isOk());
+        prepare();save(token()).andExpect(status().isOk());
+        var access=new com.cofco.qiqihar.graintrade.shared.security.application.AccessControl(()->java.util.Optional.of(former),principals,true);
+        var transaction=new org.springframework.transaction.support.TransactionTemplate(transactions);
+        org.assertj.core.api.Assertions.assertThatThrownBy(()->transaction.execute(status->access.require("BUSINESS_CREATE",REGION)))
+            .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+        var reader=transaction.execute(status->access.require("BUSINESS_READ",REGION));
+        assertThat(reader).isNotNull();
+    }
+    @Test void countyAnnualReportingRequiresWholeCountyResponsibility() throws Exception {
+        String county="230299", first="230299001", second="230299002";
+        GovernedMasterDataFixtures.insertRegion(jdbc,county,"整县责任测试县","230200","COUNTY",9995);
+        GovernedMasterDataFixtures.insertRegion(jdbc,first,"责任测试一乡",county,"TOWNSHIP",9994);
+        GovernedMasterDataFixtures.insertRegion(jdbc,second,"责任测试二乡",county,"TOWNSHIP",9993);
+        jdbc.sql("INSERT INTO platform.work_unit_region_scope(work_unit_code,region_code) VALUES('QIQIHAR_BUSINESS',:county),('TEST',:county) ON CONFLICT DO NOTHING").param("county",county).update();
+        jdbc.sql("INSERT INTO platform.security_user_region_scope(subject_id,region_code) VALUES('production-tester',:county) ON CONFLICT DO NOTHING").param("county",county).update();
+        handover(java.util.List.of(first));
+        annual(subject,county,0).andExpect(status().isForbidden());
+        handover(java.util.List.of(first,second));
+        var saved=annual(subject,county,0).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        long version=json.readTree(saved).path("data").path("version").asLong();
+        String profile=mvc.perform(get("/api/v1/identity/employees/"+subject).principal(()->"production-tester"))
+            .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        var data=json.readTree(profile).path("data");
+        mvc.perform(put("/api/v1/identity/employees/"+subject).principal(()->"production-tester").contentType(MediaType.APPLICATION_JSON)
+            .content("{\"version\":"+data.path("version")+",\"displayName\":\"更新员工姓名\",\"workUnitCode\":\"QIQIHAR_BUSINESS\",\"accountStatus\":\"ACTIVE\",\"employmentStatus\":\"ACTIVE\",\"roleCodes\":[\"BUSINESS_OPERATOR\"],\"positionCodes\":[],\"regionCodes\":"+data.path("regionCodes")+"}"))
+            .andExpect(status().isOk());
+        mvc.perform(get("/api/v1/production/regional-annual-stats?year=2026&productCode=CORN&prefectureCode=230200").principal(()->subject))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].regionCode").value(county));
+        String previous=subject;prepare();handover(java.util.List.of(second));
+        // Preserve an explicitly granted legacy county scope to verify responsibility still wins.
+        jdbc.sql("INSERT INTO platform.security_user_region_scope(subject_id,region_code) VALUES(:subject,:county) ON CONFLICT DO NOTHING").param("subject",previous).param("county",county).update();
+        annual(previous,county,version).andExpect(status().isForbidden());
+        mvc.perform(put("/api/v1/supply-balances/"+county+"/2026/CORN").principal(()->previous).contentType(MediaType.APPLICATION_JSON)
+            .content("{\"version\":0,\"manualValues\":{},\"notes\":{}}"))
+            .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("REGION_RESPONSIBILITY_DENIED"));
+        annual(subject,county,version).andExpect(status().isForbidden());
+        annual("production-tester",county,version).andExpect(status().isOk());
+    }
+    void handover(java.util.List<String> regions) throws Exception {
+        String preview=mvc.perform(post(path()+"/preview").principal(()->"production-tester").contentType(MediaType.APPLICATION_JSON)
+            .content(json.writeValueAsString(java.util.Map.of("regionCodes",regions))))
+            .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        String token=json.readTree(preview).path("data").path("previewToken").asText();
+        mvc.perform(put(path()).principal(()->"production-tester").contentType(MediaType.APPLICATION_JSON)
+            .content(json.writeValueAsString(java.util.Map.of("regionCodes",regions,"previewToken",token,"reason","地区岗位分工"))))
+            .andExpect(status().isOk());
+    }
+    org.springframework.test.web.servlet.ResultActions annual(String actor,String county,long version) throws Exception {
+        return mvc.perform(put("/api/v1/production/regional-annual-stats/"+county).principal(()->actor).contentType(MediaType.APPLICATION_JSON)
+            .content(json.writeValueAsString(java.util.Map.of("dataYear",2026,"productCode","CORN","plantedAreaMu",100,"yieldPerMuKg",400,"expectedVersion",version))));
+    }
+    @Test void responsibleEmployeeCanReadEligibleSamplesInReadOnlyTransaction() throws Exception {
+        save(token()).andExpect(status().isOk());
+        mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
+            .param("domain","PRODUCTION").param("productCode","CORN").param("regionCode",REGION)
+            .param("observedAt","2026-09-01T08:00:00+08:00").principal(()->subject))
+            .andExpect(status().isOk());
     }
     String token() throws Exception {return json.readTree(preview()).path("data").path("previewToken").asText();}
     org.springframework.test.web.servlet.ResultActions save(String token) throws Exception {

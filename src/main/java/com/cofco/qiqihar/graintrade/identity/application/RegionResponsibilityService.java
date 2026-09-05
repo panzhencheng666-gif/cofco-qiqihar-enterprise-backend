@@ -31,8 +31,10 @@ public class RegionResponsibilityService {
     }
     @Transactional(readOnly=true)
     public RegionResponsibility.Preview current(String subject){
+        var reader=access.require("IDENTITY_READ",null);
         identities.employee(subject);
         List<String> owned=repository.ownedRegions(subject);
+        if(!reader.regionCodes().containsAll(owned))throw new AccessDeniedException("ACCESS_REGION_DENIED","负责地区不在允许读取的范围内");
         var employee=identities.employee(subject);
         return new RegionResponsibility.Preview(subject,owned,repository.regions(owned),
             repository.samples(owned,owned,subject,employee.displayName()),null);
@@ -70,6 +72,8 @@ public class RegionResponsibilityService {
     private RegionResponsibility.Preview calculate(String subject,List<String> selected){
         SecurityPrincipal actor=actor();
         var employee=identities.employee(subject);
+        if(!actor.roleCodes().contains("SYSTEM_ADMIN") && !actor.workUnitCode().equals(employee.workUnitCode()))
+            throw new AccessDeniedException("ACCESS_WORK_UNIT_DENIED","无权调整其他工作单位的责任");
         var target=principals.findEnabled(subject).orElseThrow(RegionResponsibilityService::invalid);
         if(!target.permits("BUSINESS_CREATE"))throw invalid();
         var available=identities.assignmentOptions(employee.workUnitCode()).regionCodes();
@@ -79,7 +83,7 @@ public class RegionResponsibilityService {
         var regions=repository.regions(List.copyOf(affected));
         var samples=repository.samples(List.copyOf(affected),selected,subject,employee.displayName());
         // Include grants and versions as well as the full sample set: additions and authorization edits invalidate previews.
-        String snapshot=json.writeValueAsString(Arrays.asList(actor.subjectId(),new TreeSet<>(actor.permissionCodes()),new TreeSet<>(actor.regionCodes()),
+        String snapshot=json.writeValueAsString(Arrays.asList(actor.subjectId(),actor.workUnitCode(),new TreeSet<>(actor.roleCodes()),new TreeSet<>(actor.permissionCodes()),new TreeSet<>(actor.regionCodes()),
             employee,target.workUnitCode(),new TreeSet<>(target.permissionCodes()),new TreeSet<>(target.regionCodes()),selected,regions,samples));
         return new RegionResponsibility.Preview(subject,selected,regions,samples,sha256(snapshot));
     }
