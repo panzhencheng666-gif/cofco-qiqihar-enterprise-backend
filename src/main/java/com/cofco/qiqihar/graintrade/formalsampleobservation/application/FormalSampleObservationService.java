@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.formalsampleobservation.application;
 
 import com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException;
+import com.cofco.qiqihar.graintrade.formalsamplepoint.FormalSampleLocationWriter;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.FormalSampleIdentity;
@@ -48,6 +49,7 @@ public class FormalSampleObservationService {
     private final BusinessAuditRecorder audit;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final FormalSampleLocationWriter samplePoints;
 
     public FormalSampleObservationService(
             FormalSampleObservationRepository repository,
@@ -57,7 +59,8 @@ public class FormalSampleObservationService {
             LogisticsService logisticsRecords,
             BusinessAuditRecorder audit,
             ObjectMapper objectMapper,
-            Clock clock) {
+            Clock clock,
+            FormalSampleLocationWriter samplePoints) {
         this.repository = repository;
         this.accessControl = accessControl;
         this.productionRecords = productionRecords;
@@ -66,6 +69,7 @@ public class FormalSampleObservationService {
         this.audit = audit;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.samplePoints = samplePoints;
     }
 
     @Transactional(readOnly = true)
@@ -148,6 +152,11 @@ public class FormalSampleObservationService {
             throw invalidCommand("实际观测时间不能晚于当前时间");
         }
         var observedOn = command.observedAt().atZoneSameInstant(REPORTING_ZONE).toLocalDate();
+        // Keep coordinate-lock -> point-row-lock order consistent with master-data updates.
+        // All master, observation, audit and outbox writes participate in this transaction.
+        if (command.sampleLocation() != null) {
+            samplePoints.updateLocation(command.samplePointId(), command.sampleLocation());
+        }
         FormalSampleIdentity lockedIdentity = repository.lockEligibleSample(
                 command.domain(), command.samplePointId(), normalizedProduct,
                 observedOn, principal.regionCodes());
@@ -238,6 +247,9 @@ public class FormalSampleObservationService {
         canonical.put("productCode", normalizedProduct);
         canonical.put("observedAt", command.observedAt().toInstant().toString());
         canonical.set("payload", sorted(command.payload()));
+        if (command.sampleLocation() != null) {
+            canonical.set("sampleLocation", sorted(objectMapper.valueToTree(command.sampleLocation())));
+        }
         return sha256(write(canonical));
     }
 

@@ -218,6 +218,38 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
     public LogisticsRecordView insertOfficialObservation(
             String id, LogisticsDraft draft, UUID samplePointId,
             String actor, Instant observedAt, Instant officialSavedAt) {
+        int year = Integer.parseInt(draft.values().get("surveyYear"));
+        String monthValue = draft.values().get("surveyMonth");
+        Integer month = blank(monthValue) ? null : Integer.valueOf(monthValue);
+        jdbc.sql("SELECT 1 FROM (SELECT pg_advisory_xact_lock(hashtextextended(:key,0))) locked")
+                .param("key", "FORMAL:LOGISTICS:" + samplePointId + ":" + draft.productCode() + ":" + year + ":" + month)
+                .query(Long.class).single();
+        var current = jdbc.sql("""
+                SELECT event_id::text id,version FROM logistics.route_event
+                WHERE sample_point_id=:samplePointId AND product_code=:product
+                  AND survey_year=:year AND survey_month IS NOT DISTINCT FROM CAST(:month AS integer)
+                  AND status_code='APPROVED' AND survey_period_governance_state='CONFIRMED'
+                ORDER BY collection_date DESC,updated_at DESC,event_id DESC LIMIT 1 FOR UPDATE
+                """).param("samplePointId", samplePointId).param("product", draft.productCode())
+                .param("year", year).param("month", month, java.sql.Types.INTEGER)
+                .query((row, ignored) -> Map.entry(row.getString("id"), row.getLong("version"))).optional();
+        if (current.isPresent()) {
+            var existing = current.orElseThrow();
+            writeEvent(existing.getKey(), existing.getValue(), draft, LogisticsStatus.APPROVED, null, actor, officialSavedAt);
+            writeDynamicValues(existing.getKey(), draft);
+            jdbc.sql("""
+                    UPDATE logistics.route_event
+                    SET reported_at=:observedAt,submitted_at=:savedAt,updated_at=:savedAt,
+                      survey_year=:year,survey_month=:month,
+                      survey_period_precision=CASE WHEN CAST(:month AS integer) IS NULL THEN 'YEAR' ELSE 'YEAR_MONTH' END,
+                      survey_period_governance_state='CONFIRMED'
+                    WHERE event_id::text=:id
+                    """).param("id", existing.getKey())
+                    .param("year", year).param("month", month, java.sql.Types.INTEGER)
+                    .param("observedAt", OffsetDateTime.ofInstant(observedAt, ZoneOffset.UTC))
+                    .param("savedAt", OffsetDateTime.ofInstant(officialSavedAt, ZoneOffset.UTC)).update();
+            return find(existing.getKey());
+        }
         writeEvent(id, null, draft, null, null, actor, officialSavedAt);
         writeDynamicValues(id, draft);
         int linked = jdbc.sql("""

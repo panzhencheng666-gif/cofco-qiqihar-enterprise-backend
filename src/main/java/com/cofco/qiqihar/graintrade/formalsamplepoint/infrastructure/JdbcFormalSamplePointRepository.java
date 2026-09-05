@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.formalsamplepoint.infrastructure;
 
 import com.cofco.qiqihar.graintrade.formalsamplepoint.application.FormalSamplePointDraft;
+import com.cofco.qiqihar.graintrade.formalsamplepoint.FormalSampleLocationDraft;
 import com.cofco.qiqihar.graintrade.formalsamplepoint.application.FormalSampleMaintainerView;
 import com.cofco.qiqihar.graintrade.formalsamplepoint.application.FormalSamplePointRepository;
 import com.cofco.qiqihar.graintrade.formalsamplepoint.application.FormalSamplePointView;
@@ -194,6 +195,23 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
                 .param("actor", actorSubjectId)
                 .param("now", Timestamp.from(now)).update();
         return find(id);
+    }
+
+    @Override
+    public Optional<FormalSamplePointView> updateLocation(
+            UUID id, FormalSampleLocationDraft draft, String actorSubjectId, Instant now) {
+        int updated = jdbc.sql("""
+                UPDATE registry.sample_point
+                SET region_code=:region,
+                    governed_point=ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326),
+                    version=version+1,updated_by=:actor,updated_at=:now
+                WHERE sample_point_id=:id AND kind_code IN ('SURVEY_SITE','LOGISTICS_NODE')
+                  AND deletion_state='ACTIVE' AND version=:expectedVersion
+                """).param("region", draft.regionCode()).param("longitude", draft.longitude())
+                .param("latitude", draft.latitude()).param("actor", actorSubjectId)
+                .param("now", Timestamp.from(now)).param("id", id)
+                .param("expectedVersion", draft.expectedVersion()).update();
+        return updated == 0 ? Optional.empty() : find(id);
     }
 
     @Override

@@ -1,4 +1,5 @@
 package com.cofco.qiqihar.graintrade.formalsamplepoint.application;
+import com.cofco.qiqihar.graintrade.formalsamplepoint.FormalSampleLocationDraft;
 
 import com.cofco.qiqihar.graintrade.shared.application.PagedResult;
 import java.math.BigDecimal;
@@ -33,6 +34,9 @@ public interface FormalSamplePointRepository {
     Optional<FormalSamplePointView> update(
             UUID id, long expectedVersion, FormalSamplePointDraft draft,
             String actorSubjectId, Instant now);
+
+    Optional<FormalSamplePointView> updateLocation(
+            UUID id, FormalSampleLocationDraft draft, String actorSubjectId, Instant now);
 
     boolean retire(
             UUID id, long expectedVersion, String expectedRegionCode, String actorSubjectId,
