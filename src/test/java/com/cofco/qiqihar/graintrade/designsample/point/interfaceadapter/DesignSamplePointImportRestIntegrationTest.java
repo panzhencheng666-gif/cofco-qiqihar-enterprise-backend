@@ -81,6 +81,27 @@ class DesignSamplePointImportRestIntegrationTest {
     }
 
     @Test
+    void workbookChoicesDependOnEachRowsDomainAndProduct() throws Exception {
+        byte[] bytes = SamplePointMasterWorkbook.create(imports.templateDefinition());
+        assertThat(zipEntry(bytes, "xl/worksheets/sheet1.xml"))
+                .contains("INDIRECT($A2&amp;&quot;品种&quot;)")
+                .contains("INDIRECT($A2&amp;$B2&amp;&quot;对象类型&quot;)");
+        assertThat(zipEntry(bytes, "xl/workbook.xml"))
+                .contains("name=\"产情品种\"")
+                .contains("name=\"市场品种\"")
+                .contains("name=\"市场稻谷对象类型\"");
+    }
+
+    private static String zipEntry(byte[] bytes, String name) throws Exception {
+        try (var zip = new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(bytes))) {
+            for (var entry = zip.getNextEntry(); entry != null; entry = zip.getNextEntry()) {
+                if (entry.getName().equals(name)) return new String(zip.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            }
+        }
+        throw new AssertionError(name);
+    }
+
+    @Test
     void validatesTheWholeWorkbookThenWritesEveryDesignPointAtomically() throws Exception {
         byte[] workbook = SamplePointMasterWorkbook.create(
                 imports.templateDefinition(), List.of(designRow("批量设计点一", "123.95")));
@@ -191,6 +212,35 @@ class DesignSamplePointImportRestIntegrationTest {
         }
         assertThat(jdbc.sql("SELECT domain_code FROM platform.design_sample_point ORDER BY domain_code")
                 .query(String.class).list()).containsExactly("MARKET", "PRODUCTION");
+    }
+
+    @Test
+    void acceptsPriorCategoryWorkbookAndReportsUnknownDomainWithoutPartialWrites() throws Exception {
+        var current = imports.templateDefinition();
+        var legacyColumns = current.columns().stream().map(column ->
+                column.code().equals("DOMAIN_CODE")
+                        ? new SamplePointMasterWorkbook.Column(column.code(), column.label(), true, List.of("产情"))
+                        : column).toList();
+        var legacy = new SamplePointMasterWorkbook.Template(current.kind(), current.version(), current.digest(),
+                legacyColumns, "产情类设计参考点");
+        var bad = new java.util.LinkedHashMap<>(designRow("错误分类点", "123.97"));
+        bad.put("DOMAIN_CODE", "未知分类");
+        var bytes = SamplePointMasterWorkbook.create(legacy, List.of(bad, designRow("旧模板有效行", "123.95")));
+        String response = mvc.perform(multipart("/api/v1/design-sample-points/imports")
+                        .file(new MockMultipartFile("file", "legacy.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", bytes))
+                        .header("Idempotency-Key", "legacy-invalid-domain")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(0))
+                .andExpect(jsonPath("$.data.failedRows").value(2))
+                .andReturn().getResponse().getContentAsString();
+        String id = response.replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+        mvc.perform(get("/api/v1/design-sample-points/imports/{id}/errors", id)
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("INVALID_DESIGN_SAMPLE_DOMAIN")));
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.design_sample_point").query(Long.class).single()).isZero();
     }
 
     private static Map<String, String> designRow(String name, String longitude) {

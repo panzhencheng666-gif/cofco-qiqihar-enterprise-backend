@@ -98,7 +98,7 @@ public class DesignSamplePointImportService {
         return new SamplePointMasterWorkbook.Template(
                 SamplePointMasterWorkbook.Kind.DESIGN,
                 contract.contractVersion(), contract.contractDigest(), columns,
-                "设计样本点");
+                "设计样本点", contextLists(contract));
     }
 
     @Transactional
@@ -298,6 +298,22 @@ public class DesignSamplePointImportService {
         if (field.code().equals("OBJECT_TYPE_CODE")) return "参考对象类型";
         if (field.code().equals("DSP_REGION_CODE")) return "所属地区";
         return field.unit() == null ? field.label() : field.label() + "（" + field.unit() + "）";
+    }
+
+    private static Map<String, List<String>> contextLists(DesignSampleContractSnapshot contract) {
+        Map<String, java.util.LinkedHashSet<String>> options = new LinkedHashMap<>();
+        contract.supportedContexts().stream()
+                .filter(context -> Set.of("PRODUCTION", "MARKET").contains(context.domainCode()))
+                .forEach(context -> {
+                    String domain = BusinessImportWorkbook.businessLabel(context.domainCode());
+                    String product = BusinessImportWorkbook.businessLabel(context.productCode());
+                    options.computeIfAbsent(domain + "品种", ignored -> new java.util.LinkedHashSet<>()).add(product);
+                    options.computeIfAbsent(domain + product + "对象类型", ignored -> new java.util.LinkedHashSet<>())
+                            .add(BusinessImportWorkbook.businessLabel(context.objectTypeCode()));
+                });
+        Map<String, List<String>> lists = new LinkedHashMap<>();
+        options.forEach((name, values) -> lists.put(name, List.copyOf(values)));
+        return lists;
     }
 
     private static List<String> contextOptions(

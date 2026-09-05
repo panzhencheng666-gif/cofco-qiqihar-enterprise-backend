@@ -122,8 +122,25 @@ public final class BusinessImportWorkbook {
 
     public record WorkbookOptions(String dataSheetName, String purposeCode, String purposeLabel,
                                   Set<String> hiddenColumnCodes,
-                                  List<List<String>> additionalInstructions) {
+                                  List<List<String>> additionalInstructions,
+                                  Map<String, String> listFormulas,
+                                  Map<String, List<String>> namedLists) {
+        public WorkbookOptions(String dataSheetName, String purposeCode, String purposeLabel,
+                Set<String> hiddenColumnCodes, List<List<String>> additionalInstructions) {
+            this(dataSheetName, purposeCode, purposeLabel, hiddenColumnCodes, additionalInstructions,
+                    Map.of(), Map.of());
+        }
+
         public WorkbookOptions {
+            listFormulas = Map.copyOf(listFormulas);
+            var lists = new java.util.LinkedHashMap<String, List<String>>();
+            namedLists.forEach((name, values) -> {
+                if (!name.matches("[\\p{L}_][\\p{L}\\p{N}_]*") || values.isEmpty()) {
+                    throw new IllegalArgumentException("INVALID_WORKBOOK_OPTIONS");
+                }
+                lists.put(name, List.copyOf(values));
+            });
+            namedLists = java.util.Collections.unmodifiableMap(lists);
             if (dataSheetName == null || dataSheetName.isBlank() || dataSheetName.length() > 31
                     || dataSheetName.matches(".*[\\\\/?*:\\[\\]].*")) {
                 throw new IllegalArgumentException("INVALID_WORKBOOK_OPTIONS");
@@ -586,10 +603,10 @@ public final class BusinessImportWorkbook {
                 </worksheet>
                 """.formatted(columns(template, options.hiddenColumnCodes()), row(1, template.labels(), 1, false),
                 rows, columnName(template.headers().size()),
-                dataValidations(template));
+                dataValidations(template, options));
     }
 
-    private static String instructionSheet(Template template, WorkbookOptions options) {
+    private static List<List<String>> instructionRows(Template template, WorkbookOptions options) {
         java.util.ArrayList<List<String>> metadata = new java.util.ArrayList<>(List.of(
                 List.of("填报类别", publicContextValue(template.domainCode()))));
         if (template.productCode() != null) {
@@ -601,10 +618,6 @@ public final class BusinessImportWorkbook {
         if (options.purposeCode() != null) {
             metadata.add(List.of("工作簿用途", options.purposeLabel()));
         }
-        StringBuilder xml = new StringBuilder();
-        for (int index = 0; index < metadata.size(); index++) {
-            xml.append(row(index + 1, metadata.get(index), 0, false));
-        }
         java.util.ArrayList<List<String>> instructions = new java.util.ArrayList<>(List.of(
                 List.of("填报说明", "请按业务字段名称填写，不得修改表头"),
                 List.of("填报人", "由登录账号自动记录，不得在模板中填写"),
@@ -615,8 +628,20 @@ public final class BusinessImportWorkbook {
         }
         instructions.add(List.of("处理方式", "5000 条以内即时处理；5001 至 50000 条转入后台任务处理"));
         instructions.addAll(options.additionalInstructions());
-        for (int index = 0; index < instructions.size(); index++) {
-            xml.append(row(index + metadata.size() + 1, instructions.get(index), index == 0 ? 1 : 0, false));
+        metadata.addAll(instructions);
+        return metadata;
+    }
+
+    private static String instructionSheet(Template template, WorkbookOptions options) {
+        var rows = new ArrayList<>(instructionRows(template, options));
+        options.namedLists().forEach((name, values) -> {
+            for (int index = 0; index < values.size(); index++) {
+                rows.add(List.of(index == 0 ? name : "", values.get(index)));
+            }
+        });
+        StringBuilder xml = new StringBuilder();
+        for (int index = 0; index < rows.size(); index++) {
+            xml.append(row(index + 1, rows.get(index), rows.get(index).getFirst().equals("填报说明") ? 1 : 0, false));
         }
         return """
                 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -754,7 +779,15 @@ public final class BusinessImportWorkbook {
                 options.purposeCode() == null ? "" : "\n                  <definedName name=\""
                         + PURPOSE_METADATA_NAME + "\" hidden=\"1\">&quot;"
                         + xml(options.purposeCode()) + "&quot;</definedName>");
-        return standard;
+        StringBuilder named = new StringBuilder();
+        int row = instructionRows(template, options).size() + 1;
+        for (var list : options.namedLists().entrySet()) {
+            named.append("<definedName name=\"").append(xml(list.getKey())).append("\">'填报说明'!$B$")
+                    .append(row).append(":$B$").append(row + list.getValue().size() - 1)
+                    .append("</definedName>");
+            row += list.getValue().size();
+        }
+        return standard.replace("</definedNames>", named + "</definedNames>");
     }
 
     private static String publicContextValue(String internalValue) {
@@ -858,7 +891,7 @@ public final class BusinessImportWorkbook {
                 """;
     }
 
-    private static String dataValidations(Template template) {
+    private static String dataValidations(Template template, WorkbookOptions options) {
         if (template.rules().isEmpty()) return "";
         StringBuilder validations = new StringBuilder();
         for (int index = 0; index < template.rules().size(); index++) {
@@ -873,7 +906,9 @@ public final class BusinessImportWorkbook {
                     .append(" errorTitle=\"字段校验失败\" error=\"").append(xml(prompt)).append("\"");
             validations.append(validationAttributes(rule)).append(" sqref=\"")
                     .append(column).append("2:").append(column).append("5001\">")
-                    .append(validationFormula(rule, column)).append("</dataValidation>");
+                    .append(options.listFormulas().containsKey(rule.code())
+                            ? "<formula1>" + xml(options.listFormulas().get(rule.code())) + "</formula1>"
+                            : validationFormula(rule, column)).append("</dataValidation>");
         }
         return "<dataValidations count=\"" + template.rules().size() + "\">"
                 + validations + "</dataValidations>";
