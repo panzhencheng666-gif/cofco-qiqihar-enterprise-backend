@@ -29,7 +29,8 @@ class RegionResponsibilityRestIntegrationTest {
     @Autowired org.springframework.transaction.PlatformTransactionManager transactions;
     JdbcClient jdbc;
     String subject;
-    static final String REGION="230202996";
+    // Keep this fixture distinct from the identity lifecycle suite, which deletes its own township.
+    static final String REGION="230202993";
     @BeforeEach void prepare() {
         jdbc=JdbcClient.create(dataSource);
         subject="region-responsibility-"+UUID.randomUUID();
