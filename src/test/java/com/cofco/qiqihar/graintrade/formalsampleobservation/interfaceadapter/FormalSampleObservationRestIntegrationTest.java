@@ -111,10 +111,10 @@ class FormalSampleObservationRestIntegrationTest {
         jdbc.sql("""
                 INSERT INTO registry.sample_point(
                   sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
-                  governed_point,effective_from,maintainer_subject_id,created_by,updated_by)
+                  governed_point,effective_from,maintainer_subject_id,created_by,updated_by,created_at,updated_at)
                 VALUES(:samplePointId,'SURVEY_SITE','龙江县既有正式样本','230221','APPROVED','VALID',
                   ST_SetSRID(ST_MakePoint(123.2000000,47.3000000),4326),DATE '2026-01-01',
-                  :actor,:actor,:actor)
+                  :actor,:actor,:actor,TIMESTAMPTZ '2026-01-01 00:00:00+08',TIMESTAMPTZ '2026-01-01 00:00:00+08')
                 """).param("samplePointId", SAMPLE_POINT_ID).param("actor", ACTOR).update();
         jdbc.sql("""
                 INSERT INTO registry.formal_sample_point_profile(
@@ -621,7 +621,8 @@ class FormalSampleObservationRestIntegrationTest {
                 FROM platform.business_audit_event
                 WHERE aggregate_type='FORMAL_SAMPLE_OBSERVATION'
                   AND action_code='FORMAL_SAMPLE_OBSERVATION_SAVED'
-                ORDER BY occurred_at DESC LIMIT 1
+                  AND aggregate_id=(SELECT observation_id::text FROM platform.formal_sample_observation
+                    WHERE actor_subject_id='production-tester' AND idempotency_key='administrator-override-1')
                 """).query((row, index) -> java.util.List.of(
                         row.getString(1), row.getString(2), row.getString(3), row.getString(4))).single())
                 .containsExactly(SAMPLE_POINT_ID.toString(), SAME_REGION_ACTOR, ACTOR, "true");
@@ -988,7 +989,7 @@ class FormalSampleObservationRestIntegrationTest {
         assertThat(jdbc.sql("SELECT count(*) FROM market.market_record WHERE sample_point_id=:id AND status_code='APPROVED'")
                 .param("id", SAMPLE_POINT_ID).query(Long.class).single()).isEqualTo(1);
         assertThat(jdbc.sql("SELECT count(*) FROM logistics.route_event WHERE sample_point_id=:id AND status_code='APPROVED'")
-                .param("id", SAMPLE_POINT_ID).query(Long.class).single()).isEqualTo(2);
+                .param("id", SAMPLE_POINT_ID).query(Long.class).single()).isEqualTo(1);
     }
 
     @Test
@@ -1200,6 +1201,156 @@ class FormalSampleObservationRestIntegrationTest {
                                     + "\"observedAt\":\"2026-08-28T10:15:00+08:00\",\"payload\":" + request[1] + "}"))
                     .andExpect(status().isBadRequest());
         }
+    }
+
+    @Test
+    void savesLocationAndObservationAtomicallyInTheSameSampleAndReplaysOnce() throws Exception {
+        String request = locationObservationRequest(0);
+        long sampleCount = jdbc.sql("SELECT count(*) FROM registry.sample_point").query(Long.class).single();
+        String first = mvc.perform(post("/api/v1/formal-sample-observations/observations")
+                        .principal(() -> ACTOR).header("Idempotency-Key", "inline-location-success")
+                        .contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
+        assertThat(jdbc.sql("SELECT ST_X(governed_point) FROM registry.sample_point WHERE sample_point_id=:id")
+                .param("id", SAMPLE_POINT_ID).query(Double.class).single()).isEqualTo(123.2345678);
+        assertThat(jdbc.sql("SELECT version FROM registry.sample_point WHERE sample_point_id=:id")
+                .param("id", SAMPLE_POINT_ID).query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("SELECT count(*) FROM registry.sample_point").query(Long.class).single()).isEqualTo(sampleCount);
+        assertThat(jdbc.sql("SELECT value FROM production.production_record_submission_metadata WHERE record_id=:id AND field_code='PROD_SAMPLE_LONGITUDE'")
+                .param("id", RECORD_ID).query(String.class).single()).isEqualTo("123.2345678");
+        String replay = mvc.perform(post("/api/v1/formal-sample-observations/observations")
+                        .principal(() -> ACTOR).header("Idempotency-Key", "inline-location-success")
+                        .contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
+        assertThat(replay).isEqualTo(first);
+        mvc.perform(post("/api/v1/formal-sample-observations/observations")
+                        .principal(() -> ACTOR).header("Idempotency-Key", "inline-location-success")
+                        .contentType(MediaType.APPLICATION_JSON).content(request.replace("123.2345678", "123.2345679")))
+                .andExpect(status().isConflict());
+        mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
+                        .principal(() -> ACTOR).queryParam("domain", "PRODUCTION")
+                        .queryParam("productCode", "CORN").queryParam("regionCode", "230221")
+                        .queryParam("observedAt", "2026-08-28T10:15:00+08:00"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].samplePointId").value(SAMPLE_POINT_ID.toString()))
+                .andExpect(jsonPath("$.data[0].longitude").value("123.2345678"));
+    }
+
+    @Test
+    void rejectsStaleInlineLocationWithoutSavingObservation() throws Exception {
+        mvc.perform(post("/api/v1/formal-sample-observations/observations")
+                        .principal(() -> ACTOR).header("Idempotency-Key", "inline-location-stale")
+                        .contentType(MediaType.APPLICATION_JSON).content(locationObservationRequest(9)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("FORMAL_SAMPLE_POINT_VERSION_CONFLICT"));
+        assertInlineLocationUnchanged();
+    }
+
+    @Test
+    void movesBusinessRegionWithLocationAndNotifiesBothRegionalViews() throws Exception {
+        AdministrativeBoundarySnapshot destination = AdministrativeBoundarySnapshot.capture(jdbc, "230202");
+        try {
+            jdbc.sql("UPDATE overview.administrative_boundary SET geometry=ST_Multi(ST_MakeEnvelope(123,47,124,48,4326)) WHERE region_code='230202'").update();
+            String request = locationObservationRequest(0).replace("\"regionCode\":\"230221\"", "\"regionCode\":\"230202\"");
+            mvc.perform(post("/api/v1/formal-sample-observations/observations")
+                            .principal(() -> ACTOR).header("Idempotency-Key", "inline-location-region")
+                            .contentType(MediaType.APPLICATION_JSON).content(request))
+                    .andExpect(status().isCreated());
+            assertThat(jdbc.sql("SELECT region_code FROM registry.sample_point WHERE sample_point_id=:id")
+                    .param("id", SAMPLE_POINT_ID).query(String.class).single()).isEqualTo("230202");
+            assertThat(jdbc.sql("SELECT region_code FROM production.production_record WHERE record_id=:id")
+                    .param("id", RECORD_ID).query(String.class).single()).isEqualTo("230202");
+            assertThat(jdbc.sql("""
+                    SELECT count(*) FROM platform.business_event_outbox
+                    WHERE aggregate_type='FORMAL_SAMPLE_POINT' AND aggregate_id=:id
+                      AND action_code='FORMAL_SAMPLE_POINT_UPDATED'
+                      AND detail->'regionCodes' @> '["230221","230202"]'::jsonb
+                    """).param("id", SAMPLE_POINT_ID.toString()).query(Long.class).single()).isPositive();
+            mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
+                            .principal(() -> ACTOR).queryParam("domain", "PRODUCTION")
+                            .queryParam("productCode", "CORN").queryParam("regionCode", "230202")
+                            .queryParam("observedAt", "2026-08-28T10:15:00+08:00"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data[0].samplePointId").value(SAMPLE_POINT_ID.toString()))
+                    .andExpect(jsonPath("$.data[0].regionCode").value("230202"));
+        } finally {
+            destination.restore(jdbc);
+        }
+    }
+
+    @Test
+    void refusesLocationEditsWithoutMasterPermissionAndLeavesBothRecordsUnchanged() throws Exception {
+        jdbc.sql("UPDATE registry.sample_point SET maintainer_subject_id=:actor WHERE sample_point_id=:id")
+                .param("actor", SAME_REGION_ACTOR).param("id", SAMPLE_POINT_ID).update();
+        mvc.perform(post("/api/v1/formal-sample-observations/observations")
+                        .principal(() -> SAME_REGION_ACTOR).header("Idempotency-Key", "inline-location-denied")
+                        .contentType(MediaType.APPLICATION_JSON).content(locationObservationRequest(0)))
+                .andExpect(status().isForbidden());
+        assertInlineLocationUnchanged();
+    }
+
+    @Test
+    void rejectsOutOfRegionInlineCoordinatesWithoutSavingEitherRecord() throws Exception {
+        mvc.perform(post("/api/v1/formal-sample-observations/observations")
+                        .principal(() -> ACTOR).header("Idempotency-Key", "inline-location-outside")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(locationObservationRequest(0).replace("123.2345678", "126.2345678")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("COORDINATE_OUTSIDE_REGION"));
+        assertInlineLocationUnchanged();
+    }
+
+    @Test
+    void rollsBackInlineLocationWhenObservationValidationFails() throws Exception {
+        mvc.perform(post("/api/v1/formal-sample-observations/observations")
+                        .principal(() -> ACTOR).header("Idempotency-Key", "inline-location-invalid")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(locationObservationRequest(0).replace("\"125\"", "\"-1\"")))
+                .andExpect(status().isBadRequest());
+        assertInlineLocationUnchanged();
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"MARKET", "LOGISTICS"})
+    void savesInlineLocationThroughMarketAndLogisticsContracts(String domain) throws Exception {
+        var request = (tools.jackson.databind.node.ObjectNode) objectMapper.readTree(locationObservationRequest(0));
+        request.put("domain", domain);
+        request.set("payload", objectMapper.readTree(domain.equals("MARKET") ? """
+                {"productCode":"CORN","surveyYear":"2026","surveyMonth":"8",
+                 "coreValues":{"MKT_PURCHASE_BASE_PRICE":"2350","MKT_SALE_BASE_PRICE":"2400",
+                 "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
+                 "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK"},
+                 "facts":{"PURCHASE_VOLUME":"12"},"evidencePhotoIds":[]}
+                """ : """
+                {"productCode":"CORN","values":{"surveyYear":"2026","surveyMonth":"8",
+                 "LOG_TRANSPORT_MODE":"ROAD","LOG_DIRECTION":"INFLOW","LOG_ROUTE_VOLUME":"12.5",
+                 "LOG_FREIGHT_RATE":"80","LOG_BOARD_PRICE":"2650"}}
+                """));
+        mvc.perform(post("/api/v1/formal-sample-observations/observations")
+                        .principal(() -> ACTOR).header("Idempotency-Key", "inline-location-" + domain)
+                        .contentType(MediaType.APPLICATION_JSON).content(request.toString()))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.samplePointId").value(SAMPLE_POINT_ID.toString()))
+                .andExpect(jsonPath("$.data.values." + (domain.equals("MARKET") ? "MKT" : "LOG")
+                        + "_SAMPLE_LONGITUDE").value(domain.equals("MARKET") ? "123.2345678" : "123.234568"));
+        assertThat(jdbc.sql("SELECT ST_X(governed_point) FROM registry.sample_point WHERE sample_point_id=:id")
+                .param("id", SAMPLE_POINT_ID).query(Double.class).single()).isEqualTo(123.2345678);
+    }
+
+    private String locationObservationRequest(long version) {
+        return minimalProductionObservationRequest().replace("\"payload\":", """
+                "sampleLocation":{"expectedVersion":%d,"regionCode":"230221",
+                  "longitude":"123.2345678","latitude":"47.3456789"},"payload":
+                """.formatted(version));
+    }
+
+    private void assertInlineLocationUnchanged() {
+        assertThat(jdbc.sql("SELECT ST_X(governed_point) FROM registry.sample_point WHERE sample_point_id=:id")
+                .param("id", SAMPLE_POINT_ID).query(Double.class).single()).isEqualTo(123.2);
+        assertThat(jdbc.sql("SELECT cultivated_area_mu FROM production.production_record WHERE record_id=:id")
+                .param("id", RECORD_ID).query(java.math.BigDecimal.class).single()).isEqualByComparingTo("100");
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.formal_sample_observation WHERE sample_point_id=:id")
+                .param("id", SAMPLE_POINT_ID).query(Long.class).single()).isZero();
     }
 
     private void clearFixture() {

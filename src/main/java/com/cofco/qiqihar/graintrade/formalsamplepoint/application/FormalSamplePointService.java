@@ -1,4 +1,6 @@
 package com.cofco.qiqihar.graintrade.formalsamplepoint.application;
+import com.cofco.qiqihar.graintrade.formalsamplepoint.FormalSampleLocationDraft;
+import com.cofco.qiqihar.graintrade.formalsamplepoint.FormalSampleLocationWriter;
 
 import com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException;
 import com.cofco.qiqihar.graintrade.shared.application.BoundedInput;
@@ -30,7 +32,7 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 
 @Service
-public class FormalSamplePointService {
+public class FormalSamplePointService implements FormalSampleLocationWriter {
     private static final String AGGREGATE = "FORMAL_SAMPLE_POINT";
     private final FormalSamplePointRepository repository;
     private final AccessControl access;
@@ -146,6 +148,45 @@ public class FormalSamplePointService {
         return updated;
     }
 
+    @Override
+    @Transactional
+    public void updateLocation(UUID id, FormalSampleLocationDraft submitted) {
+        if (submitted == null || submitted.expectedVersion() == null
+                || submitted.expectedVersion() < 0 || submitted.longitude() == null
+                || submitted.latitude() == null) throw invalid();
+        SecurityPrincipal actor = access.require("FORMAL_SAMPLE_MANAGE", null);
+        FormalSamplePointView current = required(id);
+        access.require("FORMAL_SAMPLE_MANAGE", current.regionCode());
+        if (current.version() != submitted.expectedVersion()) {
+            throw new ConflictException("FORMAL_SAMPLE_POINT_VERSION_CONFLICT",
+                    "正式样本已发生变化，请刷新后重试");
+        }
+        FormalSampleLocationDraft draft = new FormalSampleLocationDraft(submitted.expectedVersion(),
+                required(submitted.regionCode(), 12),
+                coordinate(submitted.longitude(), new BigDecimal("-180"), new BigDecimal("180"), 10),
+                coordinate(submitted.latitude(), new BigDecimal("-90"), new BigDecimal("90"), 9));
+        access.require("FORMAL_SAMPLE_MANAGE", draft.regionCode());
+        if (current.maintainerSubjectId() != null && !current.maintainerSubjectId().isBlank()) {
+            requireValidMaintainer(current.maintainerSubjectId(), draft.regionCode());
+        }
+        requireCoordinateBoundary(draft.regionCode(), draft.longitude(), draft.latitude());
+        coordinateGuard.lockAndRequireAvailable(id, draft.longitude(), draft.latitude());
+        Instant now = clock.instant();
+        FormalSamplePointView updated;
+        try {
+            updated = repository.updateLocation(id, draft, actor.subjectId(), now)
+                    .orElseThrow(() -> new ConflictException("FORMAL_SAMPLE_POINT_VERSION_CONFLICT",
+                            "正式样本已发生变化，请刷新后重试"));
+        } catch (DataIntegrityViolationException exception) {
+            throw conflict();
+        }
+        LinkedHashSet<String> affectedRegions = new LinkedHashSet<>();
+        affectedRegions.add(current.regionCode());
+        affectedRegions.add(updated.regionCode());
+        record(actor, updated, "FORMAL_SAMPLE_POINT_UPDATED", now, List.copyOf(affectedRegions),
+                current.maintainerSubjectId(), null);
+    }
+
     @Transactional
     public FormalSampleMaintainerView assignMaintainer(
             UUID id, long expectedVersion, String submittedMaintainerSubjectId,
@@ -256,9 +297,12 @@ public class FormalSamplePointService {
     private void requireValidReferences(FormalSamplePointDraft draft) {
         if (!repository.isSupportedObjectType(draft.objectTypeCode())) throw invalid();
         requireValidMaintainer(draft.maintainerSubjectId(), draft.regionCode());
+        requireCoordinateBoundary(draft.regionCode(), draft.longitude(), draft.latitude());
+    }
+
+    private void requireCoordinateBoundary(String regionCode, BigDecimal longitude, BigDecimal latitude) {
         FormalSamplePointRepository.BoundaryContainment containment = repository
-                .coordinateBoundaryState(
-                        draft.regionCode(), draft.longitude(), draft.latitude())
+                .coordinateBoundaryState(regionCode, longitude, latitude)
                 .orElseThrow(FormalSamplePointService::invalid);
         switch (containment) {
             case UNAVAILABLE -> throw new ServiceUnavailableException(
