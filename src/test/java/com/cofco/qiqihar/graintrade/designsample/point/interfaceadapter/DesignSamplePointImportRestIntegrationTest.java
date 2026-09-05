@@ -52,7 +52,7 @@ class DesignSamplePointImportRestIntegrationTest {
                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")))
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header()
                         .string("Content-Disposition", org.hamcrest.Matchers.containsString(
-                                "%E4%BA%A7%E6%83%85%E7%B1%BB%E8%AE%BE%E8%AE%A1%E5%8F%82%E8%80%83%E7%82%B9")));
+                                "%E8%AE%BE%E8%AE%A1%E6%A0%B7%E6%9C%AC%E7%82%B9")));
 
         mvc.perform(get("/api/v1/design-sample-points/import-template")
                         .queryParam("domain", "MARKET")
@@ -60,7 +60,7 @@ class DesignSamplePointImportRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.header()
                         .string("Content-Disposition", org.hamcrest.Matchers.containsString(
-                                "%E5%B8%82%E5%9C%BA%E7%B1%BB%E8%AE%BE%E8%AE%A1%E5%8F%82%E8%80%83%E7%82%B9")));
+                                "%E8%AE%BE%E8%AE%A1%E6%A0%B7%E6%9C%AC%E7%82%B9")));
 
         assertThat(imports.templateDefinition().columns())
                 .extracting(SamplePointMasterWorkbook.Column::code)
@@ -69,13 +69,13 @@ class DesignSamplePointImportRestIntegrationTest {
                         "DSP_NAME", "DSP_REGION_CODE", "DSP_ADDRESS",
                         "DSP_LONGITUDE", "DSP_LATITUDE");
         assertThat(imports.templateDefinition("PRODUCTION").columns().get(0).options())
-                .containsExactly("产情");
+                .containsExactly("产情", "市场");
         assertThat(imports.templateDefinition("PRODUCTION").columns().get(1).options())
                 .contains("玉米", "大豆", "稻谷");
         assertThat(imports.templateDefinition("PRODUCTION").columns().get(2).options())
                 .contains("农户", "村委会", "农技站");
         assertThat(imports.templateDefinition("MARKET").columns().get(0).options())
-                .containsExactly("市场");
+                .containsExactly("产情", "市场");
         assertThat(imports.templateDefinition("MARKET").columns().get(2).options())
                 .contains("贸易商", "深加工", "养殖厂", "饲料厂", "农资店");
     }
@@ -168,6 +168,29 @@ class DesignSamplePointImportRestIntegrationTest {
 
         assertThat(jdbc.sql("SELECT count(*) FROM platform.design_sample_point")
                 .query(Long.class).single()).isZero();
+    }
+
+
+    @Test
+    void importsMixedDomainsEvenWithLegacyRequestParameterAndReplaysWithoutDuplicates() throws Exception {
+        var market = new java.util.LinkedHashMap<>(designRow("混合市场点", "123.96"));
+        market.put("DOMAIN_CODE", "市场");
+        market.put("OBJECT_TYPE_CODE", "贸易商");
+        byte[] workbook = SamplePointMasterWorkbook.create(imports.templateDefinition(),
+                List.of(designRow("混合产情点", "123.95"), market));
+        for (int attempt = 0; attempt < 2; attempt++) {
+            mvc.perform(multipart("/api/v1/design-sample-points/imports")
+                            .file(new MockMultipartFile("file", "mixed.xlsx",
+                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
+                            .queryParam("domain", "PRODUCTION")
+                            .header("Idempotency-Key", "mixed-design-import")
+                            .principal(() -> "production-tester"))
+                    .andExpect(status().is(attempt == 0 ? 201 : 200))
+                    .andExpect(jsonPath("$.data.importedRows").value(2))
+                    .andExpect(jsonPath("$.data.failedRows").value(0));
+        }
+        assertThat(jdbc.sql("SELECT domain_code FROM platform.design_sample_point ORDER BY domain_code")
+                .query(String.class).list()).containsExactly("MARKET", "PRODUCTION");
     }
 
     private static Map<String, String> designRow(String name, String longitude) {

@@ -76,17 +76,17 @@ public class DesignSamplePointImportService {
     }
 
     public SamplePointMasterWorkbook.Template templateDefinition() {
-        return templateDefinition("PRODUCTION");
+        return templateDefinition(null);
     }
 
     public SamplePointMasterWorkbook.Template templateDefinition(String requestedDomain) {
         DesignSampleContractSnapshot contract = metadata.activeContract();
-        String domain = resolveDomain(contract, requestedDomain);
+        if (requestedDomain != null) resolveDomain(contract, requestedDomain);
         List<SamplePointMasterWorkbook.Column> contextColumns = CONTEXT_FIELDS.stream()
                 .map(contract.fieldsByCode()::get)
                 .map(field -> new SamplePointMasterWorkbook.Column(
                         field.code(), publicLabel(field), true,
-                        contextOptions(contract, domain, field.code())))
+                        contextOptions(contract, field.code())))
                 .toList();
         List<SamplePointMasterWorkbook.Column> planningColumns = PLANNING_FIELDS.stream()
                 .map(contract.fieldsByCode()::get)
@@ -98,7 +98,7 @@ public class DesignSamplePointImportService {
         return new SamplePointMasterWorkbook.Template(
                 SamplePointMasterWorkbook.Kind.DESIGN,
                 contract.contractVersion(), contract.contractDigest(), columns,
-                domain.equals("PRODUCTION") ? "产情类设计参考点" : "市场类设计参考点");
+                "设计样本点");
     }
 
     @Transactional
@@ -107,8 +107,7 @@ public class DesignSamplePointImportService {
         requireUpload(idempotencyKey, filename, mediaType, bytes);
         SecurityPrincipal principal = access.require("BUSINESS_UPDATE", null);
         DesignSampleContractSnapshot contract = metadata.activeContract();
-        String domain = resolveDomain(contract, requestedDomain);
-        SamplePointMasterWorkbook.Template template = templateDefinition(domain);
+        SamplePointMasterWorkbook.Template template = templateDefinition(requestedDomain);
         List<SamplePointMasterWorkbook.Row> submitted;
         try {
             submitted = SamplePointMasterWorkbook.parse(bytes, template, limits.synchronousRows());
@@ -128,14 +127,10 @@ public class DesignSamplePointImportService {
         for (SamplePointMasterWorkbook.Row submittedRow : submitted) {
             try {
                 String rowDomain = resolveDomain(contract, submittedRow.values().get("DOMAIN_CODE"));
-                if (!domain.equals(rowDomain)) {
-                    throw new ClientRequestException(
-                            "DESIGN_SAMPLE_DOMAIN_MISMATCH", "业务分类与所用模板不一致");
-                }
                 String product = resolveProduct(contract, submittedRow.values().get("PRODUCT_CODE"));
                 String objectType = resolveObjectType(
-                        contract, domain, submittedRow.values().get("OBJECT_TYPE_CODE"));
-                DesignSampleContext context = new DesignSampleContext(domain, product, objectType);
+                        contract, rowDomain, submittedRow.values().get("OBJECT_TYPE_CODE"));
+                DesignSampleContext context = new DesignSampleContext(rowDomain, product, objectType);
                 Map<String, JsonNode> values = new LinkedHashMap<>();
                 template.columns().stream().filter(column -> PLANNING_FIELDS.contains(column.code())).forEach(column -> {
                     String value = submittedRow.values().get(column.code());
@@ -173,10 +168,7 @@ public class DesignSamplePointImportService {
                         "IMPORT_JOB_NOT_FOUND", "导入记录不存在"))
                 .job();
         requireOwner(job, principal);
-        String domain = job.rows().stream().map(row -> row.values().get("DOMAIN_CODE"))
-                .filter(value -> value != null && !value.isBlank()).findFirst()
-                .map(value -> resolveDomain(metadata.activeContract(), value)).orElse("PRODUCTION");
-        return errorFile(job, templateDefinition(domain), "design-sample-point-import-errors-");
+        return errorFile(job, templateDefinition(), "design-sample-point-import-errors-");
     }
 
     private static String resolveDomain(DesignSampleContractSnapshot contract, String value) {
@@ -309,12 +301,17 @@ public class DesignSamplePointImportService {
     }
 
     private static List<String> contextOptions(
-            DesignSampleContractSnapshot contract, String domain, String fieldCode) {
+            DesignSampleContractSnapshot contract, String fieldCode) {
         if (fieldCode.equals("DOMAIN_CODE")) {
-            return List.of(domain.equals("PRODUCTION") ? "产情" : "市场");
+            return contract.domains().stream()
+                    .filter(item -> Set.of("PRODUCTION", "MARKET").contains(item.code()))
+                    .filter(item -> contract.supportedContexts().stream()
+                            .anyMatch(context -> context.domainCode().equals(item.code())))
+                    .map(item -> item.code().equals("PRODUCTION") ? "产情" : "市场")
+                    .toList();
         }
         Set<String> supportedCodes = contract.supportedContexts().stream()
-                .filter(context -> context.domainCode().equals(domain))
+                .filter(context -> Set.of("PRODUCTION", "MARKET").contains(context.domainCode()))
                 .map(context -> fieldCode.equals("PRODUCT_CODE")
                         ? context.productCode() : context.objectTypeCode())
                 .collect(java.util.stream.Collectors.toCollection(java.util.LinkedHashSet::new));
@@ -325,7 +322,7 @@ public class DesignSamplePointImportService {
                     .toList();
         }
         return contract.objectTypes().stream()
-                .filter(item -> item.domainCode().equals(domain))
+                .filter(item -> Set.of("PRODUCTION", "MARKET").contains(item.domainCode()))
                 .filter(item -> supportedCodes.contains(item.code()))
                 .map(item -> BusinessImportWorkbook.businessLabel(item.code()))
                 .toList();

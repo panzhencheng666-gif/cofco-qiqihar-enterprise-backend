@@ -79,7 +79,10 @@ public final class SamplePointMasterWorkbook {
         return BusinessImportWorkbook.create(workbook, values,
                 new BusinessImportWorkbook.WorkbookOptions(
                         template.sheetLabel() + "批量新增", null, null, java.util.Set.of(),
-                        List.of(List.of("处理规则", "一次自动校验；任一行错误则本次零条入库"))));
+                        template.kind() == Kind.DESIGN
+                                ? List.of(List.of("处理规则", "一次自动校验；任一行错误则本次零条入库"),
+                                        List.of("混合填写", "每行选择业务分类、品种和适用参考对象类型，产情与市场可在同一文件填写；组合不适用时按行提示错误"))
+                                : List.of(List.of("处理规则", "一次自动校验；任一行错误则本次零条入库"))));
     }
 
     public static List<Row> parse(byte[] bytes, Template expected, int maximumRows) {
