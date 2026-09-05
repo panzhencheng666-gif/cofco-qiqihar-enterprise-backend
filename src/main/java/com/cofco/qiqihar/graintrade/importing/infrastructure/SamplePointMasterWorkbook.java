@@ -36,7 +36,10 @@ public final class SamplePointMasterWorkbook {
         }
     }
 
-    public record Template(Kind kind, String version, String digest, List<Column> columns, String sheetLabel) {
+    public record Template(Kind kind, String version, String digest, List<Column> columns, String sheetLabel, Map<String, List<String>> contextLists) {
+        public Template(Kind kind, String version, String digest, List<Column> columns, String sheetLabel) {
+            this(kind, version, digest, columns, sheetLabel, Map.of());
+        }
         public Template(Kind kind, String version, String digest, List<Column> columns) {
             this(kind, version, digest, columns, kind == null ? null : kind.label);
         }
@@ -47,6 +50,7 @@ public final class SamplePointMasterWorkbook {
                     || columns == null || columns.isEmpty()) {
                 throw new IllegalArgumentException("INVALID_SAMPLE_POINT_IMPORT_TEMPLATE");
             }
+            contextLists = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(contextLists));
             version = version.trim();
             digest = digest.trim();
             columns = List.copyOf(columns);
@@ -79,7 +83,14 @@ public final class SamplePointMasterWorkbook {
         return BusinessImportWorkbook.create(workbook, values,
                 new BusinessImportWorkbook.WorkbookOptions(
                         template.sheetLabel() + "批量新增", null, null, java.util.Set.of(),
-                        List.of(List.of("处理规则", "一次自动校验；任一行错误则本次零条入库"))));
+                        template.kind() == Kind.DESIGN
+                                ? List.of(List.of("处理规则", "一次自动校验；任一行错误则本次零条入库"),
+                                        List.of("混合填写", "每行选择业务分类、品种和适用参考对象类型，产情与市场可在同一文件填写；组合不适用时按行提示错误"))
+                                : List.of(List.of("处理规则", "一次自动校验；任一行错误则本次零条入库")),
+                        template.contextLists().isEmpty() ? Map.of() : Map.of(
+                                "PRODUCT_CODE", "INDIRECT($A2&\"品种\")",
+                                "OBJECT_TYPE_CODE", "INDIRECT($A2&$B2&\"对象类型\")"),
+                        template.contextLists()));
     }
 
     public static List<Row> parse(byte[] bytes, Template expected, int maximumRows) {

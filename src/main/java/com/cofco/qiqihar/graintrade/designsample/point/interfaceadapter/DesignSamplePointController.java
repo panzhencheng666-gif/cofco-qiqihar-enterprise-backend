@@ -52,15 +52,14 @@ public class DesignSamplePointController {
 
     @GetMapping("/import-template")
     ResponseEntity<byte[]> importTemplate(
-            @RequestParam(defaultValue = "PRODUCTION") String domain) {
-        String label = designDomainLabel(domain);
-        return xlsx(label + "批量新增模板.xlsx", imports.template(domain));
+            @RequestParam(required = false) String domain) {
+        return xlsx("设计样本点批量新增模板.xlsx", imports.template(domain));
     }
 
     @PostMapping("/imports")
     ResponseEntity<ApiResponse<SamplePointImportResult>> importFile(
             @RequestHeader("Idempotency-Key") String idempotencyKey,
-            @RequestParam(defaultValue = "PRODUCTION") String domain,
+            @RequestParam(required = false) String domain,
             @RequestParam("file") MultipartFile file) throws java.io.IOException {
         SamplePointImportResult result = imports.importFile(
                 domain,
@@ -70,12 +69,6 @@ public class DesignSamplePointController {
                 file == null ? null : file.getBytes());
         return ResponseEntity.status(result.replayed() ? HttpStatus.OK : HttpStatus.CREATED)
                 .body(new ApiResponse<>(result));
-    }
-
-    private static String designDomainLabel(String domain) {
-        if (domain != null && domain.strip().equalsIgnoreCase("PRODUCTION")) return "产情类设计参考点";
-        if (domain != null && domain.strip().equalsIgnoreCase("MARKET")) return "市场类设计参考点";
-        throw new ClientRequestException("INVALID_DESIGN_SAMPLE_DOMAIN", "业务分类应填写产情或市场");
     }
 
     @GetMapping("/imports/{importId}/errors")
