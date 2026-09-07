@@ -93,6 +93,32 @@ class BusinessImportWorkbookTest {
     }
 
     @Test
+    void ignoresStyleOnlyCellsOutsideTheTemplateButStillRejectsContentAndFormulas() {
+        var template = new BusinessImportWorkbook.Template(
+                "PRODUCTION", "产情", "SOYBEAN", null,
+                List.of("样本点类型"), List.of("样本点类型"));
+        byte[] original = BusinessImportWorkbook.create(template, List.of(List.of("农户")));
+        byte[] formatted = replaceZipEntry(original, "xl/worksheets/sheet1.xml",
+                xml -> xml.replace("</row></sheetData>",
+                        "<c r=\"I2\" s=\"5\"/><c r=\"J2\" s=\"3\"/></row></sheetData>"));
+        assertThat(BusinessImportWorkbook.readDraft(formatted, template, 5_000).rows())
+                .containsExactly(List.of("农户"));
+        for (String cell : List.of(
+                "<c r=\"I2\"><v>0</v></c>",
+                "<c r=\"I2\" t=\"inlineStr\"><is><t>多余内容</t></is></c>")) {
+            byte[] invalid = replaceZipEntry(original, "xl/worksheets/sheet1.xml",
+                    xml -> xml.replace("</row></sheetData>", cell + "</row></sheetData>"));
+            assertThatThrownBy(() -> BusinessImportWorkbook.readDraft(invalid, template, 5_000))
+                    .hasMessage("XLSX_EXTRA_COLUMN:9");
+        }
+        byte[] formula = replaceZipEntry(original, "xl/worksheets/sheet1.xml",
+                xml -> xml.replace("</row></sheetData>",
+                        "<c r=\"I2\"><f>1+1</f><v>2</v></c></row></sheetData>"));
+        assertThatThrownBy(() -> BusinessImportWorkbook.readDraft(formula, template, 5_000))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void identifiesTheFirstColumnOutsideTheGovernedTemplate() {
         BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
                 "PRODUCTION", "产情", "SOYBEAN", null,

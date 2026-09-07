@@ -5,11 +5,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
+import java.sql.SQLException;
 import java.util.UUID;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 @SpringBootTest(classes = GrainTradeApplication.class)
@@ -34,8 +36,12 @@ class DesignSamplePointMigrationIntegrationTest {
                          "DSP_LONGITUDE":130,"DSP_LATITUDE":50,
                          "OBSERVED_ON":"2026-06-01","PROD_AREA_MU":1}
                         """).update())
-                .hasMessageContaining("outside selected administrative region")
-                .hasMessageContaining("230202");
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("coordinate outside")
+                .hasMessageContaining("230202")
+                .rootCause()
+                .isInstanceOfSatisfying(SQLException.class,
+                        error -> assertThat(error.getSQLState()).isEqualTo("23514"));
     }
 
     @Test

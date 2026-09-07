@@ -85,7 +85,7 @@ public class LogisticsImportService implements QueuedImportProcessor {
         } catch (ClientRequestException exception) {
             throw exception;
         } catch (IllegalArgumentException exception) {
-            throw invalidFormat();
+            throw ImportWorkbookErrors.invalid(exception, "INVALID_IMPORT_FORMAT");
         }
     }
 
@@ -151,7 +151,7 @@ public class LogisticsImportService implements QueuedImportProcessor {
             parsed = parse(source.bytes(), source.productCode() == null ? null
                     : new ImportMenuContext(source.productCode(), LogisticsImportTemplate.OBJECT_TYPE));
         } catch (IllegalArgumentException exception) {
-            throw invalidFormat();
+            throw ImportWorkbookErrors.invalid(exception, "INVALID_IMPORT_FORMAT");
         }
         String key = "retry-" + UUID.randomUUID();
         var reservation = jobs.reserve(principal.subjectId(), LogisticsImportTemplate.DOMAIN, key,

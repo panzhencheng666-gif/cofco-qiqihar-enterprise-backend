@@ -31,6 +31,8 @@ class DesignSamplePointImportRestIntegrationTest {
     @Autowired MockMvc mvc;
     @Autowired DesignSamplePointImportService imports;
     @Autowired DataSource dataSource;
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean
+    com.cofco.qiqihar.graintrade.designsample.metadata.application.DesignSampleMetadataCatalog catalog;
     private JdbcClient jdbc;
 
     @BeforeEach
@@ -81,6 +83,22 @@ class DesignSamplePointImportRestIntegrationTest {
     }
 
     @Test
+    void loadsTheFieldContractPerBatchInsteadOfForEveryImportedRow() throws Exception {
+        byte[] workbook = SamplePointMasterWorkbook.create(imports.templateDefinition(), List.of(
+                designRow("批次点一", "123.95"), designRow("批次点二", "123.951"),
+                designRow("批次点三", "123.952")));
+        org.mockito.Mockito.clearInvocations(catalog);
+        mvc.perform(multipart("/api/v1/design-sample-points/imports")
+                        .file(new MockMultipartFile("file", "batch.xlsx",
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
+                        .header("Idempotency-Key", "design-import-contract-batch")
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.importedRows").value(3));
+        org.mockito.Mockito.verify(catalog, org.mockito.Mockito.atMost(3)).loadActiveContract();
+    }
+
+    @Test
     void workbookChoicesDependOnEachRowsDomainAndProduct() throws Exception {
         byte[] bytes = SamplePointMasterWorkbook.create(imports.templateDefinition());
         assertThat(zipEntry(bytes, "xl/worksheets/sheet1.xml"))
@@ -103,8 +121,11 @@ class DesignSamplePointImportRestIntegrationTest {
 
     @Test
     void validatesTheWholeWorkbookThenWritesEveryDesignPointAtomically() throws Exception {
+        var namedRegion = new java.util.LinkedHashMap<>(designRow("批量设计点一", "123.95"));
+        namedRegion.put("DSP_REGION_CODE", "龙沙");
         byte[] workbook = SamplePointMasterWorkbook.create(
-                imports.templateDefinition(), List.of(designRow("批量设计点一", "123.95")));
+                imports.templateDefinition(), List.of(namedRegion));
+        workbook = withStyledOverflowCells(workbook);
 
         mvc.perform(multipart("/api/v1/design-sample-points/imports")
                         .file(new MockMultipartFile(
@@ -241,6 +262,26 @@ class DesignSamplePointImportRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("INVALID_DESIGN_SAMPLE_DOMAIN")));
         assertThat(jdbc.sql("SELECT count(*) FROM platform.design_sample_point").query(Long.class).single()).isZero();
+    }
+
+    private static byte[] withStyledOverflowCells(byte[] workbook) throws Exception {
+        var output = new java.io.ByteArrayOutputStream();
+        try (var input = new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(workbook));
+                var zip = new java.util.zip.ZipOutputStream(output)) {
+            for (var entry = input.getNextEntry(); entry != null; entry = input.getNextEntry()) {
+                byte[] content = input.readAllBytes();
+                if (entry.getName().equals("xl/worksheets/sheet1.xml")) {
+                    content = new String(content, java.nio.charset.StandardCharsets.UTF_8)
+                            .replace("</row></sheetData>",
+                                    "<c r=\"I2\" s=\"5\"/><c r=\"J2\" s=\"3\"/></row></sheetData>")
+                            .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+                }
+                zip.putNextEntry(new java.util.zip.ZipEntry(entry.getName()));
+                zip.write(content);
+                zip.closeEntry();
+            }
+        }
+        return output.toByteArray();
     }
 
     private static Map<String, String> designRow(String name, String longitude) {

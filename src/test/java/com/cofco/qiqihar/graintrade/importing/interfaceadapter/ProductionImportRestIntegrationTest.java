@@ -360,7 +360,7 @@ class ProductionImportRestIntegrationTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("INVALID_IMPORT_FORMAT"))
                 .andExpect(jsonPath("$.error.message")
-                        .value("文件多出第 39 列，请删除模板之外的列后重试。"));
+                        .value("文件第 39 列超出模板范围且包含内容，请移除该列内容后重试。"));
 
         assertThat(jdbc.sql("SELECT count(*) FROM platform.import_job")
                 .query(Long.class).single()).isZero();

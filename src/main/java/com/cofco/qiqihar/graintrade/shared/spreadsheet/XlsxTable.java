@@ -146,10 +146,12 @@ public final class XlsxTable {
                 Element cell = (Element) cells.item(cellIndex);
                 int column = column(cell.getAttribute("r"));
                 if (column < 0) throw invalid();
+                String value = cellValue(cell, sharedStrings);
                 if (column >= expectedColumns) {
+                    // Spreadsheet editors retain empty styled cells beyond the template.
+                    if (value.isEmpty()) continue;
                     throw new IllegalArgumentException("XLSX_EXTRA_COLUMN:" + (column + 1));
                 }
-                String value = cellValue(cell, sharedStrings);
                 if (value.codePointCount(0, value.length()) > MAX_CELL_CODE_POINTS) throw invalid();
                 values.set(column, value);
             }

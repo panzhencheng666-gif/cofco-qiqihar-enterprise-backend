@@ -11,6 +11,20 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class RegionImportResolverTest {
+    @Test
+    void batchResolverLoadsOneDirectoryAndKeepsNameAndCodeResolution() {
+        var loads = new java.util.concurrent.atomic.AtomicInteger();
+        var batch = new RegionImportResolver(() -> {
+            loads.incrementAndGet();
+            return directory().regions();
+        }).forBatch();
+        assertThat(batch.apply("讷河")).isEqualTo("230281");
+        assertThat(batch.apply("230281")).isEqualTo("230281");
+        assertThat(batch.apply("讷河")).isEqualTo("230281");
+        assertThatThrownBy(() -> batch.apply("未配置的地区"))
+                .isInstanceOf(ClientRequestException.class);
+        assertThat(loads.get()).isEqualTo(1);
+    }
 
     private final RegionImportResolver resolver = new RegionImportResolver(directory());
 
