@@ -121,7 +121,7 @@ public class MarketImportService implements QueuedImportProcessor {
         } catch (ClientRequestException exception) {
             throw exception;
         } catch (IllegalArgumentException exception) {
-            throw new ClientRequestException("INVALID_IMPORT_FORMAT", "XLSX 模板或填写内容无效");
+            throw ImportWorkbookErrors.invalid(exception, "INVALID_IMPORT_FORMAT");
         }
     }
 

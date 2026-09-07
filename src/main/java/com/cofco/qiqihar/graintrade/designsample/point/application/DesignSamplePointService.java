@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.designsample.point.application;
 
 import com.cofco.qiqihar.graintrade.designsample.metadata.application.DesignSampleMetadataService;
+import com.cofco.qiqihar.graintrade.designsample.metadata.application.DesignSampleContractSnapshot;
 import com.cofco.qiqihar.graintrade.designsample.metadata.application.ValidatedDesignSampleValues;
 import com.cofco.qiqihar.graintrade.designsample.metadata.domain.DesignSampleContext;
 import com.cofco.qiqihar.graintrade.shared.application.BoundedInput;
@@ -100,8 +101,14 @@ public class DesignSamplePointService {
     @Transactional
     public DesignSamplePointRepository.CreateResult create(
             String idempotencyKey, DesignSamplePointDraft submitted) {
+        return create(idempotencyKey, submitted, metadata.activeContract());
+    }
+
+    @Transactional
+    DesignSamplePointRepository.CreateResult create(
+            String idempotencyKey, DesignSamplePointDraft submitted, DesignSampleContractSnapshot contract) {
         String key = requiredText(idempotencyKey, 200, "INVALID_IDEMPOTENCY_KEY");
-        ValidatedDraft validated = validateForCreate(submitted);
+        ValidatedDraft validated = validateForCreate(submitted, contract);
         SecurityPrincipal actor = access.require("BUSINESS_UPDATE", validated.regionCode());
         Instant now = clock.instant();
         try {
@@ -171,6 +178,10 @@ public class DesignSamplePointService {
     }
 
     ValidatedDraft validateForCreate(DesignSamplePointDraft submitted) {
+        return validateForCreate(submitted, metadata.activeContract());
+    }
+
+    ValidatedDraft validateForCreate(DesignSamplePointDraft submitted, DesignSampleContractSnapshot contract) {
         if (submitted == null || blank(submitted.contractVersion())
                 || blank(submitted.contractDigest()) || submitted.context() == null
                 || submitted.values() == null) {
@@ -201,7 +212,7 @@ public class DesignSamplePointService {
                 submitted.contractVersion().trim(), submitted.contractDigest().trim(),
                 context, values);
         ValidatedDesignSampleValues validated = metadata.validateForPersistence(
-                submittedDraft.contractVersion(), submittedDraft.contractDigest(), context, values);
+                contract, submittedDraft.contractVersion(), submittedDraft.contractDigest(), context, values);
         Map<String, JsonNode> normalizedValues = validated.values();
         DesignSamplePointDraft draft = new DesignSamplePointDraft(
                 validated.contractVersion(), validated.contractDigest(), context, normalizedValues);

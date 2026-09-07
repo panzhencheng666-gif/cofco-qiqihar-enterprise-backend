@@ -136,13 +136,7 @@ public class ProductionImportService implements QueuedImportProcessor {
         } catch (ClientRequestException exception) {
             throw exception;
         } catch (IllegalArgumentException exception) {
-            String reason = exception.getMessage();
-            if (reason != null && reason.startsWith("XLSX_EXTRA_COLUMN:")) {
-                String column = reason.substring("XLSX_EXTRA_COLUMN:".length());
-                throw new ClientRequestException("INVALID_IMPORT_FORMAT",
-                        "文件多出第 " + column + " 列，请删除模板之外的列后重试。");
-            }
-            throw new ClientRequestException("INVALID_IMPORT_FORMAT", "XLSX 模板或填写内容无效");
+            throw ImportWorkbookErrors.invalid(exception, "INVALID_IMPORT_FORMAT");
         }
     }
 

@@ -60,6 +60,16 @@ public class DesignSampleMetadataService {
             DesignSampleContext context,
             Map<String, JsonNode> values) {
         DesignSampleContractSnapshot snapshot = catalog.loadActiveContract();
+        return validateForPersistence(snapshot, contractVersion, contractDigest, context, values);
+    }
+
+    /** Uses the verified snapshot held by one atomic import, without a cross-request cache. */
+    public ValidatedDesignSampleValues validateForPersistence(
+            DesignSampleContractSnapshot snapshot,
+            String contractVersion,
+            String contractDigest,
+            DesignSampleContext context,
+            Map<String, JsonNode> values) {
         List<DesignSampleFieldDefinition> applicable = fields(snapshot, context);
         if (!snapshot.contractVersion().equals(contractVersion)
                 || !snapshot.contractDigest().equals(contractDigest)) {

@@ -13,7 +13,7 @@ import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 
 @Service
-final class RegionImportResolver {
+public final class RegionImportResolver {
     private static final List<String> ADMINISTRATIVE_SUFFIXES = List.of(
             "特别行政区", "自治区", "自治州", "自治县", "自治旗", "林区", "特区",
             "地区", "盟", "州", "市", "区", "县", "旗");
@@ -29,8 +29,18 @@ final class RegionImportResolver {
     }
 
     String resolve(String input) {
+        return resolve(input, regions.regions());
+    }
+
+    /** One authoritative directory snapshot per workbook; no persistent alias cache. */
+    public Function<String, String> forBatch() {
+        List<RegionEntry> entries = List.copyOf(regions.regions());
+        Map<String, String> resolved = new java.util.HashMap<>();
+        return input -> resolved.computeIfAbsent(input, value -> resolve(value, entries));
+    }
+
+    private String resolve(String input, List<RegionEntry> entries) {
         String value = input == null ? "" : input.trim();
-        List<RegionEntry> entries = regions.regions();
         Map<String, RegionEntry> byCode = entries.stream()
                 .collect(Collectors.toMap(RegionEntry::code, Function.identity()));
         if (byCode.containsKey(value)) return value;

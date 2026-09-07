@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.formalsamplepoint.application;
 
 import com.cofco.qiqihar.graintrade.importing.application.BusinessImportLimits;
+import com.cofco.qiqihar.graintrade.importing.application.ImportWorkbookErrors;
 import com.cofco.qiqihar.graintrade.importing.application.ImportErrorFile;
 import com.cofco.qiqihar.graintrade.importing.application.ImportJobRepository;
 import com.cofco.qiqihar.graintrade.importing.domain.CsvTable;
@@ -86,8 +87,7 @@ public class FormalSamplePointImportService {
         try {
             submitted = SamplePointMasterWorkbook.parse(bytes, TEMPLATE, limits.synchronousRows());
         } catch (IllegalArgumentException exception) {
-            throw new ClientRequestException(
-                    exception.getMessage(), "XLSX 模板或填写内容无效");
+            throw ImportWorkbookErrors.invalid(exception, exception.getMessage());
         }
         String digest = digest(bytes);
         var reservation = jobs.reserve(

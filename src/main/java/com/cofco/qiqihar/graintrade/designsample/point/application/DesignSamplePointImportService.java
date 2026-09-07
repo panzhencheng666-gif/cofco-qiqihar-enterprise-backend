@@ -5,6 +5,8 @@ import com.cofco.qiqihar.graintrade.designsample.metadata.application.DesignSamp
 import com.cofco.qiqihar.graintrade.designsample.metadata.domain.DesignSampleFieldDefinition;
 import com.cofco.qiqihar.graintrade.designsample.metadata.domain.DesignSampleContext;
 import com.cofco.qiqihar.graintrade.importing.application.BusinessImportLimits;
+import com.cofco.qiqihar.graintrade.importing.application.ImportWorkbookErrors;
+import com.cofco.qiqihar.graintrade.importing.application.RegionImportResolver;
 import com.cofco.qiqihar.graintrade.importing.application.ImportErrorFile;
 import com.cofco.qiqihar.graintrade.importing.application.ImportJobRepository;
 import com.cofco.qiqihar.graintrade.importing.domain.CsvTable;
@@ -52,6 +54,7 @@ public class DesignSamplePointImportService {
     private final BusinessImportLimits limits;
     private final BusinessAuditRecorder audit;
     private final Clock clock;
+    private final RegionImportResolver regions;
 
     public DesignSamplePointImportService(
             DesignSampleMetadataService metadata,
@@ -60,7 +63,8 @@ public class DesignSamplePointImportService {
             ImportJobRepository jobs,
             BusinessImportLimits limits,
             BusinessAuditRecorder audit,
-            Clock clock) {
+            Clock clock,
+            RegionImportResolver regions) {
         this.metadata = metadata;
         this.access = access;
         this.points = points;
@@ -68,6 +72,7 @@ public class DesignSamplePointImportService {
         this.limits = limits;
         this.audit = audit;
         this.clock = clock;
+        this.regions = regions;
     }
 
     public byte[] template(String domainCode) {
@@ -112,14 +117,14 @@ public class DesignSamplePointImportService {
         try {
             submitted = SamplePointMasterWorkbook.parse(bytes, template, limits.synchronousRows());
         } catch (IllegalArgumentException exception) {
-            throw new ClientRequestException(
-                    exception.getMessage(), "XLSX 模板或填写内容无效");
+            throw ImportWorkbookErrors.invalid(exception, exception.getMessage());
         }
         String digest = digest(bytes);
         var reservation = jobs.reserve(
                 principal.subjectId(), "DESIGN_SAMPLE_POINT", idempotencyKey, digest,
                 principal.workUnitCode(), clock.instant());
         if (!reservation.owner()) return result(reservation.stored().job(), true);
+        var resolveRegion = regions.forBatch();
 
         List<Row> rows = new ArrayList<>();
         Set<String> names = new HashSet<>();
@@ -135,14 +140,15 @@ public class DesignSamplePointImportService {
                 template.columns().stream().filter(column -> PLANNING_FIELDS.contains(column.code())).forEach(column -> {
                     String value = submittedRow.values().get(column.code());
                     if (value != null && !value.isBlank()) {
-                        values.put(column.code(), metadataNode(value));
+                        values.put(column.code(), metadataNode(column.code().equals("DSP_REGION_CODE")
+                                ? resolveRegion.apply(value) : value));
                     }
                 });
                 values.put("DSP_MAINTAINER_NAME", metadataNode(principal.displayName()));
                 values.put("DSP_MAINTAINER_UNIT", metadataNode(principal.workUnitName()));
                 DesignSamplePointDraft draft = new DesignSamplePointDraft(
                         contract.contractVersion(), contract.contractDigest(), context, values);
-                DesignSamplePointService.ValidatedDraft validated = points.validateForCreate(draft);
+                DesignSamplePointService.ValidatedDraft validated = points.validateForCreate(draft, contract);
                 access.require("BUSINESS_UPDATE", validated.regionCode());
                 if (!names.add(validated.regionCode() + "\u0000" + validated.sampleName())
                         || !coordinates.add(validated.longitude().toPlainString() + "\u0000"
@@ -156,7 +162,12 @@ public class DesignSamplePointImportService {
                         locatedError(template, submittedRow, exception)));
             }
         }
-        return complete(reservation.stored().job(), idempotencyKey, digest, principal, rows);
+        DesignSampleContractSnapshot current = metadata.activeContract();
+        if (!contract.contractVersion().equals(current.contractVersion())
+                || !contract.contractDigest().equals(current.contractDigest())) {
+            throw new ClientRequestException("CONTRACT_MISMATCH", "导入期间字段规则已更新，请下载最新模板后重试");
+        }
+        return complete(reservation.stored().job(), idempotencyKey, digest, principal, rows, contract);
     }
 
     @Transactional
@@ -223,11 +234,12 @@ public class DesignSamplePointImportService {
             case "INVALID_DESIGN_SAMPLE_DOMAIN", "DESIGN_SAMPLE_DOMAIN_MISMATCH" -> "业务分类";
             case "INVALID_DESIGN_SAMPLE_PRODUCT" -> "品种";
             case "INVALID_DESIGN_SAMPLE_OBJECT_TYPE", "INVALID_DESIGN_SAMPLE_CONTEXT" -> "参考对象类型";
+            case "IMPORT_REGION_NOT_FOUND" -> "所属地区";
             case "COORDINATE_OUTSIDE_REGION", "ADMIN_BOUNDARY_UNAVAILABLE" -> "经纬度";
-            default -> "点位名称";
+            default -> null;
         };
         return "工作表“" + template.sheetLabel() + "”第" + row.rowNumber()
-                + "行“" + column + "”列：" + errorMessage(exception);
+                + "行" + (column == null ? "" : "“" + column + "”列") + "：" + errorMessage(exception);
     }
 
     private static String firstInvalidColumn(SamplePointMasterWorkbook.Row row) {
@@ -243,12 +255,14 @@ public class DesignSamplePointImportService {
             if (row.values().getOrDefault(field.getKey(), "").isBlank()) return field.getValue();
         }
         try {
-            new java.math.BigDecimal(row.values().get("DSP_LONGITUDE"));
+            if (new java.math.BigDecimal(row.values().get("DSP_LONGITUDE")).abs()
+                    .compareTo(java.math.BigDecimal.valueOf(180)) > 0) return "经度";
         } catch (RuntimeException invalid) {
             return "经度";
         }
         try {
-            new java.math.BigDecimal(row.values().get("DSP_LATITUDE"));
+            if (new java.math.BigDecimal(row.values().get("DSP_LATITUDE")).abs()
+                    .compareTo(java.math.BigDecimal.valueOf(90)) > 0) return "纬度";
         } catch (RuntimeException invalid) {
             return "纬度";
         }
@@ -260,7 +274,8 @@ public class DesignSamplePointImportService {
             String key,
             String digest,
             SecurityPrincipal principal,
-            List<Row> rows) {
+            List<Row> rows,
+            DesignSampleContractSnapshot contract) {
         boolean failed = rows.stream().anyMatch(row -> row.errorCode != null);
         List<ImportRowOutcome> outcomes = new ArrayList<>();
         if (failed) {
@@ -274,7 +289,7 @@ public class DesignSamplePointImportService {
         } else {
             rows.forEach(row -> {
                 var created = points.create(
-                        "sample-import-" + reserved.id() + "-" + row.source.rowNumber(), row.draft);
+                        "sample-import-" + reserved.id() + "-" + row.source.rowNumber(), row.draft, contract);
                 outcomes.add(ImportRowOutcome.imported(
                         row.source.rowNumber(), created.point().id().toString(), row.source.values()));
             });
