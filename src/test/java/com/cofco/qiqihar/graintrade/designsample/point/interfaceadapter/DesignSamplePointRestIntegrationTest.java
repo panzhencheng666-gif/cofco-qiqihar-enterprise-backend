@@ -330,6 +330,42 @@ class DesignSamplePointRestIntegrationTest {
     }
 
     @Test
+    @Transactional
+    void validatesAgainstTheDisplayedBoundaryAndPreservesTheOriginalCoordinate() throws Exception {
+        jdbc.sql("""
+                UPDATE overview.administrative_boundary_render
+                SET geometry=ST_Multi(ST_MakeEnvelope(129,49,131,51,4326)),
+                    geo_json=ST_AsGeoJSON(ST_Multi(ST_MakeEnvelope(129,49,131,51,4326)))
+                WHERE region_code='230202'
+                """).update();
+        assertThat(jdbc.sql("""
+                SELECT ST_Covers(geometry,ST_SetSRID(ST_MakePoint(130,50),4326))
+                FROM overview.administrative_boundary WHERE region_code='230202'
+                """).query(Boolean.class).single()).isFalse();
+        MvcResult response = mvc.perform(post(ENDPOINT)
+                        .header("Idempotency-Key", "display-boundary-point")
+                        .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
+                        .content(request("展示边界内设计点", "10", null)
+                                .replace("123.95", "130").replace("47.35", "50")))
+                .andExpect(status().isCreated()).andReturn();
+        String id = body(response).path("data").path("id").asText();
+        mvc.perform(get(ENDPOINT + "/{id}", id).principal(() -> ACTOR))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.longitude").value(130))
+                .andExpect(jsonPath("$.data.latitude").value(50));
+        mvc.perform(put(ENDPOINT + "/{id}", id).principal(() -> ACTOR)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(request("展示边界内设计点", "10", 0L)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("COORDINATE_OUTSIDE_REGION"));
+        assertThat(jdbc.sql("""
+                SELECT ST_X(governed_point),ST_Y(governed_point)
+                FROM platform.design_sample_point WHERE design_sample_point_id=CAST(:id AS uuid)
+                """).param("id", id).query((row, index) -> List.of(row.getDouble(1),row.getDouble(2))).single())
+                .containsExactly(130.0,50.0);
+    }
+
+    @Test
     void rejectsStaleUpdatesAndDeletesWithoutChangingThePersistedVersion() throws Exception {
         String id = create("design-sample-version", "并发设计样本点", "10");
         mvc.perform(put(ENDPOINT + "/{id}", id)
