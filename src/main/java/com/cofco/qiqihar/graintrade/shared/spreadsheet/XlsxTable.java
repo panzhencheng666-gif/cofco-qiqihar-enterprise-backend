@@ -2,6 +2,7 @@ package com.cofco.qiqihar.graintrade.shared.spreadsheet;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -38,8 +39,9 @@ public final class XlsxTable {
                 || name.startsWith("xl/externalLinks/"))) throw invalid();
         List<String> sharedStrings = entries.containsKey("xl/sharedStrings.xml")
                 ? sharedStrings(entries.get("xl/sharedStrings.xml")) : List.of();
-        byte[] sheet = entries.get("xl/worksheets/sheet" + worksheetNumber + ".xml");
-        if (sheet == null) throw invalid();
+        List<Worksheet> worksheets = worksheets(entries);
+        if (worksheetNumber > worksheets.size()) throw invalid();
+        byte[] sheet = entries.get(worksheets.get(worksheetNumber - 1).part());
         return rows(sheet, sharedStrings, expectedColumns, maxRows);
     }
 
@@ -73,23 +75,57 @@ public final class XlsxTable {
 
     public static List<String> parseWorksheetNames(byte[] bytes) {
         if (bytes == null || bytes.length == 0) throw invalid();
-        Map<String, byte[]> entries = unzip(bytes);
+        return worksheets(unzip(bytes)).stream().map(Worksheet::name).toList();
+    }
+
+    private record Worksheet(String name, String part) {}
+
+    private static List<Worksheet> worksheets(Map<String, byte[]> entries) {
         byte[] workbook = entries.get("xl/workbook.xml");
-        if (workbook == null) throw invalid();
+        byte[] relationships = entries.get("xl/_rels/workbook.xml.rels");
+        if (workbook == null || relationships == null) throw invalid();
+        Map<String, Element> links = new HashMap<>();
+        var relationshipNodes = document(relationships).getElementsByTagNameNS("*", "Relationship");
+        for (int index = 0; index < relationshipNodes.getLength(); index++) {
+            Element link = (Element) relationshipNodes.item(index);
+            String id = link.getAttribute("Id");
+            if (id.isBlank() || links.put(id, link) != null) throw invalid();
+        }
         var document = document(workbook);
         var sheets = document.getElementsByTagNameNS("*", "sheet");
         if (sheets.getLength() < 1 || sheets.getLength() > 64) throw invalid();
-        List<String> names = new ArrayList<>(sheets.getLength());
+        List<Worksheet> worksheets = new ArrayList<>(sheets.getLength());
+        Set<String> names = new java.util.HashSet<>();
+        Set<String> parts = new java.util.HashSet<>();
         for (int index = 0; index < sheets.getLength(); index++) {
             Element sheet = (Element) sheets.item(index);
             String name = sheet.getAttribute("name");
             String relationship = sheet.getAttributeNS(
                     "http://schemas.openxmlformats.org/officeDocument/2006/relationships", "id");
-            if (name.isBlank() || name.length() > 31 || !relationship.equals("rId" + (index + 1))
-                    || names.contains(name)) throw invalid();
-            names.add(name);
+            Element link = links.get(relationship);
+            if (name.isBlank() || name.length() > 31 || !names.add(name) || link == null
+                    || !link.getAttribute("Type").equals(
+                            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet")
+                    || !(link.getAttribute("TargetMode").isEmpty()
+                            || link.getAttribute("TargetMode").equals("Internal"))) throw invalid();
+            String part = worksheetPart(link.getAttribute("Target"));
+            if (!entries.containsKey(part) || !parts.add(part)) throw invalid();
+            worksheets.add(new Worksheet(name, part));
         }
-        return List.copyOf(names);
+        return List.copyOf(worksheets);
+    }
+
+    private static String worksheetPart(String target) {
+        try {
+            URI reference = URI.create(target);
+            if (target.isBlank() || reference.isAbsolute() || reference.getRawAuthority() != null
+                    || reference.getRawQuery() != null || reference.getRawFragment() != null) throw invalid();
+            String path = URI.create("/xl/workbook.xml").resolve(reference).normalize().getRawPath();
+            if (!path.startsWith("/") || path.contains("..")) throw invalid();
+            return path.substring(1);
+        } catch (IllegalArgumentException exception) {
+            throw invalid();
+        }
     }
 
     private static String definedNameString(String formula) {
@@ -135,6 +171,7 @@ public final class XlsxTable {
     private static List<List<String>> rows(
             byte[] xml, List<String> sharedStrings, int expectedColumns, int maxRows) {
         var document = document(xml);
+        if (!"worksheet".equals(document.getDocumentElement().getLocalName())) throw invalid();
         if (document.getElementsByTagNameNS("*", "f").getLength() > 0) throw invalid();
         var rowNodes = document.getElementsByTagNameNS("*", "row");
         if (rowNodes.getLength() > maxRows) throw invalid();
