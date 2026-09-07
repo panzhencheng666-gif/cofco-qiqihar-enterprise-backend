@@ -149,6 +149,11 @@ class ProductionImportFormatIntegrationTest {
                       <sheets><sheet name="production" sheetId="1" r:id="rId1"/></sheets>
                     </workbook>
                     """);
+            entry(zip, "xl/_rels/workbook.xml.rels", """
+                    <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+                      <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+                    </Relationships>
+                    """);
             entry(zip, "xl/worksheets/sheet1.xml", sheet.toString());
         }
         return output.toByteArray();
