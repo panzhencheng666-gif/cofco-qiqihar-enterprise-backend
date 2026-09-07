@@ -28,6 +28,44 @@ import org.junit.jupiter.api.Test;
 class BusinessImportWorkbookTest {
 
     @Test
+    void resolvesEditorAssignedWorksheetRelationshipsInsteadOfAssumingSequentialIdsAndFilenames() {
+        var template = new BusinessImportWorkbook.Template(
+                "MARKET", "市场", "CORN", null, List.of("业务字段"), List.of("业务字段"));
+        byte[] workbook = BusinessImportWorkbook.create(template, List.of(List.of("原有数据")));
+        workbook = replaceZipEntry(workbook, "xl/workbook.xml",
+                xml -> xml.replace("rId1", "Rdata42").replace("rId2", "Rnotes87"));
+        workbook = replaceZipEntry(workbook, "xl/_rels/workbook.xml.rels",
+                xml -> xml.replace("rId1", "Rdata42").replace("rId2", "Rnotes87")
+                        .replace("worksheets/sheet1.xml", "/xl/worksheets/data.xml")
+                        .replace("worksheets/sheet2.xml", "worksheets/notes.xml"));
+        workbook = replaceZipEntry(workbook, "[Content_Types].xml",
+                xml -> xml.replace("sheet1.xml", "data.xml").replace("sheet2.xml", "notes.xml"));
+        workbook = renameZipEntry(workbook, "xl/worksheets/sheet1.xml", "xl/worksheets/data.xml");
+        workbook = renameZipEntry(workbook, "xl/worksheets/sheet2.xml", "xl/worksheets/notes.xml");
+
+        assertThat(BusinessImportWorkbook.readDraft(workbook, template, 5_000).rows())
+                .containsExactly(List.of("原有数据"));
+    }
+
+    @Test
+    void rejectsMissingExternalAndAmbiguousWorksheetRelationships() {
+        var template = new BusinessImportWorkbook.Template(
+                "MARKET", "市场", "CORN", null, List.of("业务字段"), List.of("业务字段"));
+        byte[] original = BusinessImportWorkbook.create(template, List.of(List.of("原有数据")));
+        for (UnaryOperator<String> change : List.<UnaryOperator<String>>of(
+                xml -> xml.replace("Id=\"rId1\"", "Id=\"missing\""),
+                xml -> xml.replace("Id=\"rId1\"", "Id=\"rId1\" TargetMode=\"External\""),
+                xml -> xml.replace("Id=\"rId2\"", "Id=\"rId1\""),
+                xml -> xml.replace("worksheets/sheet1.xml", "https://example.invalid/sheet.xml"),
+                xml -> xml.replace("worksheets/sheet1.xml", "../../outside.xml"),
+                xml -> xml.replace("worksheets/sheet1.xml", "worksheets/missing.xml"))) {
+            byte[] malformed = replaceZipEntry(original, "xl/_rels/workbook.xml.rels", change);
+            assertThatThrownBy(() -> BusinessImportWorkbook.readDraft(malformed, template, 5_000))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+    }
+
+    @Test
     void normalizesHumanDecimalsToTheAuthoritativeScaleUsingHalfUpRounding() {
         BusinessImportWorkbook.ColumnRule decimalRule = new BusinessImportWorkbook.ColumnRule(
                 "预计单产（公斤/亩）", "DECIMAL", "DECIMAL", true, List.of(), 18, 4, null);
@@ -510,6 +548,22 @@ class BusinessImportWorkbookTest {
             }
             zipOutput.finish();
             return output.toByteArray();
+        } catch (java.io.IOException exception) {
+            throw new AssertionError(exception);
+        }
+    }
+
+    private static byte[] renameZipEntry(byte[] workbook, String oldName, String newName) {
+        try (ZipInputStream input = new ZipInputStream(new ByteArrayInputStream(workbook));
+                ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+                ZipOutputStream output = new ZipOutputStream(bytes)) {
+            for (var entry = input.getNextEntry(); entry != null; entry = input.getNextEntry()) {
+                output.putNextEntry(new ZipEntry(entry.getName().equals(oldName) ? newName : entry.getName()));
+                output.write(input.readAllBytes());
+                output.closeEntry();
+            }
+            output.finish();
+            return bytes.toByteArray();
         } catch (java.io.IOException exception) {
             throw new AssertionError(exception);
         }
