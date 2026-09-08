@@ -74,7 +74,7 @@ class DesignSamplePointUpgradeReplayTest {
         assertThat(formalCount()).isEqualTo(1064);
         assertThat(townshipCount()).isEqualTo(232);
 
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(24);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(25);
         assertThat(formalCount()).isEqualTo(1064);
         assertThat(townshipCount()).isEqualTo(232);
 

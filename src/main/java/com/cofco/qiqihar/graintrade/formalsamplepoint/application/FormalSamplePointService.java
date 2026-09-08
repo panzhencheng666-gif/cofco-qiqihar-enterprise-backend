@@ -164,7 +164,8 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
         FormalSampleLocationDraft draft = new FormalSampleLocationDraft(submitted.expectedVersion(),
                 required(submitted.regionCode(), 12),
                 coordinate(submitted.longitude(), new BigDecimal("-180"), new BigDecimal("180"), 10),
-                coordinate(submitted.latitude(), new BigDecimal("-90"), new BigDecimal("90"), 9));
+                coordinate(submitted.latitude(), new BigDecimal("-90"), new BigDecimal("90"), 9),
+                submitted.address() == null ? null : required(submitted.address(), 500));
         access.require("FORMAL_SAMPLE_MANAGE", draft.regionCode());
         if (current.maintainerSubjectId() != null && !current.maintainerSubjectId().isBlank()) {
             requireValidMaintainer(current.maintainerSubjectId(), draft.regionCode());

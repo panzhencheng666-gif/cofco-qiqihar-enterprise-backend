@@ -1273,6 +1273,26 @@ class FormalSampleObservationRestIntegrationTest {
     }
 
     @Test
+    void savesLegacySampleAddressWithObservationAndRequeriesIt() throws Exception {
+        jdbc.sql("DELETE FROM registry.formal_sample_point_profile WHERE sample_point_id=:id")
+                .param("id", SAMPLE_POINT_ID).update();
+        var request = (tools.jackson.databind.node.ObjectNode) objectMapper.readTree(locationObservationRequest(0));
+        ((tools.jackson.databind.node.ObjectNode) request.get("sampleLocation")).put("address", "龙江县测试路18号");
+        mvc.perform(post("/api/v1/formal-sample-observations/observations")
+                        .principal(() -> ACTOR).header("Idempotency-Key", "inline-address-legacy")
+                        .contentType(MediaType.APPLICATION_JSON).content(request.toString()))
+                .andExpect(status().isCreated());
+        assertThat(jdbc.sql("SELECT address FROM registry.formal_sample_point_profile WHERE sample_point_id=:id")
+                .param("id", SAMPLE_POINT_ID).query(String.class).optional()).contains("龙江县测试路18号");
+        mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
+                        .principal(() -> ACTOR).queryParam("domain", "PRODUCTION")
+                        .queryParam("productCode", "CORN").queryParam("regionCode", "230221")
+                        .queryParam("observedAt", "2026-08-28T10:15:00+08:00"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].address").value("龙江县测试路18号"));
+    }
+
+    @Test
     void rejectsStaleInlineLocationWithoutSavingObservation() throws Exception {
         mvc.perform(post("/api/v1/formal-sample-observations/observations")
                         .principal(() -> ACTOR).header("Idempotency-Key", "inline-location-stale")
@@ -1367,13 +1387,22 @@ class FormalSampleObservationRestIntegrationTest {
                  "LOG_TRANSPORT_MODE":"ROAD","LOG_DIRECTION":"INFLOW","LOG_ROUTE_VOLUME":"12.5",
                  "LOG_FREIGHT_RATE":"80","LOG_BOARD_PRICE":"2650"}}
                 """));
+        String prefix = domain.equals("MARKET") ? "MKT" : "LOG";
+        var business = (tools.jackson.databind.node.ObjectNode) request.get("payload")
+                .get(domain.equals("MARKET") ? "coreValues" : "values");
+        business.put(prefix + "_SURVEYOR_NAME", "本次调研员");
+        business.put(prefix + "_SURVEYOR_PHONE", "13800138000");
         mvc.perform(post("/api/v1/formal-sample-observations/observations")
                         .principal(() -> ACTOR).header("Idempotency-Key", "inline-location-" + domain)
                         .contentType(MediaType.APPLICATION_JSON).content(request.toString()))
                 .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.values." + prefix + "_SURVEYOR_NAME").value("本次调研员"))
+                .andExpect(jsonPath("$.data.values." + prefix + "_SURVEYOR_PHONE").value("13800138000"))
                 .andExpect(jsonPath("$.data.samplePointId").value(SAMPLE_POINT_ID.toString()))
                 .andExpect(jsonPath("$.data.values." + (domain.equals("MARKET") ? "MKT" : "LOG")
                         + "_SAMPLE_LONGITUDE").value(domain.equals("MARKET") ? "123.2345678" : "123.234568"));
+        assertThat(jdbc.sql("SELECT address FROM registry.formal_sample_point_profile WHERE sample_point_id=:id")
+                .param("id", SAMPLE_POINT_ID).query(String.class).single()).isEqualTo("龙江县测试路18号");
         assertThat(jdbc.sql("SELECT ST_X(governed_point) FROM registry.sample_point WHERE sample_point_id=:id")
                 .param("id", SAMPLE_POINT_ID).query(Double.class).single()).isEqualTo(123.2345678);
     }
@@ -1381,11 +1410,13 @@ class FormalSampleObservationRestIntegrationTest {
     private String locationObservationRequest(long version) {
         return minimalProductionObservationRequest().replace("\"payload\":", """
                 "sampleLocation":{"expectedVersion":%d,"regionCode":"230221",
-                  "longitude":"123.2345678","latitude":"47.3456789"},"payload":
+                  "longitude":"123.2345678","latitude":"47.3456789","address":"龙江县测试路18号"},"payload":
                 """.formatted(version));
     }
 
     private void assertInlineLocationUnchanged() {
+        assertThat(jdbc.sql("SELECT address FROM registry.formal_sample_point_profile WHERE sample_point_id=:id")
+                .param("id", SAMPLE_POINT_ID).query(String.class).single()).isEqualTo("龙江县样本地址");
         assertThat(jdbc.sql("SELECT ST_X(governed_point) FROM registry.sample_point WHERE sample_point_id=:id")
                 .param("id", SAMPLE_POINT_ID).query(Double.class).single()).isEqualTo(123.2);
         assertThat(jdbc.sql("SELECT cultivated_area_mu FROM production.production_record WHERE record_id=:id")

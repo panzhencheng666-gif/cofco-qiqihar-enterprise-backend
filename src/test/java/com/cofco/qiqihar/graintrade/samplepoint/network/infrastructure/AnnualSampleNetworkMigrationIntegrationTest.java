@@ -29,7 +29,7 @@ class AnnualSampleNetworkMigrationIntegrationTest {
     void freshMigrationExposesExactlyOneDesignReferenceForEveryVillage() throws Exception {
         resetDatabase();
 
-        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(181);
+        assertThat(DATABASE.flyway().migrate().migrationsExecuted).isEqualTo(182);
         insertVillageFixtures(true);
         assertThat(query("""
                 SELECT (SELECT count(*) FROM platform.region

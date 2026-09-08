@@ -214,7 +214,18 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
                 .param("latitude", draft.latitude()).param("actor", actorSubjectId)
                 .param("now", Timestamp.from(now)).param("id", id)
                 .param("expectedVersion", draft.expectedVersion()).update();
-        return updated == 0 ? Optional.empty() : find(id);
+        if (updated == 0) return Optional.empty();
+        if (draft.address() != null) {
+            jdbc.sql("""
+                    INSERT INTO registry.formal_sample_point_profile(
+                      sample_point_id,address,created_by,created_at,updated_by,updated_at)
+                    VALUES(:id,:address,:actor,:now,:actor,:now)
+                    ON CONFLICT(sample_point_id) DO UPDATE SET
+                      address=EXCLUDED.address,updated_by=EXCLUDED.updated_by,updated_at=EXCLUDED.updated_at
+                    """).param("id", id).param("address", draft.address())
+                    .param("actor", actorSubjectId).param("now", Timestamp.from(now)).update();
+        }
+        return find(id);
     }
 
     @Override
