@@ -155,6 +155,7 @@ public class DesignSamplePointImportService {
                     throw new ConflictException(
                             "SAMPLE_POINT_IMPORT_DUPLICATE_ROW", "文件中存在业务分类、品种、对象类型、行政区及名称均相同的重复样本");
                 }
+                points.requireNewImportIdentity(validated);
                 rows.add(Row.valid(submittedRow, draft));
             } catch (RuntimeException exception) {
                 rows.add(Row.error(submittedRow, errorCode(exception),

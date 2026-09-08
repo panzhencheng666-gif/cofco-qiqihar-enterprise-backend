@@ -62,6 +62,17 @@ public class JdbcDesignSamplePointRepository implements DesignSamplePointReposit
     }
 
     @Override
+    public boolean existsIdentity(DesignSampleContext context,String regionCode,String sampleName) {
+        return jdbc.sql("""
+                SELECT EXISTS(SELECT 1 FROM platform.design_sample_point
+                  WHERE domain_code=:domain AND product_code=:product AND object_type_code=:objectType
+                    AND region_code=:region AND lower(btrim(sample_name))=lower(btrim(:name)))
+                """).param("domain",context.domainCode()).param("product",context.productCode())
+                .param("objectType",context.objectTypeCode()).param("region",regionCode)
+                .param("name",sampleName).query(Boolean.class).single();
+    }
+
+    @Override
     public Optional<BoundaryContainment> coordinateBoundaryState(
             String regionCode, BigDecimal longitude, BigDecimal latitude) {
         return jdbc.sql("""

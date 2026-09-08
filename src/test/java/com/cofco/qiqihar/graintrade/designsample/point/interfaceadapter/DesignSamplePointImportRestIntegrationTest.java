@@ -112,6 +112,24 @@ class DesignSamplePointImportRestIntegrationTest {
     }
 
     @Test
+    void reportsAnExistingBusinessIdentityAsARowErrorInsteadOfADatabaseConflict() throws Exception {
+        byte[] workbook=SamplePointMasterWorkbook.create(imports.templateDefinition(),
+                List.of(designRow("已有样本重导检查","123.95")));
+        for (int attempt=0;attempt<2;attempt++) {
+            mvc.perform(multipart("/api/v1/design-sample-points/imports")
+                            .file(new MockMultipartFile("file","existing.xlsx",
+                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",workbook))
+                            .header("Idempotency-Key","existing-business-"+attempt)
+                            .principal(() -> "production-tester"))
+                    .andExpect(status().isCreated())
+                    .andExpect(jsonPath("$.data.importedRows").value(attempt==0?1:0))
+                    .andExpect(jsonPath("$.data.failedRows").value(attempt==0?0:1));
+        }
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.design_sample_point")
+                .query(Long.class).single()).isEqualTo(1L);
+    }
+
+    @Test
     void loadsTheFieldContractPerBatchInsteadOfForEveryImportedRow() throws Exception {
         byte[] workbook = SamplePointMasterWorkbook.create(imports.templateDefinition(), List.of(
                 designRow("批次点一", "123.95"), designRow("批次点二", "123.951"),

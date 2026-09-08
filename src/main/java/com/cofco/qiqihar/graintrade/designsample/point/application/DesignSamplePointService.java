@@ -177,6 +177,12 @@ public class DesignSamplePointService {
                 java.util.List.of(current.regionCode()));
     }
 
+    void requireNewImportIdentity(ValidatedDraft validated) {
+        if(repository.existsIdentity(validated.draft().context(),validated.regionCode(),validated.sampleName())) {
+            throw conflict("SAMPLE_POINT_IMPORT_ALREADY_EXISTS","相同业务分类、品种、对象类型、行政区及名称的样本已存在，请勿重复导入");
+        }
+    }
+
     ValidatedDraft validateForCreate(DesignSamplePointDraft submitted) {
         return validateForCreate(submitted, metadata.activeContract());
     }
