@@ -527,9 +527,9 @@ public class JdbcOverviewSamplePointRepository
                        association.source_record_id,association.source_role,
                        association.product_code,product.name product_name,
                        association.occurrence_date,association.source_version,
-                       point.retired_at,point.retired_reason,point.retired_by,
-                       ST_X(point.governed_point) longitude,
-                       ST_Y(point.governed_point) latitude
+                       point.retired_at,point.retired_reason,point.retired_by,point.location_mode,
+                       ST_X(point.display_point) longitude,
+                       ST_Y(point.display_point) latitude
                 FROM registry.sample_point point
                 JOIN business_association association
                   ON association.sample_point_id=point.sample_point_id
@@ -572,7 +572,8 @@ public class JdbcOverviewSamplePointRepository
                         row.getLong("source_version"),
                         row.getTimestamp("retired_at").toInstant(), retirementYear,
                         row.getString("retired_reason"), row.getString("retired_by"),
-                        row.getDouble("longitude"), row.getDouble("latitude")))
+                        row.getDouble("longitude"), row.getDouble("latitude"),
+                        row.getString("location_mode")))
                 .list();
     }
 
@@ -593,7 +594,7 @@ public class JdbcOverviewSamplePointRepository
                 .values().stream().toList();
         return new OverviewSamplePointIcon(identity.samplePointId(), identity.name(),
                 identity.regionCode(), roles.getFirst().iconKey(), roles, types,
-                identity.longitude(), identity.latitude(), null);
+                identity.longitude(), identity.latitude(), null, identity.locationMode());
     }
 
     private static String categoryName(String categoryCode) {
@@ -1705,7 +1706,7 @@ public class JdbcOverviewSamplePointRepository
             String retirementReason,
             String retiredBy,
             double longitude,
-            double latitude) {}
+            double latitude, String locationMode) {}
 
     private record SourceRow(
             UUID samplePointId,
