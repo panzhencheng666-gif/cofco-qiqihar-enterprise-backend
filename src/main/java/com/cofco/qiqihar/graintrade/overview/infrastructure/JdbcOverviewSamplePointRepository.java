@@ -579,13 +579,12 @@ public class JdbcOverviewSamplePointRepository
 
     private OverviewSamplePointIcon historicalIcon(List<HistoricalAssociation> associations) {
         HistoricalAssociation identity = associations.getFirst();
-        List<OverviewSamplePointIcon.RoleRef> roles = associations.stream()
-                .collect(Collectors.toMap(HistoricalAssociation::categoryCode,
-                        association -> new OverviewSamplePointIcon.RoleRef(
-                                association.categoryCode(),
-                                categoryName(association.categoryCode()), association.iconKey()),
-                        (left, right) -> left, LinkedHashMap::new))
-                .values().stream().toList();
+        Set<String> categories = associations.stream()
+                .map(HistoricalAssociation::categoryCode).collect(Collectors.toSet());
+        List<OverviewSamplePointIcon.RoleRef> roles = CATEGORIES.stream()
+                .filter(category -> categories.contains(category.code()))
+                .map(category -> new OverviewSamplePointIcon.RoleRef(
+                        category.code(), category.name(), category.iconKey())).toList();
         List<OverviewSamplePointIcon.TypeRef> types = associations.stream()
                 .collect(Collectors.toMap(HistoricalAssociation::typeCode,
                         association -> new OverviewSamplePointIcon.TypeRef(
