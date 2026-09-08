@@ -47,6 +47,9 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                   ON applicability.field_code=definition.code
                  AND applicability.product_code=event.product_code
                 WHERE fact.event_id=event.event_id),'{}'::jsonb)
+            || jsonb_build_object('LOG_FILLING_AT',COALESCE(event.submitted_at,event.created_at),
+              'LOG_FILLING_TIME_BASIS',CASE WHEN event.submitted_at IS NOT NULL
+                THEN 'SUBMITTED_AT' ELSE 'CREATED_AT_NO_SUBMISSION_AUDIT' END)
             """;
     private final JdbcClient jdbc;
     private final ObjectMapper objectMapper;
@@ -122,7 +125,10 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                                WHERE value.record_id=record.record_id),'{}'::jsonb)
                            || COALESCE((SELECT jsonb_object_agg(value.subsidy_code,value.value::text)
                                FROM production.production_record_subsidy value
-                               WHERE value.record_id=record.record_id),'{}'::jsonb) latest_values
+                               WHERE value.record_id=record.record_id),'{}'::jsonb)
+                           || jsonb_build_object('PROD_FILLING_AT',COALESCE(record.submitted_at,record.created_at),
+                             'PROD_FILLING_TIME_BASIS',CASE WHEN record.submitted_at IS NOT NULL
+                               THEN 'SUBMITTED_AT' ELSE 'CREATED_AT_NO_SUBMISSION_AUDIT' END) latest_values
                     FROM production.production_record record
                     WHERE record.sample_point_id=point.sample_point_id
                       AND record.product_code=:productCode
@@ -151,7 +157,10 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                                WHERE value.record_id=record.record_id),'{}'::jsonb)
                            || COALESCE((SELECT jsonb_object_agg(fact.fact_code,fact.value::text)
                                FROM market.market_record_fact fact
-                               WHERE fact.record_id=record.record_id),'{}'::jsonb) latest_values
+                               WHERE fact.record_id=record.record_id),'{}'::jsonb)
+                           || jsonb_build_object('MKT_FILLING_AT',COALESCE(record.submitted_at,record.created_at),
+                             'MKT_FILLING_TIME_BASIS',CASE WHEN record.submitted_at IS NOT NULL
+                               THEN 'SUBMITTED_AT' ELSE 'CREATED_AT_NO_SUBMISSION_AUDIT' END) latest_values
                     FROM market.market_record record
                     WHERE record.sample_point_id=point.sample_point_id
                       AND record.product_code=:productCode
@@ -304,7 +313,10 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                                WHERE value.record_id=record.record_id),'{}'::jsonb)
                            || COALESCE((SELECT jsonb_object_agg(value.subsidy_code,value.value::text)
                                FROM production.production_record_subsidy value
-                               WHERE value.record_id=record.record_id),'{}'::jsonb) values,
+                               WHERE value.record_id=record.record_id),'{}'::jsonb)
+                           || jsonb_build_object('PROD_FILLING_AT',COALESCE(record.submitted_at,record.created_at),
+                             'PROD_FILLING_TIME_BASIS',CASE WHEN record.submitted_at IS NOT NULL
+                               THEN 'SUBMITTED_AT' ELSE 'CREATED_AT_NO_SUBMISSION_AUDIT' END) values,
                            ROW_NUMBER() OVER (ORDER BY record.survey_date DESC,record.updated_at DESC,
                              record.record_id DESC)=1 latest
                     FROM production.production_record record
@@ -342,7 +354,10 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                                WHERE value.record_id=record.record_id),'{}'::jsonb)
                            || COALESCE((SELECT jsonb_object_agg(value.fact_code,value.value::text)
                                FROM market.market_record_fact value
-                               WHERE value.record_id=record.record_id),'{}'::jsonb) values,
+                               WHERE value.record_id=record.record_id),'{}'::jsonb)
+                           || jsonb_build_object('MKT_FILLING_AT',COALESCE(record.submitted_at,record.created_at),
+                             'MKT_FILLING_TIME_BASIS',CASE WHEN record.submitted_at IS NOT NULL
+                               THEN 'SUBMITTED_AT' ELSE 'CREATED_AT_NO_SUBMISSION_AUDIT' END) values,
                            ROW_NUMBER() OVER (ORDER BY record.trade_date DESC,record.updated_at DESC,
                              record.record_id DESC)=1 latest
                     FROM market.market_record record

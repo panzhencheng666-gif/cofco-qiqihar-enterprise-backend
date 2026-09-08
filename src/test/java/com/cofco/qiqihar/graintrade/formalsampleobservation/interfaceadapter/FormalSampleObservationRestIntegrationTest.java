@@ -171,6 +171,41 @@ class FormalSampleObservationRestIntegrationTest {
                 .param("samplePointId", SAMPLE_POINT_ID).update();
     }
 
+    @Test
+    void projectsActualFillingTimeAcrossDomainsAndHistory() throws Exception {
+        String[][] domains = {{"PRODUCTION", "production.production_record", "PROD"},
+                {"MARKET", "market.market_record", "MKT"},
+                {"LOGISTICS", "logistics.route_event", "LOG"}};
+        for (String[] domain : domains) {
+            for (boolean submitted : new boolean[] {true, false}) {
+                jdbc.sql("UPDATE " + domain[1] + " SET created_at=TIMESTAMPTZ '2026-08-24 08:00:00+08',"
+                        + "submitted_at=" + (submitted ? "TIMESTAMPTZ '2026-08-25 18:52:20+08'" : "NULL")
+                        + " WHERE sample_point_id=:id").param("id", SAMPLE_POINT_ID).update();
+                String eligible = mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
+                                .principal(() -> ACTOR).queryParam("domain", domain[0])
+                                .queryParam("productCode", "CORN").queryParam("regionCode", "230221")
+                                .queryParam("year", "2026")
+                                .queryParam("observedAt", "2026-08-28T10:16:00+08:00"))
+                        .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+                String history = mvc.perform(get("/api/v1/formal-sample-observations/observations")
+                                .principal(() -> ACTOR).queryParam("domain", domain[0])
+                                .queryParam("samplePointId", SAMPLE_POINT_ID.toString())
+                                .queryParam("productCode", "CORN").queryParam("year", "2026"))
+                        .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+                for (JsonNode values : new JsonNode[] {
+                        objectMapper.readTree(eligible).at("/data/0/latestValues"),
+                        objectMapper.readTree(history).at("/data/items/0/values")}) {
+                    String time = values.path(domain[2] + "_FILLING_AT").asText();
+                    assertThat(time).as(domain[0] + " filling time").isNotBlank();
+                    assertThat(java.time.OffsetDateTime.parse(time).toInstant()).isEqualTo(
+                            Instant.parse(submitted ? "2026-08-25T10:52:20Z" : "2026-08-24T00:00:00Z"));
+                    assertThat(values.path(domain[2] + "_FILLING_TIME_BASIS").asText()).isEqualTo(
+                            submitted ? "SUBMITTED_AT" : "CREATED_AT_NO_SUBMISSION_AUDIT");
+                }
+            }
+        }
+    }
+
     @AfterEach
     void tearDown() {
         clearFixture();
