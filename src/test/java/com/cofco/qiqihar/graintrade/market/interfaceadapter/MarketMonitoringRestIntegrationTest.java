@@ -2314,7 +2314,7 @@ class MarketMonitoringRestIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(precise))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.coreValues.MKT_SAMPLE_LATITUDE").value("47.1234568"));
+                .andExpect(jsonPath("$.data.coreValues.MKT_SAMPLE_LATITUDE").value("47.12345678"));
 
         String pathological = precise.replace("47.12345678", "1E999999999");
         mockMvc.perform(post("/api/v1/market-records")

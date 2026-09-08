@@ -195,3 +195,14 @@ WHERE p.display_point IS NOT NULL
   AND overview.sample_display_point_occupied(p.display_point,p.sample_point_id,false);
 UPDATE platform.design_sample_point p SET display_point=p.display_point
 WHERE overview.sample_display_point_occupied(p.display_point,p.design_sample_point_id,true);
+
+-- Do not round a reported logistics coordinate across its admission boundary.
+-- Existing six-decimal values retain their scale; new values are bounded to the
+-- same 15 fractional digits accepted by coordinate input validation.
+ALTER TABLE logistics.route_event
+    ALTER COLUMN sample_latitude TYPE numeric,
+    ALTER COLUMN sample_longitude TYPE numeric,
+    ADD CONSTRAINT logistics_reported_latitude_range
+      CHECK (sample_latitude BETWEEN -90 AND 90 AND scale(sample_latitude)<=15),
+    ADD CONSTRAINT logistics_reported_longitude_range
+      CHECK (sample_longitude BETWEEN -180 AND 180 AND scale(sample_longitude)<=15);

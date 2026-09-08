@@ -644,6 +644,9 @@ public class MarketMonitoringService {
                             || (coordinateLimit != null && parsed.abs().compareTo(coordinateLimit) > 0)) {
                         throw invalid("Decimal is outside range for market core field: " + definition.code());
                     }
+                    if (coordinateLimit != null && parsed.scale() > definition.scale()) {
+                        yield parsed.toPlainString();
+                    }
                     BigDecimal normalized = parsed.setScale(definition.scale(), RoundingMode.HALF_UP);
                     if (normalized.precision() > definition.precision()) {
                         throw invalid("Decimal is outside range for market core field: " + definition.code());
