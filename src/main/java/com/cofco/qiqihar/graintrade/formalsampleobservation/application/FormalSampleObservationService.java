@@ -161,11 +161,7 @@ public class FormalSampleObservationService {
                 command.domain(), command.samplePointId(), normalizedProduct,
                 observedOn, principal.regionCodes());
         accessControl.require("BUSINESS_CREATE", lockedIdentity.regionCode());
-        FormalSampleIdentity identity;
-        if (lockedIdentity.maintainerSubjectId() == null || lockedIdentity.maintainerSubjectId().isBlank()) {
-            repository.claimMaintainer(lockedIdentity.samplePointId(), principal.subjectId());
-            identity = withMaintainer(lockedIdentity, principal.subjectId());
-        } else identity = lockedIdentity;
+        FormalSampleIdentity identity = lockedIdentity;
         boolean administratorOverride = requireMaintainer(principal, identity);
 
         String sourceRecordId;
@@ -280,19 +276,11 @@ public class FormalSampleObservationService {
 
     private static boolean requireMaintainer(
             SecurityPrincipal principal, FormalSampleIdentity identity) {
-        if (identity.maintainerSubjectId().equals(principal.subjectId())) return false;
+        if (principal.subjectId().equals(identity.maintainerSubjectId())) return false;
         if (principal.permits("FORMAL_SAMPLE_MANAGE")) return true;
         throw new AccessDeniedException(
                 "FORMAL_SAMPLE_MAINTAINER_DENIED",
                 "当前账号不是该正式样本的维护人，不能更新期间数据");
-    }
-
-    private static FormalSampleIdentity withMaintainer(
-            FormalSampleIdentity identity, String maintainerSubjectId) {
-        return new FormalSampleIdentity(identity.samplePointId(), identity.sampleName(),
-                identity.productCode(), identity.regionCode(), maintainerSubjectId,
-                identity.latitude(), identity.longitude(), identity.effectiveFrom(),
-                identity.effectiveTo(), identity.lockedValues());
     }
 
     private String auditDetail(FormalSampleObservationDomain domain,

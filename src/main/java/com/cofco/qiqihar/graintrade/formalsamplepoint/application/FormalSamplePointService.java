@@ -115,17 +115,24 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
     public FormalSamplePointView update(
             UUID id, long expectedVersion, FormalSamplePointDraft submitted) {
         if (expectedVersion < 0) throw invalid();
-        SecurityPrincipal actor = access.require("FORMAL_SAMPLE_MANAGE", null);
+        access.require("BUSINESS_READ", null);
         FormalSamplePointView current = required(id);
-        access.require("FORMAL_SAMPLE_MANAGE", current.regionCode());
+        SecurityPrincipal actor = requireEditor(current);
+        if (current.version() != expectedVersion) {
+            throw new ConflictException("FORMAL_SAMPLE_POINT_VERSION_CONFLICT",
+                    "正式样本已发生变化，请刷新后重试");
+        }
         FormalSamplePointDraft draft = normalize(submitted);
-        access.require("FORMAL_SAMPLE_MANAGE", draft.regionCode());
+        access.require(actor.permits("FORMAL_SAMPLE_MANAGE")
+                ? "FORMAL_SAMPLE_MANAGE" : "BUSINESS_CREATE", draft.regionCode());
         requireValidReferences(draft);
         boolean maintainerReassigned = !Objects.equals(
                 current.maintainerSubjectId(), draft.maintainerSubjectId());
+        if (maintainerReassigned) access.require("FORMAL_SAMPLE_MANAGE", current.regionCode());
         String maintainerChangeReason = maintainerReassigned
                 ? required(draft.maintainerChangeReason(), 500) : null;
-        coordinateGuard.lockAndRequireAvailable(id, draft.longitude(), draft.latitude());
+        coordinateGuard.lockAndRequireAvailableForRegion(
+                id, draft.longitude(), draft.latitude(), draft.regionCode());
         Instant now = clock.instant();
         FormalSamplePointView updated;
         try {
@@ -154,9 +161,9 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
         if (submitted == null || submitted.expectedVersion() == null
                 || submitted.expectedVersion() < 0 || submitted.longitude() == null
                 || submitted.latitude() == null) throw invalid();
-        SecurityPrincipal actor = access.require("FORMAL_SAMPLE_MANAGE", null);
+        access.require("BUSINESS_READ", null);
         FormalSamplePointView current = required(id);
-        access.require("FORMAL_SAMPLE_MANAGE", current.regionCode());
+        SecurityPrincipal actor = requireEditor(current);
         if (current.version() != submitted.expectedVersion()) {
             throw new ConflictException("FORMAL_SAMPLE_POINT_VERSION_CONFLICT",
                     "正式样本已发生变化，请刷新后重试");
@@ -166,12 +173,14 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
                 coordinate(submitted.longitude(), new BigDecimal("-180"), new BigDecimal("180"), 10),
                 coordinate(submitted.latitude(), new BigDecimal("-90"), new BigDecimal("90"), 9),
                 submitted.address() == null ? null : required(submitted.address(), 500));
-        access.require("FORMAL_SAMPLE_MANAGE", draft.regionCode());
+        access.require(actor.permits("FORMAL_SAMPLE_MANAGE")
+                ? "FORMAL_SAMPLE_MANAGE" : "BUSINESS_CREATE", draft.regionCode());
         if (current.maintainerSubjectId() != null && !current.maintainerSubjectId().isBlank()) {
             requireValidMaintainer(current.maintainerSubjectId(), draft.regionCode());
         }
         requireCoordinateBoundary(draft.regionCode(), draft.longitude(), draft.latitude());
-        coordinateGuard.lockAndRequireAvailable(id, draft.longitude(), draft.latitude());
+        coordinateGuard.lockAndRequireAvailableForRegion(
+                id, draft.longitude(), draft.latitude(), draft.regionCode());
         Instant now = clock.instant();
         FormalSamplePointView updated;
         try {
@@ -269,6 +278,19 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
                     "FORMAL_SAMPLE_POINT_HISTORY_REFERENCED",
                     "正式样本仍有关联的供需、导入或证据历史，不能删除");
         }
+    }
+
+    private SecurityPrincipal requireEditor(FormalSamplePointView current) {
+        SecurityPrincipal actor = access.require("BUSINESS_READ", current.regionCode());
+        if (actor.permits("FORMAL_SAMPLE_MANAGE")) {
+            return access.require("FORMAL_SAMPLE_MANAGE", current.regionCode());
+        }
+        access.require("BUSINESS_CREATE", current.regionCode());
+        if (!actor.subjectId().equals(current.maintainerSubjectId())) {
+            throw new AccessDeniedException("FORMAL_SAMPLE_MAINTAINER_DENIED",
+                    "当前账号不是该正式样本的维护人，不能修改样本数据");
+        }
+        return actor;
     }
 
     private FormalSamplePointView required(UUID id) {

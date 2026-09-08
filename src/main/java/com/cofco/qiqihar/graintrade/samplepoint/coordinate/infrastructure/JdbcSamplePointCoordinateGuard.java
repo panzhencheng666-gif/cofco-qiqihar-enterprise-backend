@@ -32,6 +32,28 @@ public class JdbcSamplePointCoordinateGuard implements SamplePointCoordinateGuar
     }
 
     @Override
+    public void lockAndRequireAvailableForRegion(
+            UUID allowedSamplePointId, BigDecimal longitude, BigDecimal latitude, String regionCode) {
+        SamplePointCoordinateKey key = SamplePointCoordinateKey.of(longitude, latitude);
+        lock(key);
+        List<UUID> occupied = occupants(allowedSamplePointId, key);
+        if (occupied.isEmpty()) return;
+        boolean insideSameRegion = jdbc.sql("""
+                SELECT EXISTS(SELECT 1 FROM overview.administrative_boundary
+                    WHERE region_code=:region AND ST_Covers(geometry,
+                        ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326)))
+                  AND NOT EXISTS(SELECT 1 FROM registry.sample_point
+                    WHERE sample_point_id IN (:occupants) AND region_code<>:region)
+                """).param("region", regionCode).param("longitude", key.longitude())
+                .param("latitude", key.latitude()).param("occupants", occupied)
+                .query(Boolean.class).single();
+        if (!insideSameRegion) {
+            throw new ConflictException("SAMPLE_POINT_COORDINATE_OCCUPIED",
+                    "该经纬度已被其他地区样本点使用，请核对所属地区");
+        }
+    }
+
+    @Override
     public void lockAndRequireReviewedSharing(
             UUID allowedSamplePointId, BigDecimal longitude, BigDecimal latitude,
             Set<UUID> reviewedOccupantIds) {

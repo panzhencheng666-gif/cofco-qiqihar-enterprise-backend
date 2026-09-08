@@ -221,6 +221,8 @@ class OverviewSamplePointRestIntegrationTest {
                 .andExpect(jsonPath("$.data[0].samplePointId").value(SURVEY_POINT))
                 .andExpect(jsonPath("$.data[0].name").value("同一跨产品样本点"))
                 .andExpect(jsonPath("$.data[0].roles[0].code").value("PRODUCTION"))
+                .andExpect(jsonPath("$.data[0].roles[0].iconKey").value("production"))
+                .andExpect(jsonPath("$.data[0].iconKey").value("production"))
                 .andExpect(jsonPath("$.data[0].types[0].code").value("FARMER"));
 
         mvc.perform(get("/api/v1/overview/historical-sample-points/{samplePointId}", SURVEY_POINT)

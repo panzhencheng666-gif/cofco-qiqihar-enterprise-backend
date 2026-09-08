@@ -272,7 +272,7 @@ class FormalSampleObservationRestIntegrationTest {
     }
 
     @Test
-    void letsAuthorizedBusinessOperatorsSeeUnassignedCurrentSamplesForFirstEntry() throws Exception {
+    void hidesUnassignedSamplesFromOrdinaryOperators() throws Exception {
         jdbc.sql("""
                 UPDATE registry.sample_point
                 SET maintainer_subject_id=NULL WHERE sample_point_id=:samplePointId
@@ -286,9 +286,7 @@ class FormalSampleObservationRestIntegrationTest {
                         .queryParam("year", "2026")
                         .queryParam("observedAt", "2026-08-28T10:15:00+08:00"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(1))
-                .andExpect(jsonPath("$.data[0].samplePointId").value(SAMPLE_POINT_ID.toString()))
-                .andExpect(jsonPath("$.data[0].maintainerSubjectId").doesNotExist());
+                .andExpect(jsonPath("$.data.length()").value(0));
     }
 
     @Test
@@ -486,7 +484,7 @@ class FormalSampleObservationRestIntegrationTest {
     }
 
     @Test
-    void firstPeriodWriteClaimsAnUnassignedFormalSampleForTheAuthenticatedActor() throws Exception {
+    void administratorWritesUnassignedSampleWithoutClaimingIt() throws Exception {
         long matchingAuditCountBefore = firstClaimAuditCount();
         jdbc.sql("""
                 UPDATE registry.sample_point
@@ -516,8 +514,8 @@ class FormalSampleObservationRestIntegrationTest {
         assertThat(jdbc.sql("""
                 SELECT maintainer_subject_id FROM registry.sample_point
                 WHERE sample_point_id=:samplePointId
-                """).param("samplePointId", SAMPLE_POINT_ID).query(String.class).single())
-                .isEqualTo(ACTOR);
+                """).param("samplePointId", SAMPLE_POINT_ID).query(String.class).optional())
+                .isEmpty();
         assertThat(jdbc.sql("""
                 SELECT value FROM production.production_record_submission_metadata
                 WHERE field_code='PROD_REPORTER_NAME'
@@ -525,7 +523,7 @@ class FormalSampleObservationRestIntegrationTest {
                     WHERE sample_point_id=:samplePointId)
                 """).param("samplePointId", SAMPLE_POINT_ID).query(String.class).single())
                 .isEqualTo("产情测试员");
-        assertThat(firstClaimAuditCount()).isEqualTo(matchingAuditCountBefore + 1);
+        assertThat(firstClaimAuditCount()).isEqualTo(matchingAuditCountBefore);
     }
 
     private long firstClaimAuditCount() {
@@ -543,7 +541,7 @@ class FormalSampleObservationRestIntegrationTest {
     }
 
     @Test
-    void concurrentFirstWritesAllowExactlyOneActorToClaimTheFormalSample() throws Exception {
+    void concurrentOrdinaryWritesCannotClaimAnUnassignedSample() throws Exception {
         jdbc.sql("""
                 UPDATE registry.sample_point
                 SET maintainer_subject_id=NULL WHERE sample_point_id=:samplePointId
@@ -565,7 +563,7 @@ class FormalSampleObservationRestIntegrationTest {
             start.countDown();
 
             assertThat(java.util.stream.Stream.of(first.get(), second.get()).sorted().toList())
-                    .containsExactly(201, 403);
+                    .containsExactly(403, 403);
         } finally {
             executor.shutdownNow();
         }
@@ -573,9 +571,9 @@ class FormalSampleObservationRestIntegrationTest {
         assertThat(jdbc.sql("""
                 SELECT maintainer_subject_id FROM registry.sample_point
                 WHERE sample_point_id=:samplePointId
-                """).param("samplePointId", SAMPLE_POINT_ID).query(String.class).single())
-                .isIn(RESTRICTED_ACTOR, SAME_REGION_ACTOR);
-        assertThat(formalObservationAuditCount()).isEqualTo(formalObservationAuditCountBefore + 1);
+                """).param("samplePointId", SAMPLE_POINT_ID).query(String.class).optional())
+                .isEmpty();
+        assertThat(formalObservationAuditCount()).isEqualTo(formalObservationAuditCountBefore);
     }
 
     @Test
@@ -634,6 +632,30 @@ class FormalSampleObservationRestIntegrationTest {
 
         assertThat(replay).isEqualTo(first);
         assertThat(formalObservationAuditCount()).isEqualTo(formalObservationAuditCountBefore + 1);
+    }
+
+    @Test
+    void authorizationReassignmentRevokesOldMaintainerAndEnablesNewMaintainer() throws Exception {
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put(
+                        "/api/v1/formal-sample-points/{id}/maintainer", SAMPLE_POINT_ID)
+                        .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"expectedVersion\":0,\"maintainerSubjectId\":\""
+                                + SAME_REGION_ACTOR + "\",\"maintainerChangeReason\":\"责任调整\"}"))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/v1/formal-sample-observations/observations")
+                        .principal(() -> SAME_REGION_ACTOR).header("Idempotency-Key", "new-maintainer")
+                        .contentType(MediaType.APPLICATION_JSON).content(minimalProductionObservationRequest()))
+                .andExpect(status().isCreated());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put(
+                        "/api/v1/formal-sample-points/{id}/maintainer", SAMPLE_POINT_ID)
+                        .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"expectedVersion\":1,\"maintainerSubjectId\":\""
+                                + ACTOR + "\",\"maintainerChangeReason\":\"责任再次调整\"}"))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/v1/formal-sample-observations/observations")
+                        .principal(() -> SAME_REGION_ACTOR).header("Idempotency-Key", "old-maintainer-new-write")
+                        .contentType(MediaType.APPLICATION_JSON).content(minimalProductionObservationRequest()))
+                .andExpect(status().isForbidden());
     }
 
     @Test
@@ -1273,6 +1295,24 @@ class FormalSampleObservationRestIntegrationTest {
     }
 
     @Test
+    void editsAddressForAnInsideCoincidentSampleWithoutMovingItsReportedCoordinate() throws Exception {
+        jdbc.sql("""
+                INSERT INTO registry.sample_point(sample_point_id,kind_code,canonical_name,
+                    region_code,approval_state,location_state,governed_point,effective_from,
+                    created_by,updated_by)
+                SELECT gen_random_uuid(),kind_code,'独立共址样本',region_code,approval_state,
+                    location_state,governed_point,effective_from,created_by,updated_by
+                FROM registry.sample_point WHERE sample_point_id=:id
+                """).param("id", SAMPLE_POINT_ID).update();
+        String request = locationObservationRequest(0).replace("123.2345678", "123.2")
+                .replace("47.3456789", "47.3");
+        mvc.perform(post("/api/v1/formal-sample-observations/observations")
+                        .principal(() -> ACTOR).header("Idempotency-Key", "coincident-address")
+                        .contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isCreated());
+    }
+
+    @Test
     void savesLegacySampleAddressWithObservationAndRequeriesIt() throws Exception {
         jdbc.sql("DELETE FROM registry.formal_sample_point_profile WHERE sample_point_id=:id")
                 .param("id", SAMPLE_POINT_ID).update();
@@ -1335,14 +1375,15 @@ class FormalSampleObservationRestIntegrationTest {
     }
 
     @Test
-    void refusesLocationEditsWithoutMasterPermissionAndLeavesBothRecordsUnchanged() throws Exception {
+    void allowsAssignedMaintainerToEditLocationWithoutMasterPermission() throws Exception {
         jdbc.sql("UPDATE registry.sample_point SET maintainer_subject_id=:actor WHERE sample_point_id=:id")
                 .param("actor", SAME_REGION_ACTOR).param("id", SAMPLE_POINT_ID).update();
         mvc.perform(post("/api/v1/formal-sample-observations/observations")
                         .principal(() -> SAME_REGION_ACTOR).header("Idempotency-Key", "inline-location-denied")
                         .contentType(MediaType.APPLICATION_JSON).content(locationObservationRequest(0)))
-                .andExpect(status().isForbidden());
-        assertInlineLocationUnchanged();
+                .andExpect(status().isCreated());
+        assertThat(jdbc.sql("SELECT maintainer_subject_id FROM registry.sample_point WHERE sample_point_id=:id")
+                .param("id", SAMPLE_POINT_ID).query(String.class).single()).isEqualTo(SAME_REGION_ACTOR);
     }
 
     @Test
