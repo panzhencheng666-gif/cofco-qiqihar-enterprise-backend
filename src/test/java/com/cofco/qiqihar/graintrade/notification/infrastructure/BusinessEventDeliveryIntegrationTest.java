@@ -64,6 +64,7 @@ class BusinessEventDeliveryIntegrationTest {
             UUID.fromString("99000000-0000-0000-0000-000000000006");
 
     @Autowired DataSource dataSource;
+    @Autowired org.springframework.transaction.PlatformTransactionManager transactions;
     @Autowired BusinessNotificationRepository notifications;
     @Autowired BusinessEventDeliveryRepository deliveries;
     private JdbcClient jdbc;
@@ -409,24 +410,34 @@ class BusinessEventDeliveryIntegrationTest {
         service.drain(consumer, "instance-crashed", scope, SUBJECT, initialSequence, 20,
                 event -> { throw new IllegalStateException("crashed connection"); });
 
-        jdbc.sql("""
-                UPDATE platform.business_event_delivery_checkpoint
-                SET lease_expires_at=clock_timestamp()-interval '1 second'
-                WHERE consumer_id=:consumer
-                """).param("consumer", consumer).update();
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(transactions);
+        transaction.executeWithoutResult(status -> {
+            jdbc.sql("""
+                    UPDATE platform.business_event_delivery_checkpoint
+                    SET lease_expires_at=clock_timestamp()-interval '1 second'
+                    WHERE consumer_id=:consumer
+                    """).param("consumer", consumer).update();
 
-        assertThat(service.expireStaleConsumers()).isGreaterThanOrEqualTo(1);
-        assertThat(jdbc.sql("""
-                SELECT lifecycle_status,retirement_reason
-                FROM platform.business_event_delivery_checkpoint WHERE consumer_id=:consumer
-                """).param("consumer", consumer).query().singleRow())
-                .containsEntry("lifecycle_status", "EXPIRED")
-                .containsEntry("retirement_reason", "LEASE_EXPIRED");
-        assertThat(jdbc.sql("""
-                SELECT count(*) FROM platform.business_event_delivery_backlog
-                WHERE consumer_id=:consumer
-                """).param("consumer", consumer).query(Long.class).single()).isZero();
-        assertThat(service.backlog(consumer, scope, initialSequence).pendingCount()).isZero();
+            // Keep the expired fixture and explicit scan in one transaction so the
+            // scheduled scanner cannot retire this consumer before the assertion.
+            assertThat(service.expireStaleConsumers()).isGreaterThanOrEqualTo(1);
+            assertThat(jdbc.sql("""
+                    SELECT count(*) FROM platform.business_event_consumer_lifecycle_event
+                    WHERE consumer_id=:consumer AND lifecycle_status='EXPIRED'
+                      AND reason_code='LEASE_EXPIRED'
+                    """).param("consumer", consumer).query(Long.class).single()).isOne();
+            assertThat(jdbc.sql("""
+                    SELECT lifecycle_status,retirement_reason
+                    FROM platform.business_event_delivery_checkpoint WHERE consumer_id=:consumer
+                    """).param("consumer", consumer).query().singleRow())
+                    .containsEntry("lifecycle_status", "EXPIRED")
+                    .containsEntry("retirement_reason", "LEASE_EXPIRED");
+            assertThat(jdbc.sql("""
+                    SELECT count(*) FROM platform.business_event_delivery_backlog
+                    WHERE consumer_id=:consumer
+                    """).param("consumer", consumer).query(Long.class).single()).isZero();
+            assertThat(service.backlog(consumer, scope, initialSequence).pendingCount()).isZero();
+        });
     }
 
     @Test
