@@ -59,7 +59,7 @@ class SamplePointCoordinateApprovalIntegrationTest {
     }
 
     @Test
-    void productionApprovalRejectsADifferentSamplePointAtAnOccupiedCoordinate() throws Exception {
+    void productionApprovalAcceptsADistinctSampleAtAnInsideSharedCoordinate() throws Exception {
         UUID photo = stagePhoto("production-tester", "production-coordinate.png");
         String id = createProduction(photo);
         submitProduction(id);
@@ -68,12 +68,11 @@ class SamplePointCoordinateApprovalIntegrationTest {
                         .principal(() -> "market-tester")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"version\":1}"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("SAMPLE_POINT_COORDINATE_OCCUPIED"));
+                .andExpect(status().isOk());
     }
 
     @Test
-    void marketApprovalRejectsADifferentSamplePointAtAnOccupiedCoordinate() throws Exception {
+    void marketApprovalAcceptsADistinctSampleAtAnInsideSharedCoordinate() throws Exception {
         UUID photo = stagePhoto("market-tester", "market-coordinate.png");
         String id = createMarket(photo);
         mockMvc.perform(post("/api/v1/market-records/{id}/submit", id)
@@ -86,8 +85,7 @@ class SamplePointCoordinateApprovalIntegrationTest {
                         .principal(() -> "production-tester")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"version\":1}"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("SAMPLE_POINT_COORDINATE_OCCUPIED"));
+                .andExpect(status().isOk());
     }
 
     private String createProduction(UUID photo) throws Exception {
@@ -119,7 +117,7 @@ class SamplePointCoordinateApprovalIntegrationTest {
     private String createMarket(UUID photo) throws Exception {
         String body = """
                 {"productCode":"CORN","coreValues":{
-                 "MKT_OBJECT_TYPE":"TRADER","MKT_REGION":"230200","MKT_TRADE_DATE":"2026-08-01",
+                 "MKT_OBJECT_TYPE":"TRADER","MKT_REGION":"230202","MKT_TRADE_DATE":"2026-08-01",
                  "MKT_PURCHASE_BASE_PRICE":"2300","MKT_SALE_BASE_PRICE":"2300",
                  "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
                  "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",

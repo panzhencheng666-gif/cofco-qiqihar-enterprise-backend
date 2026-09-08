@@ -305,6 +305,27 @@ class FormalSamplePointWriteRestIntegrationTest {
     }
 
     @Test
+    void maintainerCanUpdateMasterDataButCannotReassignResponsibility() throws Exception {
+        UUID id = responseId(mvc.perform(post("/api/v1/formal-sample-points")
+                        .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content(draft("维护人编辑样本", "230202", "原地址",
+                                "123.94", "47.31", "FARMER", null, RESTRICTED)))
+                .andExpect(status().isCreated()).andReturn());
+        mvc.perform(put("/api/v1/formal-sample-points/{id}", id)
+                        .principal(() -> RESTRICTED).contentType(MediaType.APPLICATION_JSON)
+                        .content(draft("维护人编辑样本", "230202", "更新地址",
+                                "123.9401", "47.31", "FARMER", 0L, RESTRICTED)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.address").value("更新地址"))
+                .andExpect(jsonPath("$.data.maintainerSubjectId").value(RESTRICTED));
+        mvc.perform(put("/api/v1/formal-sample-points/{id}", id)
+                        .principal(() -> RESTRICTED).contentType(MediaType.APPLICATION_JSON)
+                        .content(draft("维护人编辑样本", "230202", "更新地址",
+                                "123.9401", "47.31", "FARMER", 1L, ADMIN, "越权改派")))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
     void persistsAndReassignsAnActiveMaintainerFromTheEmployeeDirectory() throws Exception {
         MvcResult created = mvc.perform(post("/api/v1/formal-sample-points")
                         .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)

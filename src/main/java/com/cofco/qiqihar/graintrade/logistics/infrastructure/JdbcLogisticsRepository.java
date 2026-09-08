@@ -373,7 +373,8 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
                     """).param("effectiveFrom", sample.collectionDate()).param("actor", approvingActorId)
                     .param("updatedAt", approvedTime).param("samplePointId", samplePointId).update();
         } else {
-            coordinateGuard.lockAndRequireAvailable(null, sample.longitude(), sample.latitude());
+            coordinateGuard.lockAndRequireAvailableForRegion(
+                    null, sample.longitude(), sample.latitude(), sample.regionCode());
             String submittingActorId = jdbc.sql("""
                     SELECT actor_subject_id FROM platform.business_event_outbox
                     WHERE aggregate_type='LOGISTICS_RECORD' AND aggregate_id=:id

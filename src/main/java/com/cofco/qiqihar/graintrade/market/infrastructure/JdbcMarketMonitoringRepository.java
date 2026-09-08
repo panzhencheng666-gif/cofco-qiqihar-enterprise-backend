@@ -566,7 +566,8 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                 markCoordinateSharingVerified(
                         reviewedIdentity.reviewedOccupantIds(), approvingActorId, approvedTime);
             } else {
-                coordinateGuard.lockAndRequireAvailable(null, longitude, latitude);
+                coordinateGuard.lockAndRequireAvailableForRegion(
+                    null, longitude, latitude, governedRegionCode);
             }
             jdbc.sql("""
                     INSERT INTO registry.sample_point(
