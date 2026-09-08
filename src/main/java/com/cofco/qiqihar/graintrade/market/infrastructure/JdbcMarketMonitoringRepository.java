@@ -175,12 +175,11 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
     private Optional<String> displayRegionCode(
             String regionCode, BigDecimal latitude, BigDecimal longitude) {
         return jdbc.sql("""
-                SELECT region.code FROM platform.region region
-                JOIN overview.administrative_boundary_render boundary ON boundary.region_code=region.code
-                WHERE region.code=:regionCode
-                  AND ST_IsValid(ST_GeomFromGeoJSON(boundary.geo_json))
-                  AND NOT ST_IsEmpty(ST_GeomFromGeoJSON(boundary.geo_json))
-                """).param("regionCode", regionCode).query(String.class).optional();
+                SELECT code FROM platform.region WHERE code=:regionCode
+                  AND overview.sample_coordinate_admission_state(
+                    CAST(:regionCode AS varchar),CAST(:longitude AS numeric),CAST(:latitude AS numeric))='INSIDE'
+                """).param("regionCode", regionCode).param("longitude", longitude)
+                .param("latitude", latitude).query(String.class).optional();
     }
 
     private boolean hasBoundaryInRegionScope(String regionCode) {

@@ -76,7 +76,7 @@ public class JdbcDesignSamplePointRepository implements DesignSamplePointReposit
     public Optional<BoundaryContainment> coordinateBoundaryState(
             String regionCode, BigDecimal longitude, BigDecimal latitude) {
         return jdbc.sql("""
-                SELECT overview.design_sample_display_boundary_state(
+                SELECT overview.sample_coordinate_admission_state(
                     CAST(:regionCode AS varchar),CAST(:longitude AS numeric),CAST(:latitude AS numeric))
                 """).param("regionCode", regionCode).param("longitude", longitude)
                 .param("latitude", latitude).query(String.class).optional()

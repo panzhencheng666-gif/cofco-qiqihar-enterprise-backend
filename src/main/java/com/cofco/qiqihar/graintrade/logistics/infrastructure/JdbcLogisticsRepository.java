@@ -145,8 +145,13 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
         } catch (RuntimeException exception) {
             return false;
         }
-        return Boolean.TRUE.equals(jdbc.sql("SELECT EXISTS(SELECT 1 FROM platform.region WHERE code=:code)")
-                .param("code", draft.values().get("LOG_REGION")).query(Boolean.class).single());
+        return Boolean.TRUE.equals(jdbc.sql("""
+                SELECT coalesce(overview.sample_coordinate_admission_state(
+                  CAST(:region AS varchar),CAST(:longitude AS numeric),CAST(:latitude AS numeric))='INSIDE',false)
+                """).param("region", draft.values().get("LOG_REGION"))
+                .param("longitude", new BigDecimal(draft.values().get("LOG_SAMPLE_LONGITUDE")))
+                .param("latitude", new BigDecimal(draft.values().get("LOG_SAMPLE_LATITUDE")))
+                .query(Boolean.class).single());
     }
 
     @Override

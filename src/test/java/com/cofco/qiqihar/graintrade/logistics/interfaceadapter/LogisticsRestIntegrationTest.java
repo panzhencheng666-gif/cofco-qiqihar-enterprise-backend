@@ -31,6 +31,15 @@ class LogisticsRestIntegrationTest {
     JdbcClient jdbc;
 
     @Test
+    void rejectsAnOutOfCountyLogisticsDraft() throws Exception {
+        mvc.perform(post("/api/v1/logistics-records").principal(() -> "logistics-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("CORN", "RAIL", "TEST_RAIL", "TEST_ROAD", "10", true, null)
+                                .replace("123.918200", "130.000000")))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void onlyAnIndependentAuthorizedReviewerCanApproveOrReturnALogisticsRecord() throws Exception {
         String id=create("CORN","RAIL","TEST_RAIL","TEST_ROAD",true);
         transition(id,"submit",0,null)

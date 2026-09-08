@@ -107,7 +107,9 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
         FormalSamplePointDraft draft = normalize(submitted);
         access.require("FORMAL_SAMPLE_MANAGE", draft.regionCode());
         requireValidReferences(draft);
-        coordinateGuard.lockAndRequireAvailable(null, draft.longitude(), draft.latitude());
+        repository.lockAndRequireIdentityAvailable(draft.regionCode(), draft.canonicalName());
+        coordinateGuard.lockAndRequireAvailableForRegion(
+                null, draft.longitude(), draft.latitude(), draft.regionCode());
         return draft;
     }
 
@@ -330,7 +332,9 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
         switch (containment) {
             case UNAVAILABLE -> throw new ServiceUnavailableException(
                     "ADMIN_BOUNDARY_UNAVAILABLE", "所选行政区边界数据暂不可用");
-            case OUTSIDE, INSIDE -> { }
+            case OUTSIDE -> throw new ClientRequestException(
+                    "FORMAL_SAMPLE_POINT_OUTSIDE_REGION", "原始坐标必须位于所选县区内");
+            case INSIDE -> { }
         }
     }
 

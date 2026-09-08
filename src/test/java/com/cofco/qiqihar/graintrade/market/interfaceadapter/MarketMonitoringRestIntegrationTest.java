@@ -168,7 +168,7 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
-    void acceptsAMarketDraftWhoseCoordinatesFallOutsideTheDeclaredRegion() throws Exception {
+    void rejectsAMarketDraftWhoseCoordinatesFallOutsideTheDeclaredRegion() throws Exception {
         String body = draftBody("CORN", "FEED_MILL", "MOISTURE", null)
                 .replace("\"MKT_SAMPLE_LATITUDE\":\"47.3543\"", "\"MKT_SAMPLE_LATITUDE\":\"60\"")
                 .replace("\"MKT_SAMPLE_LONGITUDE\":\"123.9182\"", "\"MKT_SAMPLE_LONGITUDE\":\"150\"");
@@ -177,9 +177,9 @@ class MarketMonitoringRestIntegrationTest {
                         .principal(() -> "market-tester")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
-                .andExpect(status().isCreated());
+                .andExpect(status().isBadRequest());
 
-        assertThat(recordCount()).isOne();
+        assertThat(recordCount()).isZero();
     }
 
     @Test

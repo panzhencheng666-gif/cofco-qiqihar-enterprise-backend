@@ -255,7 +255,7 @@ class ProductionRecordRestIntegrationTest {
     }
 
     @Test
-    void acceptsAProductionDraftWhoseCoordinatesFallOutsideTheDeclaredRegion() throws Exception {
+    void rejectsAProductionDraftWhoseCoordinatesFallOutsideTheDeclaredRegion() throws Exception {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         jdbc.sql("""
                 INSERT INTO overview.administrative_boundary(
@@ -274,7 +274,7 @@ class ProductionRecordRestIntegrationTest {
                         .principal(() -> "production-tester")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
-                .andExpect(status().isCreated());
+                .andExpect(status().isBadRequest());
     }
 
     @Test
