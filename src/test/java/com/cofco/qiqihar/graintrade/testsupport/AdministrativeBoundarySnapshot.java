@@ -47,14 +47,22 @@ public final class AdministrativeBoundarySnapshot {
     }
 
     public void restore(JdbcClient jdbc) {
-        jdbc.sql("DELETE FROM overview.administrative_boundary WHERE region_code=:regionCode")
-                .param("regionCode", regionCode).update();
+        if (boundary.isEmpty()) {
+            jdbc.sql("DELETE FROM overview.administrative_boundary WHERE region_code=:regionCode")
+                    .param("regionCode", regionCode).update();
+            return;
+        }
         boundary.ifPresent(value -> jdbc.sql("""
                 INSERT INTO overview.administrative_boundary(
                   region_code,geometry,source_name,source_url,source_revision,source_license,
                   source_feature_id,source_effective_on,geometry_sha256,loaded_at)
                 VALUES(:regionCode,ST_GeomFromEWKB(:geometry),:sourceName,:sourceUrl,:sourceRevision,
                   :sourceLicense,:sourceFeatureId,:sourceEffectiveOn,:geometrySha256,:loadedAt)
+                ON CONFLICT(region_code) DO UPDATE SET geometry=excluded.geometry,
+                  source_name=excluded.source_name,source_url=excluded.source_url,
+                  source_revision=excluded.source_revision,source_license=excluded.source_license,
+                  source_feature_id=excluded.source_feature_id,source_effective_on=excluded.source_effective_on,
+                  geometry_sha256=excluded.geometry_sha256,loaded_at=excluded.loaded_at
                 """).param("regionCode", value.regionCode()).param("geometry", value.geometry())
                 .param("sourceName", value.sourceName()).param("sourceUrl", value.sourceUrl())
                 .param("sourceRevision", value.sourceRevision()).param("sourceLicense", value.sourceLicense())
@@ -69,6 +77,11 @@ public final class AdministrativeBoundarySnapshot {
                     VALUES(:regionCode,ST_GeomFromEWKB(:geometry),:geoJson,:simplifyTolerance,
                       :fullPointCount,:renderPointCount,:sourceGeometrySha256,:refreshedAt,
                       :sourceName,:sourceRevision,:sourceLicense)
+                    ON CONFLICT(region_code) DO UPDATE SET geometry=excluded.geometry,geo_json=excluded.geo_json,
+                      simplify_tolerance=excluded.simplify_tolerance,full_point_count=excluded.full_point_count,
+                      render_point_count=excluded.render_point_count,source_geometry_sha256=excluded.source_geometry_sha256,
+                      refreshed_at=excluded.refreshed_at,source_name=excluded.source_name,
+                      source_revision=excluded.source_revision,source_license=excluded.source_license
                     """).param("regionCode", value.regionCode()).param("geometry", value.geometry())
                     .param("geoJson", value.geoJson()).param("simplifyTolerance", value.simplifyTolerance())
                     .param("fullPointCount", value.fullPointCount())

@@ -18,7 +18,7 @@ public interface ProductionRecordRepository {
     boolean isApplicableObjectType(String productCode, String objectTypeCode);
     boolean isApplicableCultivar(String productCode, String cultivarCode);
     boolean isKnownRegion(String regionCode);
-    boolean isPointWithinRegion(String regionCode, BigDecimal latitude, BigDecimal longitude);
+    boolean supportsSampleLocation(String regionCode, BigDecimal latitude, BigDecimal longitude);
     boolean areApplicableFacts(String productCode, String objectTypeCode, Map<String, Set<String>> factCodes);
     List<ProductionFactCategory> findFactCategories();
     List<ProductionFactDefinition> findFactDefinitions(String productCode, String objectTypeCode);

@@ -59,6 +59,8 @@ class JdbcObservableAnalysisRepositoryTest {
                   '当前有效样本测试边界','urn:test:observable-valid-sample','test-1','测试',
                   :region,DATE '2026-01-01',repeat('7',64))
                 """).param("region", VALID_SAMPLE_REGION).update();
+        GovernedMasterDataFixtures.publishBoundary(jdbc, REGION);
+        GovernedMasterDataFixtures.publishBoundary(jdbc, VALID_SAMPLE_REGION);
         jdbc.sql("""
                 INSERT INTO platform.business_period(
                     code,name,starts_on,ends_on,sort_order,marketing_year_code)

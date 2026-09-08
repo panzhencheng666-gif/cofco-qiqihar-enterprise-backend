@@ -32,13 +32,13 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
     private static final String CURRENT_SAMPLE_FILTER = """
              AND (e.sample_point_id IS NULL OR EXISTS (
                SELECT 1 FROM registry.sample_point point
-               JOIN overview.administrative_boundary boundary
+               JOIN overview.administrative_boundary_render boundary
                  ON boundary.region_code=point.region_code
                WHERE point.sample_point_id=e.sample_point_id
                  AND point.approval_state='APPROVED'
                  AND point.location_state='VALID'
                  AND point.governed_point IS NOT NULL
-                 AND ST_Covers(boundary.geometry,point.governed_point)))
+                 AND ST_Covers(ST_GeomFromGeoJSON(boundary.geo_json),point.display_point)))
             """;
     private static final Pattern STORAGE_KEY = Pattern.compile("^[A-Za-z_][A-Za-z0-9_]*$");
     private static final List<String> PUBLIC_FIELD_CODES = List.of(

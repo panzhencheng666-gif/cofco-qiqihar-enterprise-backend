@@ -141,6 +141,30 @@ class OverviewSamplePointRestIntegrationTest {
     }
 
     @Test
+    void keepsOutsideReportedCoordinatesVisibleInSelectedVillageAndAncestorFilters() throws Exception {
+        jdbc.sql("""
+                UPDATE registry.sample_point SET governed_point=ST_SetSRID(ST_MakePoint(125.91,48.91),4326)
+                WHERE sample_point_id=CAST(:id AS uuid)
+                """).param("id", SURVEY_POINT).update();
+        for (String selected : java.util.List.of(COUNTY, TOWNSHIP, VILLAGE)) {
+            mvc.perform(get("/api/v1/overview/sample-point-icons")
+                            .principal(() -> "production-tester")
+                            .queryParam("regionCode", selected).queryParam("productCode", "CORN")
+                            .queryParam("year", "2026").queryParam("categoryCode", "PRODUCTION"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data[?(@.samplePointId == '" + SURVEY_POINT + "')].locationMode")
+                            .value(org.hamcrest.Matchers.hasItem("REGION_SCHEMATIC")));
+        }
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql("""
+                SELECT ST_X(point.governed_point)=125.91 AND ST_Y(point.governed_point)=48.91
+                  AND ST_Covers(ST_GeomFromGeoJSON(boundary.geo_json),point.display_point)
+                FROM registry.sample_point point
+                JOIN overview.administrative_boundary_render boundary ON boundary.region_code=point.region_code
+                WHERE point.sample_point_id=CAST(:id AS uuid)
+                """).param("id", SURVEY_POINT).query(Boolean.class).single()).isTrue();
+    }
+
+    @Test
     void listsRetiredSamplesOnlyInTheHistoricalLayerForTheirRetirementYear() throws Exception {
         jdbc.sql("""
                 UPDATE registry.sample_point

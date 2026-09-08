@@ -51,9 +51,9 @@ class FormalSamplePointImportRestIntegrationTest {
     }
 
     @Test
-    void importsFormalSamplesOnceAndReplaysWithoutDuplicateWrites() throws Exception {
+    void importsOutsideFormalSamplesOnceAndReplaysWithoutDuplicateWrites() throws Exception {
         byte[] workbook = SamplePointMasterWorkbook.create(
-                imports.templateDefinition(), List.of(formalRow("批量正式样本一", "123.94")));
+                imports.templateDefinition(), List.of(formalRow("批量正式样本一", "125.94")));
         MockMultipartFile file = new MockMultipartFile(
                 "file", "formal.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook);
@@ -72,6 +72,13 @@ class FormalSamplePointImportRestIntegrationTest {
         org.assertj.core.api.Assertions.assertThat(jdbc.sql(
                         "SELECT count(*) FROM registry.sample_point")
                 .query(Long.class).single()).isOne();
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql("""
+                SELECT ST_X(point.governed_point)=125.94
+                  AND point.location_mode='REGION_SCHEMATIC'
+                  AND ST_Covers(ST_GeomFromGeoJSON(boundary.geo_json),point.display_point)
+                FROM registry.sample_point point
+                JOIN overview.administrative_boundary_render boundary ON boundary.region_code=point.region_code
+                """).query(Boolean.class).single()).isTrue();
     }
 
     @Test

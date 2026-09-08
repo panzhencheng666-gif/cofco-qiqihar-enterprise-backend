@@ -16,7 +16,7 @@ public interface MarketMonitoringRepository {
     PagedResult<MarketListRow> findLifecyclePage(MarketRecordQuery query);
     Optional<MarketMonitoringRecord> findById(String id);
     boolean isKnownRegion(String regionCode);
-    boolean isPointWithinRegion(String regionCode, BigDecimal latitude, BigDecimal longitude);
+    boolean supportsSampleLocation(String regionCode, BigDecimal latitude, BigDecimal longitude);
     boolean isApplicableObjectType(String productCode, String objectTypeCode);
     boolean areApplicableFacts(String productCode, String objectTypeCode, Set<String> codes);
     List<MarketFactCategory> findFactCategories();

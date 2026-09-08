@@ -57,6 +57,7 @@ class SamplePointCoordinateGuardIntegrationTest {
                   source_effective_on=excluded.source_effective_on,
                   geometry_sha256=excluded.geometry_sha256
                 """).param("region", REGION).update();
+        GovernedMasterDataFixtures.publishBoundary(jdbc, REGION);
         jdbc.sql("""
                 INSERT INTO registry.sample_point(
                   sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,

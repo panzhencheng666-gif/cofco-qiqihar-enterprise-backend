@@ -91,6 +91,7 @@ class MarketMonitoringRestIntegrationTest {
                   source_effective_on=EXCLUDED.source_effective_on,
                   geometry_sha256=EXCLUDED.geometry_sha256
                 """).update();
+        com.cofco.qiqihar.graintrade.testsupport.GovernedMasterDataFixtures.publishBoundary(jdbc, "230200");
     }
     @AfterEach
     void clearAuditEvents() {
@@ -130,7 +131,7 @@ class MarketMonitoringRestIntegrationTest {
                 """).update();
         jdbc.sql("TRUNCATE overview.region_surplus_calculation_activation_audit").update();
         jdbc.sql("DELETE FROM overview.administrative_boundary "
-                        + "WHERE source_url='urn:test:market-sample-point'")
+                        + "WHERE source_url='urn:test:market-sample-point' AND region_code<>'230200'")
                 .update();
         boundarySnapshot.restore(jdbc);
     }
@@ -167,7 +168,7 @@ class MarketMonitoringRestIntegrationTest {
     }
 
     @Test
-    void rejectsAMarketDraftWhoseCoordinatesFallOutsideTheDeclaredRegion() throws Exception {
+    void acceptsAMarketDraftWhoseCoordinatesFallOutsideTheDeclaredRegion() throws Exception {
         String body = draftBody("CORN", "FEED_MILL", "MOISTURE", null)
                 .replace("\"MKT_SAMPLE_LATITUDE\":\"47.3543\"", "\"MKT_SAMPLE_LATITUDE\":\"60\"")
                 .replace("\"MKT_SAMPLE_LONGITUDE\":\"123.9182\"", "\"MKT_SAMPLE_LONGITUDE\":\"150\"");
@@ -176,10 +177,9 @@ class MarketMonitoringRestIntegrationTest {
                         .principal(() -> "market-tester")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("SAMPLE_COORDINATE_REGION_MISMATCH"));
+                .andExpect(status().isCreated());
 
-        assertThat(recordCount()).isZero();
+        assertThat(recordCount()).isOne();
     }
 
     @Test

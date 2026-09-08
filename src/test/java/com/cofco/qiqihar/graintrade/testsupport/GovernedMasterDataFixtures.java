@@ -34,6 +34,22 @@ public final class GovernedMasterDataFixtures {
                 .query(Long.class).single();
     }
 
+    public static void publishBoundary(JdbcClient jdbc, String regionCode) {
+        jdbc.sql("""
+                INSERT INTO overview.administrative_boundary_render(
+                  region_code,geometry,geo_json,simplify_tolerance,full_point_count,
+                  render_point_count,source_geometry_sha256,source_name,source_revision,source_license)
+                SELECT region_code,geometry,ST_AsGeoJSON(geometry,15,0),0,ST_NPoints(geometry),
+                       ST_NPoints(geometry),geometry_sha256,source_name,source_revision,source_license
+                FROM overview.administrative_boundary WHERE region_code=:region
+                ON CONFLICT(region_code) DO UPDATE SET geometry=excluded.geometry,
+                  geo_json=excluded.geo_json,full_point_count=excluded.full_point_count,
+                  render_point_count=excluded.render_point_count,
+                  source_geometry_sha256=excluded.source_geometry_sha256,source_name=excluded.source_name,
+                  source_revision=excluded.source_revision,source_license=excluded.source_license
+                """).param("region", regionCode).update();
+    }
+
     public static void deleteRegions(JdbcClient jdbc, Collection<String> codes) {
         if (codes.isEmpty()) return;
         List<String> governedCodes = jdbc.sql("""

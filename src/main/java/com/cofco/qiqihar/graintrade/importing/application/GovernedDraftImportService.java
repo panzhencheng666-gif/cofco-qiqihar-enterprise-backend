@@ -283,16 +283,6 @@ public class GovernedDraftImportService {
         SubjectInput input = new SubjectInput(domainCode, draft.sampleName(),
                 storedValues.get(contactCode), draft.regionCode(),
                 new BigDecimal(longitude), new BigDecimal(latitude));
-        String submittedLongitude = submittedValues.getOrDefault(longitudeCode, longitude);
-        String submittedLatitude = submittedValues.getOrDefault(latitudeCode, latitude);
-        SubjectInput submittedInput = new SubjectInput(domainCode, draft.sampleName(),
-                storedValues.get(contactCode), draft.regionCode(),
-                new BigDecimal(BusinessImportWorkbook.normalizeSubmittedDecimal(submittedLongitude)),
-                new BigDecimal(BusinessImportWorkbook.normalizeSubmittedDecimal(submittedLatitude)));
-        if (!identities.areCoordinateRepresentationsWithinDeclaredRegion(submittedInput, input)) {
-            throw new ClientRequestException("SAMPLE_COORDINATE_REGION_MISMATCH",
-                    "样本点经纬度不在所填地区范围内，请核对地区或真实坐标后重新导入");
-        }
         return identities.assess(input);
     }
 

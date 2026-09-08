@@ -54,6 +54,8 @@ class MarketReturnedCorrectionRestIntegrationTest {
     @Autowired MarketReturnedCorrectionRowService rowService;
     @Autowired InternalSecuritySubjectScope subjects;
     private JdbcClient jdbc;
+    private final java.util.Map<String, com.cofco.qiqihar.graintrade.testsupport.AdministrativeBoundarySnapshot>
+            boundaries = new java.util.LinkedHashMap<>();
 
     @BeforeEach
     void setUp() {
@@ -75,8 +77,6 @@ class MarketReturnedCorrectionRestIntegrationTest {
                   platform.business_import_draft,market.market_record,evidence.evidence_photo
                 RESTART IDENTITY CASCADE
                 """).update();
-        jdbc.sql("DELETE FROM overview.administrative_boundary WHERE source_url=:source")
-                .param("source", "urn:test:returned-market-correction").update();
         jdbc.sql("""
                 DELETE FROM registry.sample_point point
                 WHERE point.created_by='market-tester'
@@ -87,6 +87,8 @@ class MarketReturnedCorrectionRestIntegrationTest {
                   AND NOT EXISTS(SELECT 1 FROM logistics.route_event event
                     WHERE event.sample_point_id=point.sample_point_id)
                 """).update();
+        boundaries.values().forEach(snapshot -> snapshot.restore(jdbc));
+        boundaries.clear();
         ProtectedTestDatabaseConfiguration.provisionSecurityTestSubjects(jdbc);
     }
 
@@ -246,12 +248,8 @@ class MarketReturnedCorrectionRestIntegrationTest {
                         "CORN", "TRADER", "230200", "合法修正样本", "47.6000000", "123.6000000")));
         assertThatThrownBy(() -> subjects.callAs("market-tester", () -> rowService.correctAndSubmit(
                 invalid, 2, correctionRow(
-                        "CORN", "TRADER", "230200", "非法修正样本", "60.0000000", "150.0000000"))))
-                .isInstanceOfSatisfying(ClientRequestException.class, exception -> {
-                    assertThat(exception.code()).isEqualTo("MARKET_SAMPLE_POINT_OUTSIDE_REGION");
-                    assertThat(exception.clientMessage()).isEqualTo(
-                            "样本点经纬度不在所选地区范围内，请核对后重新上传");
-                });
+                        "CORN", "TRADER", "230200", "非法修正样本", "91.0000000", "150.0000000"))))
+                .isInstanceOf(ClientRequestException.class);
 
         assertThat(recordSnapshot(valid)).contains("PENDING_REVIEW:4:47.6000000:123.6000000");
         assertThat(recordSnapshot(invalid)).isEqualTo(invalidBefore);
@@ -260,7 +258,7 @@ class MarketReturnedCorrectionRestIntegrationTest {
     }
 
     @Test
-    void acceptsAPointCoveredByADescendantBoundaryOfTheSelectedRegion() throws Exception {
+    void preservesSelectedRegionWhenCoordinatesFallInsideADescendant() throws Exception {
         String id = returned(
                 "CORN", "TRADER", "230200", "区县下级边界样本", COORDINATE_REASON);
         boundary("230200", 0, 0, 1, 1);
@@ -290,7 +288,7 @@ class MarketReturnedCorrectionRestIntegrationTest {
                 FROM market.market_record record
                 JOIN registry.sample_point point ON point.sample_point_id=record.sample_point_id
                 WHERE record.record_id=:id
-                """).param("id", id).query(String.class).single()).isEqualTo("230202");
+                """).param("id", id).query(String.class).single()).isEqualTo("230200");
     }
 
     @Test
@@ -677,6 +675,8 @@ class MarketReturnedCorrectionRestIntegrationTest {
     }
 
     private void boundary(String regionCode, int west, int south, int east, int north) {
+        boundaries.computeIfAbsent(regionCode, code ->
+                com.cofco.qiqihar.graintrade.testsupport.AdministrativeBoundarySnapshot.capture(jdbc, code));
         jdbc.sql("""
                 INSERT INTO overview.administrative_boundary(
                   region_code,geometry,source_name,source_url,source_revision,source_license,
@@ -692,6 +692,7 @@ class MarketReturnedCorrectionRestIntegrationTest {
                   geometry_sha256=EXCLUDED.geometry_sha256
                 """).param("regionCode", regionCode).param("west", west).param("south", south)
                 .param("east", east).param("north", north).update();
+        com.cofco.qiqihar.graintrade.testsupport.GovernedMasterDataFixtures.publishBoundary(jdbc, regionCode);
     }
 
     private void restrictMarketTesterTo(String regionCode) {

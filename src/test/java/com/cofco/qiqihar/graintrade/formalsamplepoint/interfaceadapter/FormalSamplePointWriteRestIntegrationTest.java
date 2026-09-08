@@ -501,13 +501,45 @@ class FormalSamplePointWriteRestIntegrationTest {
     }
 
     @Test
-    void rejectsOutsideOrOccupiedCoordinatesAndStaleUpdates() throws Exception {
-        mvc.perform(post("/api/v1/formal-sample-points")
+    void preservesOutsideCoordinatesAndPlacesCreateAndUpdateInsideSelectedRegion() throws Exception {
+        MvcResult created = mvc.perform(post("/api/v1/formal-sample-points")
                         .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
-                        .content(draft("越界样本", "230202", "越界地址", "124.00", "47.40",
+                        .content(draft("区内示意样本", "230202", "填报地址", "124.00", "47.40",
                                 "FARMER", null)))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("COORDINATE_OUTSIDE_REGION"));
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.longitude").value(124.00))
+                .andExpect(jsonPath("$.data.latitude").value(47.40)).andReturn();
+        UUID id = responseId(created);
+        assertSchematicLocation(id, 124.00, 47.40);
+        mvc.perform(put("/api/v1/formal-sample-points/{id}", id)
+                        .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content(draft("区内示意样本", "230202", "修改地址", "125.00", "48.40",
+                                "FARMER", 0L)))
+                .andExpect(status().isOk());
+        mvc.perform(get("/api/v1/formal-sample-points/{id}", id).principal(() -> ADMIN))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.longitude").value(125.00))
+                .andExpect(jsonPath("$.data.latitude").value(48.40));
+        assertSchematicLocation(id, 125.00, 48.40);
+    }
+
+    private void assertSchematicLocation(UUID id, double longitude, double latitude) {
+        assertThat(jdbc.sql("""
+                SELECT point.region_code='230202'
+                  AND ST_X(point.governed_point)=:longitude
+                  AND ST_Y(point.governed_point)=:latitude
+                  AND point.location_mode='REGION_SCHEMATIC'
+                  AND ST_Covers(ST_GeomFromGeoJSON(boundary.geo_json),point.display_point)
+                FROM registry.sample_point point
+                JOIN overview.administrative_boundary_render boundary
+                  ON boundary.region_code=point.region_code
+                WHERE point.sample_point_id=:id
+                """).param("id", id).param("longitude", longitude).param("latitude", latitude)
+                .query(Boolean.class).single()).isTrue();
+    }
+
+    @Test
+    void rejectsOccupiedCoordinatesAndStaleUpdates() throws Exception {
         mvc.perform(post("/api/v1/formal-sample-points")
                         .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content(draft("占位样本", "230202", "占位地址", "123.93", "47.30",

@@ -392,7 +392,7 @@ public class ProductionRecordService implements ProductionImportPort {
             throw new ClientRequestException("INAPPLICABLE_PRODUCTION_FACT",
                     "One or more facts are not applicable to this production context");
         }
-        if (!repository.isPointWithinRegion(
+        if (!repository.supportsSampleLocation(
                 draft.regionCode(), new java.math.BigDecimal(metadata.sampleLatitude()),
                 new java.math.BigDecimal(metadata.sampleLongitude()))) {
             throw new ClientRequestException(
