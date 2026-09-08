@@ -9,6 +9,9 @@ import java.util.UUID;
 import tools.jackson.databind.JsonNode;
 
 public interface DesignSamplePointRepository {
+    boolean existsIdentity(com.cofco.qiqihar.graintrade.designsample.metadata.domain.DesignSampleContext context,
+            String regionCode,String sampleName);
+
     Optional<BoundaryContainment> coordinateBoundaryState(
             String regionCode, BigDecimal longitude, BigDecimal latitude);
 

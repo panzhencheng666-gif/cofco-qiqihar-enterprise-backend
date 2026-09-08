@@ -54,18 +54,24 @@ class DisplayedBoundaryIntegrityIntegrationTest {
     }
 
     @Test
-    void rejectsABoundaryUpdateThatWouldStrandAnExistingDesignPointOutside() {
+    void repositionsDisplayCoordinatesWhenBoundaryChangesWithoutChangingReportedCoordinates() {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         insertInsidePoint(jdbc);
-        assertThatThrownBy(() -> jdbc.sql("""
+        jdbc.sql("""
                 UPDATE overview.administrative_boundary_render
                 SET geometry=ST_Multi(ST_MakeEnvelope(130,50,131,51,4326)),
                   geo_json=ST_AsGeoJSON(ST_Multi(ST_MakeEnvelope(130,50,131,51,4326))),
                   render_point_count=5
                 WHERE region_code='230202'
-                """).update())
-                .isInstanceOf(DataIntegrityViolationException.class)
-                .hasMessageContaining("existing design sample");
+                """).update();
+        assertThat(jdbc.sql("""
+                SELECT bool_and(ST_Covers(ST_GeomFromGeoJSON(b.geo_json),p.display_point)
+                  AND NOT ST_Covers(ST_GeomFromGeoJSON(b.geo_json),p.governed_point)
+                  AND p.location_mode='REGION_SCHEMATIC')
+                FROM platform.design_sample_point p
+                JOIN overview.administrative_boundary_render b ON b.region_code=p.region_code
+                WHERE p.region_code='230202'
+                """).query(Boolean.class).single()).isTrue();
     }
 
     @Test

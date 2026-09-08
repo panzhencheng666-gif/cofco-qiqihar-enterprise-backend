@@ -16,8 +16,9 @@ import org.springframework.stereotype.Service;
 public final class RegionImportResolver {
     private static final List<String> ADMINISTRATIVE_SUFFIXES = List.of(
             "特别行政区", "自治区", "自治州", "自治县", "自治旗", "林区", "特区",
-            "地区", "盟", "州", "市", "区", "县", "旗");
+            "地区", "盟", "州", "市", "区", "县", "旗", "镇", "乡");
     private static final Map<String, String> NAMED_ALIASES = Map.ofEntries(
+            Map.entry("莫旗", "150722"),
             Map.entry("瑷珲", "231102"),
             Map.entry("瑷珲区", "231102"),
             Map.entry("梅里斯", "230208"),
@@ -52,8 +53,21 @@ public final class RegionImportResolver {
                 .toList();
         if (matches.size() == 1) return matches.getFirst();
 
+        List<String> exactNames = entries.stream()
+                .filter(region -> region.name().trim().equals(value))
+                .map(RegionEntry::code).distinct().toList();
+        if (exactNames.size()==1) return exactNames.getFirst();
+
         String namedCode = NAMED_ALIASES.get(value);
         if (namedCode != null && byCode.containsKey(namedCode)) return namedCode;
+
+        // Preserve established six-digit county/city abbreviations when adding
+        // township aliases. An explicit full township/village name matched above.
+        List<String> countyAliases = entries.stream()
+                .filter(region -> region.code().length()==6)
+                .filter(region -> aliases(region.name()).contains(value))
+                .map(RegionEntry::code).distinct().toList();
+        if (countyAliases.size()==1) return countyAliases.getFirst();
 
         List<String> aliasMatches = entries.stream()
                 .filter(region -> aliases(region.name()).contains(value))

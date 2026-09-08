@@ -177,6 +177,12 @@ public class DesignSamplePointService {
                 java.util.List.of(current.regionCode()));
     }
 
+    void requireNewImportIdentity(ValidatedDraft validated) {
+        if(repository.existsIdentity(validated.draft().context(),validated.regionCode(),validated.sampleName())) {
+            throw conflict("SAMPLE_POINT_IMPORT_ALREADY_EXISTS","相同业务分类、品种、对象类型、行政区及名称的样本已存在，请勿重复导入");
+        }
+    }
+
     ValidatedDraft validateForCreate(DesignSamplePointDraft submitted) {
         return validateForCreate(submitted, metadata.activeContract());
     }
@@ -231,9 +237,7 @@ public class DesignSamplePointService {
         switch (containment) {
             case UNAVAILABLE -> throw new ServiceUnavailableException(
                     "ADMIN_BOUNDARY_UNAVAILABLE", "所选行政区边界数据暂不可用");
-            case OUTSIDE -> throw new ClientRequestException(
-                    "COORDINATE_OUTSIDE_REGION", "设计样本点坐标不在所选行政区范围内");
-            case INSIDE -> { }
+            case OUTSIDE, INSIDE -> { }
         }
         return new ValidatedDraft(
                 draft, normalizedValues, name, region, longitude, latitude);

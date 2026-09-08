@@ -26,6 +26,22 @@ class RegionImportResolverTest {
         assertThat(loads.get()).isEqualTo(1);
     }
 
+    @Test
+    void resolvesKnownTownshipAndCountyNamesWithoutPromotingThemToParents() {
+        var resolver = new RegionImportResolver(() -> List.of(
+                new RegionEntry("150700","呼伦贝尔市",null),
+                new RegionEntry("150722","莫力达瓦达斡尔族自治旗","150700"),
+                new RegionEntry("150723","鄂伦春自治旗","150700"),
+                new RegionEntry("150723105","大杨树镇","150723"),
+                new RegionEntry("231182","五大连池市",null),
+                new RegionEntry("231182101","龙镇","231182"),
+                new RegionEntry("231182101001","龙镇村","231182101")));
+        assertThat(resolver.resolve("莫旗")).isEqualTo("150722");
+        assertThat(resolver.resolve("大杨树")).isEqualTo("150723105");
+        assertThat(resolver.resolve("龙镇")).isEqualTo("231182101");
+        assertThat(resolver.resolve("龙镇村")).isEqualTo("231182101001");
+    }
+
     private final RegionImportResolver resolver = new RegionImportResolver(directory());
 
     @Test
@@ -101,6 +117,7 @@ class RegionImportResolverTest {
                 new RegionEntry("230208", "梅里斯达斡尔族区", "230200"),
                 new RegionEntry("230221", "龙江县", "230200"),
                 new RegionEntry("230223", "依安县", "230200"),
+                new RegionEntry("230223100", "依安镇", "230223"),
                 new RegionEntry("230224", "泰来县", "230200"),
                 new RegionEntry("230225", "甘南县", "230200"),
                 new RegionEntry("230227", "富裕县", "230200"),

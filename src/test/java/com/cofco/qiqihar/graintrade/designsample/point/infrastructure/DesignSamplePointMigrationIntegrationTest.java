@@ -1,17 +1,14 @@
 package com.cofco.qiqihar.graintrade.designsample.point.infrastructure;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
-import java.sql.SQLException;
 import java.util.UUID;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 @SpringBootTest(classes = GrainTradeApplication.class)
@@ -20,28 +17,56 @@ class DesignSamplePointMigrationIntegrationTest {
     @Autowired DataSource dataSource;
 
     @Test
-    void rejectsAStoredCoordinateOutsideTheSelectedAuthoritativeRegion() {
-        JdbcClient jdbc = JdbcClient.create(dataSource);
-        assertThatThrownBy(() -> jdbc.sql("""
-                INSERT INTO platform.design_sample_point(
-                  design_sample_point_id,contract_version,domain_code,product_code,
-                  object_type_code,values_json,sample_name,region_code,governed_point,
-                  idempotency_key,request_digest,created_by,updated_by)
-                VALUES(:id,'design-sample-fields-v1','PRODUCTION','CORN','FARMER',
-                  CAST(:values AS jsonb),'越界设计样本点','230202',
-                  ST_SetSRID(ST_MakePoint(130,50),4326),
-                  'migration-containment-red',repeat('a',64),'production-tester','production-tester')
-                """).param("id", UUID.randomUUID()).param("values", """
-                        {"DSP_NAME":"越界设计样本点","DSP_REGION_CODE":"230202",
-                         "DSP_LONGITUDE":130,"DSP_LATITUDE":50,
-                         "OBSERVED_ON":"2026-06-01","PROD_AREA_MU":1}
-                        """).update())
-                .isInstanceOf(DataIntegrityViolationException.class)
-                .hasMessageContaining("coordinate outside")
-                .hasMessageContaining("230202")
-                .rootCause()
-                .isInstanceOfSatisfying(SQLException.class,
-                        error -> assertThat(error.getSQLState()).isEqualTo("23514"));
+    @org.springframework.transaction.annotation.Transactional
+    void placesSchematicPointsInTheExactSelectedCountyTownshipOrVillage() {
+        JdbcClient jdbc=JdbcClient.create(dataSource);
+        com.cofco.qiqihar.graintrade.testsupport.GovernedMasterDataFixtures.insertRegion(
+                jdbc,"230202999","示意测试乡镇","230202","TOWNSHIP",990991);
+        com.cofco.qiqihar.graintrade.testsupport.GovernedMasterDataFixtures.insertRegion(
+                jdbc,"230202999999","示意测试行政村","230202999","VILLAGE",990992);
+        for (String code:java.util.List.of("230202999","230202999999")) {
+            jdbc.sql("""
+                    INSERT INTO overview.administrative_boundary(
+                      region_code,geometry,source_name,source_url,source_revision,source_license,geometry_sha256)
+                    SELECT :code,ST_Multi(ST_MakeEnvelope(123.94,47.34,123.96,47.36,4326)),
+                      'isolated fixture','urn:test:schematic','test-v1','Test fixture',repeat('a',64)
+                    """).param("code",code).update();
+            jdbc.sql("""
+                    INSERT INTO overview.administrative_boundary_render(
+                      region_code,geometry,geo_json,simplify_tolerance,full_point_count,render_point_count,
+                      source_geometry_sha256,source_name,source_revision,source_license)
+                    SELECT region_code,geometry,ST_AsGeoJSON(geometry,15),0,ST_NPoints(geometry),
+                      ST_NPoints(geometry),geometry_sha256,source_name,source_revision,source_license
+                    FROM overview.administrative_boundary WHERE region_code=:code
+                    """).param("code",code).update();
+        }
+        for (String level: java.util.List.of("COUNTY","TOWNSHIP","VILLAGE")) {
+            String region=jdbc.sql("""
+                    SELECT b.region_code FROM overview.administrative_boundary_render b
+                    JOIN platform.region r ON r.code=b.region_code
+                    WHERE r.administrative_level=:level ORDER BY b.region_code LIMIT 1
+                    """).param("level",level).query(String.class).single();
+            UUID id=UUID.randomUUID();
+            jdbc.sql("""
+                    INSERT INTO platform.design_sample_point(
+                      design_sample_point_id,contract_version,domain_code,product_code,
+                      object_type_code,values_json,sample_name,region_code,governed_point,
+                      idempotency_key,request_digest,created_by,updated_by)
+                    VALUES(:id,'design-sample-fields-v1','PRODUCTION','CORN','FARMER',
+                      '{}'::jsonb,:name,:region,ST_SetSRID(ST_MakePoint(1,1),4326),
+                      :key,repeat('a',64),'production-tester','production-tester')
+                    """).param("id",id).param("name","示意层级-"+level)
+                    .param("region",region).param("key",id.toString()).update();
+            assertThat(jdbc.sql("""
+                    SELECT p.display_region_code=p.region_code
+                      AND p.location_mode='REGION_SCHEMATIC'
+                      AND ST_X(p.governed_point)=1 AND ST_Y(p.governed_point)=1
+                      AND ST_Covers(ST_GeomFromGeoJSON(b.geo_json),p.display_point)
+                    FROM platform.design_sample_point p
+                    JOIN overview.administrative_boundary_render b ON b.region_code=p.region_code
+                    WHERE p.design_sample_point_id=:id
+                    """).param("id",id).query(Boolean.class).single()).isTrue();
+        }
     }
 
     @Test

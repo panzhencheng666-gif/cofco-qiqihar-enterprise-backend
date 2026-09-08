@@ -247,7 +247,7 @@ class DesignSamplePointRestIntegrationTest {
     }
 
     @Test
-    void rejectsOutsideCoordinatesInapplicableFieldsAndUnauthorizedWritesWithoutPersistence()
+    void rejectsInvalidFieldsAndUnauthorizedWritesWithoutPersistence()
             throws Exception {
         mvc.perform(post(ENDPOINT)
                         .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
@@ -300,15 +300,6 @@ class DesignSamplePointRestIntegrationTest {
                 .andExpect(jsonPath("$.error.code").value("FIELD_VALUE_INVALID"));
 
         mvc.perform(post(ENDPOINT)
-                        .header("Idempotency-Key", "design-sample-outside")
-                        .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
-                        .content(request("越界设计样本点", "10", null)
-                                .replace("123.95", "130").replace("47.35", "50")))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code")
-                        .value("COORDINATE_OUTSIDE_REGION"));
-
-        mvc.perform(post(ENDPOINT)
                         .header("Idempotency-Key", "design-sample-inapplicable")
                         .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
                         .content(request("字段越权设计样本点", "10", null)
@@ -327,6 +318,71 @@ class DesignSamplePointRestIntegrationTest {
         assertThat(count("platform.design_sample_point")).isZero();
         assertThat(countEvents("platform.business_audit_event")).isEqualTo(auditBaseline);
         assertThat(countEvents("platform.business_event_outbox")).isEqualTo(outboxBaseline);
+    }
+
+    @Test
+    @Transactional
+    void dispersesSchematicPositionsAndKeepsThemStableWhenEditingDetails() throws Exception {
+        for (int i=0;i<4;i++) {
+            mvc.perform(post(ENDPOINT).header("Idempotency-Key","schematic-spread-"+i)
+                    .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
+                    .content(request("分散示意样本"+i,"10",null)
+                            .replace("123.95","130").replace("47.35","50")))
+                    .andExpect(status().isCreated());
+        }
+        assertThat(jdbc.sql("""
+                SELECT count(DISTINCT ST_AsEWKT(display_point))
+                FROM platform.design_sample_point WHERE sample_name LIKE '分散示意样本%'
+                """).query(Long.class).single()).isEqualTo(4L);
+        assertThat(jdbc.sql("""
+                SELECT bool_and(ST_Covers(ST_GeomFromGeoJSON(b.geo_json),p.display_point))
+                FROM platform.design_sample_point p
+                JOIN overview.administrative_boundary_render b ON b.region_code=p.region_code
+                WHERE p.sample_name LIKE '分散示意样本%'
+                """).query(Boolean.class).single()).isTrue();
+        String before=jdbc.sql("""
+                SELECT ST_AsEWKT(display_point) FROM platform.design_sample_point
+                WHERE sample_name='分散示意样本0'
+                """).query(String.class).single();
+        jdbc.sql("""
+                UPDATE platform.design_sample_point SET governed_point=governed_point
+                WHERE sample_name='分散示意样本0'
+                """).update();
+        assertThat(jdbc.sql("""
+                SELECT ST_AsEWKT(display_point) FROM platform.design_sample_point
+                WHERE sample_name='分散示意样本0'
+                """).query(String.class).single()).isEqualTo(before);
+    }
+
+    @Test
+    @Transactional
+    void preservesReportedCoordinatesAndUsesAnInRegionSchematicUntilCorrected() throws Exception {
+        MvcResult created = mvc.perform(post(ENDPOINT)
+                .header("Idempotency-Key", "schematic-location")
+                .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
+                .content(request("区县示意设计样本", "10", null)
+                        .replace("123.95", "130").replace("47.35", "50")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.longitude").value(130))
+                .andExpect(jsonPath("$.data.latitude").value(50))
+                .andExpect(jsonPath("$.data.locationMode").value("REGION_SCHEMATIC"))
+                .andReturn();
+        String id = body(created).path("data").path("id").asText();
+        assertThat(jdbc.sql("""
+                SELECT ST_Covers(boundary.geometry,point.display_point)
+                  AND ST_X(point.governed_point)=130 AND ST_Y(point.governed_point)=50
+                FROM platform.design_sample_point point
+                JOIN overview.administrative_boundary_render boundary
+                  ON boundary.region_code=point.display_region_code
+                WHERE point.design_sample_point_id=CAST(:id AS uuid)
+                """).param("id",id).query(Boolean.class).single()).isTrue();
+        mvc.perform(put(ENDPOINT + "/{id}",id).principal(() -> ACTOR)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(request("区县示意设计样本", "10",0L)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.longitude").value(123.95))
+                .andExpect(jsonPath("$.data.displayLongitude").value(123.95))
+                .andExpect(jsonPath("$.data.locationMode").value("REPORTED_COORDINATE"));
     }
 
     @Test
@@ -356,13 +412,13 @@ class DesignSamplePointRestIntegrationTest {
         mvc.perform(put(ENDPOINT + "/{id}", id).principal(() -> ACTOR)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(request("展示边界内设计点", "10", 0L)))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("COORDINATE_OUTSIDE_REGION"));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.locationMode").value("REGION_SCHEMATIC"));
         assertThat(jdbc.sql("""
                 SELECT ST_X(governed_point),ST_Y(governed_point)
                 FROM platform.design_sample_point WHERE design_sample_point_id=CAST(:id AS uuid)
                 """).param("id", id).query((row, index) -> List.of(row.getDouble(1),row.getDouble(2))).single())
-                .containsExactly(130.0,50.0);
+                .containsExactly(123.95,47.35);
     }
 
     @Test
