@@ -165,6 +165,33 @@ class OverviewSamplePointRestIntegrationTest {
     }
 
     @Test
+    void keepsRetiredSchematicSamplesInsideTheirVillage() throws Exception {
+        jdbc.sql("""
+                UPDATE registry.sample_point
+                SET governed_point=ST_SetSRID(ST_MakePoint(125.91,48.91),4326),
+                    deletion_state='RETIRED',effective_to=DATE '2027-02-04',
+                    retired_at=TIMESTAMPTZ '2027-02-04 09:30:00+08',
+                    retired_by='production-tester',retired_reason='年度样本调整'
+                WHERE sample_point_id=CAST(:id AS uuid)
+                """).param("id", SURVEY_POINT).update();
+        JsonNode icons = responseData(get("/api/v1/overview/historical-sample-point-icons")
+                .principal(() -> "production-tester")
+                .queryParam("regionCode", VILLAGE).queryParam("productCode", "CORN")
+                .queryParam("year", "2027").queryParam("categoryCode", "PRODUCTION"));
+        assertEquals(1, icons.size());
+        JsonNode icon = icons.get(0);
+        assertEquals("REGION_SCHEMATIC", icon.get("locationMode").asText());
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql("""
+                SELECT ST_Covers(ST_GeomFromGeoJSON(boundary.geo_json),
+                    ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326))
+                FROM overview.administrative_boundary_render boundary
+                WHERE boundary.region_code=:region
+                """).param("longitude", icon.get("longitude").asDouble())
+                .param("latitude", icon.get("latitude").asDouble()).param("region", VILLAGE)
+                .query(Boolean.class).single()).isTrue();
+    }
+
+    @Test
     void listsRetiredSamplesOnlyInTheHistoricalLayerForTheirRetirementYear() throws Exception {
         jdbc.sql("""
                 UPDATE registry.sample_point
