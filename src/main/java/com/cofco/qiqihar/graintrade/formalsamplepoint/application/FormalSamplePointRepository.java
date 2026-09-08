@@ -10,6 +10,8 @@ import java.util.Set;
 import java.util.UUID;
 
 public interface FormalSamplePointRepository {
+    LocalDate retirementDate();
+
     PagedResult<FormalSamplePointView> findPage(
             String regionCode, String keyword, int pageNumber, int pageSize,
             Set<String> authorizedRegionCodes);

@@ -620,7 +620,7 @@ public class JdbcOverviewSamplePointRepository
     public List<CurrentOverviewSamplePoint> readAtLifecycleCutoff(
             int year, String productCode, String regionCode, String categoryCode,
             LocalDate lifecycleCutoff, Set<String> authorizedRegionCodes) {
-        return iconsFromProjection(projection(
+        return iconsFromProjection(loadProjection(
                         year, productCode, regionCode, categoryCode, null, null,
                         authorizedRegionCodes, false, lifecycleCutoff), productCode)
                 .stream()
@@ -1584,11 +1584,11 @@ public class JdbcOverviewSamplePointRepository
 
     private static boolean matchesEntityFilter(List<SourceRow> rows, String productCode,
             String categoryCode, String typeCode, String query) {
-        if (rows.stream().noneMatch(row -> row.productCode().equals(productCode))) return false;
+        if (rows.stream().noneMatch(row -> (productCode == null || row.productCode().equals(productCode)))) return false;
         if (categoryCode != null && rows.stream().noneMatch(
-                row -> row.productCode().equals(productCode)
+                row -> (productCode == null || row.productCode().equals(productCode))
                         && row.categoryCode().equals(categoryCode))) return false;
-        if (typeCode != null && rows.stream().noneMatch(row -> row.productCode().equals(productCode)
+        if (typeCode != null && rows.stream().noneMatch(row -> (productCode == null || row.productCode().equals(productCode))
                 && row.categoryCode().equals(categoryCode) && row.typeCode().equals(typeCode))) return false;
         if (query == null) return true;
         String normalized = query.toLowerCase(Locale.ROOT);

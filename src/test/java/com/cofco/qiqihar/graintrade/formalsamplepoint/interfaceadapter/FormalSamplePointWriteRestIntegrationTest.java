@@ -94,6 +94,217 @@ class FormalSamplePointWriteRestIntegrationTest {
     }
 
     @Test
+    void previewsTheAuthoritativeCollectionAndRetiresItOnce() throws Exception {
+        batchSource();
+        MvcResult preview = mvc.perform(post("/api/v1/formal-sample-points/retirement-previews")
+                        .principal(() -> ADMIN))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.candidateCount").value(1)).andReturn();
+        String previewId = json.readTree(preview.getResponse().getContentAsString())
+                .path("data").path("id").asText();
+        String body = "{\"reason\":\"停止经营\"}";
+        for (int attempt = 0; attempt < 2; attempt++) {
+            mvc.perform(put("/api/v1/formal-sample-points/retirement-previews/{id}/execution", previewId)
+                            .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON).content(body))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.retiredCount").value(1));
+        }
+        mvc.perform(get("/api/v1/formal-sample-points/retirement-previews/{id}", previewId)
+                        .principal(() -> ADMIN))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.retiredCount").value(1));
+        mvc.perform(get("/api/v1/formal-sample-points/{id}", OCCUPIED_POINT_ID).principal(() -> ADMIN))
+                .andExpect(status().isNotFound());
+        mvc.perform(get("/api/v1/formal-sample-points/{id}", LOGISTICS_POINT_ID).principal(() -> ADMIN))
+                .andExpect(status().isOk());
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM registry.sample_point point
+                JOIN platform.business_audit_event event ON event.aggregate_id=point.sample_point_id::text
+                WHERE point.sample_point_id=:id AND event.action_code='FORMAL_SAMPLE_POINT_RETIRED'
+                  AND (event.detail->>'retirementYear')::integer=
+                    EXTRACT(YEAR FROM point.retired_at AT TIME ZONE 'Asia/Shanghai')::integer
+                  AND point.effective_to=(point.retired_at AT TIME ZONE 'Asia/Shanghai')::date
+                """).param("id", OCCUPIED_POINT_ID).query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record WHERE record_id='batch-source'")
+                .query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.business_event_outbox WHERE action_code='FORMAL_SAMPLE_POINT_RETIRED'")
+                .query(Long.class).single()).isOne();
+    }
+
+    private void batchSource() {
+        jdbc.sql("""
+                INSERT INTO production.production_record(
+                  record_id,product_code,object_type_code,region_code,survey_date,reported_at,
+                  cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,
+                  survey_year,survey_period_precision,survey_period_governance_state,sample_point_id)
+                VALUES('batch-source','CORN','FARMER','230202',CURRENT_DATE,CURRENT_TIMESTAMP,
+                  320,500,'APPROVED',:actor,2026,'YEAR','CONFIRMED',:id)
+                """).param("actor", ADMIN).param("id", OCCUPIED_POINT_ID).update();
+    }
+
+    private String batchPreview() throws Exception {
+        return json.readTree(mvc.perform(post("/api/v1/formal-sample-points/retirement-previews")
+                        .principal(() -> ADMIN)).andExpect(status().isOk()).andReturn()
+                .getResponse().getContentAsString()).path("data").path("id").asText();
+    }
+
+    @Test
+    void includesMoreThanOnePageAndDeduplicatesProductsBySampleIdentity() throws Exception {
+        batchSource();
+        jdbc.sql("""
+                INSERT INTO registry.sample_point(sample_point_id,kind_code,canonical_name,
+                  region_code,approval_state,location_state,governed_point,effective_from,created_by,updated_by)
+                SELECT md5('batch-page-'||n)::uuid,'SURVEY_SITE','批量样本'||n,
+                  '230202','APPROVED','VALID',ST_SetSRID(ST_MakePoint(123.94+n*0.0001,47.31),4326),
+                  DATE '2026-01-01',:actor,:actor FROM generate_series(1,25) n
+                """).param("actor", ADMIN).update();
+        jdbc.sql("""
+                INSERT INTO production.production_record(
+                  record_id,product_code,object_type_code,region_code,survey_date,reported_at,
+                  cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,
+                  survey_year,survey_period_precision,survey_period_governance_state,sample_point_id)
+                SELECT 'batch-page-'||n, 'SOYBEAN','FARMER','230202',CURRENT_DATE,CURRENT_TIMESTAMP,
+                  320,500,'APPROVED',:actor,2026,'YEAR','CONFIRMED',md5('batch-page-'||n)::uuid
+                FROM generate_series(1,25) n
+                UNION ALL SELECT 'batch-second-product','SOYBEAN','FARMER','230202',CURRENT_DATE,CURRENT_TIMESTAMP,
+                  320,500,'APPROVED',:actor,2026,'YEAR','CONFIRMED',:id
+                """).param("actor", ADMIN).param("id", OCCUPIED_POINT_ID).update();
+        String preview = batchPreview();
+        mvc.perform(get("/api/v1/formal-sample-points/retirement-previews/{id}", preview).principal(() -> ADMIN))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.candidateCount").value(26));
+        mvc.perform(put("/api/v1/formal-sample-points/retirement-previews/{id}/execution", preview)
+                        .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"停止经营\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.retiredCount").value(26));
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.business_event_outbox WHERE action_code='FORMAL_SAMPLE_POINT_RETIRED'")
+                .query(Long.class).single()).isEqualTo(26);
+    }
+
+    @Test
+    void concurrentConfirmationReturnsTheSameDurableReceipt() throws Exception {
+        batchSource();
+        String preview = batchPreview();
+        var ready = new java.util.concurrent.CountDownLatch(2);
+        var start = new java.util.concurrent.CountDownLatch(1);
+        try (var executor = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            java.util.concurrent.Callable<Integer> request = () -> {
+                ready.countDown();
+                start.await();
+                return mvc.perform(put("/api/v1/formal-sample-points/retirement-previews/{id}/execution", preview)
+                                .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"reason\":\"停止经营\"}"))
+                        .andReturn().getResponse().getStatus();
+            };
+            var first = executor.submit(request);
+            var second = executor.submit(request);
+            assertThat(ready.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            assertThat(first.get(15, java.util.concurrent.TimeUnit.SECONDS)).isEqualTo(200);
+            assertThat(second.get(15, java.util.concurrent.TimeUnit.SECONDS)).isEqualTo(200);
+        }
+        assertThat(notifications.findVisible(new AuthorizedReadScope(ADMIN, Set.of("230202")), ADMIN, 100))
+                .filteredOn(event -> event.actionCode().equals("FORMAL_SAMPLE_POINT_RETIRED"))
+                .hasSize(1);
+        assertThat(notifications.findVisible(new AuthorizedReadScope(RESTRICTED, Set.of("230203")), RESTRICTED, 100))
+                .noneMatch(event -> event.actionCode().equals("FORMAL_SAMPLE_POINT_RETIRED"));
+    }
+
+    @Test
+    void rejectsChangedVersionsAndExpiredPreviewsWithoutRetiringAnything() throws Exception {
+        batchSource();
+        String preview = batchPreview();
+        jdbc.sql("UPDATE registry.sample_point SET version=version+1 WHERE sample_point_id=:id")
+                .param("id", OCCUPIED_POINT_ID).update();
+        mvc.perform(put("/api/v1/formal-sample-points/retirement-previews/{id}/execution", preview)
+                        .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"停止经营\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("RETIREMENT_PREVIEW_STALE"));
+        String expired = batchPreview();
+        jdbc.sql("""
+                UPDATE registry.formal_sample_retirement_batch
+                SET snapshot=jsonb_set(snapshot,'{expiresAt}','"2020-01-01T00:00:00Z"'::jsonb)
+                WHERE batch_id=:id
+                """).param("id", UUID.fromString(expired)).update();
+        mvc.perform(put("/api/v1/formal-sample-points/retirement-previews/{id}/execution", expired)
+                        .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"停止经营\"}"))
+                .andExpect(status().isConflict());
+        mvc.perform(get("/api/v1/formal-sample-points/{id}", OCCUPIED_POINT_ID).principal(() -> ADMIN))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void rejectsChangedAuthoritativeMembershipAndDoesNotUseTheMasterTable() throws Exception {
+        batchSource();
+        String preview = batchPreview();
+        jdbc.sql("UPDATE production.production_record SET status_code='DRAFT' WHERE record_id='batch-source'").update();
+        mvc.perform(put("/api/v1/formal-sample-points/retirement-previews/{id}/execution", preview)
+                        .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"停止经营\"}"))
+                .andExpect(status().isConflict());
+        mvc.perform(get("/api/v1/formal-sample-points/{id}", OCCUPIED_POINT_ID).principal(() -> ADMIN))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void requiresPermissionAndKeepsPreviewsPrivateToTheirActor() throws Exception {
+        batchSource();
+        String preview = batchPreview();
+        mvc.perform(post("/api/v1/formal-sample-points/retirement-previews").principal(() -> RESTRICTED))
+                .andExpect(status().isForbidden());
+        jdbc.sql("INSERT INTO platform.security_user_role(subject_id,role_code) VALUES(:actor,'SYSTEM_ADMIN')")
+                .param("actor", RESTRICTED).update();
+        mvc.perform(get("/api/v1/formal-sample-points/retirement-previews/{id}", preview)
+                        .principal(() -> RESTRICTED)).andExpect(status().isNotFound());
+        mvc.perform(put("/api/v1/formal-sample-points/retirement-previews/{id}/execution", preview)
+                        .principal(() -> RESTRICTED).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"停止经营\"}"))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void rollsBackEveryRetirementAndReceiptWhenTheSecondAuditFails() throws Exception {
+        batchSource();
+        jdbc.sql("UPDATE registry.sample_point SET kind_code='SURVEY_SITE' WHERE sample_point_id=:id")
+                .param("id", LOGISTICS_POINT_ID).update();
+        jdbc.sql("""
+                INSERT INTO production.production_record(
+                  record_id,product_code,object_type_code,region_code,survey_date,reported_at,
+                  cultivated_area_mu,yield_per_mu_kg,status_code,last_modified_by,
+                  survey_year,survey_period_precision,survey_period_governance_state,sample_point_id)
+                VALUES('batch-second','CORN','FARMER','230202',CURRENT_DATE,CURRENT_TIMESTAMP,
+                  320,500,'APPROVED',:actor,2026,'YEAR','CONFIRMED',:id)
+                """).param("actor", ADMIN).param("id", LOGISTICS_POINT_ID).update();
+        String preview = batchPreview();
+        jdbc.sql("""
+                CREATE OR REPLACE FUNCTION platform.reject_formal_sample_audit_for_test()
+                RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+                  IF NEW.action_code='FORMAL_SAMPLE_POINT_RETIRED'
+                    AND NEW.aggregate_id='fa120000-0000-0000-0000-000000000002' THEN
+                    RAISE EXCEPTION 'test rejects second retirement audit';
+                  END IF;
+                  RETURN NEW;
+                END $$
+                """).update();
+        jdbc.sql("""
+                CREATE TRIGGER reject_formal_sample_audit_for_test BEFORE INSERT
+                ON platform.business_audit_event FOR EACH ROW
+                EXECUTE FUNCTION platform.reject_formal_sample_audit_for_test()
+                """).update();
+        mvc.perform(put("/api/v1/formal-sample-points/retirement-previews/{id}/execution", preview)
+                        .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"reason\":\"停止经营\"}"))
+                .andExpect(status().is5xxServerError());
+        for (UUID id : java.util.List.of(OCCUPIED_POINT_ID, LOGISTICS_POINT_ID)) {
+            mvc.perform(get("/api/v1/formal-sample-points/{id}", id).principal(() -> ADMIN))
+                    .andExpect(status().isOk());
+        }
+        mvc.perform(get("/api/v1/formal-sample-points/retirement-previews/{id}", preview).principal(() -> ADMIN))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.retiredCount").doesNotExist());
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.business_event_outbox WHERE action_code='FORMAL_SAMPLE_POINT_RETIRED'")
+                .query(Long.class).single()).isZero();
+    }
+
+    @Test
     void persistsAndReassignsAnActiveMaintainerFromTheEmployeeDirectory() throws Exception {
         MvcResult created = mvc.perform(post("/api/v1/formal-sample-points")
                         .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
