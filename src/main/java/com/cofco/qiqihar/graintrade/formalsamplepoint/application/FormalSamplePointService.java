@@ -232,7 +232,7 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
         }
         String reason = required(submittedReason, 500);
         Instant now = clock.instant();
-        LocalDate retiredOn = LocalDate.now(clock);
+        LocalDate retiredOn = repository.retirementDate();
         if (!repository.retire(id, expectedVersion, point.regionCode(),
                 actor.subjectId(), reason, retiredOn)) {
             throw new ConflictException(

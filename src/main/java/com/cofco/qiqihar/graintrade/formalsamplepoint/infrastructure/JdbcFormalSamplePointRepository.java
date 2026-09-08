@@ -55,6 +55,12 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
     }
 
     @Override
+    public LocalDate retirementDate() {
+        return jdbc.sql("SELECT (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date")
+                .query(LocalDate.class).single();
+    }
+
+    @Override
     public PagedResult<FormalSamplePointView> findPage(
             String regionCode, String keyword, int pageNumber, int pageSize,
             Set<String> authorizedRegionCodes) {
