@@ -117,6 +117,7 @@ class RegionImportResolverTest {
                 new RegionEntry("230208", "梅里斯达斡尔族区", "230200"),
                 new RegionEntry("230221", "龙江县", "230200"),
                 new RegionEntry("230223", "依安县", "230200"),
+                new RegionEntry("230223100", "依安镇", "230223"),
                 new RegionEntry("230224", "泰来县", "230200"),
                 new RegionEntry("230225", "甘南县", "230200"),
                 new RegionEntry("230227", "富裕县", "230200"),

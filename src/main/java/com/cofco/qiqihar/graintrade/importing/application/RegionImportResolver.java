@@ -61,6 +61,14 @@ public final class RegionImportResolver {
         String namedCode = NAMED_ALIASES.get(value);
         if (namedCode != null && byCode.containsKey(namedCode)) return namedCode;
 
+        // Preserve established six-digit county/city abbreviations when adding
+        // township aliases. An explicit full township/village name matched above.
+        List<String> countyAliases = entries.stream()
+                .filter(region -> region.code().length()==6)
+                .filter(region -> aliases(region.name()).contains(value))
+                .map(RegionEntry::code).distinct().toList();
+        if (countyAliases.size()==1) return countyAliases.getFirst();
+
         List<String> aliasMatches = entries.stream()
                 .filter(region -> aliases(region.name()).contains(value))
                 .map(RegionEntry::code)
