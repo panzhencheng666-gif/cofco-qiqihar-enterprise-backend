@@ -1295,6 +1295,24 @@ class FormalSampleObservationRestIntegrationTest {
     }
 
     @Test
+    void editsAddressForAnInsideCoincidentSampleWithoutMovingItsReportedCoordinate() throws Exception {
+        jdbc.sql("""
+                INSERT INTO registry.sample_point(sample_point_id,kind_code,canonical_name,
+                    region_code,approval_state,location_state,governed_point,effective_from,
+                    created_by,updated_by)
+                SELECT gen_random_uuid(),kind_code,'独立共址样本',region_code,approval_state,
+                    location_state,governed_point,effective_from,created_by,updated_by
+                FROM registry.sample_point WHERE sample_point_id=:id
+                """).param("id", SAMPLE_POINT_ID).update();
+        String request = locationObservationRequest(0).replace("123.2345678", "123.2")
+                .replace("47.3456789", "47.3");
+        mvc.perform(post("/api/v1/formal-sample-observations/observations")
+                        .principal(() -> ACTOR).header("Idempotency-Key", "coincident-address")
+                        .contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isCreated());
+    }
+
+    @Test
     void savesLegacySampleAddressWithObservationAndRequeriesIt() throws Exception {
         jdbc.sql("DELETE FROM registry.formal_sample_point_profile WHERE sample_point_id=:id")
                 .param("id", SAMPLE_POINT_ID).update();

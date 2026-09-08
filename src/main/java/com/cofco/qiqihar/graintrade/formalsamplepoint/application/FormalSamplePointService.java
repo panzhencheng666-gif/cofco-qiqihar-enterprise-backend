@@ -117,6 +117,10 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
         if (expectedVersion < 0) throw invalid();
         FormalSamplePointView current = required(id);
         SecurityPrincipal actor = requireEditor(current);
+        if (current.version() != expectedVersion) {
+            throw new ConflictException("FORMAL_SAMPLE_POINT_VERSION_CONFLICT",
+                    "正式样本已发生变化，请刷新后重试");
+        }
         FormalSamplePointDraft draft = normalize(submitted);
         access.require(actor.permits("FORMAL_SAMPLE_MANAGE")
                 ? "FORMAL_SAMPLE_MANAGE" : "BUSINESS_CREATE", draft.regionCode());
@@ -126,7 +130,8 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
         if (maintainerReassigned) access.require("FORMAL_SAMPLE_MANAGE", current.regionCode());
         String maintainerChangeReason = maintainerReassigned
                 ? required(draft.maintainerChangeReason(), 500) : null;
-        coordinateGuard.lockAndRequireAvailable(id, draft.longitude(), draft.latitude());
+        coordinateGuard.lockAndRequireAvailableForRegion(
+                id, draft.longitude(), draft.latitude(), draft.regionCode());
         Instant now = clock.instant();
         FormalSamplePointView updated;
         try {
@@ -172,7 +177,8 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
             requireValidMaintainer(current.maintainerSubjectId(), draft.regionCode());
         }
         requireCoordinateBoundary(draft.regionCode(), draft.longitude(), draft.latitude());
-        coordinateGuard.lockAndRequireAvailable(id, draft.longitude(), draft.latitude());
+        coordinateGuard.lockAndRequireAvailableForRegion(
+                id, draft.longitude(), draft.latitude(), draft.regionCode());
         Instant now = clock.instant();
         FormalSamplePointView updated;
         try {
