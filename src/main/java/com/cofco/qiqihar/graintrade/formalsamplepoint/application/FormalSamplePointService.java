@@ -115,6 +115,7 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
     public FormalSamplePointView update(
             UUID id, long expectedVersion, FormalSamplePointDraft submitted) {
         if (expectedVersion < 0) throw invalid();
+        access.require("BUSINESS_READ", null);
         FormalSamplePointView current = required(id);
         SecurityPrincipal actor = requireEditor(current);
         if (current.version() != expectedVersion) {
@@ -160,6 +161,7 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
         if (submitted == null || submitted.expectedVersion() == null
                 || submitted.expectedVersion() < 0 || submitted.longitude() == null
                 || submitted.latitude() == null) throw invalid();
+        access.require("BUSINESS_READ", null);
         FormalSamplePointView current = required(id);
         SecurityPrincipal actor = requireEditor(current);
         if (current.version() != submitted.expectedVersion()) {
