@@ -21,6 +21,6 @@ class CiWorkflowContractTest {
     void reservesEnoughTimeForTheFullBackendVerificationSuite() throws Exception {
         String workflow = Files.readString(Path.of(".github/workflows/ci.yml"));
 
-        assertThat(workflow).contains("timeout-minutes: 60");
+        assertThat(workflow).contains("timeout-minutes: 90");
     }
 }
