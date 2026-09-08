@@ -427,6 +427,8 @@ class OverviewRestIntegrationTest {
                     'spatial metric child fixture','https://example.invalid/spatial-metric-child',
                     'test','test',repeat('6',64))
                 """).update();
+        GovernedMasterDataFixtures.publishBoundary(jdbc, "230281999");
+        GovernedMasterDataFixtures.publishBoundary(jdbc, "230281999001");
         String samplePointId = UUID.randomUUID().toString();
         jdbc.sql("""
                 INSERT INTO registry.sample_point(

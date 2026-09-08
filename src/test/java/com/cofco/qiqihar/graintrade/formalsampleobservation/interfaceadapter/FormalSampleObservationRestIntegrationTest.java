@@ -108,6 +108,7 @@ class FormalSampleObservationRestIntegrationTest {
                   source_effective_on=excluded.source_effective_on,
                   geometry_sha256=excluded.geometry_sha256
                 """).update();
+        com.cofco.qiqihar.graintrade.testsupport.GovernedMasterDataFixtures.publishBoundary(jdbc, "230221");
         jdbc.sql("""
                 INSERT INTO registry.sample_point(
                   sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
@@ -1325,14 +1326,19 @@ class FormalSampleObservationRestIntegrationTest {
     }
 
     @Test
-    void rejectsOutOfRegionInlineCoordinatesWithoutSavingEitherRecord() throws Exception {
+    void savesOutOfRegionInlineCoordinatesWithAnInteriorSchematicPosition() throws Exception {
         mvc.perform(post("/api/v1/formal-sample-observations/observations")
                         .principal(() -> ACTOR).header("Idempotency-Key", "inline-location-outside")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(locationObservationRequest(0).replace("123.2345678", "126.2345678")))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("COORDINATE_OUTSIDE_REGION"));
-        assertInlineLocationUnchanged();
+                .andExpect(status().isCreated());
+        assertThat(jdbc.sql("""
+                SELECT ST_X(point.governed_point)=126.2345678 AND point.location_mode='REGION_SCHEMATIC'
+                  AND ST_Covers(ST_GeomFromGeoJSON(boundary.geo_json),point.display_point)
+                FROM registry.sample_point point
+                JOIN overview.administrative_boundary_render boundary ON boundary.region_code=point.region_code
+                WHERE sample_point_id=:id
+                """).param("id", SAMPLE_POINT_ID).query(Boolean.class).single()).isTrue();
     }
 
     @Test

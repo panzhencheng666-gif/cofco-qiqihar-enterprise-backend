@@ -110,11 +110,13 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                 ON boundary.region_code=point.region_code
                AND boundary.geometry_sha256=point.containment_boundary_sha256
                AND boundary.source_revision=point.containment_boundary_revision
+              JOIN overview.administrative_boundary_render display_boundary
+                ON display_boundary.region_code=point.region_code
               WHERE point.deletion_state='ACTIVE'
                 AND point.approval_state='APPROVED'
                 AND point.location_state='VALID'
-                AND point.governed_point IS NOT NULL
-                AND ST_Covers(boundary.geometry,point.governed_point)
+                AND point.display_point IS NOT NULL
+                AND ST_Covers(ST_GeomFromGeoJSON(display_boundary.geo_json),point.display_point)
               UNION
               SELECT point.sample_point_id
               FROM registry.sample_point point
@@ -123,14 +125,16 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                 ON boundary.region_code=point.region_code
                AND boundary.geometry_sha256=point.containment_boundary_sha256
                AND boundary.source_revision=point.containment_boundary_revision
-              JOIN overview.administrative_boundary requested_boundary
+              JOIN overview.administrative_boundary_render display_boundary
+                ON display_boundary.region_code=point.region_code
+              JOIN overview.administrative_boundary_render requested_boundary
                 ON requested_boundary.region_code=:region
               WHERE point.deletion_state='ACTIVE'
                 AND point.approval_state='APPROVED'
                 AND point.location_state='VALID'
-                AND point.governed_point IS NOT NULL
-                AND ST_Covers(boundary.geometry,point.governed_point)
-                AND ST_Covers(requested_boundary.geometry,point.governed_point)
+                AND point.display_point IS NOT NULL
+                AND ST_Covers(ST_GeomFromGeoJSON(display_boundary.geo_json),point.display_point)
+                AND ST_Covers(ST_GeomFromGeoJSON(requested_boundary.geo_json),point.display_point)
               UNION ALL SELECT '00000000-0000-0000-0000-000000000000'::uuid
             )
             """;
@@ -147,10 +151,12 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                 ON boundary.region_code=point.region_code
                AND boundary.geometry_sha256=point.containment_boundary_sha256
                AND boundary.source_revision=point.containment_boundary_revision
+              JOIN overview.administrative_boundary_render display_boundary
+                ON display_boundary.region_code=point.region_code
               WHERE point.deletion_state='ACTIVE'
                 AND point.approval_state='APPROVED'
                 AND point.location_state='VALID'
-                AND point.governed_point IS NOT NULL
+                AND point.display_point IS NOT NULL
               UNION ALL SELECT '00000000-0000-0000-0000-000000000000'::uuid
             )
             """;
@@ -169,10 +175,12 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                 ON boundary.region_code=point.region_code
                AND boundary.geometry_sha256=point.containment_boundary_sha256
                AND boundary.source_revision=point.containment_boundary_revision
+              JOIN overview.administrative_boundary_render display_boundary
+                ON display_boundary.region_code=point.region_code
               WHERE point.deletion_state='ACTIVE'
                 AND point.approval_state='APPROVED'
                 AND point.location_state='VALID'
-                AND point.governed_point IS NOT NULL
+                AND point.display_point IS NOT NULL
               UNION ALL SELECT '00000000-0000-0000-0000-000000000000'::uuid
             )
             """;

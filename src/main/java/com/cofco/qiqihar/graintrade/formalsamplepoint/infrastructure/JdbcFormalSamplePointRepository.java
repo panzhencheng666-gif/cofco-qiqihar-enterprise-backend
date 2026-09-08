@@ -29,6 +29,8 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
                    point.maintainer_subject_id,maintainer.display_name maintainer_display_name,
                    ST_X(point.governed_point) longitude,
                    ST_Y(point.governed_point) latitude,
+                   ST_X(point.display_point) display_longitude,
+                   ST_Y(point.display_point) display_latitude,point.location_mode,
                    point.effective_from,point.effective_to,point.version,
                    ((SELECT count(*) FROM production.production_record record
                        WHERE record.sample_point_id=point.sample_point_id)
@@ -127,7 +129,8 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
                   ELSE 'OUTSIDE'
                 END
                 FROM platform.region region
-                LEFT JOIN overview.administrative_boundary boundary
+                LEFT JOIN (SELECT region_code,ST_GeomFromGeoJSON(geo_json) geometry
+                  FROM overview.administrative_boundary_render) boundary
                   ON boundary.region_code=region.code
                 WHERE region.code=:regionCode
                 """).param("regionCode", regionCode).param("longitude", longitude)
@@ -281,7 +284,8 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
                 row.getObject("effective_from", LocalDate.class),
                 row.getObject("effective_to", LocalDate.class),
                 row.getLong("version"), row.getLong("annual_observation_count"),
-                row.getLong("network_membership_count"));
+                row.getLong("network_membership_count"), row.getBigDecimal("display_longitude"),
+                row.getBigDecimal("display_latitude"), row.getString("location_mode"));
     }
 
     private void insertProfile(

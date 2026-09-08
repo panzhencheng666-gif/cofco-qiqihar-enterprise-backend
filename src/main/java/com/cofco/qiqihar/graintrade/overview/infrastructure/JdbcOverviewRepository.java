@@ -58,22 +58,22 @@ public class JdbcOverviewRepository implements OverviewRepository {
             ), current_valid_sample(sample_point_id) AS MATERIALIZED (
               SELECT point.sample_point_id
               FROM registry.sample_point point
-              JOIN overview.administrative_boundary boundary
+              JOIN (SELECT region_code,ST_GeomFromGeoJSON(geo_json) geometry
+                    FROM overview.administrative_boundary_render) boundary
                 ON boundary.region_code=point.region_code
-               AND boundary.geometry_sha256=point.containment_boundary_sha256
-               AND boundary.source_revision=point.containment_boundary_revision
               WHERE point.deletion_state='ACTIVE'
                 AND point.approval_state='APPROVED'
                 AND point.location_state='VALID'
-                AND point.governed_point IS NOT NULL
-                AND ST_Covers(boundary.geometry,point.governed_point)
+                AND point.display_point IS NOT NULL
+                AND ST_Covers(boundary.geometry,point.display_point)
                 AND (
                   point.region_code IN (SELECT code FROM scope)
                   OR point.region_code IN (SELECT code FROM requested_ancestors)
                     AND EXISTS(
-                      SELECT 1 FROM overview.administrative_boundary requested_boundary
+                      SELECT 1 FROM (SELECT region_code,ST_GeomFromGeoJSON(geo_json) geometry
+                          FROM overview.administrative_boundary_render) requested_boundary
                       WHERE requested_boundary.region_code=CAST(:region AS varchar)
-                        AND ST_Covers(requested_boundary.geometry,point.governed_point)))
+                        AND ST_Covers(requested_boundary.geometry,point.display_point)))
               UNION ALL SELECT '00000000-0000-0000-0000-000000000000'::uuid
             )
             """;
@@ -105,13 +105,14 @@ public class JdbcOverviewRepository implements OverviewRepository {
             ), sample_table_region_candidate AS MATERIALIZED (
               SELECT point.sample_point_id,region.code root_code,
                 row_number() OVER(PARTITION BY point.sample_point_id
-                  ORDER BY CASE WHEN ST_Contains(boundary.geometry,point.governed_point)
+                  ORDER BY CASE WHEN ST_Contains(boundary.geometry,point.display_point)
                     THEN 0 ELSE 1 END,region.sort_order,region.code) spatial_rank
               FROM current_valid_sample valid
               JOIN registry.sample_point point ON point.sample_point_id=valid.sample_point_id
               JOIN table_region region ON true
-              JOIN overview.administrative_boundary boundary ON boundary.region_code=region.code
-              WHERE ST_Covers(boundary.geometry,point.governed_point)
+              JOIN (SELECT region_code,ST_GeomFromGeoJSON(geo_json) geometry
+                    FROM overview.administrative_boundary_render) boundary ON boundary.region_code=region.code
+              WHERE ST_Covers(boundary.geometry,point.display_point)
             ), sample_table_region(sample_point_id,root_code) AS MATERIALIZED (
               SELECT sample_point_id,root_code FROM sample_table_region_candidate WHERE spatial_rank=1
             )
@@ -275,14 +276,13 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   JOIN navigable_region child ON child.parent_code=parent.code
                 ), current_valid_sample(sample_point_id) AS MATERIALIZED (
                   SELECT point.sample_point_id FROM registry.sample_point point
-                  JOIN overview.administrative_boundary boundary
+                  JOIN (SELECT region_code,ST_GeomFromGeoJSON(geo_json) geometry
+                    FROM overview.administrative_boundary_render) boundary
                     ON boundary.region_code=point.region_code
-                   AND boundary.geometry_sha256=point.containment_boundary_sha256
-                   AND boundary.source_revision=point.containment_boundary_revision
                   WHERE point.deletion_state='ACTIVE'
                     AND point.approval_state='APPROVED' AND point.location_state='VALID'
-                    AND point.governed_point IS NOT NULL
-                    AND ST_Covers(boundary.geometry,point.governed_point)
+                    AND point.display_point IS NOT NULL
+                    AND ST_Covers(boundary.geometry,point.display_point)
                   UNION ALL SELECT '00000000-0000-0000-0000-000000000000'::uuid
                 ), approved AS (
                   SELECT record.region_code,record.record_id
@@ -392,14 +392,13 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   SELECT child.code FROM platform.region child JOIN descendants parent ON child.parent_code=parent.code
                 ), current_valid_sample(sample_point_id) AS MATERIALIZED (
                   SELECT point.sample_point_id FROM registry.sample_point point
-                  JOIN overview.administrative_boundary boundary
+                  JOIN (SELECT region_code,ST_GeomFromGeoJSON(geo_json) geometry
+                    FROM overview.administrative_boundary_render) boundary
                     ON boundary.region_code=point.region_code
-                   AND boundary.geometry_sha256=point.containment_boundary_sha256
-                   AND boundary.source_revision=point.containment_boundary_revision
                   WHERE point.deletion_state='ACTIVE'
                     AND point.approval_state='APPROVED' AND point.location_state='VALID'
-                    AND point.governed_point IS NOT NULL
-                    AND ST_Covers(boundary.geometry,point.governed_point)
+                    AND point.display_point IS NOT NULL
+                    AND ST_Covers(boundary.geometry,point.display_point)
                   UNION ALL SELECT '00000000-0000-0000-0000-000000000000'::uuid
                 ), approved AS (
                   SELECT record.region_code,record.record_id
@@ -701,22 +700,22 @@ public class JdbcOverviewRepository implements OverviewRepository {
                 ), current_valid_sample(sample_point_id) AS MATERIALIZED (
                   SELECT point.sample_point_id
                   FROM registry.sample_point point
-                  JOIN overview.administrative_boundary boundary
+                  JOIN (SELECT region_code,ST_GeomFromGeoJSON(geo_json) geometry
+                    FROM overview.administrative_boundary_render) boundary
                     ON boundary.region_code=point.region_code
-                   AND boundary.geometry_sha256=point.containment_boundary_sha256
-                   AND boundary.source_revision=point.containment_boundary_revision
                   WHERE point.deletion_state='ACTIVE'
                     AND point.approval_state='APPROVED'
                     AND point.location_state='VALID'
-                    AND point.governed_point IS NOT NULL
-                    AND ST_Covers(boundary.geometry,point.governed_point)
+                    AND point.display_point IS NOT NULL
+                    AND ST_Covers(boundary.geometry,point.display_point)
                     AND (
                       point.region_code IN (SELECT code FROM scope)
                       OR point.region_code IN (SELECT code FROM requested_ancestors)
                         AND EXISTS(
-                          SELECT 1 FROM overview.administrative_boundary requested_boundary
+                          SELECT 1 FROM (SELECT region_code,ST_GeomFromGeoJSON(geo_json) geometry
+                          FROM overview.administrative_boundary_render) requested_boundary
                           WHERE requested_boundary.region_code=:region
-                            AND ST_Covers(requested_boundary.geometry,point.governed_point)))
+                            AND ST_Covers(requested_boundary.geometry,point.display_point)))
                   UNION ALL SELECT '00000000-0000-0000-0000-000000000000'::uuid
                 ), comparison_year AS (
                   SELECT (:surveyYear-year_offset)::text business_year,

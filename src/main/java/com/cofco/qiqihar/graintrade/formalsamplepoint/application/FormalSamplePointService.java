@@ -307,9 +307,7 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
         switch (containment) {
             case UNAVAILABLE -> throw new ServiceUnavailableException(
                     "ADMIN_BOUNDARY_UNAVAILABLE", "所选行政区边界数据暂不可用");
-            case OUTSIDE -> throw new ClientRequestException(
-                    "COORDINATE_OUTSIDE_REGION", "正式样本坐标不在所选行政区范围内");
-            case INSIDE -> { }
+            case OUTSIDE, INSIDE -> { }
         }
     }
 

@@ -23,4 +23,7 @@ public record FormalSamplePointView(
         LocalDate effectiveTo,
         long version,
         long annualObservationCount,
-        long networkMembershipCount) {}
+        long networkMembershipCount,
+        BigDecimal displayLongitude,
+        BigDecimal displayLatitude,
+        String locationMode) {}

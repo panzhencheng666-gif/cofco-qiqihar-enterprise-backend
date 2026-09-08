@@ -738,7 +738,7 @@ public class JdbcOverviewSamplePointRepository
                 .toList();
         return Optional.of(new OverviewSamplePointDetail(samplePointId, identity.canonicalName(),
                 identity.governedRegionCode(), identity.governedRegionName(), identity.locationState(),
-                entity.dataQualityReason(), roles, associations));
+                entity.dataQualityReason(), roles, associations, identity.locationMode()));
     }
 
     @Override
@@ -870,7 +870,10 @@ public class JdbcOverviewSamplePointRepository
                              AND value.field_code='MKT_SAMPLE_CONTACT')
                        END END sample_contact,
                        ST_X(point.governed_point) longitude,
-                       ST_Y(point.governed_point) latitude
+                       ST_Y(point.governed_point) latitude,
+                       ST_X(point.display_point) display_longitude,
+                       ST_Y(point.display_point) display_latitude,
+                       point.location_mode
                 FROM overview.current_sample_point_query_source(
                   :year,:product,:allProducts,:includePeriodHistory) source
                 JOIN platform.object_type visible_type
@@ -944,7 +947,10 @@ public class JdbcOverviewSamplePointRepository
                         row.getString("unresolved_reason"),
                         row.getString("sample_contact"),
                         row.getObject("longitude", Double.class),
-                        row.getObject("latitude", Double.class)))
+                        row.getObject("latitude", Double.class),
+                        row.getObject("display_longitude", Double.class),
+                        row.getObject("display_latitude", Double.class),
+                        row.getString("location_mode")))
                 .list();
     }
 
@@ -1321,7 +1327,10 @@ public class JdbcOverviewSamplePointRepository
         if (identity.longitude() == null || identity.latitude() == null) {
             return new LocationEvaluation(null, "LOCATION_MISSING");
         }
-        Coordinate stable = Coordinate.stable(identity);
+        if (identity.displayLongitude() == null || identity.displayLatitude() == null) {
+            return new LocationEvaluation(null, "LOCATION_MISSING");
+        }
+        Coordinate stable = new Coordinate(identity.displayLongitude(), identity.displayLatitude());
         if (!stable.inRange()) return new LocationEvaluation(null, "COORDINATE_OUT_OF_RANGE");
         return new LocationEvaluation(stable, null);
     }
@@ -1569,7 +1578,7 @@ public class JdbcOverviewSamplePointRepository
                 identity.governedRegionCode(),
                 stableRoles.getFirst().iconKey(), roles, types,
                 entity.coordinate().longitude(), entity.coordinate().latitude(),
-                entity.dataQualityReason());
+                entity.dataQualityReason(), identity.locationMode());
     }
 
     private static boolean matchesEntityFilter(List<SourceRow> rows, String productCode,
@@ -1722,7 +1731,10 @@ public class JdbcOverviewSamplePointRepository
             String unresolvedReason,
             String sampleContact,
             Double longitude,
-            Double latitude) {
+            Double latitude,
+            Double displayLongitude,
+            Double displayLatitude,
+            String locationMode) {
         boolean approvedPoint() {
             return samplePointId != null && "APPROVED".equals(pointApprovalState);
         }

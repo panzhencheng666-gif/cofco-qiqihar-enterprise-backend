@@ -319,7 +319,7 @@ public class MarketMonitoringService {
         authorize("BUSINESS_SUBMIT", parsed.regionCode());
         BigDecimal latitude = requiredCorrectionCoordinate(parsed, "MKT_SAMPLE_LATITUDE");
         BigDecimal longitude = requiredCorrectionCoordinate(parsed, "MKT_SAMPLE_LONGITUDE");
-        if (!repository.isPointWithinRegion(parsed.regionCode(), latitude, longitude)) {
+        if (!repository.supportsSampleLocation(parsed.regionCode(), latitude, longitude)) {
             throw new ClientRequestException(
                     "MARKET_SAMPLE_POINT_OUTSIDE_REGION",
                     "样本点经纬度不在所选地区范围内，请核对后重新上传");
@@ -446,7 +446,7 @@ public class MarketMonitoringService {
     private void validateEntryCoordinates(ParsedDraft draft) {
         BigDecimal latitude = requiredCorrectionCoordinate(draft, "MKT_SAMPLE_LATITUDE");
         BigDecimal longitude = requiredCorrectionCoordinate(draft, "MKT_SAMPLE_LONGITUDE");
-        if (!repository.isPointWithinRegion(draft.regionCode(), latitude, longitude)) {
+        if (!repository.supportsSampleLocation(draft.regionCode(), latitude, longitude)) {
             throw new ClientRequestException(
                     "SAMPLE_COORDINATE_REGION_MISMATCH",
                     "样本点经纬度不在所选地区范围内，请核对后重新填报");

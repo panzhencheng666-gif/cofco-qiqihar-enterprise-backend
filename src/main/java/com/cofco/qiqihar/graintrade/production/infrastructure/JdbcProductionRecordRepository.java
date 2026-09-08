@@ -193,34 +193,20 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
     }
 
     @Override
-    public boolean isPointWithinRegion(
+    public boolean supportsSampleLocation(
             String regionCode, BigDecimal latitude, BigDecimal longitude) {
-        return containingRegionCode(regionCode, latitude, longitude).isPresent();
+        return displayRegionCode(regionCode, latitude, longitude).isPresent();
     }
 
-    private Optional<String> containingRegionCode(
+    private Optional<String> displayRegionCode(
             String regionCode, BigDecimal latitude, BigDecimal longitude) {
         return jdbc.sql("""
-                WITH RECURSIVE selected_region_scope(code,depth) AS (
-                  SELECT code,0 FROM platform.region WHERE code=:regionCode
-                  UNION ALL
-                  SELECT child.code,parent.depth + 1
-                  FROM platform.region child
-                  JOIN selected_region_scope parent ON child.parent_code=parent.code
-                )
-                SELECT scope.code
-                FROM selected_region_scope scope
-                JOIN overview.administrative_boundary boundary
-                  ON boundary.region_code=scope.code
-                LEFT JOIN platform.monitoring_scope_region formal
-                  ON formal.scope_code='FORMAL_BUSINESS'
-                 AND formal.region_code=scope.code
-                WHERE ST_Covers(boundary.geometry,
-                  ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326))
-                ORDER BY COALESCE(formal.included,false) DESC,scope.depth DESC,scope.code
-                LIMIT 1
-                """).param("regionCode", regionCode).param("longitude", longitude)
-                .param("latitude", latitude).query(String.class).optional();
+                SELECT region.code FROM platform.region region
+                JOIN overview.administrative_boundary_render boundary ON boundary.region_code=region.code
+                WHERE region.code=:regionCode
+                  AND ST_IsValid(ST_GeomFromGeoJSON(boundary.geo_json))
+                  AND NOT ST_IsEmpty(ST_GeomFromGeoJSON(boundary.geo_json))
+                """).param("regionCode", regionCode).query(String.class).optional();
     }
 
     @Override
@@ -492,7 +478,7 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         subjectId = subjectId == null || subjectId.isBlank() ? null : subjectId.trim();
         BigDecimal latitude = new BigDecimal(latitudeValue);
         BigDecimal longitude = new BigDecimal(longitudeValue);
-        String governedRegionCode = containingRegionCode(record.regionCode(), latitude, longitude)
+        String governedRegionCode = displayRegionCode(record.regionCode(), latitude, longitude)
                 .orElseThrow(() -> new ConflictException(
                         "PRODUCTION_SAMPLE_POINT_OUTSIDE_REGION",
                         "样本点经纬度不在所选地区范围内，请核对后再审核"));

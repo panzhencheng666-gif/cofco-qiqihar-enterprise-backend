@@ -53,6 +53,7 @@ class JdbcSampleIdentityGovernanceRepositoryIntegrationTest {
                   'Test fixture',:region,DATE '2026-08-20',repeat('8',64))
                 ON CONFLICT(region_code) DO UPDATE SET geometry=excluded.geometry
                 """).param("region", REGION).update();
+        GovernedMasterDataFixtures.publishBoundary(jdbc, REGION);
         jdbc.sql("""
                 INSERT INTO registry.sample_point(
                   sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,

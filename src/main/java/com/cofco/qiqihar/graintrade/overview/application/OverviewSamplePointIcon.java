@@ -12,7 +12,11 @@ public record OverviewSamplePointIcon(
         List<TypeRef> types,
         double longitude,
         double latitude,
-        String dataQualityReason) {
+        String dataQualityReason, String locationMode) {
+    public OverviewSamplePointIcon(UUID samplePointId, String name, String regionCode, String iconKey,
+            List<RoleRef> roles, List<TypeRef> types, double longitude, double latitude, String dataQualityReason) {
+        this(samplePointId,name,regionCode,iconKey,roles,types,longitude,latitude,dataQualityReason,null);
+    }
     public OverviewSamplePointIcon {
         roles = List.copyOf(roles);
         types = List.copyOf(types);

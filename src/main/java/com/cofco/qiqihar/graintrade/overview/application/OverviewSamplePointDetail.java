@@ -13,7 +13,11 @@ public record OverviewSamplePointDetail(
         String locationState,
         String dataQualityReason,
         List<RoleRef> roles,
-        List<Association> associations) {
+        List<Association> associations, String locationMode) {
+    public OverviewSamplePointDetail(UUID samplePointId, String name, String regionCode, String regionName,
+            String locationState, String dataQualityReason, List<RoleRef> roles, List<Association> associations) {
+        this(samplePointId,name,regionCode,regionName,locationState,dataQualityReason,roles,associations,null);
+    }
     public OverviewSamplePointDetail {
         roles = List.copyOf(roles);
         associations = List.copyOf(associations);
