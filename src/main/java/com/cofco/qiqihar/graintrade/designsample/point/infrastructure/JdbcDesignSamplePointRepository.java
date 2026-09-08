@@ -43,6 +43,9 @@ public class JdbcDesignSamplePointRepository implements DesignSamplePointReposit
                    region_path.path AS region_path,
                    ST_X(point.governed_point)::numeric AS longitude,
                    ST_Y(point.governed_point)::numeric AS latitude,
+                   ST_X(point.display_point)::numeric AS display_longitude,
+                   ST_Y(point.display_point)::numeric AS display_latitude,
+                   point.display_region_code,point.location_mode,
                    point.version,point.updated_at
             FROM platform.design_sample_point point
             JOIN platform.design_sample_contract contract
@@ -223,6 +226,8 @@ public class JdbcDesignSamplePointRepository implements DesignSamplePointReposit
                 read(row.getString("values_json")), row.getString("sample_name"),
                 row.getString("region_code"), row.getString("region_path"),
                 row.getBigDecimal("longitude"), row.getBigDecimal("latitude"),
+                row.getBigDecimal("display_longitude"),row.getBigDecimal("display_latitude"),
+                row.getString("display_region_code"),row.getString("location_mode"),
                 row.getLong("version"), row.getTimestamp("updated_at").toInstant());
     }
 

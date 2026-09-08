@@ -128,7 +128,6 @@ public class DesignSamplePointImportService {
 
         List<Row> rows = new ArrayList<>();
         Set<String> names = new HashSet<>();
-        Set<String> coordinates = new HashSet<>();
         for (SamplePointMasterWorkbook.Row submittedRow : submitted) {
             try {
                 String rowDomain = resolveDomain(contract, submittedRow.values().get("DOMAIN_CODE"));
@@ -150,11 +149,11 @@ public class DesignSamplePointImportService {
                         contract.contractVersion(), contract.contractDigest(), context, values);
                 DesignSamplePointService.ValidatedDraft validated = points.validateForCreate(draft, contract);
                 access.require("BUSINESS_UPDATE", validated.regionCode());
-                if (!names.add(validated.regionCode() + "\u0000" + validated.sampleName())
-                        || !coordinates.add(validated.longitude().toPlainString() + "\u0000"
-                                + validated.latitude().toPlainString())) {
+                String identity = String.join("\u0000",rowDomain,product,objectType,
+                        validated.regionCode(),validated.sampleName().trim().toLowerCase(Locale.ROOT));
+                if (!names.add(identity)) {
                     throw new ConflictException(
-                            "SAMPLE_POINT_IMPORT_DUPLICATE_ROW", "文件中存在重复名称或坐标");
+                            "SAMPLE_POINT_IMPORT_DUPLICATE_ROW", "文件中存在业务分类、品种、对象类型、行政区及名称均相同的重复样本");
                 }
                 rows.add(Row.valid(submittedRow, draft));
             } catch (RuntimeException exception) {

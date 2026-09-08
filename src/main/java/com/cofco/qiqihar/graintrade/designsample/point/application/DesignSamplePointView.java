@@ -17,5 +17,9 @@ public record DesignSamplePointView(
         String regionPath,
         BigDecimal longitude,
         BigDecimal latitude,
+        BigDecimal displayLongitude,
+        BigDecimal displayLatitude,
+        String displayRegionCode,
+        String locationMode,
         long version,
         Instant updatedAt) {}
