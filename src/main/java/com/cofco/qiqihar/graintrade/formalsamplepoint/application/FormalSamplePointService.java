@@ -106,6 +106,12 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
     FormalSamplePointDraft validateForCreate(FormalSamplePointDraft submitted) {
         FormalSamplePointDraft draft = normalize(submitted);
         access.require("FORMAL_SAMPLE_MANAGE", draft.regionCode());
+        String responsible = principals.responsibleSubject(draft.regionCode(), false).orElse(null);
+        if (draft.maintainerSubjectId() != null
+                && !Objects.equals(draft.maintainerSubjectId(), responsible)) {
+            throw responsibilityOnly();
+        }
+        draft = withMaintainer(draft, responsible);
         requireValidReferences(draft);
         repository.lockAndRequireIdentityAvailable(draft.regionCode(), draft.canonicalName());
         coordinateGuard.lockAndRequireAvailableForRegion(
@@ -127,12 +133,12 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
         FormalSamplePointDraft draft = normalize(submitted);
         access.require(actor.permits("FORMAL_SAMPLE_MANAGE")
                 ? "FORMAL_SAMPLE_MANAGE" : "BUSINESS_CREATE", draft.regionCode());
+        if (draft.maintainerSubjectId() != null
+                && !Objects.equals(current.maintainerSubjectId(), draft.maintainerSubjectId())) {
+            throw responsibilityOnly();
+        }
+        draft = withMaintainer(draft, maintainerForRegion(current, draft.regionCode()));
         requireValidReferences(draft);
-        boolean maintainerReassigned = !Objects.equals(
-                current.maintainerSubjectId(), draft.maintainerSubjectId());
-        if (maintainerReassigned) access.require("FORMAL_SAMPLE_MANAGE", current.regionCode());
-        String maintainerChangeReason = maintainerReassigned
-                ? required(draft.maintainerChangeReason(), 500) : null;
         coordinateGuard.lockAndRequireAvailableForRegion(
                 id, draft.longitude(), draft.latitude(), draft.regionCode());
         Instant now = clock.instant();
@@ -149,11 +155,8 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
         LinkedHashSet<String> regions = new LinkedHashSet<>();
         regions.add(current.regionCode());
         regions.add(updated.regionCode());
-        String action = maintainerReassigned
-                ? "FORMAL_SAMPLE_POINT_MAINTAINER_REASSIGNED"
-                : "FORMAL_SAMPLE_POINT_UPDATED";
-        record(actor, updated, action, now, List.copyOf(regions),
-                current.maintainerSubjectId(), maintainerChangeReason);
+        record(actor, updated, "FORMAL_SAMPLE_POINT_UPDATED", now, List.copyOf(regions),
+                current.maintainerSubjectId(), null);
         return updated;
     }
 
@@ -177,8 +180,9 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
                 submitted.address() == null ? null : required(submitted.address(), 500));
         access.require(actor.permits("FORMAL_SAMPLE_MANAGE")
                 ? "FORMAL_SAMPLE_MANAGE" : "BUSINESS_CREATE", draft.regionCode());
-        if (current.maintainerSubjectId() != null && !current.maintainerSubjectId().isBlank()) {
-            requireValidMaintainer(current.maintainerSubjectId(), draft.regionCode());
+        String maintainer = maintainerForRegion(current, draft.regionCode());
+        if (maintainer != null && !maintainer.isBlank()) {
+            requireValidMaintainer(maintainer, draft.regionCode());
         }
         requireCoordinateBoundary(draft.regionCode(), draft.longitude(), draft.latitude());
         coordinateGuard.lockAndRequireAvailableForRegion(
@@ -203,31 +207,24 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
     public FormalSampleMaintainerView assignMaintainer(
             UUID id, long expectedVersion, String submittedMaintainerSubjectId,
             String submittedReason) {
-        if (expectedVersion < 0) throw invalid();
-        SecurityPrincipal actor = access.require("FORMAL_SAMPLE_MANAGE", null);
-        FormalSampleMaintainerView current = repository.findMaintainerTarget(id)
-                .orElseThrow(FormalSamplePointService::notFound);
-        access.require("FORMAL_SAMPLE_MANAGE", current.regionCode());
-        if (current.version() != expectedVersion) {
-            throw new ConflictException(
-                    "FORMAL_SAMPLE_POINT_VERSION_CONFLICT",
-                    "正式样本已发生变化，请刷新后重试");
-        }
-        String maintainerSubjectId = maintainer(submittedMaintainerSubjectId);
-        requireValidMaintainer(maintainerSubjectId, current.regionCode());
-        if (Objects.equals(current.maintainerSubjectId(), maintainerSubjectId)) return current;
-        String reason = required(submittedReason, 500);
-        Instant now = clock.instant();
-        FormalSampleMaintainerView updated = repository.assignMaintainer(
-                        id, expectedVersion, maintainerSubjectId, actor.subjectId(), now)
-                .orElseThrow(() -> new ConflictException(
-                        "FORMAL_SAMPLE_POINT_VERSION_CONFLICT",
-                        "正式样本已发生变化，请刷新后重试"));
-        String action = current.maintainerSubjectId() == null
-                ? "FORMAL_SAMPLE_POINT_MAINTAINER_ASSIGNED"
-                : "FORMAL_SAMPLE_POINT_MAINTAINER_REASSIGNED";
-        recordMaintainer(actor, updated, action, now, current.maintainerSubjectId(), reason);
-        return updated;
+        access.require("FORMAL_SAMPLE_MANAGE", null);
+        throw responsibilityOnly();
+    }
+
+    private String maintainerForRegion(FormalSamplePointView current, String regionCode) {
+        if (Objects.equals(current.regionCode(), regionCode)) return current.maintainerSubjectId();
+        // V177 synchronizes assigned destinations; retain legacy ownership in unassigned regions.
+        return principals.responsibleSubject(regionCode, false).orElse(current.maintainerSubjectId());
+    }
+
+    private static AccessDeniedException responsibilityOnly() {
+        return new AccessDeniedException("FORMAL_SAMPLE_RESPONSIBILITY_ACCOUNT_ONLY",
+                "请在账号与授权中配置或改派负责地区，维护人随地区责任统一更新");
+    }
+
+    private static FormalSamplePointDraft withMaintainer(FormalSamplePointDraft draft, String subjectId) {
+        return new FormalSamplePointDraft(draft.canonicalName(), draft.regionCode(), draft.address(),
+                draft.longitude(), draft.latitude(), draft.objectTypeCode(), subjectId, null);
     }
 
     @Transactional
@@ -308,7 +305,9 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
         String address = required(submitted.address(), 500);
         String objectType = required(submitted.objectTypeCode(), 80)
                 .toUpperCase(Locale.ROOT);
-        String maintainerSubjectId = maintainer(submitted.maintainerSubjectId());
+        String maintainerSubjectId = submitted.maintainerSubjectId() == null
+                || submitted.maintainerSubjectId().isBlank() ? null
+                : optional(submitted.maintainerSubjectId(), 120);
         String maintainerChangeReason = optional(submitted.maintainerChangeReason(), 500);
         BigDecimal longitude = coordinate(submitted.longitude(), new BigDecimal("-180"),
                 new BigDecimal("180"), 10);
@@ -321,7 +320,8 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
 
     private void requireValidReferences(FormalSamplePointDraft draft) {
         if (!repository.isSupportedObjectType(draft.objectTypeCode())) throw invalid();
-        requireValidMaintainer(draft.maintainerSubjectId(), draft.regionCode());
+        if (draft.maintainerSubjectId() != null)
+            requireValidMaintainer(draft.maintainerSubjectId(), draft.regionCode());
         requireCoordinateBoundary(draft.regionCode(), draft.longitude(), draft.latitude());
     }
 
@@ -372,14 +372,6 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
         return normalized;
     }
 
-    private static String maintainer(String value) {
-        if (value == null || value.isBlank()
-                || value.codePointCount(0, value.length()) > 120) {
-            throw invalidMaintainer();
-        }
-        return value.trim();
-    }
-
     private void record(
             SecurityPrincipal actor, FormalSamplePointView point, String action,
             Instant occurredAt, List<String> regionCodes,
@@ -387,23 +379,6 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
         try {
             String detail = json.writeValueAsString(new EventDetail(
                     point.regionCode(), regionCodes, point.objectTypeCode(), point.version(),
-                    previousMaintainerSubjectId, point.maintainerSubjectId(), actor.subjectId(),
-                    maintainerChangeReason));
-            audit.record(actor, AGGREGATE, point.id().toString(), action, occurredAt, detail);
-        } catch (JacksonException exception) {
-            throw new IllegalStateException("Cannot serialize formal sample point event", exception);
-        } catch (DataIntegrityViolationException exception) {
-            throw new IllegalStateException("Cannot persist formal sample point event", exception);
-        }
-    }
-
-    private void recordMaintainer(
-            SecurityPrincipal actor, FormalSampleMaintainerView point, String action,
-            Instant occurredAt, String previousMaintainerSubjectId,
-            String maintainerChangeReason) {
-        try {
-            String detail = json.writeValueAsString(new EventDetail(
-                    point.regionCode(), List.of(point.regionCode()), null, point.version(),
                     previousMaintainerSubjectId, point.maintainerSubjectId(), actor.subjectId(),
                     maintainerChangeReason));
             audit.record(actor, AGGREGATE, point.id().toString(), action, occurredAt, detail);

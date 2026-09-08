@@ -55,4 +55,35 @@ class FormalSamplePointVersionAuthorizationTest {
                         org.assertj.core.api.Assertions.assertThat(error.code())
                                 .isEqualTo("FORMAL_SAMPLE_POINT_VERSION_CONFLICT"));
     }
+    @Test
+    void administratorCannotReassignThroughOrdinaryUpdate() {
+        var repository = mock(FormalSamplePointRepository.class);
+        var access = mock(AccessControl.class);
+        var principals = mock(SecurityPrincipalRepository.class);
+        var actor = new SecurityPrincipal("admin", "TEST",
+                Set.of("BUSINESS_READ", "BUSINESS_CREATE", "FORMAL_SAMPLE_MANAGE"), Set.of("230202"));
+        var current = mock(FormalSamplePointView.class);
+        UUID id = UUID.randomUUID();
+        when(current.id()).thenReturn(id);
+        when(current.version()).thenReturn(0L);
+        when(current.regionCode()).thenReturn("230202");
+        when(current.maintainerSubjectId()).thenReturn("owner");
+        when(repository.find(id)).thenReturn(Optional.of(current));
+        when(access.require(anyString(), any())).thenReturn(actor);
+        when(principals.findEnabled("admin")).thenReturn(Optional.of(actor));
+        when(repository.isSupportedObjectType("FARMER")).thenReturn(true);
+        when(repository.coordinateBoundaryState(anyString(), any(), any()))
+                .thenReturn(Optional.of(FormalSamplePointRepository.BoundaryContainment.INSIDE));
+        when(repository.update(any(), anyLong(), any(), anyString(), any())).thenReturn(Optional.of(current));
+        var service = new FormalSamplePointService(repository, access, principals,
+                mock(SamplePointCoordinateGuard.class), mock(BusinessAuditRecorder.class),
+                new ObjectMapper(), Clock.systemUTC());
+        var draft = new FormalSamplePointDraft("样本", "230202", "地址",
+                new BigDecimal("123.9"), new BigDecimal("47.3"), "FARMER", "admin", "岗位调整");
+        assertThatThrownBy(() -> service.update(id, 0L, draft))
+                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+        org.mockito.Mockito.verify(repository, org.mockito.Mockito.never())
+                .update(any(), anyLong(), any(), anyString(), any());
+    }
+
 }
