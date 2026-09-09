@@ -254,7 +254,6 @@ public class ProductionSecurityConfiguration {
             String path=request.getRequestURI().substring(request.getContextPath().length());
             return (request.getMethod().equals("POST")
                     && (path.equals("/api/v1/identity/invitations/activate")
-                        ||path.equals("/api/v1/identity/invitations/first-administrator")
                         ||path.equals("/api/v1/identity/registration")))
                     ||(request.getMethod().equals("GET")
                     && (path.equals("/api/v1/identity/invitations/activation-bootstrap")

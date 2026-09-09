@@ -50,7 +50,7 @@ public class EmployeeRegistrationService {
         EmployeeAssignment assignment=new EmployeeAssignment(requested.displayName(),requested.workUnitCode(),
                 "ACTIVE","ACTIVE",List.of("BUSINESS_OPERATOR"),requested.positionCodes(),requested.regionCodes());
         governance.validateRegistration(assignment);
-        // Same lock order as first-admin binding; covers concurrent username/binding claims.
+        // Serialize concurrent username and identity binding claims.
         jdbc.sql("LOCK TABLE platform.identity_provider_binding IN SHARE ROW EXCLUSIVE MODE").update();
         jdbc.sql("LOCK TABLE platform.security_user IN SHARE ROW EXCLUSIVE MODE").update();
         var existing=jdbc.sql("SELECT security_subject_id FROM platform.identity_provider_binding WHERE issuer_uri=:issuer AND provider_subject=:subject")
