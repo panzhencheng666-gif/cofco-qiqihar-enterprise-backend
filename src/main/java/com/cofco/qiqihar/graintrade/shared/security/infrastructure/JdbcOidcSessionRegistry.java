@@ -19,7 +19,7 @@ import org.springframework.security.oauth2.core.oidc.user.DefaultOidcUser;
 import org.springframework.transaction.annotation.Transactional;
 
 /** Shared OIDC-to-browser-session mapping for multi-instance logout and concurrency. */
-public final class JdbcOidcSessionRegistry implements OidcSessionRegistry {
+public class JdbcOidcSessionRegistry implements OidcSessionRegistry {
     private static final TypeReference<Map<String,String>> STRING_MAP = new TypeReference<>() {};
     private final JdbcClient jdbc;
     private final ObjectMapper json;
