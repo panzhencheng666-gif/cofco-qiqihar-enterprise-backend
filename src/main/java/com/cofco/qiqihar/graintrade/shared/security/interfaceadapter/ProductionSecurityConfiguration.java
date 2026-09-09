@@ -298,7 +298,7 @@ public class ProductionSecurityConfiguration {
             if(principal==null) {
                 var session=request.getSession();
                 audit.record(authentication.getName(),session.getId(),
-                        "LOGIN_ACTIVATION_REQUIRED","{}");
+                        "LOGIN_SUCCESS","{\"activationRequired\":true}");
                 delegate.onAuthenticationSuccess(request,response,authentication);
                 return;
             }
