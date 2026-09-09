@@ -3,6 +3,15 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 import java.util.List;
 class EmployeeRegistrationPolicyTest {
+ @Test void registrationRequiresExactlyOneTownship(){
+  for(List<String> regions:List.of(List.<String>of(),List.of("town1","town2"),List.of("")))
+   assertThrows(RuntimeException.class,()->EmployeeRegistrationService.validateSingleRegion(regions));
+  assertDoesNotThrow(()->EmployeeRegistrationService.validateSingleRegion(List.of("town1")));
+  for(String level:List.of("PREFECTURE","COUNTY","VILLAGE",""))
+   assertThrows(RuntimeException.class,()->EmployeeRegistrationService.validateTownshipLevel(level));
+  assertDoesNotThrow(()->EmployeeRegistrationService.validateTownshipLevel("TOWNSHIP"));
+ }
+
  @Test void preventsReservedOrCallerChosenAdministratorIdentity(){
   assertThrows(RuntimeException.class,()->EmployeeRegistrationService.validateIdentity("admin"));
   assertThrows(RuntimeException.class,()->EmployeeRegistrationService.validateIdentity("ADMIN"));

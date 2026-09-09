@@ -79,10 +79,10 @@
                 <button id="cofco-send" type="button" disabled>获取验证码</button></div>
                 <label for="cofco-unit">工作单位 *</label>
                 <select id="cofco-unit" required disabled></select>
-                <label for="cofco-region-search">授权地区 *</label>
-                <input id="cofco-region-search" type="search" placeholder="搜索地区名称" />
-                <select id="cofco-regions" multiple size="7" required disabled></select>
-                <small>可选择多个地区，注册后获得所选地区的普通业务权限。</small>
+                <label for="cofco-region-search">绑定乡镇 *</label>
+                <input id="cofco-region-search" type="search" placeholder="搜索乡镇名称" />
+                <select id="cofco-regions" required disabled><option value="">请选择一个乡镇</option></select>
+                <small>一个账号只能绑定一个乡镇，注册后获得该乡镇范围内的普通业务权限。</small>
                 <p id="cofco-entry-error" role="alert"></p>
                 <button id="cofco-retry" type="button" hidden>重新加载单位和地区</button>
             </div>

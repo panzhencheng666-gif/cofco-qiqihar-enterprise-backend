@@ -2,7 +2,9 @@ const https=require('https'),http=require('http'),fs=require('fs'),path=require(
 const tls={key:fs.readFileSync(__dirname+'/localhost-key.pem'),cert:fs.readFileSync(__dirname+'/localhost.pem')};
 const dist=__dirname+'/web-dist';
 function proxy(req,res){const headers={...req.headers,'x-forwarded-proto':'https','x-forwarded-host':req.headers.host};for(const k of Object.keys(headers))if(k.startsWith('x-local-')||k==='x-actor'||k==='x-trusted-subject')delete headers[k];const p=http.request({host:'127.0.0.1',port:28090,path:req.url,method:req.method,headers},r=>{res.writeHead(r.statusCode,r.headers);r.pipe(res)});p.on('error',()=>{res.writeHead(502);res.end('业务服务暂不可用')});req.pipe(p)}
+const overviewProxy=require('./overview-proxy.cjs');
 https.createServer(tls,(req,res)=>{
+ if(overviewProxy(req,res))return;
  if(req.url.split('?')[0]==='/activation-required.html'){res.writeHead(302,{'Location':'/register.html','Cache-Control':'no-store'});return res.end()}
  if(req.url.split('?')[0]==='/register.html'){res.setHeader('Content-Type','text/html; charset=utf-8');res.setHeader('Cache-Control','no-store');return res.end(fs.readFileSync(__dirname+'/register.html'))}
  if(req.url==='/local-identity-delivery'){res.writeHead(503,{'Content-Type':'application/json'});return res.end('{"error":"LOCAL_DELIVERY_NOT_CONFIGURED"}')}

@@ -16,6 +16,13 @@ import org.springframework.transaction.annotation.Transactional;
 /** Self-registration never imports roles or an existing business identity from user input. */
 @Service
 public class EmployeeRegistrationService {
+    private static final List<AssignmentOptions.Option> REGISTRATION_UNITS=List.of(
+            new AssignmentOptions.Option("QIQIHAR_BUSINESS","齐齐哈尔经营部"),
+            new AssignmentOptions.Option("NEHE_DEPOT","讷河库"),
+            new AssignmentOptions.Option("KESHAN_DEPOT","克山库"),
+            new AssignmentOptions.Option("KEDONG_DEPOT","克东库"),
+            new AssignmentOptions.Option("LONGZHEN_DEPOT","龙镇库"),
+            new AssignmentOptions.Option("CHENGJISIHAN_DEPOT","成吉思汗库"));
     private final IdentityGovernanceRepository repository;
     private final IdentityGovernanceService governance;
     private final JdbcClient jdbc;
@@ -39,15 +46,18 @@ public class EmployeeRegistrationService {
     public AssignmentOptions options(String unit) {
         requireEnabled();
         AssignmentOptions all=governance.registrationOptions(unit);
-        return new AssignmentOptions(all.workUnits(),all.roles().stream()
+        var townships=all.regions().stream().filter(region->"TOWNSHIP".equals(region.administrativeLevel())).toList();
+        return new AssignmentOptions(REGISTRATION_UNITS.stream()
+                .filter(unitOption->all.workUnits().stream().anyMatch(available->available.code().equals(unitOption.code()))).toList(),all.roles().stream()
                 .filter(role->role.code().equals("BUSINESS_OPERATOR")).toList(),
-                all.positions(),all.regionCodes(),all.regions());
+                all.positions(),townships.stream().map(AssignmentOptions.RegionOption::code).toList(),townships);
     }
     @Transactional(readOnly=true)
     public void validateDraft(String username, EmployeeAssignment assignment) {
         requireEnabled();
         validateIdentity(username);
         validateRoles(assignment.roleCodes());
+        validateBoundTownship(assignment.regionCodes());
         governance.validateRegistration(assignment);
         if (jdbc.sql("SELECT EXISTS(SELECT 1 FROM platform.security_user WHERE lower(subject_id)=lower(:username))")
                 .param("username",username).query(Boolean.class).single())
@@ -64,6 +74,7 @@ public class EmployeeRegistrationService {
         validateRoles(requested.roleCodes());
         EmployeeAssignment assignment=new EmployeeAssignment(requested.displayName(),requested.workUnitCode(),
                 "ACTIVE","ACTIVE",List.of("BUSINESS_OPERATOR"),requested.positionCodes(),requested.regionCodes());
+        validateBoundTownship(assignment.regionCodes());
         governance.validateRegistration(assignment);
         // Serialize concurrent username and identity binding claims.
         jdbc.sql("LOCK TABLE platform.identity_provider_binding IN SHARE ROW EXCLUSIVE MODE").update();
@@ -88,6 +99,21 @@ public class EmployeeRegistrationService {
         audit.record(principal,assignment.workUnitCode(),"SECURITY_USER",username,
                 "SECURITY_USER_REGISTERED",Instant.now(),"{\"registration\":\"SELF_SERVICE\",\"role\":\"BUSINESS_OPERATOR\"}");
         return IdentityActivationResult.active(username);
+    }
+    private void validateBoundTownship(List<String> regions) {
+        validateSingleRegion(regions);
+        String level=jdbc.sql("SELECT administrative_level FROM platform.region WHERE code=:code")
+                .param("code",regions.getFirst()).query(String.class).optional().orElse("");
+        validateTownshipLevel(level);
+    }
+    static void validateSingleRegion(List<String> regions) {
+        if(regions==null || regions.size()!=1 || regions.getFirst()==null || regions.getFirst().isBlank())
+            throw new com.cofco.qiqihar.graintrade.shared.application.ClientRequestException(
+                    "REGISTRATION_SINGLE_TOWNSHIP_REQUIRED","一个账号只能绑定一个乡镇，请选择一个乡镇");
+    }
+    static void validateTownshipLevel(String level) {
+        if(!"TOWNSHIP".equals(level))throw new com.cofco.qiqihar.graintrade.shared.application.ClientRequestException(
+                "REGISTRATION_TOWNSHIP_REQUIRED","绑定区域必须精确到乡镇，不能选择市、区县或行政村");
     }
     static void validateIdentity(String username) {
         if(username==null||!username.matches("[A-Za-z0-9._:@-]{1,120}")

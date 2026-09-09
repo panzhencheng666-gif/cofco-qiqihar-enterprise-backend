@@ -10,7 +10,7 @@ const phone = form.querySelector('[name="phone_number"]');
 const code = document.querySelector('#cofco-sms-code');
 const username = form.querySelector('[name="username"]');
 let csrf = '', challengeId = null, submitting = false, nativeReady = false, generation = 0, ready = false;
-let allRegions = [], selected = new Set(), cooldownUntil = 0, credentialsComplete = false;
+let allRegions = [], selected = '', cooldownUntil = 0, credentialsComplete = false;
 const submit = form.querySelector('[type="submit"]');
 submit.disabled = true;
 async function api(path, body) {
@@ -25,9 +25,10 @@ async function api(path, body) {
 }
 function renderRegions() {
   const term = search.value.trim();
-  regions.replaceChildren(...allRegions.filter(r => !term || r.name.includes(term) || selected.has(r.code)).map(r => {
-    const option = new Option(r.name, r.code); option.selected = selected.has(r.code); return option;
+  regions.replaceChildren(new Option('请选择一个乡镇',''), ...allRegions.filter(r => !term || r.name.includes(term) || selected === r.code).map(r => {
+    const option = new Option(r.name, r.code); option.selected = selected === r.code; return option;
   }));
+  regions.value = selected;
 }
 async function loadOptions(codeValue = 'QIQIHAR_BUSINESS') {
   const current = ++generation; ready = false; send.disabled = true; submit.disabled = true; regions.disabled = true;
@@ -38,14 +39,15 @@ async function loadOptions(codeValue = 'QIQIHAR_BUSINESS') {
     if (!data.workUnits?.length || !data.regions?.length) throw new Error('单位或地区暂无可用选项，请重试或联系管理员');
     unit.replaceChildren(...data.workUnits.map(u => new Option(u.name,u.code)));
     unit.value = codeValue; if (!unit.value) throw new Error('所选单位不可用');
-    allRegions = data.regions; selected = new Set([...selected].filter(c => allRegions.some(r => r.code === c)));
+    allRegions = data.regions.filter(r => r.administrativeLevel === 'TOWNSHIP');
+    if (!allRegions.some(r => r.code === selected)) selected = '';
     renderRegions(); unit.disabled = false; regions.disabled = false; ready = true;
     send.disabled = Date.now() < cooldownUntil; submit.disabled = false; error.textContent = '';
   } catch (caught) { if (current === generation) { error.textContent = caught.message; retry.hidden = false; } }
 }
-regions.addEventListener('change', () => { for (const option of regions.options) option.selected ? selected.add(option.value) : selected.delete(option.value); });
+regions.addEventListener('change', () => { selected = regions.value; });
 search.addEventListener('input', renderRegions);
-unit.addEventListener('change', () => { selected.clear(); search.value = ''; void loadOptions(unit.value); });
+unit.addEventListener('change', () => { selected = '';  search.value = ''; void loadOptions(unit.value); });
 retry.addEventListener('click', () => void loadOptions(unit.value || 'QIQIHAR_BUSINESS'));
 phone?.addEventListener('input', () => { challengeId = null; code.value = ''; code.required = true; });
 send.addEventListener('click', async () => {
@@ -65,14 +67,14 @@ send.addEventListener('click', async () => {
 form.addEventListener('submit', async event => {
   if (nativeReady) return;
   event.preventDefault(); if (submitting || !ready) return;
-  if (!form.reportValidity() || !selected.size) { error.textContent = '请完整填写注册信息并选择地区'; return; }
+  if (!form.reportValidity() || !selected) { error.textContent = '请完整填写注册信息并选择地区'; return; }
   submitting = true; submit.disabled = true; error.textContent = '';
   try {
     const first = form.querySelector('[name="firstName"]')?.value || '';
     const last = form.querySelector('[name="lastName"]')?.value || '';
     const result = await api('registration-entry/draft', {
       username:username.value, displayName:last+first, phone:phone.value, workUnitCode:unit.value,
-      regionCodes:[...selected], challengeId, code:code.value,
+      regionCodes:[selected], challengeId, code:code.value,
     });
     if (result.complete) { location.assign(base + '/oauth2/authorization/enterprise'); return; }
     nativeReady = true; submit.disabled = false; form.requestSubmit();
@@ -95,7 +97,7 @@ try {
     const draft = state.draft;
     if (draft?.username && draft.username === username.value && draft.phone === phone.value) {
       code.required = false; code.placeholder = '手机号已验证';
-      selected = new Set(draft.regionCodes || []);
+      selected = draft.regionCodes?.length === 1 ? draft.regionCodes[0] : '';
     }
     await loadOptions(draft?.workUnitCode || 'QIQIHAR_BUSINESS');
     if (state.registrationError) error.textContent = state.registrationError;
