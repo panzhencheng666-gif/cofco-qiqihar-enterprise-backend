@@ -1387,19 +1387,13 @@ class FormalSampleObservationRestIntegrationTest {
     }
 
     @Test
-    void savesOutOfRegionInlineCoordinatesWithAnInteriorSchematicPosition() throws Exception {
+    void rejectsOutOfCountyInlineCoordinatesWithoutChangingTheSample() throws Exception {
         mvc.perform(post("/api/v1/formal-sample-observations/observations")
                         .principal(() -> ACTOR).header("Idempotency-Key", "inline-location-outside")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(locationObservationRequest(0).replace("123.2345678", "126.2345678")))
-                .andExpect(status().isCreated());
-        assertThat(jdbc.sql("""
-                SELECT ST_X(point.governed_point)=126.2345678 AND point.location_mode='REGION_SCHEMATIC'
-                  AND ST_Covers(ST_GeomFromGeoJSON(boundary.geo_json),point.display_point)
-                FROM registry.sample_point point
-                JOIN overview.administrative_boundary_render boundary ON boundary.region_code=point.region_code
-                WHERE sample_point_id=:id
-                """).param("id", SAMPLE_POINT_ID).query(Boolean.class).single()).isTrue();
+                .andExpect(status().isBadRequest());
+        assertInlineLocationUnchanged();
     }
 
     @Test

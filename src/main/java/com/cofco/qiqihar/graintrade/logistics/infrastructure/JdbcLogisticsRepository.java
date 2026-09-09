@@ -121,7 +121,9 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
             try {
                 if (field.control.equals("DECIMAL")) {
                     BigDecimal decimal = decimal(value, field);
-                    if (decimal.signum() < 0 || decimal.precision() > field.precision || decimal.scale() > field.scale) return false;
+                    if (!isCoordinate(field)
+                            && (decimal.signum() < 0 || decimal.precision() > field.precision
+                                || decimal.scale() > field.scale)) return false;
                 } else if (field.control.equals("DATE") && LocalDate.parse(value).isAfter(today)) return false;
                 else if (field.control.equals("SELECT") && !optionValues.get(field.code).contains(value)) return false;
             } catch (RuntimeException exception) {
@@ -145,8 +147,13 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
         } catch (RuntimeException exception) {
             return false;
         }
-        return Boolean.TRUE.equals(jdbc.sql("SELECT EXISTS(SELECT 1 FROM platform.region WHERE code=:code)")
-                .param("code", draft.values().get("LOG_REGION")).query(Boolean.class).single());
+        return Boolean.TRUE.equals(jdbc.sql("""
+                SELECT coalesce(overview.sample_coordinate_admission_state(
+                  CAST(:region AS varchar),CAST(:longitude AS numeric),CAST(:latitude AS numeric))='INSIDE',false)
+                """).param("region", draft.values().get("LOG_REGION"))
+                .param("longitude", new BigDecimal(draft.values().get("LOG_SAMPLE_LONGITUDE")))
+                .param("latitude", new BigDecimal(draft.values().get("LOG_SAMPLE_LATITUDE")))
+                .query(Boolean.class).single());
     }
 
     @Override
@@ -642,7 +649,15 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
         if (field.precision == null || field.scale == null) {
             throw new IllegalStateException("Logistics decimal metadata is incomplete: " + field.code);
         }
+        if (isCoordinate(field)) {
+            BigDecimal parsed = PlainDecimal.parse(value, 3, 15, "INVALID_LOGISTICS_RECORD");
+            return parsed.scale() < field.scale ? parsed.setScale(field.scale) : parsed;
+        }
         return PlainDecimal.parse(value, field.precision - field.scale, field.scale, "INVALID_LOGISTICS_RECORD");
+    }
+
+    private static boolean isCoordinate(FieldMeta field) {
+        return "LOG_SAMPLE_LATITUDE".equals(field.code) || "LOG_SAMPLE_LONGITUDE".equals(field.code);
     }
 
     private static void require(int count) {

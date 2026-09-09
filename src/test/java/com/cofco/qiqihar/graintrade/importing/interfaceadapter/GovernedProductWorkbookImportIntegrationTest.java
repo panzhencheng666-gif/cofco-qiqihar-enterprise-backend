@@ -164,7 +164,7 @@ class GovernedProductWorkbookImportIntegrationTest {
     }
 
     @Test
-    void acceptsOutsideCoordinatesAtImportForAllThreeDomains() throws Exception {
+    void rejectsOutsideCoordinatesAtImportForAllThreeDomains() throws Exception {
         Map<String, String> outsideProduction = new LinkedHashMap<>(completeProductionValues());
         outsideProduction.put("纬度（度）", "47.000000");
         outsideProduction.put("经度（度）", "123.000000");
@@ -177,29 +177,29 @@ class GovernedProductWorkbookImportIntegrationTest {
 
         importWorkbook("production", "production-tester", "production-coordinate-region-mismatch",
                 workbook(workbookFixture("production", "PRODUCTION", "产情",
-                        "production-tester", "样本点名称"), "越界产情样本", outsideProduction), 1, 0);
+                        "production-tester", "样本点名称"), "越界产情样本", outsideProduction), 0, 1);
         importWorkbook("market", "market-tester", "market-coordinate-region-mismatch",
                 workbook(workbookFixture("market", "MARKET", "市场",
-                        "market-tester", "样本点名称"), "越界市场样本", outsideMarket), 1, 0);
+                        "market-tester", "样本点名称"), "越界市场样本", outsideMarket), 0, 1);
         importWorkbook("logistics", "logistics-tester", "logistics-coordinate-region-mismatch",
                 workbook(workbookFixture("logistics", "LOGISTICS", "物流",
-                        "logistics-tester", "物流样本点名称"), "越界物流样本", outsideLogistics), 1, 0);
+                        "logistics-tester", "物流样本点名称"), "越界物流样本", outsideLogistics), 0, 1);
 
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM platform.import_row_result result
                 JOIN platform.import_job job ON job.import_job_id=result.import_job_id
                 WHERE job.idempotency_key LIKE '%-coordinate-region-mismatch'
-                  AND result.error_code='SAMPLE_COORDINATE_REGION_MISMATCH'
-                """).query(Long.class).single()).isZero();
+                  AND result.outcome_code='ERROR'
+                """).query(Long.class).single()).isEqualTo(3);
         assertThat(jdbc.sql("""
                 SELECT (SELECT count(*) FROM production.production_record)
                      + (SELECT count(*) FROM market.market_record)
                      + (SELECT count(*) FROM logistics.route_event)
-                """).query(Long.class).single()).isEqualTo(3);
+                """).query(Long.class).single()).isZero();
     }
 
     @Test
-    void acceptsOutsideHighPrecisionCoordinatesForAllThreeDomains() throws Exception {
+    void rejectsOutsideHighPrecisionCoordinatesForAllThreeDomains() throws Exception {
         Map<String, String> production = new LinkedHashMap<>(completeProductionValues());
         production.put("纬度（度）", "47.55000012345");
         production.put("经度（度）", "124.2000004");
@@ -212,29 +212,29 @@ class GovernedProductWorkbookImportIntegrationTest {
 
         importWorkbook("production", "production-tester", "production-rounding-boundary-mismatch",
                 workbook(workbookFixture("production", "PRODUCTION", "产情",
-                        "production-tester", "样本点名称"), "边界外产情样本", production), 1, 0);
+                        "production-tester", "样本点名称"), "边界外产情样本", production), 0, 1);
         importWorkbook("market", "market-tester", "market-rounding-boundary-mismatch",
                 workbook(workbookFixture("market", "MARKET", "市场",
-                        "market-tester", "样本点名称"), "边界外市场样本", market), 1, 0);
+                        "market-tester", "样本点名称"), "边界外市场样本", market), 0, 1);
         importWorkbook("logistics", "logistics-tester", "logistics-rounding-boundary-mismatch",
                 workbook(workbookFixture("logistics", "LOGISTICS", "物流",
-                        "logistics-tester", "物流样本点名称"), "边界外物流样本", logistics), 1, 0);
+                        "logistics-tester", "物流样本点名称"), "边界外物流样本", logistics), 0, 1);
 
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM platform.import_row_result result
                 JOIN platform.import_job job ON job.import_job_id=result.import_job_id
                 WHERE job.idempotency_key LIKE '%-rounding-boundary-mismatch'
-                  AND result.error_code='SAMPLE_COORDINATE_REGION_MISMATCH'
-                """).query(Long.class).single()).isZero();
+                  AND result.outcome_code='ERROR'
+                """).query(Long.class).single()).isEqualTo(3);
         assertThat(jdbc.sql("""
                 SELECT (SELECT count(*) FROM production.production_record)
                      + (SELECT count(*) FROM market.market_record)
                      + (SELECT count(*) FROM logistics.route_event)
-                """).query(Long.class).single()).isEqualTo(3);
+                """).query(Long.class).single()).isZero();
     }
 
     @Test
-    void acceptsHighPrecisionCoordinatesByNormalizingToEachGovernedStorageResolution()
+    void preservesHighPrecisionCoordinatesAcrossAllThreeDomains()
             throws Exception {
         Map<String, String> production = new LinkedHashMap<>(completeProductionValues());
         production.put("纬度（度）", "47.55000012345");
@@ -263,28 +263,37 @@ class GovernedProductWorkbookImportIntegrationTest {
     }
 
     @Test
-    void acceptsStorageRoundingAcrossTheDeclaredBoundary() throws Exception {
+    void preservesCountyContainedCoordinatesInsteadOfRoundingThemOutside() throws Exception {
         jdbc.sql("""
                 UPDATE overview.administrative_boundary
                 SET geometry=ST_Multi(ST_MakeEnvelope(123.5,47.4,124.2000007,47.9,4326))
                 WHERE region_code='230208'
                 """).update();
-        Map<String, String> production = new LinkedHashMap<>(completeProductionValues());
-        production.put("纬度（度）", "47.55000012345");
-        production.put("经度（度）", "124.2000006");
-
-        importWorkbook("production", "production-tester", "production-rounded-coordinate-outside",
-                workbook(workbookFixture("production", "PRODUCTION", "产情",
-                        "production-tester", "样本点名称"), "舍入后越界产情样本", production), 1, 0);
-
+        for (String domain : List.of("production", "market", "logistics")) {
+            Map<String, String> values = new LinkedHashMap<>(switch (domain) {
+                case "production" -> completeProductionValues();
+                case "market" -> completeMarketValues();
+                default -> completeLogisticsValues();
+            });
+            values.put("纬度（度）", "47.55000012345");
+            values.put("经度（度）", "124.2000006");
+            String label = domain.equals("production") ? "产情" : domain.equals("market") ? "市场" : "物流";
+            String sampleLabel = domain.equals("logistics") ? "物流样本点名称" : "样本点名称";
+            importWorkbook(domain, domain + "-tester", domain + "-unrounded-county-coordinate",
+                    workbook(workbookFixture(domain, domain.toUpperCase(Locale.ROOT), label,
+                            domain + "-tester", sampleLabel), label + "原始县内坐标样本", values), 1, 0);
+        }
         assertThat(jdbc.sql("""
-                SELECT count(*) FROM platform.import_row_result result
-                JOIN platform.import_job job ON job.import_job_id=result.import_job_id
-                WHERE job.idempotency_key='production-rounded-coordinate-outside'
-                  AND result.error_code='SAMPLE_COORDINATE_REGION_MISMATCH'
-                """).query(Long.class).single()).isZero();
-        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
-                .query(Long.class).single()).isEqualTo(1);
+                SELECT count(*) FROM (
+                  SELECT value::numeric longitude FROM production.production_record_submission_metadata
+                    WHERE field_code='PROD_SAMPLE_LONGITUDE'
+                  UNION ALL
+                  SELECT value::numeric FROM market.market_record_core_value
+                    WHERE field_code='MKT_SAMPLE_LONGITUDE'
+                  UNION ALL
+                  SELECT sample_longitude FROM logistics.route_event
+                ) coordinates WHERE longitude=124.2000006
+                """).query(Long.class).single()).isEqualTo(3);
     }
 
     @Test

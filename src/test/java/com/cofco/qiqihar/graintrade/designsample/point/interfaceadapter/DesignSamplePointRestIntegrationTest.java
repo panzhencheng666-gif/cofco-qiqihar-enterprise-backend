@@ -323,11 +323,16 @@ class DesignSamplePointRestIntegrationTest {
     @Test
     @Transactional
     void dispersesSchematicPositionsAndKeepsThemStableWhenEditingDetails() throws Exception {
+        jdbc.sql("""
+                UPDATE overview.administrative_boundary
+                SET geometry=ST_Multi(ST_MakeEnvelope(123.4,47.1,124.3,48.0,4326))
+                WHERE region_code='230202'
+                """).update();
         for (int i=0;i<4;i++) {
             mvc.perform(post(ENDPOINT).header("Idempotency-Key","schematic-spread-"+i)
                     .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
                     .content(request("分散示意样本"+i,"10",null)
-                            .replace("123.95","130").replace("47.35","50")))
+                            .replace("123.95","124.1").replace("47.35","47.6")))
                     .andExpect(status().isCreated());
         }
         assertThat(jdbc.sql("""
@@ -357,20 +362,25 @@ class DesignSamplePointRestIntegrationTest {
     @Test
     @Transactional
     void preservesReportedCoordinatesAndUsesAnInRegionSchematicUntilCorrected() throws Exception {
+        jdbc.sql("""
+                UPDATE overview.administrative_boundary
+                SET geometry=ST_Multi(ST_MakeEnvelope(123.4,47.1,124.3,48.0,4326))
+                WHERE region_code='230202'
+                """).update();
         MvcResult created = mvc.perform(post(ENDPOINT)
                 .header("Idempotency-Key", "schematic-location")
                 .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
                 .content(request("区县示意设计样本", "10", null)
-                        .replace("123.95", "130").replace("47.35", "50")))
+                        .replace("123.95", "124.1").replace("47.35", "47.6")))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.longitude").value(130))
-                .andExpect(jsonPath("$.data.latitude").value(50))
+                .andExpect(jsonPath("$.data.longitude").value(124.1))
+                .andExpect(jsonPath("$.data.latitude").value(47.6))
                 .andExpect(jsonPath("$.data.locationMode").value("REGION_SCHEMATIC"))
                 .andReturn();
         String id = body(created).path("data").path("id").asText();
         assertThat(jdbc.sql("""
                 SELECT ST_Covers(boundary.geometry,point.display_point)
-                  AND ST_X(point.governed_point)=130 AND ST_Y(point.governed_point)=50
+                  AND ST_X(point.governed_point)=124.1 AND ST_Y(point.governed_point)=47.6
                 FROM platform.design_sample_point point
                 JOIN overview.administrative_boundary_render boundary
                   ON boundary.region_code=point.display_region_code
@@ -387,38 +397,19 @@ class DesignSamplePointRestIntegrationTest {
 
     @Test
     @Transactional
-    void validatesAgainstTheDisplayedBoundaryAndPreservesTheOriginalCoordinate() throws Exception {
+    void rejectsOutsideCountyEvenIfTheDisplayBoundaryWouldCoverIt() throws Exception {
         jdbc.sql("""
                 UPDATE overview.administrative_boundary_render
-                SET geometry=ST_Multi(ST_MakeEnvelope(129,49,131,51,4326)),
-                    geo_json=ST_AsGeoJSON(ST_Multi(ST_MakeEnvelope(129,49,131,51,4326)))
+                SET geometry=ST_Multi(ST_MakeEnvelope(129,49,131,51,4326))
                 WHERE region_code='230202'
                 """).update();
-        assertThat(jdbc.sql("""
-                SELECT ST_Covers(geometry,ST_SetSRID(ST_MakePoint(130,50),4326))
-                FROM overview.administrative_boundary WHERE region_code='230202'
-                """).query(Boolean.class).single()).isFalse();
-        MvcResult response = mvc.perform(post(ENDPOINT)
-                        .header("Idempotency-Key", "display-boundary-point")
+        mvc.perform(post(ENDPOINT).header("Idempotency-Key", "outside-county-display")
                         .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
-                        .content(request("展示边界内设计点", "10", null)
+                        .content(request("越县设计点", "10", null)
                                 .replace("123.95", "130").replace("47.35", "50")))
-                .andExpect(status().isCreated()).andReturn();
-        String id = body(response).path("data").path("id").asText();
-        mvc.perform(get(ENDPOINT + "/{id}", id).principal(() -> ACTOR))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.longitude").value(130))
-                .andExpect(jsonPath("$.data.latitude").value(50));
-        mvc.perform(put(ENDPOINT + "/{id}", id).principal(() -> ACTOR)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content(request("展示边界内设计点", "10", 0L)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.locationMode").value("REGION_SCHEMATIC"));
-        assertThat(jdbc.sql("""
-                SELECT ST_X(governed_point),ST_Y(governed_point)
-                FROM platform.design_sample_point WHERE design_sample_point_id=CAST(:id AS uuid)
-                """).param("id", id).query((row, index) -> List.of(row.getDouble(1),row.getDouble(2))).single())
-                .containsExactly(123.95,47.35);
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("DESIGN_SAMPLE_POINT_OUTSIDE_REGION"));
+        assertThat(count("platform.design_sample_point")).isZero();
     }
 
     @Test

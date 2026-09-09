@@ -27,6 +27,8 @@ public interface FormalSamplePointRepository {
     Optional<BoundaryContainment> coordinateBoundaryState(
             String regionCode, BigDecimal longitude, BigDecimal latitude);
 
+    void lockAndRequireIdentityAvailable(String regionCode, String canonicalName);
+
     boolean isSupportedObjectType(String objectTypeCode);
 
     Optional<FormalSamplePointView> insert(

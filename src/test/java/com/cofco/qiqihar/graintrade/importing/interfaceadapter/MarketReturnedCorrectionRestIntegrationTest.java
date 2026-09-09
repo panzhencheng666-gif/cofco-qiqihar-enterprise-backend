@@ -261,7 +261,7 @@ class MarketReturnedCorrectionRestIntegrationTest {
     void preservesSelectedRegionWhenCoordinatesFallInsideADescendant() throws Exception {
         String id = returned(
                 "CORN", "TRADER", "230200", "区县下级边界样本", COORDINATE_REASON);
-        boundary("230200", 0, 0, 1, 1);
+        boundary("230200", 121, 45, 126, 50);
         boundary("230202", 122, 46, 125, 49);
         boundary("230208", 0, 0, 1, 1);
         long recordCount = count("market.market_record");

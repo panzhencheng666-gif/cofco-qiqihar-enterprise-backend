@@ -85,7 +85,7 @@ class DesignSamplePointImportRestIntegrationTest {
     @Test
     void importsDifferentSamplesSharingCoordinatesAndRetainsRealDuplicateProtection() throws Exception {
         byte[] workbook=SamplePointMasterWorkbook.create(imports.templateDefinition(),List.of(
-                designRow("同址样本甲","130"),designRow("同址样本乙","130")));
+                designRow("同址样本甲","123.95"),designRow("同址样本乙","123.95")));
         mvc.perform(multipart("/api/v1/design-sample-points/imports")
                         .file(new MockMultipartFile("file","shared.xlsx",
                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",workbook))
@@ -99,7 +99,7 @@ class DesignSamplePointImportRestIntegrationTest {
                 WHERE sample_name IN ('同址样本甲','同址样本乙')
                 """).query(Long.class).single()).isEqualTo(2L);
         byte[] duplicate=SamplePointMasterWorkbook.create(imports.templateDefinition(),List.of(
-                designRow("真正重复样本","130"),designRow("真正重复样本","130")));
+                designRow("真正重复样本","123.95"),designRow("真正重复样本","123.95")));
         mvc.perform(multipart("/api/v1/design-sample-points/imports")
                         .file(new MockMultipartFile("file","duplicates.xlsx",
                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",duplicate))

@@ -51,9 +51,15 @@ class FormalSamplePointImportRestIntegrationTest {
     }
 
     @Test
-    void importsOutsideFormalSamplesOnceAndReplaysWithoutDuplicateWrites() throws Exception {
+    @org.springframework.transaction.annotation.Transactional
+    void importsCountyFormalSamplesOnceAndReplaysWithoutDuplicateWrites() throws Exception {
+        jdbc.sql("""
+                UPDATE overview.administrative_boundary
+                SET geometry=ST_Multi(ST_MakeEnvelope(123.4,47.1,124.3,48.0,4326))
+                WHERE region_code='230202'
+                """).update();
         byte[] workbook = SamplePointMasterWorkbook.create(
-                imports.templateDefinition(), List.of(formalRow("批量正式样本一", "125.94")));
+                imports.templateDefinition(), List.of(formalRow("批量正式样本一", "124.10")));
         MockMultipartFile file = new MockMultipartFile(
                 "file", "formal.xlsx",
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook);
@@ -73,12 +79,30 @@ class FormalSamplePointImportRestIntegrationTest {
                         "SELECT count(*) FROM registry.sample_point")
                 .query(Long.class).single()).isOne();
         org.assertj.core.api.Assertions.assertThat(jdbc.sql("""
-                SELECT ST_X(point.governed_point)=125.94
+                SELECT ST_X(point.governed_point)=124.10
                   AND point.location_mode='REGION_SCHEMATIC'
                   AND ST_Covers(ST_GeomFromGeoJSON(boundary.geo_json),point.display_point)
                 FROM registry.sample_point point
                 JOIN overview.administrative_boundary_render boundary ON boundary.region_code=point.region_code
                 """).query(Boolean.class).single()).isTrue();
+    }
+
+    @Test
+    void importsIndependentSameCoordinateIdentitiesButRejectsRepeatedIdentity() throws Exception {
+        for (boolean duplicate : List.of(false, true)) {
+            byte[] workbook = SamplePointMasterWorkbook.create(imports.templateDefinition(), List.of(
+                    formalRow("共址甲", "123.95"), formalRow(duplicate ? "共址甲" : "共址乙", "123.95")));
+            mvc.perform(multipart("/api/v1/formal-sample-points/imports")
+                            .file(new MockMultipartFile("file", "sharing.xlsx",
+                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
+                            .header("Idempotency-Key", "sharing-" + duplicate)
+                            .principal(() -> "production-tester"))
+                    .andExpect(status().isCreated())
+                    .andExpect(jsonPath("$.data.importedRows").value(duplicate ? 0 : 2));
+        }
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql("""
+                SELECT count(DISTINCT ST_AsEWKT(display_point)) FROM registry.sample_point
+                """).query(Long.class).single()).isEqualTo(2L);
     }
 
     @Test

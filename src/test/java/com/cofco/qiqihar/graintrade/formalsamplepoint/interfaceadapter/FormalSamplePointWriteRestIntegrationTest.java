@@ -733,7 +733,13 @@ class FormalSamplePointWriteRestIntegrationTest {
     }
 
     @Test
-    void preservesOutsideCoordinatesAndPlacesCreateAndUpdateInsideSelectedRegion() throws Exception {
+    @org.springframework.transaction.annotation.Transactional
+    void preservesCountyCoordinatesButRejectsAnOutOfCountyUpdate() throws Exception {
+        jdbc.sql("""
+                UPDATE overview.administrative_boundary
+                SET geometry=ST_Multi(ST_MakeEnvelope(123.4,47.1,124.3,48.0,4326))
+                WHERE region_code='230202'
+                """).update();
         MvcResult created = mvc.perform(post("/api/v1/formal-sample-points")
                         .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content(draft("区内示意样本", "230202", "填报地址", "124.00", "47.40",
@@ -747,12 +753,12 @@ class FormalSamplePointWriteRestIntegrationTest {
                         .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content(draft("区内示意样本", "230202", "修改地址", "125.00", "48.40",
                                 "FARMER", 0L)))
-                .andExpect(status().isOk());
+                .andExpect(status().isBadRequest());
         mvc.perform(get("/api/v1/formal-sample-points/{id}", id).principal(() -> ADMIN))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.longitude").value(125.00))
-                .andExpect(jsonPath("$.data.latitude").value(48.40));
-        assertSchematicLocation(id, 125.00, 48.40);
+                .andExpect(jsonPath("$.data.longitude").value(124.00))
+                .andExpect(jsonPath("$.data.latitude").value(47.40));
+        assertSchematicLocation(id, 124.00, 47.40);
     }
 
     private void assertSchematicLocation(UUID id, double longitude, double latitude) {
@@ -771,13 +777,19 @@ class FormalSamplePointWriteRestIntegrationTest {
     }
 
     @Test
-    void rejectsOccupiedCoordinatesAndStaleUpdates() throws Exception {
+    void permitsIndependentSharedCoordinatesAndRejectsStaleUpdates() throws Exception {
+        mvc.perform(post("/api/v1/formal-sample-points")
+                        .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
+                        .content(draft("占位样本", "230202", "占位地址", "123.93", "47.30",
+                                "FARMER", null)))
+                .andExpect(status().isCreated());
+
         mvc.perform(post("/api/v1/formal-sample-points")
                         .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content(draft("占位样本", "230202", "占位地址", "123.93", "47.30",
                                 "FARMER", null)))
                 .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("SAMPLE_POINT_COORDINATE_OCCUPIED"));
+                .andExpect(jsonPath("$.error.code").value("FORMAL_SAMPLE_POINT_IDENTITY_CONFLICT"));
 
         jdbc.sql("""
                 UPDATE registry.sample_point

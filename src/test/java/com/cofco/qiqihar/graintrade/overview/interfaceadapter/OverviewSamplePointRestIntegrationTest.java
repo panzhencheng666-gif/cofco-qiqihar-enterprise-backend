@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.overview.interfaceadapter;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -1012,13 +1013,26 @@ class OverviewSamplePointRestIntegrationTest {
                 WHERE sample_point_id IN (CAST(:first AS uuid),CAST(:second AS uuid))
                 """).param("first", first).param("second", second).update();
         double publishedLongitude = jdbc.sql("""
-                SELECT ST_X(governed_point) FROM registry.sample_point
+                SELECT ST_X(display_point) FROM registry.sample_point
                 WHERE sample_point_id=CAST(:point AS uuid)
                 """).param("point", first).query(Double.class).single();
         double publishedLatitude = jdbc.sql("""
-                SELECT ST_Y(governed_point) FROM registry.sample_point
+                SELECT ST_Y(display_point) FROM registry.sample_point
                 WHERE sample_point_id=CAST(:point AS uuid)
                 """).param("point", first).query(Double.class).single();
+        double secondLongitude = jdbc.sql("""
+                SELECT ST_X(display_point) FROM registry.sample_point
+                WHERE sample_point_id=CAST(:point AS uuid)
+                """).param("point", second).query(Double.class).single();
+        double secondLatitude = jdbc.sql("""
+                SELECT ST_Y(display_point) FROM registry.sample_point
+                WHERE sample_point_id=CAST(:point AS uuid)
+                """).param("point", second).query(Double.class).single();
+        assertThat(jdbc.sql("""
+                SELECT count(DISTINCT ST_AsEWKT(governed_point))=1
+                  AND count(DISTINCT ST_AsEWKT(display_point))=2
+                FROM registry.sample_point WHERE sample_point_id IN (CAST(:first AS uuid),CAST(:second AS uuid))
+                """).param("first", first).param("second", second).query(Boolean.class).single()).isTrue();
         insertProduction(firstRecord, "CORN", "APPROVED", first);
         insertProduction(secondRecord, "CORN", "APPROVED", second);
         jdbc.sql("""
@@ -1053,10 +1067,10 @@ class OverviewSamplePointRestIntegrationTest {
                 .andExpect(jsonPath("$.data.length()").value(2))
                 .andExpect(jsonPath("$.data[*].longitude")
                         .value(org.hamcrest.Matchers.containsInAnyOrder(
-                                publishedLongitude, publishedLongitude)))
+                                publishedLongitude, secondLongitude)))
                 .andExpect(jsonPath("$.data[*].latitude")
                         .value(org.hamcrest.Matchers.containsInAnyOrder(
-                                publishedLatitude, publishedLatitude)));
+                                publishedLatitude, secondLatitude)));
     }
 
     @Test

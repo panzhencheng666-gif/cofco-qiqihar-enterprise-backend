@@ -18,7 +18,8 @@ jobs:
   verify:
     name: JDK 21 / Maven verify
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # The full serial database suite can exceed 60 minutes on hosted runners.
+    timeout-minutes: 90
     services:
       postgres:
         image: postgis/postgis:17-3.6-alpine

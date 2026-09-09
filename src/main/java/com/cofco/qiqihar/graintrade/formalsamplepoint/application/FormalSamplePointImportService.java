@@ -97,16 +97,15 @@ public class FormalSamplePointImportService {
 
         List<Row> rows = new ArrayList<>();
         Set<String> names = new HashSet<>();
-        Set<String> coordinates = new HashSet<>();
         for (SamplePointMasterWorkbook.Row submittedRow : submitted) {
             try {
                 FormalSamplePointDraft draft = draft(submittedRow);
                 FormalSamplePointDraft validated = points.validateForCreate(draft);
-                if (!names.add(validated.regionCode() + "\u0000" + validated.canonicalName())
-                        || !coordinates.add(validated.longitude().toPlainString() + "\u0000"
-                                + validated.latitude().toPlainString())) {
+                if (!names.add(validated.regionCode() + "\u0000"
+                        + java.text.Normalizer.normalize(validated.canonicalName(), java.text.Normalizer.Form.NFKC)
+                                .trim().toLowerCase(java.util.Locale.ROOT))) {
                     throw new ConflictException(
-                            "SAMPLE_POINT_IMPORT_DUPLICATE_ROW", "文件中存在重复名称或坐标");
+                            "SAMPLE_POINT_IMPORT_DUPLICATE_ROW", "文件中存在重复样本身份");
                 }
                 rows.add(Row.valid(submittedRow, validated));
             } catch (RuntimeException exception) {

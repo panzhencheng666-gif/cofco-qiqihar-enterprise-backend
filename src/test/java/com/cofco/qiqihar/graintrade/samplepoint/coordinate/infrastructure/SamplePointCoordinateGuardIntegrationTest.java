@@ -68,6 +68,76 @@ class SamplePointCoordinateGuardIntegrationTest {
                 """).param("id", OCCUPIED_POINT.toString()).param("region", REGION).update();
     }
 
+    @Autowired com.cofco.qiqihar.graintrade.production.application.ProductionRecordRepository production;
+    @Autowired com.cofco.qiqihar.graintrade.market.application.MarketMonitoringRepository market;
+    @Autowired com.cofco.qiqihar.graintrade.designsample.point.application.DesignSamplePointRepository design;
+    @Autowired com.cofco.qiqihar.graintrade.formalsamplepoint.application.FormalSamplePointRepository formal;
+
+    @Test
+    void acceptsCountyCoordinatesOutsideTheDeclaredVillageAcrossAllIngressReaders() {
+        countyBoundary();
+        BigDecimal longitude = new BigDecimal("124.5");
+        BigDecimal latitude = new BigDecimal("48.5");
+        assertThat(production.supportsSampleLocation(REGION, latitude, longitude)).isTrue();
+        assertThat(market.supportsSampleLocation(REGION, latitude, longitude)).isTrue();
+        assertThat(design.coordinateBoundaryState(REGION, longitude, latitude).orElseThrow().name())
+                .isEqualTo("INSIDE");
+        assertThat(formal.coordinateBoundaryState(REGION, longitude, latitude).orElseThrow().name())
+                .isEqualTo("INSIDE");
+    }
+
+    @Test
+    void rejectsOutOfCountyCoordinatesEvenWhenTheDisplayBoundaryIsAvailable() {
+        countyBoundary();
+        BigDecimal longitude = new BigDecimal("130");
+        BigDecimal latitude = new BigDecimal("50");
+        assertThat(production.supportsSampleLocation(REGION, latitude, longitude)).isFalse();
+        assertThat(market.supportsSampleLocation(REGION, latitude, longitude)).isFalse();
+        assertThat(design.coordinateBoundaryState(REGION, longitude, latitude).orElseThrow().name())
+                .isEqualTo("OUTSIDE");
+        assertThat(formal.coordinateBoundaryState(REGION, longitude, latitude).orElseThrow().name())
+                .isEqualTo("OUTSIDE");
+    }
+
+    @Test
+    void allowsIndependentIdentitiesSharingCountyCoordinatesAcrossDeclaredRegions() {
+        countyBoundary();
+        assertThatCode(() -> guard.lockAndRequireAvailableForRegion(null,
+                new BigDecimal("123.51"), new BigDecimal("47.92"), "230202"))
+                .doesNotThrowAnyException();
+    }
+
+    @Test
+    void separatesDisplayPointsWithoutChangingSharedReportedCoordinates() {
+        UUID other = UUID.randomUUID();
+        jdbc.sql("""
+                INSERT INTO registry.sample_point(
+                  sample_point_id,kind_code,canonical_name,region_code,approval_state,location_state,
+                  governed_point,effective_from,version,created_by,updated_by)
+                VALUES(:id,'SURVEY_SITE','独立共址身份',:region,'APPROVED','VALID',
+                  ST_SetSRID(ST_MakePoint(123.51,47.92),4326),DATE '2026-01-01',0,
+                  'production-tester','production-tester')
+                """).param("id", other).param("region", REGION).update();
+        assertThat(jdbc.sql("""
+                SELECT ST_Equals(a.governed_point,b.governed_point)
+                  AND NOT ST_Equals(a.display_point,b.display_point)
+                  AND ST_Covers(boundary.geometry,b.display_point)
+                FROM registry.sample_point a, registry.sample_point b,
+                  overview.administrative_boundary_render boundary
+                WHERE a.sample_point_id=:first AND b.sample_point_id=:second
+                  AND boundary.region_code=b.region_code
+                """).param("first", OCCUPIED_POINT).param("second", other)
+                .query(Boolean.class).single()).isTrue();
+    }
+
+    private void countyBoundary() {
+        jdbc.sql("""
+                UPDATE overview.administrative_boundary
+                SET geometry=ST_Multi(ST_MakeEnvelope(122,46,125,49,4326))
+                WHERE region_code='230202'
+                """).update();
+    }
+
     @Test
     void rejectsNumericallyEqualCoordinatesForADifferentStablePoint() {
         UUID otherPoint = UUID.fromString("95000000-0000-0000-0000-000000000002");

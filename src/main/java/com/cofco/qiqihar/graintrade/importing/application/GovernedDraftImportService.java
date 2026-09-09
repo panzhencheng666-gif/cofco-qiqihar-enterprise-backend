@@ -205,6 +205,18 @@ public class GovernedDraftImportService {
                         && !code.equals(row.regionCode()) && !code.equals(row.photoCode())
                         && !code.equals(row.objectTypeCodeField())) storedValues.put(code, value.trim());
             });
+            // Admission and all downstream writes use submitted coordinates, not a
+            // storage-rounded point that can cross a county boundary in either direction.
+            for (String prefix : List.of("PROD", "MKT", "LOG")) {
+                for (String axis : List.of("LONGITUDE", "LATITUDE")) {
+                    String code = prefix + "_SAMPLE_" + axis;
+                    String submitted = row.values().get(code);
+                    if (!blank(submitted) && storedValues.containsKey(code)) {
+                        storedValues.put(code, new BigDecimal(
+                                BusinessImportWorkbook.normalizeSubmittedDecimal(submitted)).toPlainString());
+                    }
+                }
+            }
             var now = clock.instant();
             ImportDraft draft = new ImportDraft(UUID.randomUUID(), source.domainCode(), source.productCode(),
                     blank(row.objectTypeCode()) ? null : row.objectTypeCode(), row.sampleName().trim(), regionCode,

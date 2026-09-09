@@ -128,20 +128,30 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
     public Optional<BoundaryContainment> coordinateBoundaryState(
             String regionCode, BigDecimal longitude, BigDecimal latitude) {
         return jdbc.sql("""
-                SELECT CASE
-                  WHEN boundary.region_code IS NULL THEN 'UNAVAILABLE'
-                  WHEN ST_Covers(boundary.geometry,
-                    ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326)) THEN 'INSIDE'
-                  ELSE 'OUTSIDE'
-                END
-                FROM platform.region region
-                LEFT JOIN (SELECT region_code,ST_GeomFromGeoJSON(geo_json) geometry
-                  FROM overview.administrative_boundary_render) boundary
-                  ON boundary.region_code=region.code
-                WHERE region.code=:regionCode
+                SELECT overview.sample_coordinate_admission_state(
+                    CAST(:regionCode AS varchar),CAST(:longitude AS numeric),CAST(:latitude AS numeric))
                 """).param("regionCode", regionCode).param("longitude", longitude)
                 .param("latitude", latitude).query(String.class).optional()
                 .map(BoundaryContainment::valueOf);
+    }
+
+    @Override
+    public void lockAndRequireIdentityAvailable(String regionCode, String canonicalName) {
+        String nameKey = jdbc.sql("SELECT lower(btrim(normalize(CAST(:name AS text),NFKC)))")
+                .param("name", canonicalName).query(String.class).single();
+        jdbc.sql("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))")
+                .param("key", "FORMAL_SAMPLE_IDENTITY:" + regionCode + ":" + nameKey)
+                .query((row, index) -> Boolean.TRUE).single();
+        boolean exists = jdbc.sql("""
+                SELECT EXISTS(SELECT 1 FROM registry.sample_point
+                  WHERE region_code=:region
+                    AND lower(btrim(normalize(canonical_name,NFKC)))=:name)
+                """).param("region", regionCode).param("name", nameKey)
+                .query(Boolean.class).single();
+        if (exists) {
+            throw new com.cofco.qiqihar.graintrade.shared.application.ConflictException(
+                    "FORMAL_SAMPLE_POINT_IDENTITY_CONFLICT", "所选地区已存在同名样本，请核对样本身份");
+        }
     }
 
     @Override

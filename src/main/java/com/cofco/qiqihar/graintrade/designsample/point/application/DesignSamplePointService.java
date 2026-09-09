@@ -237,7 +237,9 @@ public class DesignSamplePointService {
         switch (containment) {
             case UNAVAILABLE -> throw new ServiceUnavailableException(
                     "ADMIN_BOUNDARY_UNAVAILABLE", "所选行政区边界数据暂不可用");
-            case OUTSIDE, INSIDE -> { }
+            case OUTSIDE -> throw new ClientRequestException(
+                    "DESIGN_SAMPLE_POINT_OUTSIDE_REGION", "原始坐标必须位于所选县区内");
+            case INSIDE -> { }
         }
         return new ValidatedDraft(
                 draft, normalizedValues, name, region, longitude, latitude);
