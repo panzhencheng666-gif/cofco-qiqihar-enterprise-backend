@@ -26,11 +26,13 @@ public class EmployeeRegistrationController {
     /** A draft only: never creates a verified phone binding. */
     @GetMapping("/phone")
     ApiResponse<RegistrationPhone> phone(Authentication authentication) {
-        String value=identity(authentication).getClaimAsString("phone_number");
+        OidcUser user=identity(authentication);
+        String value=user.getClaimAsString("phone_number");
         return new ApiResponse<>(new RegistrationPhone(
-                value!=null&&value.matches("1[3-9][0-9]{9}")?value:""));
+                value!=null&&value.matches("1[3-9][0-9]{9}")?value:"",
+                service.alreadyRegistered(user.getIssuer().toString(),user.getSubject())));
     }
-    record RegistrationPhone(String phone) {}
+    record RegistrationPhone(String phone,boolean registered) {}
 
     @PostMapping
     ApiResponse<IdentityActivationResult> register(Authentication authentication,

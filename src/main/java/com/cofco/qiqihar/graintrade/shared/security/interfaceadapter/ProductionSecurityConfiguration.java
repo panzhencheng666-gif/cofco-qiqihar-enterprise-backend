@@ -316,6 +316,16 @@ public class ProductionSecurityConfiguration {
                 }
                 return;
             }
+            if(principal==null && authentication.getPrincipal() instanceof OidcUser user
+                    && "admin".equalsIgnoreCase(user.getPreferredUsername())) {
+                var session=request.getSession(false);
+                audit.record(authentication.getName(),session==null?null:session.getId(),
+                        "LOGIN_DENIED","{\"reason\":\"ADMIN_IDENTITY_BINDING_REQUIRED\"}");
+                if(session!=null)session.invalidate();
+                SecurityContextHolder.clearContext();
+                response.sendError(HttpStatus.FORBIDDEN.value(),"管理员身份绑定未配置，请联系管理员；无需进行员工注册");
+                return;
+            }
             if(principal==null) {
                 var session=request.getSession();
                 audit.record(authentication.getName(),session.getId(),
@@ -326,6 +336,10 @@ public class ProductionSecurityConfiguration {
             var session=request.getSession();
             Authentication stableAuthentication=bindStableSubject(authentication,principal);
             audit.record(stableAuthentication.getName(),session.getId(),"LOGIN_SUCCESS","{}");
+            if(principal.roleCodes().contains("SYSTEM_ADMIN")) {
+                response.sendRedirect(request.getContextPath()+"/");
+                return;
+            }
             delegate.onAuthenticationSuccess(request,response,stableAuthentication);
         }
     }

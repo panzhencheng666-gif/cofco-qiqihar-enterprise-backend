@@ -97,4 +97,33 @@ class UnboundOidcLoginAuditTest {
         request.setParameter("reauthenticate","1");
         assertEquals("login",resolver.resolve(request,"enterprise").getAdditionalParameters().get("prompt"));
     }
+    @Test
+    void administratorWithoutBindingNeverEntersEmployeeRegistration() throws Exception {
+        var principals=mock(SecurityPrincipalRepository.class);
+        var audit=mock(SecuritySessionAuditRecorder.class);
+        var type=Class.forName(ProductionSecurityConfiguration.class.getName()+"$EnterpriseAuthenticationSuccessHandler");
+        var constructor=type.getDeclaredConstructor(SecurityPrincipalRepository.class,
+                SecuritySessionAuditRecorder.class,Set.class,Set.class);
+        constructor.setAccessible(true);
+        var handler=(AuthenticationSuccessHandler)constructor.newInstance(principals,audit,Set.of("pwd"),Set.of());
+        var now=Instant.now();
+        var id=OidcIdToken.withTokenValue("test-only").issuer("https://issuer.example.test")
+                .subject("real-admin-provider-subject").issuedAt(now).expiresAt(now.plusSeconds(300))
+                .claim("preferred_username","admin").claim("amr",List.of("pwd")).build();
+        var user=new DefaultOidcUser(List.of(new SimpleGrantedAuthority("OIDC_USER")),id);
+        var auth=new OAuth2AuthenticationToken(user,user.getAuthorities(),"enterprise");
+        var response=new MockHttpServletResponse();
+        handler.onAuthenticationSuccess(new MockHttpServletRequest(),response,auth);
+        assertEquals(403,response.getStatus());
+        assertNull(response.getRedirectedUrl());
+        // A real issuer/subject binding, with password proof and no phone claim, is sufficient.
+        var admin=new com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal(
+                "admin","管理员","PLATFORM_ADMIN","平台系统管理","ACTIVE","ACTIVE",
+                Set.of("SYSTEM_ADMIN"),List.of(),Set.of("BUSINESS_READ"),Set.of("230200"));
+        when(principals.findEnabledByOidcIdentity("https://issuer.example.test","real-admin-provider-subject"))
+                .thenReturn(java.util.Optional.of(admin));
+        response=new MockHttpServletResponse();
+        handler.onAuthenticationSuccess(new MockHttpServletRequest(),response,auth);
+        assertEquals("/",response.getRedirectedUrl());
+    }
 }

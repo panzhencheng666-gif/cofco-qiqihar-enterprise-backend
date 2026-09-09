@@ -39,3 +39,15 @@ The preview uses isolated database 55435. These entry checks do not replace acce
 Create `phone-registration-scope.json` first, then merge the single attribute from `phone-registration-attribute.json` into the realm user profile without replacing other attributes. Keycloak validates that a selector's scope already exists. Assign this scope as a default only to the intended phone-registration client. Existing clients keep their form unchanged.
 
 The optional phone field uses HTML tel input and server-side mainland-mobile format validation. Keycloak stores it as `phone_number`; the scope emits the draft in the ID token, never a verified-phone claim. The authenticated `/api/v1/identity/registration/phone` endpoint returns only a valid draft for prefilling the employee form. The existing REGISTER SMS challenge is still mandatory before creating the business phone binding. Typing a phone number does not establish ownership.
+
+## Enrollment baseline and administrator routing repair
+
+The local 29444 preview must keep its reference work units, unit scopes and complete region catalog after test cleanup. These are persistent reference data, not phone-test fixtures. The missing catalog previously produced empty work-unit/region controls. Reference metadata was read from the existing 5432 business database in a read-only transaction and only missing rows were inserted into isolated 55435. No business sample data or user region assignments were copied with the catalog.
+
+The preview's admin binding was also missing. Its existing approved source binding was matched against the actual IdP admin subject before copying the account, SYSTEM_ADMIN role and approved scopes into 55435. No administrator rights are inferred from a submitted username. Admin does not require phone registration; an unbound reserved admin receives an explicit configuration error rather than employee enrollment. A bound administrator with valid password proof goes directly to the system.
+
+Run `scripts/verify-registration-baseline.sql` on the preview database before starting the preview backend. The local launcher now performs this check. Never delete the shared QIQIHAR_BUSINESS unit during disposable-fixture cleanup.
+
+The registration bootstrap returns whether the authenticated OIDC identity already has a business binding; established accounts skip the employee form. Do not probe the protected session/me API for an unbound identity: that endpoint intentionally invalidates unauthorized business sessions. New employees continue to step 2, titled 完善员工资料. Empty catalogs disable SMS/submission, explain the problem and offer a retry that preserves entered data.
+
+Bounded validation: 9 backend routing/security tests passed; a real disposable OIDC login loaded and selected all six units (232/15/15/7/11/12 available regions); browser UI regression covers empty unit/region results, retry and existing-account redirect. The user's actual in-app browser displayed admin with platform-management permissions after password login. The disposable identity/audits were removed; user-owned accounts and optional phone bindings were preserved. Production runtime remains unchanged.

@@ -31,6 +31,11 @@ public class EmployeeRegistrationService {
         this.audit=audit;this.enabled=enabled;this.issuer=issuer;
     }
     @Transactional(readOnly=true)
+    public boolean alreadyRegistered(String issuerUri,String providerSubject) {
+        return jdbc.sql("SELECT EXISTS(SELECT 1 FROM platform.identity_provider_binding WHERE issuer_uri=:issuer AND provider_subject=:subject)")
+                .param("issuer",issuerUri).param("subject",providerSubject).query(Boolean.class).single();
+    }
+    @Transactional(readOnly=true)
     public AssignmentOptions options(String unit) {
         requireEnabled();
         AssignmentOptions all=governance.registrationOptions(unit);
