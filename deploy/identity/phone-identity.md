@@ -23,3 +23,13 @@ Bind and merge require a fresh original OIDC login (ten-minute window) plus the 
 PhoneIdentityIntegrationTest is opt-in with -Dqiqihar.phone.acceptance=true and connects only to 127.0.0.1:55435/qiqihar_enterprise_test. Run it through a JUnit launcher with launcher-session and test-execution auto-listeners disabled, as required by the local acceptance environment; do not invoke the default full Maven test lifecycle. Catalog fixture setup uses a transaction-local mode only on the isolated database; service calls use ordinary connections and allocation triggers. The test cleans its exact prefixed rows.
 
 2026-09-09 evidence: real Aliyun send/check/login completed in a trusted browser with the user's authorized number; registration and merge were additionally exercised through real OIDC with a test-only gateway outside the packaged application. Mobile login was checked at 390x844. Test clients/users and database fixtures are disposable; no cloud deployment or existing managed runtime replacement is part of this acceptance.
+
+## Login entry regression (2026-09-09)
+
+The 29444 preview previously reused a client whose only allowed callback was on 29443; Keycloak correctly rejected it with HTTP 400 `redirect_uri`. The preview now uses its own `cofco-phone-local` client and exact `https://localhost:29444/login/oauth2/code/enterprise` callback. Never fix this by allowing wildcard callback URLs.
+
+Before exposing this Keycloak-based entry, run `python3 scripts/verify-oidc-entry.py --issuer <issuer> --client-id <client> --redirect-uri <exact-callback> --ca-file <trusted-CA-file>`. It opens fresh password and registration authorization requests without logging in, sending SMS or creating accounts, and fails on callback rejection or missing forms. The local preview launcher runs this check before starting the backend. Keep the frontend unavailable when it fails.
+
+Run the bounded browser regression from the frontend with `node scripts/verify-identity-entry.mjs https://localhost:29444`. It checks password/SMS selection, direct registration (including the old register.html bookmark), mobile overflow and repeated login/refresh. Optional `IDENTITY_ENTRY_EVIDENCE_DIR` writes screenshots and a JSON result outside the repository. No credentials are submitted and no SMS is sent.
+
+The preview uses isolated database 55435. These entry checks do not replace acceptance against the managed business runtime. Existing 29443 and production client configuration remain unchanged.

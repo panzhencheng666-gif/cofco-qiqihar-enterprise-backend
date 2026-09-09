@@ -26,11 +26,14 @@ final class EnterpriseAuthorizationRequestResolver implements OAuth2Authorizatio
     }
 
     private OAuth2AuthorizationRequest customize(HttpServletRequest request, OAuth2AuthorizationRequest authorization) {
-        if (authorization == null || !"1".equals(request.getParameter("reauthenticate"))) return authorization;
+        if (authorization == null) return null;
+        boolean fresh = "1".equals(request.getParameter("reauthenticate"));
+        boolean register = "1".equals(request.getParameter("register"));
+        if (!fresh && !register) return authorization;
         var parameters = new HashMap<>(authorization.getAdditionalParameters());
-        parameters.put("prompt", "login");
-        // OIDC requires auth_time in the ID token when max_age is requested.
-        parameters.put("max_age", 0);
+        // Keep Spring's state, nonce, PKCE and configured callback unchanged.
+        parameters.put("prompt", fresh ? "login" : "create");
+        if (fresh) parameters.put("max_age", 0);
         return OAuth2AuthorizationRequest.from(authorization).additionalParameters(parameters).build();
     }
 }

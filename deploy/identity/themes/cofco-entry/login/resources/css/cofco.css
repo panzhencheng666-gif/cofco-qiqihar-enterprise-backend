@@ -1,0 +1,13 @@
+html.login-pf, .login-pf body {background:#eef4f7;color:#173746;font-family:system-ui,-apple-system,"PingFang SC",sans-serif}
+.login-pf-page{padding:48px 20px;min-height:100vh}
+#kc-header-wrapper{padding:16px 0 28px;color:#173746;font-size:20px;font-weight:600;letter-spacing:1px}
+.card-pf{max-width:480px;padding:32px;border:1px solid #c3d7e2;border-radius:18px;box-shadow:0 18px 55px #1737460c;background:white}
+#kc-page-title{font-size:26px;font-weight:700;line-height:1.4;margin:0 0 10px}
+.login-pf-page .login-pf-header{margin-bottom:24px}.cofco-login-tabs{display:flex;background:#edf3f6;border-radius:9px;padding:4px;margin-bottom:26px;gap:4px}
+.cofco-login-tabs>*{flex:1;text-align:center;padding:10px 8px;border-radius:6px;font-size:15px;text-decoration:none;color:#526e7b}
+.cofco-login-tabs [aria-current]{background:white;color:#0b3446;box-shadow:0 1px 5px #17374612;font-weight:600}
+.pf-c-form-control{height:46px;border:1px solid #b6cbd5;border-radius:7px;font-size:16px;background:white;color:#173746}
+.pf-c-input-group{gap:6px}.pf-c-button.pf-m-primary{background:#0b3446;border-radius:7px;min-height:46px;font-size:16px}
+.pf-c-form__label{font-size:14px;color:#173746;margin-bottom:8px}.form-group{margin-bottom:20px}
+a{color:#0b617f}#kc-info-wrapper{background:transparent;padding:12px 0 0}#kc-info{margin:0}.login-pf-page .login-pf-signup{font-size:14px;color:#526e7b}
+@media(max-width:600px){.login-pf-page{padding:16px 12px}#kc-header-wrapper{font-size:16px;padding:12px 0 22px}.card-pf{padding:24px 20px;margin:0 auto}#kc-page-title{font-size:24px}}

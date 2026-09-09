@@ -77,4 +77,24 @@ class UnboundOidcLoginAuditTest {
         request.setParameter("reauthenticate","1");
         assertEquals("login",resolver.resolve(request,"enterprise").getAdditionalParameters().get("prompt"));
     }
+    @Test
+    void registrationStartsAtCreateFormAndRetainsExactCallbackAndState() {
+        var registration=org.springframework.security.oauth2.client.registration.ClientRegistration
+                .withRegistrationId("enterprise").clientId("test-client")
+                .authorizationGrantType(org.springframework.security.oauth2.core.AuthorizationGrantType.AUTHORIZATION_CODE)
+                .redirectUri("https://localhost:29444/login/oauth2/code/enterprise")
+                .authorizationUri("https://issuer.example.test/auth")
+                .tokenUri("https://issuer.example.test/token").scope("openid").build();
+        var resolver=new EnterpriseAuthorizationRequestResolver(
+                new org.springframework.security.oauth2.client.registration.InMemoryClientRegistrationRepository(registration));
+        var request=new MockHttpServletRequest();
+        request.setParameter("register","1");
+        var result=resolver.resolve(request,"enterprise");
+        assertEquals("create",result.getAdditionalParameters().get("prompt"));
+        assertEquals(registration.getRedirectUri(),result.getRedirectUri());
+        assertNotNull(result.getState());
+        assertTrue(result.getAuthorizationRequestUri().contains("prompt=create"));
+        request.setParameter("reauthenticate","1");
+        assertEquals("login",resolver.resolve(request,"enterprise").getAdditionalParameters().get("prompt"));
+    }
 }
