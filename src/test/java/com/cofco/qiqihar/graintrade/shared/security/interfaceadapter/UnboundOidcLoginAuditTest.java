@@ -38,7 +38,7 @@ class UnboundOidcLoginAuditTest {
         verify(audit).record(eq("unbound-subject"),anyString(),eq("LOGIN_SUCCESS"),
                 eq("{\"activationRequired\":true}"));
         assertEquals(302,response.getStatus());
-        assertEquals("/activation-required.html",response.getRedirectedUrl());
+        assertEquals("/register.html",response.getRedirectedUrl());
     }
     @Test
     void newIdentityWithoutPasswordAuthenticationMustAuthenticateBeforeRegistration() throws Exception {
@@ -60,6 +60,21 @@ class UnboundOidcLoginAuditTest {
         verify(audit).record(eq("unbound-subject"),isNull(),eq("LOGIN_DENIED"),
                 eq("{\"reason\":\"MFA_REQUIRED\"}"));
         assertEquals(302,response.getStatus());
-        assertEquals("/register.html?reauthenticate=1",response.getRedirectedUrl());
+        assertEquals("/oauth2/authorization/enterprise?reauthenticate=1",response.getRedirectedUrl());
+    }
+    @Test
+    void reauthenticationForcesLoginWithoutChangingNormalSso() {
+        var registration=org.springframework.security.oauth2.client.registration.ClientRegistration
+                .withRegistrationId("enterprise").clientId("test-client")
+                .authorizationGrantType(org.springframework.security.oauth2.core.AuthorizationGrantType.AUTHORIZATION_CODE)
+                .redirectUri("https://app.example.test/login/oauth2/code/enterprise")
+                .authorizationUri("https://issuer.example.test/auth")
+                .tokenUri("https://issuer.example.test/token").scope("openid").build();
+        var resolver=new EnterpriseAuthorizationRequestResolver(
+                new org.springframework.security.oauth2.client.registration.InMemoryClientRegistrationRepository(registration));
+        var request=new MockHttpServletRequest();
+        assertFalse(resolver.resolve(request,"enterprise").getAdditionalParameters().containsKey("prompt"));
+        request.setParameter("reauthenticate","1");
+        assertEquals("login",resolver.resolve(request,"enterprise").getAdditionalParameters().get("prompt"));
     }
 }

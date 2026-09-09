@@ -162,7 +162,9 @@ public class ProductionSecurityConfiguration {
                         .requestMatchers("/logout/connect/back-channel/**").permitAll()
                         .requestMatchers("/api/v1/**").authenticated()
                         .anyRequest().denyAll())
-                .oauth2Login(login -> login.successHandler(loginSuccess))
+                .oauth2Login(login -> login.successHandler(loginSuccess)
+                        .authorizationEndpoint(endpoint -> endpoint.authorizationRequestResolver(
+                                new EnterpriseAuthorizationRequestResolver(clientRegistrations))))
                 .oidcLogout(oidc -> oidc.backChannel(backChannel -> { }))
                 .logout(logout -> logout
                         .logoutUrl("/api/v1/session/logout")
@@ -294,7 +296,7 @@ public class ProductionSecurityConfiguration {
                 if(session!=null)session.invalidate();
                 SecurityContextHolder.clearContext();
                 if(principal==null && reason.equals("MFA_REQUIRED")) {
-                    response.sendRedirect(request.getContextPath()+"/register.html?reauthenticate=1");
+                    response.sendRedirect(request.getContextPath()+"/oauth2/authorization/enterprise?reauthenticate=1");
                 } else {
                     response.sendError(HttpStatus.FORBIDDEN.value());
                 }
@@ -304,7 +306,7 @@ public class ProductionSecurityConfiguration {
                 var session=request.getSession();
                 audit.record(authentication.getName(),session.getId(),
                         "LOGIN_SUCCESS","{\"activationRequired\":true}");
-                response.sendRedirect(request.getContextPath()+"/activation-required.html");
+                response.sendRedirect(request.getContextPath()+"/register.html");
                 return;
             }
             var session=request.getSession();
