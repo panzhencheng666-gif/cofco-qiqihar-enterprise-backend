@@ -40,4 +40,26 @@ class UnboundOidcLoginAuditTest {
         assertEquals(302,response.getStatus());
         assertEquals("/activation-required.html",response.getRedirectedUrl());
     }
+    @Test
+    void newIdentityWithoutPasswordAuthenticationMustAuthenticateBeforeRegistration() throws Exception {
+        var principals=mock(SecurityPrincipalRepository.class);
+        var audit=mock(SecuritySessionAuditRecorder.class);
+        var type=Class.forName(ProductionSecurityConfiguration.class.getName()+"$EnterpriseAuthenticationSuccessHandler");
+        var constructor=type.getDeclaredConstructor(SecurityPrincipalRepository.class,
+                SecuritySessionAuditRecorder.class,Set.class,Set.class);
+        constructor.setAccessible(true);
+        var handler=(AuthenticationSuccessHandler)constructor.newInstance(principals,audit,Set.of("pwd"),Set.of());
+        var now=Instant.now();
+        var id=OidcIdToken.withTokenValue("test-only").issuer("https://issuer.example.test")
+                .subject("unbound-subject").issuedAt(now).expiresAt(now.plusSeconds(300))
+                .build();
+        var user=new DefaultOidcUser(List.of(new SimpleGrantedAuthority("OIDC_USER")),id);
+        var auth=new OAuth2AuthenticationToken(user,user.getAuthorities(),"enterprise");
+        var response=new MockHttpServletResponse();
+        handler.onAuthenticationSuccess(new MockHttpServletRequest(),response,auth);
+        verify(audit).record(eq("unbound-subject"),isNull(),eq("LOGIN_DENIED"),
+                eq("{\"reason\":\"MFA_REQUIRED\"}"));
+        assertEquals(302,response.getStatus());
+        assertEquals("/register.html?reauthenticate=1",response.getRedirectedUrl());
+    }
 }

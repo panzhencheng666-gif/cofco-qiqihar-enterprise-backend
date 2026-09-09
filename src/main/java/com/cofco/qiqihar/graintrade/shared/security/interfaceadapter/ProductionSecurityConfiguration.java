@@ -254,9 +254,11 @@ public class ProductionSecurityConfiguration {
             String path=request.getRequestURI().substring(request.getContextPath().length());
             return (request.getMethod().equals("POST")
                     && (path.equals("/api/v1/identity/invitations/activate")
-                        ||path.equals("/api/v1/identity/invitations/first-administrator")))
+                        ||path.equals("/api/v1/identity/invitations/first-administrator")
+                        ||path.equals("/api/v1/identity/registration")))
                     ||(request.getMethod().equals("GET")
-                    && path.equals("/api/v1/identity/invitations/activation-bootstrap"));
+                    && (path.equals("/api/v1/identity/invitations/activation-bootstrap")
+                        ||path.equals("/api/v1/identity/registration/options")));
         }
 
         private static boolean authenticated(Authentication authentication) {
@@ -292,7 +294,11 @@ public class ProductionSecurityConfiguration {
                         "LOGIN_DENIED","{\"reason\":\""+reason+"\"}");
                 if(session!=null)session.invalidate();
                 SecurityContextHolder.clearContext();
-                response.sendError(HttpStatus.FORBIDDEN.value());
+                if(principal==null && reason.equals("MFA_REQUIRED")) {
+                    response.sendRedirect(request.getContextPath()+"/register.html?reauthenticate=1");
+                } else {
+                    response.sendError(HttpStatus.FORBIDDEN.value());
+                }
                 return;
             }
             if(principal==null) {

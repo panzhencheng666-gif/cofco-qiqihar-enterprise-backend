@@ -63,17 +63,23 @@ public class IdentityGovernanceService {
         if(blank(workUnitCode))throw invalid();
         requireAssignableWorkUnit(workUnitCode);
         requireWorkUnit(actor,workUnitCode);
+        AssignmentOptions options=registrationOptions(workUnitCode);
+        if(systemAdministrator(actor))return options;
+        return new AssignmentOptions(
+                options.workUnits().stream().filter(unit->unit.code().equals(actor.workUnitCode())).toList(),
+                options.roles().stream().filter(role->!role.code().equals("SYSTEM_ADMIN")).toList(),
+                options.positions(),options.regionCodes(),options.regions());
+    }
+
+    AssignmentOptions registrationOptions(String workUnitCode) {
+        requireAssignableWorkUnit(workUnitCode);
         AssignmentOptions available=repository.assignmentOptions(workUnitCode);
         AssignmentOptions options=new AssignmentOptions(
                 available.workUnits().stream()
                         .filter(unit->ASSIGNABLE_WORK_UNITS.contains(unit.code())).toList(),
                 available.roles().stream().filter(role->ASSIGNABLE_BUSINESS_ROLES.contains(role.code())).toList(),
                 available.positions(),available.regionCodes(),available.regions());
-        if(systemAdministrator(actor))return options;
-        return new AssignmentOptions(
-                options.workUnits().stream().filter(unit->unit.code().equals(actor.workUnitCode())).toList(),
-                options.roles().stream().filter(role->!role.code().equals("SYSTEM_ADMIN")).toList(),
-                options.positions(),options.regionCodes(),options.regions());
+        return options;
     }
 
     @Transactional
@@ -239,6 +245,11 @@ public class IdentityGovernanceService {
         return repository.find(subjectId,systemAdministrator(actor)?null:actor.workUnitCode())
                 .orElseThrow(() -> new ResourceNotFoundException(
                         IdentityLifecycleContract.ERROR_SUBJECT_NOT_FOUND,"员工账号不存在"));
+    }
+
+    void validateRegistration(EmployeeAssignment assignment) {
+        requireAssignableWorkUnit(assignment.workUnitCode());
+        validate(assignment);
     }
 
     private void validate(EmployeeAssignment assignment) {
