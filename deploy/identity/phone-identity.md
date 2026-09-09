@@ -59,3 +59,17 @@ Login now has password/SMS modes in one screen; employee registration is one com
 The trusted business subject `admin` with an effective `SYSTEM_ADMIN` role has all active permissions and all actual catalog regions. Unit, region, maintainer and import-owner authorization gates have root exceptions, including audit/review/report queries. Native state/version checks, submission provenance and transactional preview consistency remain. Other users retain their original grants. Never put `*` in the persisted principal region list: some readers use direct SQL region sets.
 
 Validation: 27 targeted backend tests, 31 frontend tests, trusted-browser combined forms and full catalog, and a read-only JDBC query showing 2,601 actual regions / 21 active permissions for the approved admin binding. The user completed password login without phone verification. This round does not send a second real SMS or create a real employee; draft/OTP completion is covered by isolated tests. Changes are active only in the 29444 / 28092 / 55435 local preview.
+
+### Populated business entry readiness
+
+A phone/OIDC fixture database is not a populated business runtime. Before routing
+an existing business entry to a new backend, run both
+`scripts/verify-registration-baseline.sql` and
+`scripts/verify-business-entry-baseline.sql` against that backend's exact database.
+The business gate rejects an empty approved sample registry or missing formal
+map render boundaries, including township and village levels. Keep automated test
+fixtures on a separate database; do not use the populated copy as a test cleanup
+target. Recover business data from a consistent read-only source snapshot into a
+new local database, preserving the existing local identity/phone bindings. Verify
+source-versus-copy sample identifiers and boundary payloads before switching the
+proxy, then check the logged-in sample list, work-unit form and map drill-down.
