@@ -43,6 +43,16 @@ public class EmployeeRegistrationService {
                 .filter(role->role.code().equals("BUSINESS_OPERATOR")).toList(),
                 all.positions(),all.regionCodes(),all.regions());
     }
+    @Transactional(readOnly=true)
+    public void validateDraft(String username, EmployeeAssignment assignment) {
+        requireEnabled();
+        validateIdentity(username);
+        validateRoles(assignment.roleCodes());
+        governance.validateRegistration(assignment);
+        if (jdbc.sql("SELECT EXISTS(SELECT 1 FROM platform.security_user WHERE lower(subject_id)=lower(:username))")
+                .param("username",username).query(Boolean.class).single())
+            throw new ConflictException("REGISTRATION_USERNAME_EXISTS","该账号已存在，请直接登录或联系管理员");
+    }
     @Transactional
     public IdentityActivationResult register(String authenticatedIssuer,String providerSubject,
             String username,EmployeeAssignment requested) {

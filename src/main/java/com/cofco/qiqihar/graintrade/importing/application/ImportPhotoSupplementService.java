@@ -76,8 +76,8 @@ public class ImportPhotoSupplementService {
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "IMPORT_JOB_NOT_FOUND", "导入任务不存在"));
         if (!"PRODUCTION".equals(stored.job().domainCode())
-                || !stored.job().requestedBy().equals(principal.subjectId())
-                || !stored.job().workUnitCode().equals(principal.workUnitCode())
+                || (!principal.isRootAdministrator() && (!stored.job().requestedBy().equals(principal.subjectId())
+                    || !stored.job().workUnitCode().equals(principal.workUnitCode())))
                 || stored.job().completedAt() == null
                 || !governedImports.supports(stored.sourceContent())) {
             throw new ConflictException("IMPORT_PHOTO_SUPPLEMENT_NOT_ALLOWED",

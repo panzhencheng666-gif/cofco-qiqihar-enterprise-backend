@@ -95,7 +95,7 @@ public class WorkObligationReportService {
         String workUnitCode = trim(command.workUnitCode());
         String domain = trim(command.businessDomain());
         String region = trim(command.regionCode());
-        if (subjectId == null && workUnitCode == null) {
+        if (subjectId == null && workUnitCode == null && !principal.isRootAdministrator()) {
             subjectId = principal.subjectId();
             workUnitCode = principal.workUnitCode();
         }

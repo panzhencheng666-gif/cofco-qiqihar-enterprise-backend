@@ -63,6 +63,7 @@ public class AccessControl {
     }
 
     private void requireResponsible(SecurityPrincipal principal,String regionCode,boolean countyReporting) {
+        if (principal.isRootAdministrator()) return;
         var owner=principals.responsibleSubject(regionCode,countyReporting);
         if(owner.isPresent() && !owner.get().equals(principal.subjectId())
                 && !principal.permits("FORMAL_SAMPLE_MANAGE")) {

@@ -6,8 +6,8 @@
     <#elseif section = "form">
         <#if client?? && client.baseUrl?has_content>
         <nav class="cofco-login-tabs" aria-label="登录方式">
-            <span aria-current="page">账号密码</span>
-            <a href="${client.baseUrl}/phone.html">短信验证码</a>
+            <button type="button" id="cofco-password-tab" aria-pressed="true">账号密码</button>
+            <button type="button" id="cofco-sms-tab" aria-pressed="false">短信验证码</button>
         </nav>
         </#if>
         <div id="kc-form">
@@ -86,6 +86,16 @@
             </#if>
             </div>
         </div>
+        <form id="cofco-sms-login" data-app-base="${client.baseUrl}" hidden>
+            <label for="cofco-login-phone">手机号</label>
+            <input id="cofco-login-phone" type="tel" autocomplete="tel" pattern="1[3-9][0-9]{9}" maxlength="11" required />
+            <label for="cofco-login-code">短信验证码</label>
+            <div class="cofco-code-row"><input id="cofco-login-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required />
+            <button id="cofco-login-send" type="button">获取验证码</button></div>
+            <p id="cofco-login-error" role="alert"></p>
+            <button type="submit">登录</button>
+        </form>
+        <script type="module" src="${url.resourcesPath}/js/sms-login.js"></script>
         <@passkeys.conditionalUIData />
         <script type="module" src="${url.resourcesPath}/js/passwordVisibility.js"></script>
     <#elseif section = "info" >

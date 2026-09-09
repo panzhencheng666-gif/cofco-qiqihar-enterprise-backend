@@ -11,6 +11,16 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class SeparationOfDutiesPolicyTest {
+    @Test
+    void rootMayReviewOwnSubmissionButProvenanceIsStillRequired() {
+        var root = principal("admin", Set.of(), Set.of("SYSTEM_ADMIN"));
+        var policy = new SeparationOfDutiesPolicy((type, id, action) -> Optional.of("admin"));
+        assertThatCode(() -> policy.requireIndependentApprover("TYPE", "1", "SUBMIT", root)).doesNotThrowAnyException();
+        var missing = new SeparationOfDutiesPolicy((type, id, action) -> Optional.empty());
+        assertThatThrownBy(() -> missing.requireIndependentApprover("TYPE", "1", "SUBMIT", root))
+                .isInstanceOf(AccessDeniedException.class);
+    }
+
 
     @Test
     void explicitSelfApprovalPermissionAllowsTheSubmitterToApprove() {

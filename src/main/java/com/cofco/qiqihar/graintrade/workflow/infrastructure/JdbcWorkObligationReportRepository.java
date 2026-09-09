@@ -90,7 +90,7 @@ public class JdbcWorkObligationReportRepository implements WorkObligationReportR
                 rows.size(), count(rows, "ON_TIME"), count(rows, "LATE_COMPLETED"),
                 count(rows, "OVERDUE_OUTSTANDING"), count(rows, "PENDING"),
                 rows.stream().filter(item -> "RETURNED".equals(item.statusCode())).count());
-        String scope = rows.isEmpty()
+        String scope = query.subjectId() == null && query.workUnitCode() == null ? "全部单位人员" : rows.isEmpty()
                 ? (query.subjectId() == null ? query.workUnitCode() : query.subjectId())
                 : (query.subjectId() == null ? rows.getFirst().workUnitName() : rows.getFirst().employeeName());
         return new WorkObligationWeeklyReport(

@@ -375,7 +375,7 @@ public class DesignSamplePointImportService {
     }
 
     private static void requireOwner(ImportJob job, SecurityPrincipal principal) {
-        if (!job.requestedBy().equals(principal.subjectId())) {
+        if (!principal.isRootAdministrator() && !job.requestedBy().equals(principal.subjectId())) {
             throw new ConflictException(
                     "IMPORT_ERROR_FILE_NOT_ALLOWED", "导入记录属于其他用户");
         }

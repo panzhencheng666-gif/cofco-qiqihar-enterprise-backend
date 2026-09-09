@@ -30,6 +30,13 @@ public class PhoneIdentityService {
         bind(username,verifiedPhone);
         return result;
     }
+    @Transactional(readOnly=true)
+    public void requireUnboundPhone(String phone) {
+        SmsChallengeService.validatePhone(phone);
+        if (jdbc.sql("SELECT EXISTS(SELECT 1 FROM platform.phone_identity WHERE phone=:phone)")
+                .param("phone",phone).query(Boolean.class).single())
+            throw conflict("PHONE_ALREADY_BOUND","该手机号已绑定账号，请直接使用短信验证码登录");
+    }
     @Transactional
     public void bind(String subject,String verifiedPhone) {
         SmsChallengeService.validatePhone(verifiedPhone);

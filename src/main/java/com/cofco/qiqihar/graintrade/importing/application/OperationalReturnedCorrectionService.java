@@ -192,7 +192,7 @@ public class OperationalReturnedCorrectionService {
                 .filter(value -> supports(domainCode, value.sourceContent()))
                 .orElseThrow(() -> new ClientRequestException(
                         "IMPORT_JOB_NOT_FOUND", "修正任务不存在"));
-        if (!stored.job().requestedBy().equals(principal.subjectId())) {
+        if (!principal.isRootAdministrator() && !stored.job().requestedBy().equals(principal.subjectId())) {
             throw new ConflictException("IMPORT_JOB_NOT_ALLOWED", "修正任务属于其他账号");
         }
         return stored;

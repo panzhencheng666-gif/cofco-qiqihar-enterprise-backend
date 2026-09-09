@@ -43,7 +43,8 @@ public class BusinessReadAuthenticationInterceptor implements HandlerInterceptor
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
         String path = request.getRequestURI().substring(request.getContextPath().length());
         // The security filter authenticates this bootstrap endpoint before business binding exists.
-        boolean identityEntry = "/api/v1/session/login".equals(path)
+        boolean identityEntry = path.startsWith("/api/v1/identity/registration-entry/")
+                || "/api/v1/session/login".equals(path)
                 || "/api/v1/identity/invitations/activation-bootstrap".equals(path)
                 || "/api/v1/identity/registration/options".equals(path)
                 || "/api/v1/identity/registration/phone".equals(path)

@@ -24,9 +24,9 @@ class UnboundOidcLoginAuditTest {
         var audit=mock(SecuritySessionAuditRecorder.class);
         var type=Class.forName(ProductionSecurityConfiguration.class.getName()+"$EnterpriseAuthenticationSuccessHandler");
         var constructor=type.getDeclaredConstructor(SecurityPrincipalRepository.class,
-                SecuritySessionAuditRecorder.class,Set.class,Set.class);
+                SecuritySessionAuditRecorder.class,Set.class,Set.class,com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService.class);
         constructor.setAccessible(true);
-        var handler=(AuthenticationSuccessHandler)constructor.newInstance(principals,audit,Set.of("pwd"),Set.of());
+        var handler=(AuthenticationSuccessHandler)constructor.newInstance(principals,audit,Set.of("pwd"),Set.of(),mock(com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService.class));
         var now=Instant.now();
         var id=OidcIdToken.withTokenValue("test-only").issuer("https://issuer.example.test")
                 .subject("unbound-subject").issuedAt(now).expiresAt(now.plusSeconds(300))
@@ -38,7 +38,7 @@ class UnboundOidcLoginAuditTest {
         verify(audit).record(eq("unbound-subject"),anyString(),eq("LOGIN_SUCCESS"),
                 eq("{\"activationRequired\":true}"));
         assertEquals(302,response.getStatus());
-        assertEquals("/register.html",response.getRedirectedUrl());
+        assertEquals("/oauth2/authorization/enterprise?register=1",response.getRedirectedUrl());
     }
     @Test
     void newIdentityWithoutPasswordAuthenticationMustAuthenticateBeforeRegistration() throws Exception {
@@ -46,9 +46,9 @@ class UnboundOidcLoginAuditTest {
         var audit=mock(SecuritySessionAuditRecorder.class);
         var type=Class.forName(ProductionSecurityConfiguration.class.getName()+"$EnterpriseAuthenticationSuccessHandler");
         var constructor=type.getDeclaredConstructor(SecurityPrincipalRepository.class,
-                SecuritySessionAuditRecorder.class,Set.class,Set.class);
+                SecuritySessionAuditRecorder.class,Set.class,Set.class,com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService.class);
         constructor.setAccessible(true);
-        var handler=(AuthenticationSuccessHandler)constructor.newInstance(principals,audit,Set.of("pwd"),Set.of());
+        var handler=(AuthenticationSuccessHandler)constructor.newInstance(principals,audit,Set.of("pwd"),Set.of(),mock(com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService.class));
         var now=Instant.now();
         var id=OidcIdToken.withTokenValue("test-only").issuer("https://issuer.example.test")
                 .subject("unbound-subject").issuedAt(now).expiresAt(now.plusSeconds(300))
@@ -60,6 +60,29 @@ class UnboundOidcLoginAuditTest {
         verify(audit).record(eq("unbound-subject"),isNull(),eq("LOGIN_DENIED"),
                 eq("{\"reason\":\"MFA_REQUIRED\"}"));
         assertEquals(302,response.getStatus());
+        assertEquals("/oauth2/authorization/enterprise?reauthenticate=1",response.getRedirectedUrl());
+    }
+    @Test
+    void freshAuthenticationRotatesSessionWithoutLosingVerifiedRegistrationDraft() throws Exception {
+        var principals=mock(SecurityPrincipalRepository.class);
+        var audit=mock(SecuritySessionAuditRecorder.class);
+        var type=Class.forName(ProductionSecurityConfiguration.class.getName()+"$EnterpriseAuthenticationSuccessHandler");
+        var constructor=type.getDeclaredConstructor(SecurityPrincipalRepository.class,
+                SecuritySessionAuditRecorder.class,Set.class,Set.class,com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService.class);
+        constructor.setAccessible(true);
+        var handler=(AuthenticationSuccessHandler)constructor.newInstance(principals,audit,Set.of("pwd"),Set.of(),mock(com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService.class));
+        var now=Instant.now();
+        var id=OidcIdToken.withTokenValue("test-only").issuer("https://issuer.example.test")
+                .subject("new-identity").issuedAt(now).expiresAt(now.plusSeconds(300)).build();
+        var user=new DefaultOidcUser(List.of(new SimpleGrantedAuthority("OIDC_USER")),id);
+        var auth=new OAuth2AuthenticationToken(user,user.getAuthorities(),"enterprise");
+        var request=new MockHttpServletRequest();var session=request.getSession();String priorId=session.getId();
+        session.setAttribute("verified-registration-draft","proof");
+        session.setAttribute("SPRING_SECURITY_CONTEXT","unapproved");
+        var response=new MockHttpServletResponse();handler.onAuthenticationSuccess(request,response,auth);
+        assertEquals("proof",request.getSession().getAttribute("verified-registration-draft"));
+        assertNull(request.getSession().getAttribute("SPRING_SECURITY_CONTEXT"));
+        assertNotEquals(priorId,request.getSession().getId());
         assertEquals("/oauth2/authorization/enterprise?reauthenticate=1",response.getRedirectedUrl());
     }
     @Test
@@ -103,9 +126,9 @@ class UnboundOidcLoginAuditTest {
         var audit=mock(SecuritySessionAuditRecorder.class);
         var type=Class.forName(ProductionSecurityConfiguration.class.getName()+"$EnterpriseAuthenticationSuccessHandler");
         var constructor=type.getDeclaredConstructor(SecurityPrincipalRepository.class,
-                SecuritySessionAuditRecorder.class,Set.class,Set.class);
+                SecuritySessionAuditRecorder.class,Set.class,Set.class,com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService.class);
         constructor.setAccessible(true);
-        var handler=(AuthenticationSuccessHandler)constructor.newInstance(principals,audit,Set.of("pwd"),Set.of());
+        var handler=(AuthenticationSuccessHandler)constructor.newInstance(principals,audit,Set.of("pwd"),Set.of(),mock(com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService.class));
         var now=Instant.now();
         var id=OidcIdToken.withTokenValue("test-only").issuer("https://issuer.example.test")
                 .subject("real-admin-provider-subject").issuedAt(now).expiresAt(now.plusSeconds(300))

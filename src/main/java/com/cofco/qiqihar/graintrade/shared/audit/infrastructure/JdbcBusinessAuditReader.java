@@ -62,7 +62,7 @@ public class JdbcBusinessAuditReader implements BusinessAuditReader {
             String actorSubjectId,
             Instant occurredFrom,
             Instant occurredTo) {
-        StringBuilder sql = new StringBuilder(" WHERE e.work_unit_code=:workUnit");
+        StringBuilder sql = new StringBuilder(" WHERE (CAST(:workUnit AS text) IS NULL OR e.work_unit_code=:workUnit)");
         if (aggregateType != null) sql.append(" AND e.aggregate_type=:aggregateType");
         if (actorSubjectId != null) sql.append(" AND e.actor_subject_id=:actor");
         if (occurredFrom != null) sql.append(" AND e.occurred_at>=:occurredFrom");
