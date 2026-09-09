@@ -38,6 +38,6 @@ class UnboundOidcLoginAuditTest {
         verify(audit).record(eq("unbound-subject"),anyString(),eq("LOGIN_SUCCESS"),
                 eq("{\"activationRequired\":true}"));
         assertEquals(302,response.getStatus());
-        assertEquals("/",response.getRedirectedUrl());
+        assertEquals("/activation-required.html",response.getRedirectedUrl());
     }
 }
