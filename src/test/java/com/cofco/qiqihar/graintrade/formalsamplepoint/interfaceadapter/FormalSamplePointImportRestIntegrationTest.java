@@ -35,9 +35,16 @@ class FormalSamplePointImportRestIntegrationTest {
     @BeforeEach
     void setUp() {
         jdbc = JdbcClient.create(dataSource);
+        jdbc.sql("DELETE FROM platform.region_responsibility").update();
+        jdbc.sql("INSERT INTO platform.region_responsibility(region_code,subject_id,updated_by,reason) VALUES('230202','production-tester','production-tester','测试负责地区')").update();
         jdbc.sql("TRUNCATE platform.import_row_result,platform.import_job RESTART IDENTITY CASCADE")
                 .update();
         jdbc.sql("TRUNCATE registry.sample_point CASCADE").update();
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void clearResponsibility() {
+        jdbc.sql("DELETE FROM platform.region_responsibility").update();
     }
 
     @Test
@@ -138,7 +145,6 @@ class FormalSamplePointImportRestIntegrationTest {
                 "address", "龙沙区批量导入地址",
                 "longitude", longitude,
                 "latitude", "47.31",
-                "objectTypeCode", "FARMER",
-                "maintainerSubjectId", "production-tester");
+                "objectTypeCode", "FARMER");
     }
 }

@@ -48,6 +48,7 @@ class FormalSamplePointWriteRestIntegrationTest {
     @BeforeEach
     void setUp() {
         jdbc = JdbcClient.create(dataSource);
+        jdbc.sql("DELETE FROM platform.region_responsibility").update();
         jdbc.sql("""
                 TRUNCATE platform.business_event_outbox,platform.business_audit_event,
                   registry.sample_network_year,registry.sample_point CASCADE
@@ -83,10 +84,20 @@ class FormalSamplePointWriteRestIntegrationTest {
                 VALUES(:id,'LOGISTICS_NODE','历史物流正式样本','230202','APPROVED','VALID',
                   ST_SetSRID(ST_MakePoint(123.95,47.32),4326),DATE '2026-01-01',:actor,:actor)
                 """).param("id", LOGISTICS_POINT_ID).param("actor", ADMIN).update();
+        responsibility(ADMIN);
+    }
+
+    private void responsibility(String subject) {
+        jdbc.sql("""
+                INSERT INTO platform.region_responsibility(region_code,subject_id,updated_by,reason)
+                VALUES('230202',:subject,:actor,'测试账号负责地区')
+                ON CONFLICT(region_code) DO UPDATE SET subject_id=EXCLUDED.subject_id
+                """).param("subject",subject).param("actor",ADMIN).update();
     }
 
     @AfterEach
     void tearDown() {
+        jdbc.sql("DELETE FROM platform.region_responsibility").update();
         jdbc.sql("DROP TRIGGER IF EXISTS reject_formal_sample_audit_for_test "
                 + "ON platform.business_audit_event").update();
         jdbc.sql("DROP FUNCTION IF EXISTS platform.reject_formal_sample_audit_for_test()")
@@ -306,6 +317,7 @@ class FormalSamplePointWriteRestIntegrationTest {
 
     @Test
     void maintainerCanUpdateMasterDataButCannotReassignResponsibility() throws Exception {
+        responsibility(RESTRICTED);
         UUID id = responseId(mvc.perform(post("/api/v1/formal-sample-points")
                         .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content(draft("维护人编辑样本", "230202", "原地址",
@@ -326,67 +338,64 @@ class FormalSamplePointWriteRestIntegrationTest {
     }
 
     @Test
-    void persistsAndReassignsAnActiveMaintainerFromTheEmployeeDirectory() throws Exception {
-        MvcResult created = mvc.perform(post("/api/v1/formal-sample-points")
-                        .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
-                        .content(draft("维护人样本", "230202", "龙沙区维护人地址",
-                                "123.94", "47.31", "FARMER", null, RESTRICTED)))
+    void administratorEditsWithoutClaimingAndCannotExplicitlyReassign() throws Exception {
+        responsibility(RESTRICTED);
+        String createBody = draft("维护人样本", "230202", "原地址", "123.94", "47.31", "FARMER", null);
+        var body = json.readTree(createBody);
+        ((tools.jackson.databind.node.ObjectNode) body).remove("maintainerSubjectId");
+        UUID id = responseId(mvc.perform(post("/api/v1/formal-sample-points")
+                        .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(body)))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.maintainerSubjectId").value(RESTRICTED))
-                .andExpect(jsonPath("$.data.maintainerDisplayName").value("正式样本维护受限用户"))
-                .andReturn();
-        UUID id = responseId(created);
-
-        mvc.perform(put("/api/v1/formal-sample-points/{id}", id)
-                        .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
-                        .content(draft("维护人样本", "230202", "龙沙区维护人地址",
-                                "123.94", "47.31", "FARMER", 0L, ADMIN,
-                                "原维护人岗位调整")))
+                .andExpect(jsonPath("$.data.maintainerSubjectId").value(RESTRICTED)).andReturn());
+        ((tools.jackson.databind.node.ObjectNode) body).put("expectedVersion", 0);
+        ((tools.jackson.databind.node.ObjectNode) body).put("address", "管理员编辑地址");
+        mvc.perform(put("/api/v1/formal-sample-points/{id}", id).principal(() -> ADMIN)
+                        .contentType(MediaType.APPLICATION_JSON).content(json.writeValueAsString(body)))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.maintainerSubjectId").value(ADMIN))
-                .andExpect(jsonPath("$.data.maintainerDisplayName").isNotEmpty());
-
-        assertThat(jdbc.sql("""
-                SELECT action_code FROM platform.business_audit_event
-                WHERE aggregate_type='FORMAL_SAMPLE_POINT' AND aggregate_id=:id
-                ORDER BY occurred_at
-                """).param("id", id.toString()).query(String.class).list())
-                .containsExactly("FORMAL_SAMPLE_POINT_CREATED",
-                        "FORMAL_SAMPLE_POINT_MAINTAINER_REASSIGNED");
-        assertThat(jdbc.sql("""
-                SELECT detail->>'previousMaintainerSubjectId',
-                       detail->>'maintainerSubjectId', detail->>'maintainerChangeReason'
-                FROM platform.business_audit_event
-                WHERE aggregate_type='FORMAL_SAMPLE_POINT' AND aggregate_id=:id
-                  AND action_code='FORMAL_SAMPLE_POINT_MAINTAINER_REASSIGNED'
-                """).param("id", id.toString()).query((row, index) ->
-                        java.util.List.of(row.getString(1), row.getString(2), row.getString(3))).single())
-                .containsExactly(RESTRICTED, ADMIN, "原维护人岗位调整");
+                .andExpect(jsonPath("$.data.maintainerSubjectId").value(RESTRICTED));
+        mvc.perform(put("/api/v1/formal-sample-points/{id}", id).principal(() -> ADMIN)
+                        .contentType(MediaType.APPLICATION_JSON).content(draft("维护人样本", "230202", "改派失败地址",
+                                "123.94", "47.31", "FARMER", 1L, ADMIN, "岗位调整")))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("FORMAL_SAMPLE_RESPONSIBILITY_ACCOUNT_ONLY"));
+        mvc.perform(get("/api/v1/formal-sample-points/{id}", id).principal(() -> ADMIN))
+                .andExpect(jsonPath("$.data.maintainerSubjectId").value(RESTRICTED))
+                .andExpect(jsonPath("$.data.address").value("管理员编辑地址"))
+                .andExpect(jsonPath("$.data.version").value(1));
+        assertThat(jdbc.sql("SELECT action_code FROM platform.business_audit_event WHERE aggregate_id=:id ORDER BY occurred_at")
+                .param("id",id.toString()).query(String.class).list())
+                .containsExactly("FORMAL_SAMPLE_POINT_CREATED", "FORMAL_SAMPLE_POINT_UPDATED");
     }
 
     @Test
-    void assignsAnActiveMaintainerToAHistoricalLogisticsFormalSample() throws Exception {
+    void movingRegionInheritsTheDestinationResponsibilityWithoutManualAssignment() throws Exception {
+        responsibility(RESTRICTED);
+        jdbc.sql("INSERT INTO platform.region_responsibility(region_code,subject_id,updated_by,reason) VALUES('230203',:actor,:actor,'目标负责地区')")
+                .param("actor", ADMIN).update();
+        UUID id = responseId(mvc.perform(post("/api/v1/formal-sample-points").principal(() -> ADMIN)
+                        .contentType(MediaType.APPLICATION_JSON).content(draft("移区责任样本", "230202", "旧地区地址",
+                                "123.94", "47.31", "FARMER", null, RESTRICTED)))
+                .andExpect(status().isCreated()).andReturn());
+        mvc.perform(put("/api/v1/formal-sample-points/{id}", id).principal(() -> ADMIN)
+                        .contentType(MediaType.APPLICATION_JSON).content(draft("移区责任样本", "230203", "目标地区地址",
+                                "124.00", "47.40", "FARMER", 0L, RESTRICTED)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.maintainerSubjectId").value(ADMIN));
+        assertThat(jdbc.sql("SELECT maintainer_subject_id FROM registry.sample_point WHERE sample_point_id=:id AND region_code='230203'")
+                .param("id",id).query(String.class).single()).isEqualTo(ADMIN);
+    }
+
+    @Test
+    void rejectsLegacySinglePointAssignmentEvenForAnAdministrator() throws Exception {
         mvc.perform(put("/api/v1/formal-sample-points/{id}/maintainer", LOGISTICS_POINT_ID)
                         .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {
-                                  "maintainerSubjectId":"formal-sample-manage-restricted",
-                                  "maintainerChangeReason":"明确物流样本后续维护责任",
-                                  "expectedVersion":0
-                                }
-                                """))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.kindCode").value("LOGISTICS_NODE"))
-                .andExpect(jsonPath("$.data.maintainerSubjectId").value(RESTRICTED))
-                .andExpect(jsonPath("$.data.maintainerDisplayName").value("正式样本维护受限用户"))
-                .andExpect(jsonPath("$.data.version").value(1));
-
-        assertThat(jdbc.sql("""
-                SELECT action_code FROM platform.business_audit_event
-                WHERE aggregate_type='FORMAL_SAMPLE_POINT'
-                  AND aggregate_id=:id ORDER BY occurred_at DESC LIMIT 1
-                """).param("id", LOGISTICS_POINT_ID.toString()).query(String.class).single())
-                .isEqualTo("FORMAL_SAMPLE_POINT_MAINTAINER_ASSIGNED");
+                        .content("{\"maintainerSubjectId\":\"formal-sample-manage-restricted\",\"maintainerChangeReason\":\"调整\",\"expectedVersion\":0}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("FORMAL_SAMPLE_RESPONSIBILITY_ACCOUNT_ONLY"));
+        assertThat(jdbc.sql("SELECT count(*) FROM registry.sample_point WHERE sample_point_id=:id AND maintainer_subject_id IS NULL AND version=0")
+                .param("id", LOGISTICS_POINT_ID).query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.business_audit_event WHERE aggregate_id=:id")
+                .param("id", LOGISTICS_POINT_ID.toString()).query(Long.class).single()).isZero();
     }
 
     @Test
@@ -441,7 +450,8 @@ class FormalSamplePointWriteRestIntegrationTest {
     }
 
     @Test
-    void requiresAReasonWhenTheMaintainerChanges() throws Exception {
+    void rejectsReassignmentEvenWithoutAReason() throws Exception {
+        responsibility(RESTRICTED);
         MvcResult created = mvc.perform(post("/api/v1/formal-sample-points")
                         .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content(draft("重派原因样本", "230202", "龙沙区重派原因地址",
@@ -453,8 +463,8 @@ class FormalSamplePointWriteRestIntegrationTest {
                         .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content(draft("重派原因样本", "230202", "龙沙区重派原因地址",
                                 "123.94", "47.31", "FARMER", 0L, ADMIN)))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("INVALID_FORMAL_SAMPLE_POINT"));
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("FORMAL_SAMPLE_RESPONSIBILITY_ACCOUNT_ONLY"));
 
         mvc.perform(get("/api/v1/formal-sample-points/{id}", id)
                         .principal(() -> ADMIN))
@@ -464,13 +474,14 @@ class FormalSamplePointWriteRestIntegrationTest {
     }
 
     @Test
-    void rejectsMissingInactiveOrOutOfScopeMaintainersWithoutWriting() throws Exception {
+    void rejectsUnconfiguredInactiveOrNonReportingMaintainersWithoutWriting() throws Exception {
+        responsibility(RESTRICTED);
         mvc.perform(post("/api/v1/formal-sample-points")
                         .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
                         .content(draft("无效维护人样本", "230202", "龙沙区地址",
                                 "123.94", "47.31", "FARMER", null, "missing-maintainer")))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("INVALID_FORMAL_SAMPLE_MAINTAINER"));
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.error.code").value("FORMAL_SAMPLE_RESPONSIBILITY_ACCOUNT_ONLY"));
 
         jdbc.sql("""
                 UPDATE platform.security_user SET account_status='SUSPENDED'
@@ -487,7 +498,7 @@ class FormalSamplePointWriteRestIntegrationTest {
                 UPDATE platform.security_user SET account_status='ACTIVE'
                 WHERE subject_id=:subject
                 """).param("subject", RESTRICTED).update();
-        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id=:subject")
+        jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:subject")
                 .param("subject", RESTRICTED).update();
         mvc.perform(post("/api/v1/formal-sample-points")
                         .principal(() -> ADMIN).contentType(MediaType.APPLICATION_JSON)
@@ -793,7 +804,8 @@ class FormalSamplePointWriteRestIntegrationTest {
 
         jdbc.sql("""
                 UPDATE registry.sample_point
-                SET approval_state='RETURNED',effective_to=DATE '2099-12-31'
+                SET approval_state='RETURNED',effective_to=DATE '2099-12-31',
+                    maintainer_subject_id='production-tester'
                 WHERE sample_point_id=:id
                 """).param("id", OCCUPIED_POINT_ID).update();
         mvc.perform(put("/api/v1/formal-sample-points/{id}", OCCUPIED_POINT_ID)

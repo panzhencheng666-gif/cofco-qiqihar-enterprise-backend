@@ -635,27 +635,48 @@ class FormalSampleObservationRestIntegrationTest {
     }
 
     @Test
+    @org.springframework.transaction.annotation.Transactional
     void authorizationReassignmentRevokesOldMaintainerAndEnablesNewMaintainer() throws Exception {
-        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put(
-                        "/api/v1/formal-sample-points/{id}/maintainer", SAMPLE_POINT_ID)
-                        .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expectedVersion\":0,\"maintainerSubjectId\":\""
-                                + SAME_REGION_ACTOR + "\",\"maintainerChangeReason\":\"责任调整\"}"))
-                .andExpect(status().isOk());
+        // Roll back the county responsibility, transferred samples and grants together.
+        jdbc.sql("""
+                INSERT INTO platform.work_unit(code,name,sort_order)
+                VALUES('QIQIHAR_BUSINESS','地区责任测试单位',9980) ON CONFLICT DO NOTHING
+                """).update();
+        jdbc.sql("UPDATE platform.security_user SET work_unit_code='QIQIHAR_BUSINESS' WHERE subject_id IN (:subjects)")
+                .param("subjects", java.util.List.of(ACTOR, SAME_REGION_ACTOR)).update();
+        jdbc.sql("""
+                INSERT INTO platform.work_unit_region_scope(work_unit_code,region_code)
+                SELECT work_unit_code,'230221' FROM platform.security_user WHERE subject_id=:actor
+                ON CONFLICT DO NOTHING
+                """).param("actor", ACTOR).update();
+        assignObservationResponsibility(SAME_REGION_ACTOR);
+        assertThat(jdbc.sql("SELECT maintainer_subject_id FROM registry.sample_point WHERE sample_point_id=:id")
+                .param("id", SAMPLE_POINT_ID).query(String.class).single()).isEqualTo(SAME_REGION_ACTOR);
         mvc.perform(post("/api/v1/formal-sample-observations/observations")
                         .principal(() -> SAME_REGION_ACTOR).header("Idempotency-Key", "new-maintainer")
                         .contentType(MediaType.APPLICATION_JSON).content(minimalProductionObservationRequest()))
                 .andExpect(status().isCreated());
-        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put(
-                        "/api/v1/formal-sample-points/{id}/maintainer", SAMPLE_POINT_ID)
-                        .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"expectedVersion\":1,\"maintainerSubjectId\":\""
-                                + ACTOR + "\",\"maintainerChangeReason\":\"责任再次调整\"}"))
-                .andExpect(status().isOk());
+        assignObservationResponsibility(ACTOR);
+        assertThat(jdbc.sql("SELECT maintainer_subject_id FROM registry.sample_point WHERE sample_point_id=:id")
+                .param("id", SAMPLE_POINT_ID).query(String.class).single()).isEqualTo(ACTOR);
         mvc.perform(post("/api/v1/formal-sample-observations/observations")
                         .principal(() -> SAME_REGION_ACTOR).header("Idempotency-Key", "old-maintainer-new-write")
                         .contentType(MediaType.APPLICATION_JSON).content(minimalProductionObservationRequest()))
                 .andExpect(status().isForbidden());
+    }
+
+    private void assignObservationResponsibility(String subject) throws Exception {
+        String path = "/api/v1/identity/employees/" + subject + "/region-responsibility";
+        String preview = mvc.perform(post(path + "/preview").principal(() -> ACTOR)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"regionCodes\":[\"230221\"]}"))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        String token = objectMapper.readTree(preview).path("data").path("previewToken").asText();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put(path)
+                        .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(java.util.Map.of(
+                                "regionCodes", java.util.List.of("230221"), "previewToken", token,
+                                "reason", "观测样本责任调整"))))
+                .andExpect(status().isOk());
     }
 
     @Test

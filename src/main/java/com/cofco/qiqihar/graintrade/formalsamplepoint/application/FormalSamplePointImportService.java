@@ -45,7 +45,7 @@ public class FormalSamplePointImportService {
                             new SamplePointMasterWorkbook.Column("latitude", "纬度", true),
                             new SamplePointMasterWorkbook.Column("objectTypeCode", "对象类型", true),
                             new SamplePointMasterWorkbook.Column(
-                                    "maintainerSubjectId", "维护人员工账号", true)));
+                                    "maintainerSubjectId", "维护人员工账号", false)));
 
     private final AccessControl access;
     private final FormalSamplePointService points;

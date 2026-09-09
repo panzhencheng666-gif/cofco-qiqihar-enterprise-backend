@@ -83,7 +83,7 @@ class RegionResponsibilityRestIntegrationTest {
         long version=jdbc.sql("SELECT version FROM registry.sample_point WHERE sample_point_id=:id").param("id",id).query(Long.class).single();
         mvc.perform(put("/api/v1/formal-sample-points/"+id+"/maintainer").principal(()->"production-tester").contentType(MediaType.APPLICATION_JSON)
             .content(json.writeValueAsString(java.util.Map.of("maintainerSubjectId","production-tester","maintainerChangeReason","旧入口试图覆盖","expectedVersion",version))))
-            .andExpect(status().isConflict()).andExpect(jsonPath("$.error.code").value("REGION_RESPONSIBILITY_CONFLICT"));
+            .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("FORMAL_SAMPLE_RESPONSIBILITY_ACCOUNT_ONLY"));
         assertThat(owner(id)).isEqualTo(subject);
         assertThat(jdbc.sql("SELECT actor_subject_id FROM platform.formal_sample_observation WHERE observation_id=:id").param("id",observation).query(String.class).single()).isEqualTo("production-tester");
     }
