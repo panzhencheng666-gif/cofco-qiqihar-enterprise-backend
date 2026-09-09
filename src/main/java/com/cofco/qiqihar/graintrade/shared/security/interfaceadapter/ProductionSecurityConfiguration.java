@@ -253,7 +253,8 @@ public class ProductionSecurityConfiguration {
         private static boolean invitationActivationEntry(HttpServletRequest request) {
             String path=request.getRequestURI().substring(request.getContextPath().length());
             return (request.getMethod().equals("POST")
-                    && path.equals("/api/v1/identity/invitations/activate"))
+                    && (path.equals("/api/v1/identity/invitations/activate")
+                        ||path.equals("/api/v1/identity/invitations/first-administrator")))
                     ||(request.getMethod().equals("GET")
                     && path.equals("/api/v1/identity/invitations/activation-bootstrap"));
         }

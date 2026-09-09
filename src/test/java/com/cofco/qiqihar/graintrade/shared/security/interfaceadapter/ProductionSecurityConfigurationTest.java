@@ -65,6 +65,7 @@ import org.springframework.web.bind.annotation.RestController;
                 "qiqihar.identity.management-url=https://id.example.test/account"
         })
 @Import({ProductionSecurityConfigurationTest.ProbeController.class,
+        com.cofco.qiqihar.graintrade.identity.interfaceadapter.FirstAdministratorController.class,
         OidcLoginController.class, ProductionSecurityConfiguration.class, SecurityStartupInvariant.class})
 @ContextConfiguration(classes = GrainTradeApplication.class)
 @ActiveProfiles("production")
@@ -78,6 +79,9 @@ class ProductionSecurityConfigurationTest {
 
     @MockitoBean
     SecuritySessionAuditRecorder sessionAudit;
+
+    @MockitoBean
+    com.cofco.qiqihar.graintrade.identity.application.FirstAdministratorService firstAdministrator;
 
     @MockitoBean
     JdbcClient jdbc;
@@ -293,6 +297,27 @@ class ProductionSecurityConfigurationTest {
         mockMvc.perform(asyncDispatch(initial))
                 .andExpect(status().isOk())
                 .andExpect(content().string("oidc-subject"));
+    }
+
+    @Test
+    void firstAdministratorRequiresMfaAndCsrfAndUsesAuthenticatedSubject() throws Exception {
+        org.mockito.Mockito.doReturn(Optional.empty()).when(principals).findEnabledByOidcIdentity(any(),any());
+        var identity=oidcLogin().idToken(token -> token.issuer("https://issuer.example.test")
+                .subject("actual-provider-subject").claim("amr",List.of("mfa")));
+        String path="/api/v1/identity/invitations/first-administrator";
+        mockMvc.perform(post(path).with(identity).contentType("application/json")
+                .content("{\"token\":\"claim-token\"}")).andExpect(status().isForbidden());
+        mockMvc.perform(post(path).with(oidcLogin()).with(
+                org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf())
+                .contentType("application/json").content("{\"token\":\"claim-token\"}"))
+                .andExpect(status().isForbidden());
+        verify(firstAdministrator,never()).bind(any(),any(),any());
+        mockMvc.perform(post(path).with(identity).with(
+                org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf())
+                .contentType("application/json")
+                .content("{\"token\":\"claim-token\",\"subject\":\"forged\"}"))
+                .andExpect(status().isOk());
+        verify(firstAdministrator).bind("https://issuer.example.test","actual-provider-subject","claim-token");
     }
 
     @RestController
