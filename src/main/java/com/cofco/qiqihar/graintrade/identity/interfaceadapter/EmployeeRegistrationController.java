@@ -14,7 +14,9 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/v1/identity/registration")
 public class EmployeeRegistrationController {
     private final EmployeeRegistrationService service;
-    public EmployeeRegistrationController(EmployeeRegistrationService service){this.service=service;}
+    private final PhoneIdentityService phones;
+    private final SmsChallengeService sms;
+    public EmployeeRegistrationController(EmployeeRegistrationService service,PhoneIdentityService phones,SmsChallengeService sms){this.service=service;this.phones=phones;this.sms=sms;}
     @GetMapping("/options")
     ApiResponse<AssignmentOptions> options(Authentication authentication,
             @RequestParam(defaultValue="QIQIHAR_BUSINESS") String workUnitCode) {
@@ -29,11 +31,12 @@ public class EmployeeRegistrationController {
                 ||hasNull(request.roleCodes())||hasNull(request.positionCodes())||hasNull(request.regionCodes()))
             throw new com.cofco.qiqihar.graintrade.shared.application.ClientRequestException(
                     "INVALID_REGISTRATION", "请完整填写员工资料，选项不能为空");
-        var result=service.register(user.getIssuer().toString(),user.getSubject(),user.getPreferredUsername(),
+        String phone=sms.verify(request.challengeId(),request.smsCode(),"REGISTER",servletRequest.getSession().getId());
+        var result=phones.register(user.getIssuer().toString(),user.getSubject(),user.getPreferredUsername(),
                 new EmployeeAssignment(request.displayName(),request.workUnitCode(),"ACTIVE","ACTIVE",
                     request.roleCodes()==null?List.of("BUSINESS_OPERATOR"):request.roleCodes(),
                     request.positionCodes()==null?List.of():request.positionCodes(),
-                    request.regionCodes()==null?List.of():request.regionCodes()));
+                    request.regionCodes()==null?List.of():request.regionCodes()),phone);
         var session=servletRequest.getSession(false);
         if(session!=null)session.invalidate();
         return new ApiResponse<>(result);
@@ -47,5 +50,5 @@ public class EmployeeRegistrationController {
         throw new AuthenticationRequiredException();
     }
     record RegistrationRequest(String displayName,String workUnitCode,List<String> positionCodes,
-            List<String> regionCodes,List<String> roleCodes) {}
+            List<String> regionCodes,List<String> roleCodes,java.util.UUID challengeId,String smsCode) {}
 }

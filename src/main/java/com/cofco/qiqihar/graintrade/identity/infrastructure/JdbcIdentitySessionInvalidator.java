@@ -28,6 +28,8 @@ public final class JdbcIdentitySessionInvalidator implements IdentitySessionInva
                 WHERE security_subject_id=:subject AND revoked_at IS NULL
                 FOR UPDATE
                 """).param("subject",subjectId).query(String.class).list();
+        jdbc.sql("DELETE FROM platform.http_session WHERE principal_name=:subject")
+                .param("subject",subjectId).update();
         if(sessionIds.isEmpty())return;
         jdbc.sql("""
                 UPDATE platform.oidc_session_registry

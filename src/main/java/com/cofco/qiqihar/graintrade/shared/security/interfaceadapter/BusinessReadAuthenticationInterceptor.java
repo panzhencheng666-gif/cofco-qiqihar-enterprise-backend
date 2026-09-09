@@ -45,7 +45,8 @@ public class BusinessReadAuthenticationInterceptor implements HandlerInterceptor
         // The security filter authenticates this bootstrap endpoint before business binding exists.
         boolean identityEntry = "/api/v1/session/login".equals(path)
                 || "/api/v1/identity/invitations/activation-bootstrap".equals(path)
-                || "/api/v1/identity/registration/options".equals(path);
+                || "/api/v1/identity/registration/options".equals(path)
+                || "/api/v1/identity/phone/bootstrap".equals(path);
         if (required && "GET".equals(request.getMethod()) && !identityEntry) {
             accessControl.require("BUSINESS_READ", null);
         }

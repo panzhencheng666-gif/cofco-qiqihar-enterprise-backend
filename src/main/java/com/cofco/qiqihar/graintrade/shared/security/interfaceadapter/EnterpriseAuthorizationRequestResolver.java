@@ -29,6 +29,8 @@ final class EnterpriseAuthorizationRequestResolver implements OAuth2Authorizatio
         if (authorization == null || !"1".equals(request.getParameter("reauthenticate"))) return authorization;
         var parameters = new HashMap<>(authorization.getAdditionalParameters());
         parameters.put("prompt", "login");
+        // OIDC requires auth_time in the ID token when max_age is requested.
+        parameters.put("max_age", 0);
         return OAuth2AuthorizationRequest.from(authorization).additionalParameters(parameters).build();
     }
 }
