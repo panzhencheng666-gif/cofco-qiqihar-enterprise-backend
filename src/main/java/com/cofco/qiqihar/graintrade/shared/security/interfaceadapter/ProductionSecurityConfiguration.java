@@ -272,6 +272,7 @@ public class ProductionSecurityConfiguration {
                         ||path.equals("/api/v1/identity/phone/challenge")))
                     ||(request.getMethod().equals("GET")
                     && (path.equals("/api/v1/identity/invitations/activation-bootstrap")
+                        ||path.equals("/api/v1/identity/registration/phone")
                         ||path.equals("/api/v1/identity/registration/options")));
         }
 

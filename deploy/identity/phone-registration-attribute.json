@@ -1,0 +1,32 @@
+{
+  "name": "phone_number",
+  "displayName": "手机号",
+  "validations": {
+    "pattern": {
+      "pattern": "1[3-9][0-9]{9}",
+      "error-message": "请输入11位有效手机号"
+    }
+  },
+  "permissions": {
+    "view": [
+      "admin",
+      "user"
+    ],
+    "edit": [
+      "admin",
+      "user"
+    ]
+  },
+  "selector": {
+    "scopes": [
+      "cofco-phone-registration"
+    ]
+  },
+  "annotations": {
+    "inputType": "html5-tel",
+    "inputTypePlaceholder": "输入11位手机号",
+    "inputTypePattern": "1[3-9][0-9]{9}",
+    "inputTypeMaxlength": "11"
+  },
+  "multivalued": false
+}

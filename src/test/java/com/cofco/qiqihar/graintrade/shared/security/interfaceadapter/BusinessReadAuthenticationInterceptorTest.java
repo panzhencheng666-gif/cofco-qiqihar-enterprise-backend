@@ -43,4 +43,12 @@ class BusinessReadAuthenticationInterceptorTest {
 
         verifyNoInteractions(accessControl);
     }
+    @Test
+    void registrationDraftCanBeReadBeforeBusinessBinding() {
+        var accessControl=mock(AccessControl.class);
+        var interceptor=new BusinessReadAuthenticationInterceptor(accessControl,true);
+        interceptor.preHandle(new MockHttpServletRequest("GET","/api/v1/identity/registration/phone"),
+                new MockHttpServletResponse(),new Object());
+        verifyNoInteractions(accessControl);
+    }
 }

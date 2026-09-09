@@ -46,6 +46,7 @@ public class BusinessReadAuthenticationInterceptor implements HandlerInterceptor
         boolean identityEntry = "/api/v1/session/login".equals(path)
                 || "/api/v1/identity/invitations/activation-bootstrap".equals(path)
                 || "/api/v1/identity/registration/options".equals(path)
+                || "/api/v1/identity/registration/phone".equals(path)
                 || "/api/v1/identity/phone/bootstrap".equals(path);
         if (required && "GET".equals(request.getMethod()) && !identityEntry) {
             accessControl.require("BUSINESS_READ", null);

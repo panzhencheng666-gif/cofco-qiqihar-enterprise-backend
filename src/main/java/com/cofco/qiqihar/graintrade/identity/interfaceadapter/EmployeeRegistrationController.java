@@ -23,6 +23,15 @@ public class EmployeeRegistrationController {
         identity(authentication);
         return new ApiResponse<>(service.options(workUnitCode));
     }
+    /** A draft only: never creates a verified phone binding. */
+    @GetMapping("/phone")
+    ApiResponse<RegistrationPhone> phone(Authentication authentication) {
+        String value=identity(authentication).getClaimAsString("phone_number");
+        return new ApiResponse<>(new RegistrationPhone(
+                value!=null&&value.matches("1[3-9][0-9]{9}")?value:""));
+    }
+    record RegistrationPhone(String phone) {}
+
     @PostMapping
     ApiResponse<IdentityActivationResult> register(Authentication authentication,
             @RequestBody RegistrationRequest request,HttpServletRequest servletRequest) {

@@ -33,3 +33,9 @@ Before exposing this Keycloak-based entry, run `python3 scripts/verify-oidc-entr
 Run the bounded browser regression from the frontend with `node scripts/verify-identity-entry.mjs https://localhost:29444`. It checks password/SMS selection, direct registration (including the old register.html bookmark), mobile overflow and repeated login/refresh. Optional `IDENTITY_ENTRY_EVIDENCE_DIR` writes screenshots and a JSON result outside the repository. No credentials are submitted and no SMS is sent.
 
 The preview uses isolated database 55435. These entry checks do not replace acceptance against the managed business runtime. Existing 29443 and production client configuration remain unchanged.
+
+## Phone on the first registration form
+
+Create `phone-registration-scope.json` first, then merge the single attribute from `phone-registration-attribute.json` into the realm user profile without replacing other attributes. Keycloak validates that a selector's scope already exists. Assign this scope as a default only to the intended phone-registration client. Existing clients keep their form unchanged.
+
+The optional phone field uses HTML tel input and server-side mainland-mobile format validation. Keycloak stores it as `phone_number`; the scope emits the draft in the ID token, never a verified-phone claim. The authenticated `/api/v1/identity/registration/phone` endpoint returns only a valid draft for prefilling the employee form. The existing REGISTER SMS challenge is still mandatory before creating the business phone binding. Typing a phone number does not establish ownership.
