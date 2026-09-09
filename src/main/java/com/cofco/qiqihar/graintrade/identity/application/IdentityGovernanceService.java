@@ -58,12 +58,16 @@ public class IdentityGovernanceService {
     }
 
     @Transactional(readOnly=true)
-    public AssignmentOptions assignmentOptions(String workUnitCode) {
+    public AssignmentOptions assignmentOptions(String workUnitCode) { return assignmentOptions(workUnitCode,null); }
+
+    @Transactional(readOnly=true)
+    public AssignmentOptions assignmentOptions(String workUnitCode,String subjectId) {
         SecurityPrincipal actor=access.require("IDENTITY_READ",null);
         if(blank(workUnitCode))throw invalid();
         requireAssignableWorkUnit(workUnitCode);
         requireWorkUnit(actor,workUnitCode);
-        AssignmentOptions options=registrationOptions(workUnitCode);
+        if(subjectId!=null)required(subjectId,actor);
+        AssignmentOptions options=registrationOptions(workUnitCode,subjectId);
         if(systemAdministrator(actor))return options;
         return new AssignmentOptions(
                 options.workUnits().stream().filter(unit->unit.code().equals(actor.workUnitCode())).toList(),
@@ -71,9 +75,11 @@ public class IdentityGovernanceService {
                 options.positions(),options.regionCodes(),options.regions());
     }
 
-    AssignmentOptions registrationOptions(String workUnitCode) {
+    AssignmentOptions registrationOptions(String workUnitCode) { return registrationOptions(workUnitCode,null); }
+
+    private AssignmentOptions registrationOptions(String workUnitCode,String subjectId) {
         requireAssignableWorkUnit(workUnitCode);
-        AssignmentOptions available=repository.assignmentOptions(workUnitCode);
+        AssignmentOptions available=subjectId==null?repository.assignmentOptions(workUnitCode):repository.assignmentOptions(workUnitCode,subjectId);
         AssignmentOptions options=new AssignmentOptions(
                 available.workUnits().stream()
                         .filter(unit->ASSIGNABLE_WORK_UNITS.contains(unit.code())).toList(),

@@ -7,7 +7,7 @@
 <label>姓名<input id="name" required maxlength="160" autocomplete="name"></label>
 <label>工作单位<select id="unit" required></select></label>
 <label id="positionsLabel" hidden>岗位<select id="positions" multiple size="4"></select></label>
-<label>授权地区<input id="search" type="search" placeholder="搜索地区名称"><select id="regions" multiple size="10" required aria-label="授权地区"></select></label><small>可选择多个地区；选项与邀请员工一致，不能选择单位范围外的地区。选择后立即获得普通业务权限，地区负责人仍由管理员安排。</small>
+<label>授权地区<input id="search" type="search" placeholder="搜索地区名称"><select id="regions" multiple size="10" required aria-label="授权地区"></select></label><small>可选择多个尚未绑定的地区；每个地区仅允许一个普通账号绑定，选项与邀请员工一致。选择后立即获得普通业务权限，地区负责人仍由管理员安排。</small>
 <button id="submit" type="submit">完成注册并进入系统</button></form>
 <p id="status" role="status" aria-live="polite"></p><a id="enter" href="/oauth2/authorization/enterprise" hidden>重新登录并进入系统</a><p><a href="/">返回登录页面</a></p></main>
 <script>
@@ -23,7 +23,7 @@ async function load(unit='QIQIHAR_BUSINESS'){
  const {data}=await response.json();if(current!==generation)return;
  el('login').hidden=true;el('form').hidden=false;
  populate(el('unit'),data.workUnits);el('unit').value=unit;populate(el('positions'),data.positions);el('positionsLabel').hidden=!data.positions.length;
- populate(el('regions'),data.regions);el('search').value='';el('submit').disabled=false;el('status').textContent='';
+ populate(el('regions'),data.regions);el('search').value='';el('submit').disabled=!data.regions.length;el('status').textContent=data.regions.length?'':'该单位暂无可选择的未绑定地区，请更换单位或联系管理员解除原绑定。';
  }catch{if(current===generation)el('status').textContent='网络连接失败，请刷新页面重试。';}
 }
 el('unit').onchange=()=>load(el('unit').value);

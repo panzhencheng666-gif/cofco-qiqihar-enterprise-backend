@@ -76,7 +76,7 @@ public class RegionResponsibilityService {
             throw new AccessDeniedException("ACCESS_WORK_UNIT_DENIED","无权调整其他工作单位的责任");
         var target=principals.findEnabled(subject).orElseThrow(RegionResponsibilityService::invalid);
         if(!target.permits("BUSINESS_CREATE"))throw invalid();
-        var available=identities.assignmentOptions(employee.workUnitCode()).regionCodes();
+        var available=identities.assignmentOptions(employee.workUnitCode(),subject).regionCodes();
         var affected=new TreeSet<>(repository.ownedRegions(subject));affected.addAll(selected);
         if(!available.containsAll(selected)||!actor.regionCodes().containsAll(affected))throw new AccessDeniedException(
             "ACCESS_REGION_DENIED","负责地区不在允许分配的范围内");

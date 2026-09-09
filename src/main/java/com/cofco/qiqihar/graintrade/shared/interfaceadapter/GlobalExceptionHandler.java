@@ -115,6 +115,10 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(org.springframework.dao.DataIntegrityViolationException.class)
     ResponseEntity<ApiErrorResponse> handleInvalidInput(org.springframework.dao.DataIntegrityViolationException exception, HttpServletRequest request) {
         String detail=exception.getMostSpecificCause().getMessage();
+        if(detail!=null && detail.contains("region_binding_exclusive")) {
+            return error(HttpStatus.CONFLICT,"REGION_ALREADY_ASSIGNED",
+                    "该地区已被其他账号绑定，请刷新后选择未占用地区",request);
+        }
         if(detail!=null && detail.contains("sample_region_responsibility_conflict")) {
             return error(HttpStatus.CONFLICT,"REGION_RESPONSIBILITY_CONFLICT",
                     "该样本由地区负责人维护，请通过设置负责地区办理交接",request);
