@@ -25,6 +25,13 @@ public class AccessControl {
         return new AuthorizedReadScope(principal.subjectId(), principal.regionCodes());
     }
 
+    /** Map visibility is shared by enabled accounts; responsibility still governs writes. */
+    @Transactional(readOnly = true)
+    public AuthorizedReadScope requireOverviewReadScope() {
+        SecurityPrincipal principal = requireAuthenticated();
+        return new AuthorizedReadScope(principal.subjectId(), java.util.Set.of("*"));
+    }
+
     @Transactional(readOnly = true)
     public SecurityPrincipal requireAuthenticated() {
         String subjectId = currentSubject.subjectId().orElseThrow(AuthenticationRequiredException::new);

@@ -126,7 +126,7 @@ public class OverviewService {
                         scope.regionCodes()));
     }
 
-    private AuthorizedReadScope readScope(){return accessControl==null?AuthorizedReadScope.unrestricted():accessControl.requireReadScope();}
+    private AuthorizedReadScope readScope(){return accessControl==null?AuthorizedReadScope.unrestricted():accessControl.requireOverviewReadScope();}
 
     private int effectiveYear(Integer year, String periodCode) {
         Integer effective = year;

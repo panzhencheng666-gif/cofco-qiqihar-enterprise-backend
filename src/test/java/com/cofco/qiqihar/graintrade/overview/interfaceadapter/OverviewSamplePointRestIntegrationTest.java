@@ -1669,7 +1669,7 @@ class OverviewSamplePointRestIntegrationTest {
     }
 
     @Test
-    void excludesAssociationsWhoseBusinessSourceRegionIsOutsideTheReaderScope() throws Exception {
+    void includesAssociationsOutsideTheReadersResponsibilityRegion() throws Exception {
         insertProductionAtRegion("94000000-0000-0000-0000-000000000108", "CORN", "APPROVED",
                 SURVEY_POINT, "230281");
         jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id='production-tester'").update();
@@ -1684,11 +1684,11 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("productCode", "CORN")
                         .queryParam("regionCode", VILLAGE))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.associations.length()").value(2));
+                .andExpect(jsonPath("$.data.associations.length()").value(3));
     }
 
     @Test
-    void enforcesExistingRegionAndObjectTypeAuthorization() throws Exception {
+    void sharesMapRegionsWhileStillValidatingObjectTypes() throws Exception {
         jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id='production-tester'").update();
         jdbc.sql("""
                 INSERT INTO platform.security_user_region_scope(subject_id,region_code)
@@ -1700,8 +1700,7 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("year", "2026")
                         .queryParam("productCode", "CORN")
                         .queryParam("regionCode", "230281"))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+                .andExpect(status().isOk());
 
         mvc.perform(get("/api/v1/overview/sample-points")
                         .principal(() -> "production-tester")
