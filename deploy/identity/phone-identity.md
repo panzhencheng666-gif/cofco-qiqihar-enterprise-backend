@@ -73,3 +73,19 @@ target. Recover business data from a consistent read-only source snapshot into a
 new local database, preserving the existing local identity/phone bindings. Verify
 source-versus-copy sample identifiers and boundary payloads before switching the
 proxy, then check the logged-in sample list, work-unit form and map drill-down.
+
+### Private synchronized copies
+
+For a populated, non-production copy running with the loopback-only `local`
+profile, set `QIQIHAR_LOCAL_BOOTSTRAP_ENABLED=false` to keep the existing account
+and region assignments instead of seeding demo assignments. The default remains
+true for existing local development environments. This setting does not relax
+production authentication checks or the numeric-loopback binding requirement.
+
+A project-local SMS credential copy may be kept at
+`.runtime-secrets/aliyun-sms-credentials.json` with directory mode 0700 and file
+mode 0600. Exclude this directory through Git's local `info/exclude` before
+copying. Mount the file read-only into the backend and set
+`QIQIHAR_SMS_CREDENTIALS_FILE` to its container path; never put it in an image,
+frontend asset, commit, or command log. Reuse the local PNVS signature/templates.
+Configuration validation alone does not prove receipt of a real SMS.
