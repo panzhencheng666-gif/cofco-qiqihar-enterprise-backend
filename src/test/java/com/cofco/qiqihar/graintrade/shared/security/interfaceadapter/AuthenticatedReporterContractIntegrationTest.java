@@ -64,7 +64,9 @@ class AuthenticatedReporterContractIntegrationTest {
                 .param("outsider", OUTSIDER).update();
         jdbc.sql("""
                 INSERT INTO platform.security_user_role(subject_id,role_code)
-                VALUES (:author,'TEST_AUTOMATION'),(:colleague,'TEST_AUTOMATION'),(:outsider,'TEST_AUTOMATION')
+                VALUES (:author,'TEST_AUTOMATION'),(:author,'SYSTEM_ADMIN'),
+                       (:colleague,'TEST_AUTOMATION'),(:colleague,'SYSTEM_ADMIN'),
+                       (:outsider,'TEST_AUTOMATION'),(:outsider,'SYSTEM_ADMIN')
                 """).param("author", AUTHOR).param("colleague", COLLEAGUE)
                 .param("outsider", OUTSIDER).update();
         jdbc.sql("""
@@ -73,6 +75,11 @@ class AuthenticatedReporterContractIntegrationTest {
                 """).param("author", AUTHOR).param("colleague", COLLEAGUE)
                 .param("outsider", OUTSIDER).param("region", REGION)
                 .param("outsideRegion", OUTSIDE_REGION).update();
+        jdbc.sql("""
+                DELETE FROM platform.security_user_role
+                WHERE subject_id IN (:author,:colleague,:outsider) AND role_code='SYSTEM_ADMIN'
+                """).param("author", AUTHOR).param("colleague", COLLEAGUE)
+                .param("outsider", OUTSIDER).update();
         jdbc.sql("""
                 INSERT INTO platform.position(code,name,active,sort_order)
                 VALUES ('IDENTITY_CONTRACT_REPORTER','区域业务专员',true,9970)
@@ -115,6 +122,8 @@ class AuthenticatedReporterContractIntegrationTest {
 
     @Test
     void accountLifecycleAndEffectiveDatedGrantsTakeEffectOnTheNextRequest() throws Exception {
+        jdbc.sql("UPDATE platform.security_user_region_scope SET valid_until=now()-interval '1 second' WHERE subject_id=:colleague")
+                .param("colleague", COLLEAGUE).update();
         jdbc.sql("UPDATE platform.security_user SET account_status='SUSPENDED' WHERE subject_id=:author")
                 .param("author", AUTHOR).update();
         mvc.perform(get("/api/v1/session/me").principal(() -> AUTHOR))

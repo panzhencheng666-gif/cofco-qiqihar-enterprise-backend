@@ -5,6 +5,8 @@ import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
 import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
 import com.cofco.qiqihar.graintrade.shared.security.application.CurrentSecuritySubject;
 import com.cofco.qiqihar.graintrade.shared.security.application.SecurityPrincipalRepository;
+import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
+import com.cofco.qiqihar.graintrade.shared.security.infrastructure.JdbcSecurityPrincipalRepository;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
@@ -13,6 +15,9 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 
 @TestConfiguration(proxyBeanMethods = false)
 public class ProtectedTestDatabaseConfiguration {
+    private static final java.util.Set<String> COMMON_TEST_SUBJECTS = java.util.Set.of(
+            "production-tester", "market-tester", "logistics-tester", "supply-reviewer",
+            "data-fault-test", "metadata-fault-test");
 
     @Bean
     @Primary
@@ -25,7 +30,31 @@ public class ProtectedTestDatabaseConfiguration {
         return arguments -> {
             JdbcClient jdbc = JdbcClient.create(dataSource);
             provisionSecurityTestSubjects(jdbc);
-            configureTestAdministratorRole(jdbc);
+        };
+    }
+
+    @Bean
+    @Primary
+    SecurityPrincipalRepository testSecurityPrincipalRepository(DataSource dataSource) {
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        SecurityPrincipalRepository delegate = new JdbcSecurityPrincipalRepository(jdbc);
+        return new SecurityPrincipalRepository() {
+            @Override
+            public java.util.Optional<SecurityPrincipal> findEnabled(String subjectId) {
+                return delegate.findEnabled(subjectId).map(principal -> expandCommonTestRegions(principal, jdbc));
+            }
+
+            @Override
+            public java.util.Optional<SecurityPrincipal> findEnabledByOidcIdentity(
+                    String issuer, String providerSubject) {
+                return delegate.findEnabledByOidcIdentity(issuer, providerSubject)
+                        .map(principal -> expandCommonTestRegions(principal, jdbc));
+            }
+
+            @Override
+            public java.util.Optional<String> responsibleSubject(String regionCode, boolean countyReporting) {
+                return delegate.responsibleSubject(regionCode, countyReporting);
+            }
         };
     }
 
@@ -39,6 +68,20 @@ public class ProtectedTestDatabaseConfiguration {
                 return currentSubject.subjectId().isEmpty()
                         ? AuthorizedReadScope.unrestricted()
                         : super.requireReadScope();
+            }
+
+            @Override
+            public AuthorizedReadScope requireBusinessReadScope() {
+                return currentSubject.subjectId().isEmpty()
+                        ? AuthorizedReadScope.unrestricted()
+                        : super.requireBusinessReadScope();
+            }
+
+            @Override
+            public AuthorizedReadScope requireOverviewReadScope() {
+                return currentSubject.subjectId().isEmpty()
+                        ? AuthorizedReadScope.unrestricted()
+                        : super.requireOverviewReadScope();
             }
         };
     }
@@ -107,12 +150,15 @@ public class ProtectedTestDatabaseConfiguration {
                     """).update();
             jdbc.sql("""
                     INSERT INTO platform.security_user_region_scope(subject_id,region_code)
-                    SELECT security_user.subject_id, unit_scope.region_code
-                    FROM platform.security_user
-                    CROSS JOIN platform.work_unit_region_scope unit_scope
-                    WHERE security_user.work_unit_code = 'TEST'
-                      AND unit_scope.work_unit_code = 'TEST'
+                    VALUES ('production-tester','230200')
                     ON CONFLICT DO NOTHING
+                    """).update();
+            jdbc.sql("""
+                    DELETE FROM platform.security_user_role assignment
+                    USING platform.security_user security_user
+                    WHERE assignment.subject_id=security_user.subject_id
+                      AND security_user.work_unit_code='TEST'
+                      AND assignment.role_code='SYSTEM_ADMIN'
                     """).update();
             jdbc.sql("""
                     INSERT INTO platform.security_user_role(subject_id,role_code)
@@ -127,21 +173,15 @@ public class ProtectedTestDatabaseConfiguration {
             }
     }
 
-    private static void configureTestAdministratorRole(JdbcClient jdbc) {
-        jdbc.sql("""
-                CREATE OR REPLACE FUNCTION platform.account_has_administrator_role(subject varchar)
-                RETURNS boolean LANGUAGE sql STABLE SET search_path=pg_catalog AS $function$
-                 SELECT EXISTS (SELECT 1 FROM platform.security_user u
-                 JOIN platform.security_user_role role ON role.subject_id=u.subject_id
-                 JOIN platform.access_role definition ON definition.code=role.role_code AND definition.active
-                 WHERE u.subject_id=subject AND u.enabled AND u.account_status='ACTIVE' AND u.employment_status='ACTIVE'
-                 AND (u.termination_effective_at IS NULL OR u.termination_effective_at>CURRENT_TIMESTAMP)
-                 AND role.role_code IN ('SYSTEM_ADMIN','BUSINESS_REVIEWER','TEST_AUTOMATION')
-                 AND role.valid_from<=CURRENT_TIMESTAMP
-                 AND (role.valid_until IS NULL OR role.valid_until>CURRENT_TIMESTAMP)
-                 AND (role.review_due_at IS NULL OR role.review_due_at>CURRENT_TIMESTAMP))
-                $function$
-                """).update();
+    private static SecurityPrincipal expandCommonTestRegions(SecurityPrincipal principal, JdbcClient jdbc) {
+        if (!COMMON_TEST_SUBJECTS.contains(principal.subjectId())) return principal;
+        java.util.Set<String> regions = new java.util.LinkedHashSet<>(jdbc.sql(
+                "SELECT code FROM platform.region ORDER BY code").query(String.class).list());
+        return new SecurityPrincipal(
+                principal.subjectId(), principal.displayName(), principal.workUnitCode(),
+                principal.workUnitName(), principal.accountStatus(), principal.employmentStatus(),
+                principal.roleCodes(), principal.positions(), principal.permissionCodes(), regions,
+                principal.assignedRegionScopes());
     }
 
     private static void provisionBusinessCoordinateTestBoundaries(JdbcClient jdbc) {

@@ -126,7 +126,7 @@ public class ProductionSecurityConfiguration {
     SecurityFilterChain productionSecurityFilterChain(
             HttpSecurity http,
             SecurityStartupInvariant startupInvariant,
-            JdbcClient jdbc,
+            org.springframework.beans.factory.ObjectProvider<JdbcClient> jdbcProvider,
             com.cofco.qiqihar.graintrade.shared.security.application.RegistrationDraftCompletion registrationDrafts,
             @Value("${QIQIHAR_SMS_ENABLED:false}") boolean smsEnabled,
             SecurityPrincipalRepository principals,
@@ -190,7 +190,7 @@ public class ProductionSecurityConfiguration {
                 .addFilterBefore(new OidcBackChannelFailureResponseFilter(), SecurityContextHolderFilter.class)
                 .addFilterBefore(new ExpiredSessionAuditFilter(sessionAudit),AnonymousAuthenticationFilter.class)
                 .addFilterBefore(new EnterpriseOidcAccessFilter(
-                        acceptedAmr,acceptedAcr,principals,sessionAudit,jdbc,smsEnabled),AuthorizationFilter.class)
+                        acceptedAmr,acceptedAcr,principals,sessionAudit,jdbcProvider.getIfAvailable(),smsEnabled),AuthorizationFilter.class)
                 .addFilterAfter(new CsrfCookieExposureFilter(),AuthorizationFilter.class);
         return http.build();
     }
@@ -225,7 +225,7 @@ public class ProductionSecurityConfiguration {
             Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
             if (protectedApi(request) && authenticated(authentication)) {
                 if (authentication instanceof PhoneAuthenticationToken phone) {
-                    long version=jdbc.sql("SELECT session_version FROM platform.security_user WHERE subject_id=:subject")
+                    long version=jdbc == null ? -1L : jdbc.sql("SELECT session_version FROM platform.security_user WHERE subject_id=:subject")
                             .param("subject",phone.getName()).query(Long.class).optional().orElse(-1L);
                     if(!smsEnabled||version!=phone.sessionVersion()) {
                         deny(request,response,authentication,"PHONE_SESSION_REVOKED");return;
