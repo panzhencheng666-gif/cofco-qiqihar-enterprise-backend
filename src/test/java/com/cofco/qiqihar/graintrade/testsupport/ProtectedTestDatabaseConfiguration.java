@@ -5,6 +5,8 @@ import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
 import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
 import com.cofco.qiqihar.graintrade.shared.security.application.CurrentSecuritySubject;
 import com.cofco.qiqihar.graintrade.shared.security.application.SecurityPrincipalRepository;
+import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
+import com.cofco.qiqihar.graintrade.shared.security.infrastructure.JdbcSecurityPrincipalRepository;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.context.annotation.Bean;
@@ -25,6 +27,31 @@ public class ProtectedTestDatabaseConfiguration {
         return arguments -> {
             JdbcClient jdbc = JdbcClient.create(dataSource);
             provisionSecurityTestSubjects(jdbc);
+        };
+    }
+
+    @Bean
+    @Primary
+    SecurityPrincipalRepository testSecurityPrincipalRepository(DataSource dataSource) {
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        SecurityPrincipalRepository delegate = new JdbcSecurityPrincipalRepository(jdbc);
+        return new SecurityPrincipalRepository() {
+            @Override
+            public java.util.Optional<SecurityPrincipal> findEnabled(String subjectId) {
+                return delegate.findEnabled(subjectId).map(principal -> ordinaryTestPrincipal(principal, jdbc));
+            }
+
+            @Override
+            public java.util.Optional<SecurityPrincipal> findEnabledByOidcIdentity(
+                    String issuer, String providerSubject) {
+                return delegate.findEnabledByOidcIdentity(issuer, providerSubject)
+                        .map(principal -> ordinaryTestPrincipal(principal, jdbc));
+            }
+
+            @Override
+            public java.util.Optional<String> responsibleSubject(String regionCode, boolean countyReporting) {
+                return delegate.responsibleSubject(regionCode, countyReporting);
+            }
         };
     }
 
@@ -89,6 +116,16 @@ public class ProtectedTestDatabaseConfiguration {
                     ON CONFLICT(subject_id) DO NOTHING
                     """).update();
             jdbc.sql("""
+                    INSERT INTO platform.access_role(code,name,active,sort_order)
+                    VALUES ('TEST_AUTOMATION','自动化测试角色',true,9999)
+                    ON CONFLICT(code) DO UPDATE SET active=true
+                    """).update();
+            jdbc.sql("""
+                    INSERT INTO platform.access_role_permission(role_code,permission_code)
+                    SELECT 'TEST_AUTOMATION',code FROM platform.access_permission WHERE active
+                    ON CONFLICT DO NOTHING
+                    """).update();
+            jdbc.sql("""
                     INSERT INTO platform.security_user_role(subject_id,role_code)
                     SELECT subject_id, 'SYSTEM_ADMIN' FROM platform.security_user
                     WHERE work_unit_code = 'TEST'
@@ -103,11 +140,58 @@ public class ProtectedTestDatabaseConfiguration {
                       AND unit_scope.work_unit_code = 'TEST'
                     ON CONFLICT DO NOTHING
                     """).update();
+            jdbc.sql("""
+                    INSERT INTO platform.security_user_role(subject_id,role_code)
+                    SELECT subject_id, 'TEST_AUTOMATION' FROM platform.security_user
+                    WHERE work_unit_code = 'TEST'
+                    ON CONFLICT DO NOTHING
+                    """).update();
             if (includeCoordinateBoundaries
                     && jdbc.sql("SELECT to_regclass('overview.administrative_boundary_dataset') IS NOT NULL")
                     .query(Boolean.class).single()) {
                 provisionBusinessCoordinateTestBoundaries(jdbc);
             }
+    }
+
+    private static SecurityPrincipal ordinaryTestPrincipal(SecurityPrincipal principal, JdbcClient jdbc) {
+        if (!principal.roleCodes().contains("TEST_AUTOMATION")
+                || principal.roleCodes().contains("BUSINESS_REVIEWER")
+                || principal.roleCodes().contains("ACCOUNT_OWNER")) return principal;
+        java.util.Set<String> roles = new java.util.LinkedHashSet<>(principal.roleCodes());
+        roles.remove("SYSTEM_ADMIN");
+        java.util.Set<String> permissions = new java.util.LinkedHashSet<>(jdbc.sql("""
+                SELECT DISTINCT role_permission.permission_code
+                FROM platform.security_user_role assignment
+                JOIN platform.access_role role ON role.code=assignment.role_code AND role.active
+                JOIN platform.access_role_permission role_permission ON role_permission.role_code=role.code
+                JOIN platform.access_permission permission ON permission.code=role_permission.permission_code AND permission.active
+                WHERE assignment.subject_id=:subject
+                  AND assignment.role_code<>'SYSTEM_ADMIN'
+                  AND CURRENT_TIMESTAMP>=assignment.valid_from
+                  AND (assignment.valid_until IS NULL OR CURRENT_TIMESTAMP<assignment.valid_until)
+                  AND (assignment.review_due_at IS NULL OR CURRENT_TIMESTAMP<assignment.review_due_at)
+                ORDER BY role_permission.permission_code
+                """).param("subject", principal.subjectId()).query(String.class).list());
+        java.util.Set<String> regions = new java.util.LinkedHashSet<>(jdbc.sql("""
+                WITH RECURSIVE assigned(region_code) AS (
+                    SELECT region_code FROM platform.security_user_region_scope
+                    WHERE subject_id=:subject
+                      AND CURRENT_TIMESTAMP>=valid_from
+                      AND (valid_until IS NULL OR CURRENT_TIMESTAMP<valid_until)
+                      AND (review_due_at IS NULL OR CURRENT_TIMESTAMP<review_due_at)
+                ), covered(region_code) AS (
+                    SELECT region_code FROM assigned
+                    UNION
+                    SELECT child.code FROM platform.region child
+                    JOIN covered parent ON parent.region_code=child.parent_code
+                )
+                SELECT region_code FROM covered ORDER BY region_code
+                """).param("subject", principal.subjectId()).query(String.class).list());
+        return new SecurityPrincipal(
+                principal.subjectId(), principal.displayName(), principal.workUnitCode(),
+                principal.workUnitName(), principal.accountStatus(), principal.employmentStatus(),
+                roles, principal.positions(), permissions, regions,
+                principal.assignedRegionScopes());
     }
 
     private static void provisionBusinessCoordinateTestBoundaries(JdbcClient jdbc) {

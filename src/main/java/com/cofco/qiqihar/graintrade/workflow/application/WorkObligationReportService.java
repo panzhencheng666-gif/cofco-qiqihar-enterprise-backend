@@ -76,7 +76,7 @@ public class WorkObligationReportService {
                     "WORK_OBLIGATION_EXPORT_NOT_FOUND", "Work obligation export was not found");
         }
         if (!export.generatedBy().equals(principal.subjectId())
-                && !principal.roleCodes().contains("SYSTEM_ADMIN")) {
+                && !principal.isRootAdministrator()) {
             throw denied();
         }
         if (export.authorizedRegionCodes().isEmpty()
@@ -95,7 +95,7 @@ public class WorkObligationReportService {
         String workUnitCode = trim(command.workUnitCode());
         String domain = trim(command.businessDomain());
         String region = trim(command.regionCode());
-        if (subjectId == null && workUnitCode == null) {
+        if (subjectId == null && workUnitCode == null && !principal.isRootAdministrator()) {
             subjectId = principal.subjectId();
             workUnitCode = principal.workUnitCode();
         }
@@ -108,7 +108,7 @@ public class WorkObligationReportService {
         boolean unitSummary = subjectId == null;
         if (!own || unitSummary) {
             if (!principal.permits("OBLIGATION_REPORT_UNIT")) throw denied();
-            if (!principal.roleCodes().contains("SYSTEM_ADMIN")
+            if (!principal.isRootAdministrator()
                     && !principal.workUnitCode().equals(workUnitCode)) throw denied();
         }
         return new WorkObligationReportRepository.Query(

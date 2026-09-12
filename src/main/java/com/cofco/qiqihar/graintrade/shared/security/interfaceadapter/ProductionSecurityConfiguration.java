@@ -126,6 +126,9 @@ public class ProductionSecurityConfiguration {
     SecurityFilterChain productionSecurityFilterChain(
             HttpSecurity http,
             SecurityStartupInvariant startupInvariant,
+            JdbcClient jdbc,
+            com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService registrationDrafts,
+            @Value("${QIQIHAR_SMS_ENABLED:false}") boolean smsEnabled,
             SecurityPrincipalRepository principals,
             SecuritySessionAuditRecorder sessionAudit,
             ClientRegistrationRepository clientRegistrations,
@@ -139,13 +142,24 @@ public class ProductionSecurityConfiguration {
         Set<String> acceptedAmr=values(mfaAmrValues);
         Set<String> acceptedAcr=values(mfaAcrValues);
         AuthenticationSuccessHandler loginSuccess=new EnterpriseAuthenticationSuccessHandler(
-                principals,sessionAudit,acceptedAmr,acceptedAcr);
+                principals,sessionAudit,acceptedAmr,acceptedAcr,registrationDrafts);
         OidcClientInitiatedLogoutSuccessHandler providerLogout=
                 new OidcClientInitiatedLogoutSuccessHandler(clientRegistrations);
         providerLogout.setPostLogoutRedirectUri(postLogoutRedirectUri);
         LogoutSuccessHandler logoutSuccess=providerLogout;
         LogoutHandler logoutAudit=new SecuritySessionLogoutHandler(sessionAudit);
+        var corsSource = new org.springframework.web.cors.UrlBasedCorsConfigurationSource();
+        var entryCors = new org.springframework.web.cors.CorsConfiguration();
+        String issuer = clientRegistrations.findByRegistrationId("enterprise").getProviderDetails().getIssuerUri();
+        var issuerUri = java.net.URI.create(issuer);
+        entryCors.setAllowedOrigins(List.of(issuerUri.getScheme()+"://"+issuerUri.getRawAuthority()));
+        entryCors.setAllowedMethods(List.of("GET","POST","OPTIONS"));
+        entryCors.setAllowedHeaders(List.of("Content-Type","X-XSRF-TOKEN"));
+        entryCors.setAllowCredentials(true);
+        corsSource.registerCorsConfiguration("/api/v1/identity/registration-entry/**",entryCors);
+        corsSource.registerCorsConfiguration("/api/v1/identity/phone/**",entryCors);
         http
+                .cors(cors -> cors.configurationSource(corsSource))
                 .csrf(csrf -> csrf.csrfTokenRepository(csrfTokens)
                         .csrfTokenRequestHandler(csrfRequestHandler))
                 .sessionManagement(session -> session
@@ -158,11 +172,15 @@ public class ProductionSecurityConfiguration {
                         .dispatcherTypeMatchers(DispatcherType.ASYNC).permitAll()
                         .requestMatchers("/actuator/health", "/actuator/health/**",
                                 "/actuator/prometheus").permitAll()
+                        .requestMatchers("/api/v1/identity/registration-entry/**").permitAll()
+                        .requestMatchers("/api/v1/identity/phone/bootstrap", "/api/v1/identity/phone/challenge", "/api/v1/identity/phone/login").permitAll()
                         .requestMatchers("/api/v1/session/login", "/oauth2/**", "/login/oauth2/**").permitAll()
                         .requestMatchers("/logout/connect/back-channel/**").permitAll()
                         .requestMatchers("/api/v1/**").authenticated()
                         .anyRequest().denyAll())
-                .oauth2Login(login -> login.successHandler(loginSuccess))
+                .oauth2Login(login -> login.successHandler(loginSuccess)
+                        .authorizationEndpoint(endpoint -> endpoint.authorizationRequestResolver(
+                                new EnterpriseAuthorizationRequestResolver(clientRegistrations))))
                 .oidcLogout(oidc -> oidc.backChannel(backChannel -> { }))
                 .logout(logout -> logout
                         .logoutUrl("/api/v1/session/logout")
@@ -172,7 +190,7 @@ public class ProductionSecurityConfiguration {
                 .addFilterBefore(new OidcBackChannelFailureResponseFilter(), SecurityContextHolderFilter.class)
                 .addFilterBefore(new ExpiredSessionAuditFilter(sessionAudit),AnonymousAuthenticationFilter.class)
                 .addFilterBefore(new EnterpriseOidcAccessFilter(
-                        acceptedAmr,acceptedAcr,principals,sessionAudit),AuthorizationFilter.class)
+                        acceptedAmr,acceptedAcr,principals,sessionAudit,jdbc,smsEnabled),AuthorizationFilter.class)
                 .addFilterAfter(new CsrfCookieExposureFilter(),AuthorizationFilter.class);
         return http.build();
     }
@@ -189,9 +207,12 @@ public class ProductionSecurityConfiguration {
         private final Set<String> acceptedAcr;
         private final SecurityPrincipalRepository principals;
         private final SecuritySessionAuditRecorder audit;
+        private final JdbcClient jdbc;
+        private final boolean smsEnabled;
 
         private EnterpriseOidcAccessFilter(Set<String> acceptedAmr,Set<String> acceptedAcr,
-                SecurityPrincipalRepository principals,SecuritySessionAuditRecorder audit) {
+                SecurityPrincipalRepository principals,SecuritySessionAuditRecorder audit,JdbcClient jdbc,boolean smsEnabled) {
+            this.jdbc=jdbc;this.smsEnabled=smsEnabled;
             this.acceptedAmr = Set.copyOf(acceptedAmr);
             this.acceptedAcr = Set.copyOf(acceptedAcr);
             this.principals=principals;
@@ -203,7 +224,13 @@ public class ProductionSecurityConfiguration {
                 FilterChain filterChain) throws ServletException, IOException {
             Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
             if (protectedApi(request) && authenticated(authentication)) {
-                if (!approvedMfa(authentication)) {
+                if (authentication instanceof com.cofco.qiqihar.graintrade.shared.security.domain.PhoneAuthenticationToken phone) {
+                    long version=jdbc.sql("SELECT session_version FROM platform.security_user WHERE subject_id=:subject")
+                            .param("subject",phone.getName()).query(Long.class).optional().orElse(-1L);
+                    if(!smsEnabled||version!=phone.sessionVersion()) {
+                        deny(request,response,authentication,"PHONE_SESSION_REVOKED");return;
+                    }
+                } else if (!approvedMfa(authentication)) {
                     deny(request,response,authentication,"MFA_REQUIRED");
                     return;
                 }
@@ -252,10 +279,14 @@ public class ProductionSecurityConfiguration {
 
         private static boolean invitationActivationEntry(HttpServletRequest request) {
             String path=request.getRequestURI().substring(request.getContextPath().length());
-            return (request.getMethod().equals("POST")
-                    && path.equals("/api/v1/identity/invitations/activate"))
+            return path.startsWith("/api/v1/identity/registration-entry/") || (request.getMethod().equals("POST")
+                    && (path.equals("/api/v1/identity/invitations/activate")
+                        ||path.equals("/api/v1/identity/registration")
+                        ||path.equals("/api/v1/identity/phone/challenge")))
                     ||(request.getMethod().equals("GET")
-                    && path.equals("/api/v1/identity/invitations/activation-bootstrap"));
+                    && (path.equals("/api/v1/identity/invitations/activation-bootstrap")
+                        ||path.equals("/api/v1/identity/registration/phone")
+                        ||path.equals("/api/v1/identity/registration/options")));
         }
 
         private static boolean authenticated(Authentication authentication) {
@@ -269,14 +300,17 @@ public class ProductionSecurityConfiguration {
         private final SecuritySessionAuditRecorder audit;
         private final Set<String> acceptedAmr;
         private final Set<String> acceptedAcr;
+        private final com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService drafts;
         private final AuthenticationSuccessHandler delegate=new SavedRequestAwareAuthenticationSuccessHandler();
 
         private EnterpriseAuthenticationSuccessHandler(SecurityPrincipalRepository principals,
-                SecuritySessionAuditRecorder audit,Set<String> acceptedAmr,Set<String> acceptedAcr) {
+                SecuritySessionAuditRecorder audit,Set<String> acceptedAmr,Set<String> acceptedAcr,
+                com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService drafts) {
             this.principals=principals;
             this.audit=audit;
             this.acceptedAmr=acceptedAmr;
             this.acceptedAcr=acceptedAcr;
+            this.drafts=drafts;
         }
 
         @Override
@@ -289,21 +323,57 @@ public class ProductionSecurityConfiguration {
                 var session=request.getSession(false);
                 audit.record(authentication.getName(),session==null?null:session.getId(),
                         "LOGIN_DENIED","{\"reason\":\""+reason+"\"}");
+                if(session!=null) {
+                    if(principal==null && reason.equals("MFA_REQUIRED")) {
+                        session.removeAttribute(org.springframework.security.web.context.HttpSessionSecurityContextRepository.SPRING_SECURITY_CONTEXT_KEY);
+                        request.changeSessionId();
+                    } else session.invalidate();
+                }
+                SecurityContextHolder.clearContext();
+                if(principal==null && reason.equals("MFA_REQUIRED")) {
+                    response.sendRedirect(request.getContextPath()+"/oauth2/authorization/enterprise?reauthenticate=1");
+                } else {
+                    response.sendError(HttpStatus.FORBIDDEN.value());
+                }
+                return;
+            }
+            if(principal==null && authentication.getPrincipal() instanceof OidcUser user
+                    && "admin".equalsIgnoreCase(user.getPreferredUsername())) {
+                var session=request.getSession(false);
+                audit.record(authentication.getName(),session==null?null:session.getId(),
+                        "LOGIN_DENIED","{\"reason\":\"ADMIN_IDENTITY_BINDING_REQUIRED\"}");
                 if(session!=null)session.invalidate();
                 SecurityContextHolder.clearContext();
-                response.sendError(HttpStatus.FORBIDDEN.value());
+                response.sendError(HttpStatus.FORBIDDEN.value(),"管理员身份绑定未配置，请联系管理员；无需进行员工注册");
                 return;
+            }
+            if(principal==null && authentication.getPrincipal() instanceof OidcUser user) {
+                try {
+                    if (drafts.complete(request.getSession(false),user)) {
+                        principal=findEnabledOidc(principals,authentication).orElse(null);
+                    }
+                } catch (com.cofco.qiqihar.graintrade.shared.application.ClientRequestException
+                        | com.cofco.qiqihar.graintrade.shared.application.ConflictException
+                        | com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException failure) {
+                    drafts.failed(request.getSession(),failure.getMessage());
+                    response.sendRedirect(request.getContextPath()+"/oauth2/authorization/enterprise?register=1");
+                    return;
+                }
             }
             if(principal==null) {
                 var session=request.getSession();
                 audit.record(authentication.getName(),session.getId(),
-                        "LOGIN_ACTIVATION_REQUIRED","{}");
-                delegate.onAuthenticationSuccess(request,response,authentication);
+                        "LOGIN_SUCCESS","{\"activationRequired\":true}");
+                response.sendRedirect(request.getContextPath()+"/oauth2/authorization/enterprise?register=1");
                 return;
             }
             var session=request.getSession();
             Authentication stableAuthentication=bindStableSubject(authentication,principal);
             audit.record(stableAuthentication.getName(),session.getId(),"LOGIN_SUCCESS","{}");
+            if(principal.isRootAdministrator()) {
+                response.sendRedirect(request.getContextPath()+"/");
+                return;
+            }
             delegate.onAuthenticationSuccess(request,response,stableAuthentication);
         }
     }
@@ -455,6 +525,8 @@ class LocalSecurityConfiguration {
     SecurityFilterChain localSecurityFilterChain(
             HttpSecurity http,
             SecurityStartupInvariant startupInvariant,
+            JdbcClient jdbc,
+            @Value("${QIQIHAR_SMS_ENABLED:false}") boolean smsEnabled,
             @Value("${qiqihar.security.trusted-subject-header:}") String trustedSubjectHeader) throws Exception {
         http
                 .csrf(csrf -> csrf.disable())

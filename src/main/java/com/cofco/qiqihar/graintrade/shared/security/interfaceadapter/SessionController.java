@@ -25,7 +25,7 @@ public class SessionController {
             String accountStatus,String employmentStatus,List<String> roleCodes,
             List<SecurityPrincipal.PositionAssignment> positions,
             List<String> permissions,List<String> regionCodes,
-            List<SecurityPrincipal.RegionScope> regionScopes) {
+            List<SecurityPrincipal.RegionScope> regionScopes, boolean rootAdministrator) {
         static SessionResponse from(SecurityPrincipal principal) {
             return new SessionResponse(
                     principal.subjectId(),principal.displayName(),principal.workUnitCode(),principal.workUnitName(),
@@ -33,7 +33,7 @@ public class SessionController {
                     principal.roleCodes().isEmpty()?List.of():List.of(principal.permits("BUSINESS_APPROVE")
                             ? "BUSINESS_REVIEWER" : "BUSINESS_OPERATOR"),principal.positions(),
                     principal.permissionCodes().stream().sorted().toList(),
-                    principal.regionCodes().stream().sorted().toList(),principal.assignedRegionScopes());
+                    principal.regionCodes().stream().sorted().toList(),principal.assignedRegionScopes(),principal.isRootAdministrator());
         }
     }
 }

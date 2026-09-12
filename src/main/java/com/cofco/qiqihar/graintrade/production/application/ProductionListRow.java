@@ -8,7 +8,12 @@ import java.util.Set;
 
 public record ProductionListRow(
         String id, Map<String, String> values, ProductionStatus status,
-        Set<String> configuredActions, long version) {
+        Set<String> configuredActions, long version, String regionCode) {
+    public ProductionListRow(String id, Map<String, String> values, ProductionStatus status,
+            Set<String> configuredActions, long version) {
+        this(id, values, status, configuredActions, version, null);
+    }
+
     public ProductionListRow {
         values = Collections.unmodifiableMap(new LinkedHashMap<>(values));
         configuredActions = Set.copyOf(configuredActions);

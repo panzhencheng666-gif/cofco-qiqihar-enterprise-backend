@@ -21,7 +21,7 @@ public class JdbcRegionalCropSummaryRepository implements RegionalCropSummaryRep
                   ON (target.administrative_level='COUNTY' AND county.code=target.code)
                   OR (target.administrative_level='PREFECTURE'
                       AND county.parent_code=target.code AND county.administrative_level='COUNTY')
-                WHERE county.code IN (:authorizedRegions)
+                WHERE (:unrestricted OR county.code IN (:authorizedRegions))
             ), annual AS MATERIALIZED (
                 SELECT stat.data_year,COUNT(*) AS row_count,
                        SUM(stat.planted_area_mu) AS planted_area_mu,
@@ -62,7 +62,9 @@ public class JdbcRegionalCropSummaryRepository implements RegionalCropSummaryRep
     public Optional<RegionalCropSummary> summarize(
             int year, String productCode, String regionCode, Set<String> authorizedRegions) {
         return jdbc.sql(SUMMARY_SQL).param("regionCode", regionCode)
-                .param("authorizedRegions", authorizedRegions).param("productCode", productCode)
+                .param("unrestricted", authorizedRegions.contains("*"))
+                .param("authorizedRegions", authorizedRegions.isEmpty() ? Set.of("__NO_REGION__") : authorizedRegions)
+                .param("productCode", productCode)
                 .param("year", year).param("previousYear", year - 1)
                 .query((rs, rowNum) -> {
                     boolean currentAvailable = rs.getObject("current_count") != null;

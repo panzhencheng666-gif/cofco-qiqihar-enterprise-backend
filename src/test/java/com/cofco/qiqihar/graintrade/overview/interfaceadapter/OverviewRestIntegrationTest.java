@@ -31,9 +31,14 @@ class OverviewRestIntegrationTest {
     @Autowired DataSource dataSource;
     JdbcClient jdbc;
 
+    private static org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder authorizedGet(String path) {
+        return get(path).principal(() -> "production-tester");
+    }
+
     @BeforeEach
     void clean() {
         jdbc = JdbcClient.create(dataSource);
+        com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabaseConfiguration.provisionSecurityTestSubjects(jdbc);
         jdbc.sql("""
                 DO $$ BEGIN
                   DELETE FROM overview.region_surplus_calculation_activation_audit;
@@ -111,12 +116,12 @@ class OverviewRestIntegrationTest {
                 .param("corn2026", UUID.randomUUID().toString())
                 .param("draft2024", UUID.randomUUID().toString()).update();
 
-        mvc.perform(get("/api/v1/overview/options"))
+        mvc.perform(authorizedGet("/api/v1/overview/options"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.years[0]").value(2026))
                 .andExpect(jsonPath("$.data.years[1]").value(2025))
                 .andExpect(jsonPath("$.data.years[?(@ == 2024)]").isEmpty());
-        mvc.perform(get("/api/v1/overview/dashboard")
+        mvc.perform(authorizedGet("/api/v1/overview/dashboard")
                         .queryParam("productCode", "CORN")
                         .queryParam("regionCode", "230200")
                         .queryParam("year", "2025"))
@@ -126,7 +131,7 @@ class OverviewRestIntegrationTest {
                 .andExpect(jsonPath("$.data.productStructure.length()").value(1))
                 .andExpect(jsonPath("$.data.productStructure[0].productCode").value("CORN"));
 
-        mvc.perform(get("/api/v1/overview/dashboard")
+        mvc.perform(authorizedGet("/api/v1/overview/dashboard")
                         .queryParam("productCode", "CORN")
                         .queryParam("regionCode", "230200")
                         .queryParam("year", "2026"))
@@ -134,7 +139,7 @@ class OverviewRestIntegrationTest {
                 .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].value")
                         .value(org.hamcrest.Matchers.hasItem("20")));
 
-        mvc.perform(get("/api/v1/overview/dashboard-summary")
+        mvc.perform(authorizedGet("/api/v1/overview/dashboard-summary")
                         .queryParam("productCode", "CORN")
                         .queryParam("regionCode", "230200")
                         .queryParam("year", "2026"))
@@ -152,7 +157,7 @@ class OverviewRestIntegrationTest {
                 .andExpect(jsonPath("$.data.outputYoY").doesNotExist())
                 .andExpect(jsonPath("$.data.businessTables").doesNotExist());
 
-        mvc.perform(get("/api/v1/overview/dashboard-summary")
+        mvc.perform(authorizedGet("/api/v1/overview/dashboard-summary")
                         .queryParam("productCode", "CORN")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
@@ -161,7 +166,7 @@ class OverviewRestIntegrationTest {
                 .andExpect(jsonPath("$.data.metrics[?(@.code == 'PRODUCTION_CULTIVATED_AREA')].sourceCount")
                         .value(org.hamcrest.Matchers.hasItem(1)));
 
-        mvc.perform(get("/api/v1/overview/dashboard")
+        mvc.perform(authorizedGet("/api/v1/overview/dashboard")
                         .queryParam("productCode", "RICE")
                         .queryParam("regionCode", "230200")
                         .queryParam("year", "2025"))
@@ -209,13 +214,13 @@ class OverviewRestIntegrationTest {
         jdbc.sql("INSERT INTO logistics.route_fact(event_id,fact_code,value,unit_code) VALUES(CAST(:id AS uuid),'ROUTE_VOLUME',2,'万吨')")
                 .param("id", eventId).update();
 
-        mvc.perform(get("/api/v1/overview/options"))
+        mvc.perform(authorizedGet("/api/v1/overview/options"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.products[0].code").value("CORN"))
                 .andExpect(jsonPath("$.data.periods[?(@.code == '2026-Q3')]").isNotEmpty());
-        mvc.perform(get("/api/v1/overview/regions").queryParam("productCode", "CORN").queryParam("periodCode", "2026-Q3"))
+        mvc.perform(authorizedGet("/api/v1/overview/regions").queryParam("productCode", "CORN").queryParam("periodCode", "2026-Q3"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].code").value("230200"))
                 .andExpect(jsonPath("$.data[0].boundaryGeoJson").isString());
-        mvc.perform(get("/api/v1/overview/regions").queryParam("productCode", "CORN")
+        mvc.perform(authorizedGet("/api/v1/overview/regions").queryParam("productCode", "CORN")
                         .queryParam("periodCode", "2026-Q3").queryParam("parentCode", "230200"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.code == '230208')]").isNotEmpty())
@@ -234,7 +239,7 @@ class OverviewRestIntegrationTest {
                 .andExpect(jsonPath("$.data[?(@.code == '230207')].mapContextOnly")
                         .value(org.hamcrest.Matchers.hasItem(false)))
                 .andExpect(jsonPath("$.data[?(@.mapContextOnly == true)]").isEmpty());
-        mvc.perform(get("/api/v1/overview/indicators").queryParam("productCode", "CORN")
+        mvc.perform(authorizedGet("/api/v1/overview/indicators").queryParam("productCode", "CORN")
                         .queryParam("regionCode", "230200").queryParam("periodCode", "2026-Q3"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.contractVersion").value("overview-audit-v2"))
@@ -254,7 +259,7 @@ class OverviewRestIntegrationTest {
                 .andExpect(jsonPath("$.data[?(@.sourceDomain == 'SUPPLY')]").isEmpty())
                 .andExpect(jsonPath("$.data[?(@.code == 'REGION_SURPLUS')]").isEmpty());
 
-        mvc.perform(get("/api/v1/overview/dashboard").queryParam("productCode", "CORN")
+        mvc.perform(authorizedGet("/api/v1/overview/dashboard").queryParam("productCode", "CORN")
                         .queryParam("regionCode", "230200").queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.contractVersion").value("overview-audit-v2"))
@@ -365,7 +370,7 @@ class OverviewRestIntegrationTest {
 
     @Test
     void returnsVerifiedBoundaryGeometryForTheSelectedYear() throws Exception {
-        mvc.perform(get("/api/v1/overview/regions").queryParam("productCode", "CORN")
+        mvc.perform(authorizedGet("/api/v1/overview/regions").queryParam("productCode", "CORN")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].code").value("230200"))
@@ -381,27 +386,27 @@ class OverviewRestIntegrationTest {
                 VALUES('FORMAL_BUSINESS','230281999',true),('FORMAL_BUSINESS','230281999001',true)
                 """).update();
 
-        mvc.perform(get("/api/v1/overview/dashboard").queryParam("productCode", "CORN")
+        mvc.perform(authorizedGet("/api/v1/overview/dashboard").queryParam("productCode", "CORN")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.scope.villageCount").value(1));
-        mvc.perform(get("/api/v1/overview/dashboard")
+        mvc.perform(authorizedGet("/api/v1/overview/dashboard")
                         .queryParam("productCode", "CORN").queryParam("regionCode", "230200")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.scope.villageCount").value(1));
-        mvc.perform(get("/api/v1/overview/dashboard")
+        mvc.perform(authorizedGet("/api/v1/overview/dashboard")
                         .queryParam("productCode", "CORN").queryParam("regionCode", "230281")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.scope.villageCount").value(1));
-        mvc.perform(get("/api/v1/overview/dashboard")
+        mvc.perform(authorizedGet("/api/v1/overview/dashboard")
                         .queryParam("productCode", "CORN").queryParam("regionCode", "230281999")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.scope.townshipCount").value(1))
                 .andExpect(jsonPath("$.data.scope.villageCount").value(1));
-        mvc.perform(get("/api/v1/overview/dashboard")
+        mvc.perform(authorizedGet("/api/v1/overview/dashboard")
                         .queryParam("productCode", "CORN").queryParam("regionCode", "230281999001")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
@@ -484,7 +489,19 @@ class OverviewRestIntegrationTest {
                 VALUES(CAST(:id AS uuid),'ROUTE_VOLUME',3,'吨')
                 """).param("id", logisticsId).update();
 
-        mvc.perform(get("/api/v1/overview/indicators")
+        for (String region : java.util.List.of("230200", "230281", "230281999", "230281999001")) {
+            mvc.perform(authorizedGet("/api/v1/overview/map-samples")
+                    .queryParam("productCode","CORN").queryParam("year","2026").queryParam("regionCode",region))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[?(@.samplePointId == '" + samplePointId + "')]").isNotEmpty())
+                .andExpect(jsonPath("$.data[0].summaryValues").doesNotExist())
+                .andExpect(jsonPath("$.data[0].values").doesNotExist());
+        }
+        mvc.perform(get("/api/v1/overview/map-samples").queryParam("productCode","CORN")
+                .queryParam("year","2026").queryParam("regionCode","230200"))
+            .andExpect(status().isUnauthorized());
+
+        mvc.perform(authorizedGet("/api/v1/overview/indicators")
                         .queryParam("productCode", "CORN")
                         .queryParam("regionCode", "230281999001")
                         .queryParam("year", "2026"))
@@ -498,7 +515,7 @@ class OverviewRestIntegrationTest {
                 .andExpect(jsonPath("$.data[?(@.code == 'LOGISTICS_INFLOW_VOLUME')].value")
                         .value(org.hamcrest.Matchers.hasItem("3")));
 
-        mvc.perform(get("/api/v1/overview/dashboard")
+        mvc.perform(authorizedGet("/api/v1/overview/dashboard")
                         .queryParam("productCode", "CORN")
                         .queryParam("regionCode", "230281999001")
                         .queryParam("year", "2026"))
@@ -525,7 +542,7 @@ class OverviewRestIntegrationTest {
                         "$.data.businessTables[?(@.code == 'LOGISTICS')].rows[0].values.LOG_ROUTE_VOLUME.value")
                         .value(org.hamcrest.Matchers.hasItem("3")));
 
-        mvc.perform(get("/api/v1/overview/annual-comparisons")
+        mvc.perform(authorizedGet("/api/v1/overview/annual-comparisons")
                         .queryParam("productCode", "CORN")
                         .queryParam("regionCode", "230281999001")
                         .queryParam("surveyYear", "2026")
@@ -766,14 +783,14 @@ class OverviewRestIntegrationTest {
         jdbc.sql("SELECT overview.refresh_administrative_boundary_render()")
                 .query(Object.class).single();
 
-        mvc.perform(get("/api/v1/overview/regions").queryParam("productCode", "CORN")
+        mvc.perform(authorizedGet("/api/v1/overview/regions").queryParam("productCode", "CORN")
                         .queryParam("year", "2026")
                         .queryParam("parentCode", "230281"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.code == '230281999')].boundaryGeoJson").value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.containsString("Polygon"))))
                 .andExpect(jsonPath("$.data[?(@.code == '230281999')].locationGeoJson").value(org.hamcrest.Matchers.hasItem(org.hamcrest.Matchers.containsString("Point"))))
                 .andExpect(jsonPath("$.data[?(@.code == '230281999')].locationReviewStatus").value(org.hamcrest.Matchers.hasItem("DERIVED_FROM_VILLAGE_POINTS")));
-        mvc.perform(get("/api/v1/overview/regions").queryParam("productCode", "CORN")
+        mvc.perform(authorizedGet("/api/v1/overview/regions").queryParam("productCode", "CORN")
                         .queryParam("year", "2026")
                         .queryParam("parentCode", "230281999"))
                 .andExpect(status().isOk())
@@ -781,28 +798,28 @@ class OverviewRestIntegrationTest {
                 .andExpect(jsonPath("$.data[0].boundaryGeoJson").value(org.hamcrest.Matchers.containsString("Polygon")))
                 .andExpect(jsonPath("$.data[0].locationGeoJson").value(org.hamcrest.Matchers.containsString("Point")))
                 .andExpect(jsonPath("$.data[0].locationReviewStatus").value("AUTO_MATCHED_PENDING_SPATIAL_QA"));
-        mvc.perform(get("/api/v1/overview/locations").queryParam("productCode", "CORN")
+        mvc.perform(authorizedGet("/api/v1/overview/locations").queryParam("productCode", "CORN")
                         .queryParam("year", "2026")
                         .queryParam("ancestorCode", "230281")
                         .queryParam("level", "TOWNSHIP"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[?(@.code == '230281999')].locationReviewStatus")
                         .value(org.hamcrest.Matchers.hasItem("DERIVED_FROM_VILLAGE_POINTS")));
-        mvc.perform(get("/api/v1/overview/locations").queryParam("productCode", "CORN")
+        mvc.perform(authorizedGet("/api/v1/overview/locations").queryParam("productCode", "CORN")
                         .queryParam("year", "2026")
                         .queryParam("ancestorCode", "230281999")
                         .queryParam("level", "VILLAGE"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].code").value("230281999001"))
                 .andExpect(jsonPath("$.data[0].locationReviewStatus").value("AUTO_MATCHED_PENDING_SPATIAL_QA"));
-        mvc.perform(get("/api/v1/overview/dashboard")
+        mvc.perform(authorizedGet("/api/v1/overview/dashboard")
                         .queryParam("productCode", "CORN")
                         .queryParam("year", "2026")
                         .queryParam("regionCode", "230281999"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.scope.townshipCount").value(1))
                 .andExpect(jsonPath("$.data.scope.villageCount").value(1));
-        mvc.perform(get("/api/v1/overview/dashboard")
+        mvc.perform(authorizedGet("/api/v1/overview/dashboard")
                         .queryParam("productCode", "CORN")
                         .queryParam("year", "2026")
                         .queryParam("regionCode", "230281999001"))
@@ -839,7 +856,7 @@ class OverviewRestIntegrationTest {
                       (:id,'ENDING_INVENTORY',4,'CORN','TRADER')
                 """).param("id", marketId).update();
 
-        mvc.perform(get("/api/v1/overview/dashboard")
+        mvc.perform(authorizedGet("/api/v1/overview/dashboard")
                         .queryParam("productCode", "CORN")
                         .queryParam("periodCode", "2026-Q3")
                         .queryParam("regionCode", "230200"))

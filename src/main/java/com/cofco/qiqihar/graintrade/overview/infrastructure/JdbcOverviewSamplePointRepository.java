@@ -438,6 +438,51 @@ public class JdbcOverviewSamplePointRepository
 
     @Override
     @Transactional(readOnly = true)
+    public List<OverviewSamplePointAggregate> historicalAggregates(int retirementYear,String productCode,
+            String parentCode,String categoryCode,String typeCode,String query,Set<String> authorizedRegionCodes) {
+        var parameters=com.cofco.qiqihar.graintrade.shared.infrastructure.HistoricalSampleSql.parameters(
+                retirementYear,productCode,parentCode,categoryCode,typeCode,query,authorizedRegionCodes);
+        return jdbc.sql(com.cofco.qiqihar.graintrade.shared.infrastructure.HistoricalSampleSql.CTE + """
+                , child_regions AS (
+                  SELECT code,name,administrative_level,sort_order FROM platform.region
+                  WHERE parent_code IS NOT DISTINCT FROM NULLIF(:region,'')
+                ), child_scopes(child_code,code) AS (
+                  SELECT code,code FROM child_regions
+                  UNION ALL
+                  SELECT scope.child_code,child.code FROM child_scopes scope
+                  JOIN platform.region child ON child.parent_code=scope.code
+                ), counts AS (
+                  SELECT scope.child_code,COUNT(DISTINCT history.sample_point_id) total,
+                    COUNT(DISTINCT history.sample_point_id) FILTER (WHERE category_code='PRODUCTION') production,
+                    COUNT(DISTINCT history.sample_point_id) FILTER (WHERE category_code='MARKET') market,
+                    COUNT(DISTINCT history.sample_point_id) FILTER (WHERE category_code='LOGISTICS') logistics,
+                    COUNT(DISTINCT history.sample_point_id) FILTER (WHERE longitude IS NOT NULL AND latitude IS NOT NULL) coordinates
+                  FROM child_scopes scope JOIN historical history ON history.display_region_code=scope.code
+                  GROUP BY scope.child_code
+                ), result AS (
+                  SELECT child.code,child.name,child.administrative_level,child.sort_order,'CHILD_REGION' kind,
+                    COALESCE(counts.total,0) total,COALESCE(counts.production,0) production,
+                    COALESCE(counts.market,0) market,COALESCE(counts.logistics,0) logistics,
+                    COALESCE(counts.coordinates,0) coordinates
+                  FROM child_regions child LEFT JOIN counts ON counts.child_code=child.code
+                  UNION ALL
+                  SELECT region.code,'本级样本',region.administrative_level,2147483647,'PARENT_DIRECT',
+                    COUNT(DISTINCT history.sample_point_id),
+                    COUNT(DISTINCT history.sample_point_id) FILTER (WHERE category_code='PRODUCTION'),
+                    COUNT(DISTINCT history.sample_point_id) FILTER (WHERE category_code='MARKET'),
+                    COUNT(DISTINCT history.sample_point_id) FILTER (WHERE category_code='LOGISTICS'),
+                    COUNT(DISTINCT history.sample_point_id) FILTER (WHERE longitude IS NOT NULL AND latitude IS NOT NULL)
+                  FROM platform.region region JOIN historical history ON history.display_region_code=region.code
+                  WHERE region.code=:region GROUP BY region.code,region.administrative_level
+                ) SELECT * FROM result ORDER BY sort_order,code
+                """).params(parameters).query((row,index)->new OverviewSamplePointAggregate(
+                    row.getString("code"),row.getString("name"),row.getString("administrative_level"),
+                    row.getString("kind"),row.getString("code"),row.getLong("total"),row.getLong("production"),
+                    row.getLong("market"),row.getLong("logistics"),row.getLong("coordinates"),0,0,0)).list();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public List<OverviewSamplePointIcon> historicalIcons(
             int retirementYear, String productCode, String regionCode,
             String categoryCode, String typeCode, String query,
@@ -492,75 +537,10 @@ public class JdbcOverviewSamplePointRepository
             int retirementYear, String productCode, String regionCode,
             String categoryCode, String typeCode, String query,
             Set<String> authorizedRegionCodes) {
-        return jdbc.sql("""
-                WITH RECURSIVE descendants(code) AS (
-                  SELECT code FROM platform.region WHERE code=:region
-                  UNION ALL
-                  SELECT child.code FROM platform.region child
-                  JOIN descendants parent ON child.parent_code=parent.code
-                ), business_association AS (
-                  SELECT record.sample_point_id,'PRODUCTION' category_code,
-                         record.object_type_code type_code,record.record_id::text source_record_id,
-                         'PRODUCTION' source_role,record.product_code,record.survey_date occurrence_date,
-                         record.version source_version
-                  FROM production.production_record record
-                  WHERE record.status_code='APPROVED' AND record.product_code=:product
-                  UNION
-                  SELECT record.sample_point_id,'MARKET',record.object_type_code,
-                         record.record_id::text,'MARKET',record.product_code,record.trade_date,
-                         record.version
-                  FROM market.market_record record
-                  WHERE record.status_code='APPROVED' AND record.product_code=:product
-                  UNION
-                  SELECT node.sample_point_id,'LOGISTICS',node.node_type_code,
-                         event.event_id::text,'LOGISTICS',event.product_code,event.collection_date,
-                         event.version
-                  FROM logistics.logistics_node node
-                  JOIN logistics.route_event event
-                    ON event.origin_node_code=node.node_code
-                    OR event.destination_node_code=node.node_code
-                  WHERE event.status_code='APPROVED' AND event.product_code=:product
-                )
-                SELECT point.sample_point_id,point.canonical_name,point.region_code,
-                       association.category_code,object_type.code type_code,
-                       object_type.name type_name,object_type.overview_icon_key,
-                       association.source_record_id,association.source_role,
-                       association.product_code,product.name product_name,
-                       association.occurrence_date,association.source_version,
-                       point.retired_at,point.retired_reason,point.retired_by,point.location_mode,
-                       ST_X(point.display_point) longitude,
-                       ST_Y(point.display_point) latitude
-                FROM registry.sample_point point
-                JOIN business_association association
-                  ON association.sample_point_id=point.sample_point_id
-                JOIN platform.object_type object_type
-                  ON object_type.business_domain=association.category_code
-                 AND object_type.code=association.type_code
-                 AND object_type.overview_enabled
-                JOIN platform.product product ON product.code=association.product_code
-                JOIN platform.region region ON region.code=point.region_code
-                WHERE point.deletion_state='RETIRED'
-                  AND point.approval_state='APPROVED'
-                  AND point.location_state='VALID'
-                  AND EXTRACT(YEAR FROM point.retired_at AT TIME ZONE 'Asia/Shanghai')=:retirementYear
-                  AND association.occurrence_date<=point.effective_to
-                  AND point.region_code IN (SELECT code FROM descendants)
-                  AND (:category='' OR association.category_code=:category)
-                  AND (:type='' OR association.type_code=:type)
-                  AND (:query='' OR lower(point.canonical_name) LIKE :queryPattern
-                    OR lower(region.name) LIKE :queryPattern)
-                  AND (:unrestricted OR point.region_code IN (
-                    SELECT unnest(string_to_array(:authorizedRegionList,','))))
-                ORDER BY point.canonical_name,point.sample_point_id,
-                         association.category_code,object_type.sort_order,object_type.code
-                """).param("region", regionCode).param("product", productCode)
-                .param("retirementYear", retirementYear)
-                .param("category", categoryCode == null ? "" : categoryCode)
-                .param("type", typeCode == null ? "" : typeCode)
-                .param("query", query == null ? "" : query)
-                .param("queryPattern", query == null ? "" : "%" + query.toLowerCase(Locale.ROOT) + "%")
-                .param("unrestricted", unrestricted(authorizedRegionCodes))
-                .param("authorizedRegionList", authorizedRegionList(authorizedRegionCodes))
+        return jdbc.sql(com.cofco.qiqihar.graintrade.shared.infrastructure.HistoricalSampleSql.CTE +
+                "SELECT * FROM historical ORDER BY canonical_name,sample_point_id,category_code,type_code")
+                .params(com.cofco.qiqihar.graintrade.shared.infrastructure.HistoricalSampleSql.parameters(
+                        retirementYear,productCode,regionCode,categoryCode,typeCode,query,authorizedRegionCodes))
                 .query((row, ignored) -> new HistoricalAssociation(
                         row.getObject("sample_point_id", UUID.class),
                         row.getString("canonical_name"), row.getString("region_code"),
@@ -570,9 +550,9 @@ public class JdbcOverviewSamplePointRepository
                         row.getString("product_code"), row.getString("product_name"),
                         row.getObject("occurrence_date", LocalDate.class),
                         row.getLong("source_version"),
-                        row.getTimestamp("retired_at").toInstant(), retirementYear,
+                        row.getTimestamp("retired_at").toInstant(), row.getInt("retirement_year"),
                         row.getString("retired_reason"), row.getString("retired_by"),
-                        row.getDouble("longitude"), row.getDouble("latitude"),
+                        row.getObject("longitude",Double.class), row.getObject("latitude",Double.class),
                         row.getString("location_mode")))
                 .list();
     }
@@ -1704,8 +1684,8 @@ public class JdbcOverviewSamplePointRepository
             int retirementYear,
             String retirementReason,
             String retiredBy,
-            double longitude,
-            double latitude, String locationMode) {}
+            Double longitude,
+            Double latitude, String locationMode) {}
 
     private record SourceRow(
             UUID samplePointId,

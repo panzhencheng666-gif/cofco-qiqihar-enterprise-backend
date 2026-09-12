@@ -11,6 +11,45 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 class AccessControlTest {
+    @Test
+    void mapReadIsSharedWhileWritesKeepResponsibilityScope() {
+        var user = new SecurityPrincipal("reader", "TEST",
+                Set.of("BUSINESS_READ", "BUSINESS_UPDATE"), Set.of("230200"));
+        var access = new AccessControl(() -> Optional.of("reader"), id -> Optional.of(user), true);
+        assertThat(access.requireOverviewReadScope().isUnrestricted()).isTrue();
+        assertThat(access.requireOverviewReadScope().subjectId()).isEqualTo("reader");
+        assertThat(access.requireReadScope().regionCodes()).containsExactly("230200");
+        assertThatThrownBy(() -> access.require("BUSINESS_UPDATE", "231100"))
+                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+    }
+
+    @Test
+    void enabledAccountWithoutAssignedRegionsCanViewMapButAnonymousCannot() {
+        var user = new SecurityPrincipal("reader", "TEST", Set.of(), Set.of());
+        var access = new AccessControl(() -> Optional.of("reader"), id -> Optional.of(user), true);
+        assertThat(access.requireOverviewReadScope().isUnrestricted()).isTrue();
+        var anonymous = new AccessControl(Optional::<String>empty, id -> Optional.empty(), true);
+        assertThatThrownBy(anonymous::requireOverviewReadScope)
+                .isInstanceOf(AuthenticationRequiredException.class);
+    }
+
+    @Test
+    void rootReadsAllRegionsAndDoesNotRequireEmployeeResponsibility() {
+        var root = new SecurityPrincipal("admin", "Admin", "PLATFORM_ADMIN", "Platform", "ACTIVE", "ACTIVE",
+                Set.of("SYSTEM_ADMIN"), java.util.List.of(), Set.of(), Set.of("outside-unit"));
+        var repository = new SecurityPrincipalRepository() {
+            public Optional<SecurityPrincipal> findEnabled(String id) { return Optional.of(root); }
+            public Optional<String> responsibleSubject(String region, boolean county) {
+                throw new AssertionError("Root must not be checked as an employee maintainer");
+            }
+        };
+        var access = new AccessControl(() -> Optional.of("admin"), repository, true);
+        assertThat(access.requireReadScope().regionCodes()).containsExactly("outside-unit");
+        assertThat(access.requireReadScope().subjectId()).isEqualTo("admin");
+        assertThat(access.require("BUSINESS_UPDATE", "outside-unit")).isEqualTo(root);
+        access.requireCountyReporter(root, "outside-unit");
+    }
+
 
     @Test
     void readAuthenticationConfigurationCannotDisableApplicationAuthorization() {

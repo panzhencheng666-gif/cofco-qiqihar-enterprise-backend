@@ -142,7 +142,7 @@ public class SampleIdentityMergeService {
     @Transactional(readOnly = true)
     public List<ReviewView> reviewQueue() {
         SecurityPrincipal principal = access.require("BUSINESS_APPROVE", null);
-        return repository.pendingRequests(principal.workUnitCode()).stream()
+        return repository.pendingRequests(principal.isRootAdministrator() ? null : principal.workUnitCode()).stream()
                 .filter(request -> principal.includesRegion(request.regionCode()))
                 .map(request -> reviewView(request, "PENDING_REVIEW", null))
                 .toList();
@@ -155,7 +155,7 @@ public class SampleIdentityMergeService {
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "SAMPLE_IDENTITY_MERGE_REQUEST_NOT_FOUND", "身份归并申请不存在"));
         access.require("BUSINESS_APPROVE", request.regionCode());
-        if (!principal.workUnitCode().equals(request.workUnitCode())) {
+        if ((!principal.isRootAdministrator() && !principal.workUnitCode().equals(request.workUnitCode()))) {
             throw new ConflictException("SAMPLE_IDENTITY_MERGE_WORK_UNIT_MISMATCH",
                     "身份归并申请不属于当前单位");
         }

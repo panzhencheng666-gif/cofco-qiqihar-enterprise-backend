@@ -72,7 +72,7 @@ public class SampleIdentityReviewService {
         for (ImportDraft draft : drafts.findPendingIdentityReviews()) {
             if (!principal.includesRegion(draft.regionCode())) continue;
             SubmissionSnapshot submission = reviews.submission(draft.id()).orElse(null);
-            if (submission == null || !principal.workUnitCode().equals(submission.workUnitCode())) continue;
+            if (submission == null || (!principal.isRootAdministrator() && !principal.workUnitCode().equals(submission.workUnitCode()))) continue;
             result.add(reviewItem(draft, submission));
         }
         return List.copyOf(result);
@@ -87,7 +87,7 @@ public class SampleIdentityReviewService {
         SecurityPrincipal principal = access.require("BUSINESS_APPROVE", draft.regionCode());
         SubmissionSnapshot submission = reviews.submission(draftId).orElseThrow(() ->
                 new ResourceNotFoundException("SAMPLE_IDENTITY_REVIEW_NOT_FOUND", "身份待核验记录不存在"));
-        if (!principal.workUnitCode().equals(submission.workUnitCode())) {
+        if ((!principal.isRootAdministrator() && !principal.workUnitCode().equals(submission.workUnitCode()))) {
             throw new ConflictException("SAMPLE_IDENTITY_WORK_UNIT_MISMATCH",
                     "身份待核验记录不属于当前单位");
         }

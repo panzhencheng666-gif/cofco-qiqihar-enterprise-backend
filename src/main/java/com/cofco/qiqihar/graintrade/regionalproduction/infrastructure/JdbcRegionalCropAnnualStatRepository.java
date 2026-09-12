@@ -51,10 +51,11 @@ public class JdbcRegionalCropAnnualStatRepository implements RegionalCropAnnualS
                  AND stat.product_code=:productCode
                 WHERE county.parent_code=:prefectureCode
                   AND county.administrative_level='COUNTY'
-                  AND county.code IN (:authorizedRegions)
+                  AND (:unrestricted OR county.code IN (:authorizedRegions))
                 ORDER BY county.sort_order,county.code
                 """).param("dataYear", dataYear).param("productCode", productCode)
-                .param("prefectureCode", prefectureCode).param("authorizedRegions", authorizedRegions)
+                .param("prefectureCode", prefectureCode).param("unrestricted", authorizedRegions.contains("*"))
+                .param("authorizedRegions", authorizedRegions.isEmpty() ? Set.of("__NO_REGION__") : authorizedRegions)
                 .query(this::map).list();
     }
 

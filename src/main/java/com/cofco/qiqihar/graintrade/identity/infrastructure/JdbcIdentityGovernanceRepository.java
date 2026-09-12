@@ -22,9 +22,14 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
 
     @Override
     public boolean validAssignment(EmployeeAssignment value) {
-        if(value.roleCodes().isEmpty()||value.regionCodes().isEmpty())return false;
+        if(value.roleCodes().isEmpty())return false;
+        boolean administrator=com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal.hasAdministratorRole(value.roleCodes());
+        if(value.regionCodes().isEmpty())return (administrator || value.roleCodes().equals(java.util.List.of("BUSINESS_OPERATOR")))
+            && count("SELECT count(*) FROM platform.work_unit WHERE code=:code AND active","code",value.workUnitCode())==1
+            && countIn("SELECT count(*) FROM platform.access_role WHERE code IN (:codes) AND active",value.roleCodes())==value.roleCodes().size()
+            && (value.positionCodes().isEmpty() || countIn("SELECT count(*) FROM platform.position WHERE code IN (:codes) AND active",value.positionCodes())==value.positionCodes().size());
         boolean privileged=value.roleCodes().stream().anyMatch(
-                role->role.equals("SYSTEM_ADMIN")||role.equals("IDENTITY_ADMIN"));
+                role->role.equals("SYSTEM_ADMIN")||role.equals("BUSINESS_REVIEWER")||role.equals("IDENTITY_ADMIN"));
         return count("SELECT count(*) FROM platform.work_unit WHERE code=:code AND active","code",value.workUnitCode())==1
                 && countIn("SELECT count(*) FROM platform.access_role WHERE code IN (:codes) AND active",value.roleCodes())==value.roleCodes().size()
                 && (value.positionCodes().isEmpty()
@@ -135,7 +140,10 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
     }
 
     @Override
-    public AssignmentOptions assignmentOptions(String workUnitCode) {
+    public AssignmentOptions assignmentOptions(String workUnitCode) { return assignmentOptions(workUnitCode,null); }
+
+    @Override
+    public AssignmentOptions assignmentOptions(String workUnitCode,String subjectId) {
         List<AssignmentOptions.Option> workUnits=jdbc.sql("""
                 SELECT code,name FROM platform.work_unit WHERE active ORDER BY sort_order,code
                 """).query((row,index)->new AssignmentOptions.Option(row.getString(1),row.getString(2))).list();
@@ -156,7 +164,7 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
                 SELECT region.code,region.name,region.administrative_level,region.parent_code
                 FROM platform.region region
                 JOIN authorized_region authorized ON authorized.code=region.code
-                WHERE region.administrative_level='TOWNSHIP'
+                WHERE (region.administrative_level='TOWNSHIP'
                    OR (region.administrative_level='COUNTY'
                      AND EXISTS (
                        SELECT 1 FROM platform.monitoring_scope_region governed
@@ -170,9 +178,10 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
                          SELECT child.code,child.administrative_level
                          FROM platform.region child
                          JOIN descendant parent ON child.parent_code=parent.code)
-                       SELECT 1 FROM descendant WHERE administrative_level='TOWNSHIP'))
+                       SELECT 1 FROM descendant WHERE administrative_level='TOWNSHIP')))
+                AND platform.employee_region_available(region.code,CAST(:subject AS varchar))
                 ORDER BY region.code
-                """).param("unit",workUnitCode).query((row,index)->new AssignmentOptions.RegionOption(
+                """).param("unit",workUnitCode).param("subject",subjectId,java.sql.Types.VARCHAR).query((row,index)->new AssignmentOptions.RegionOption(
                         row.getString(1),row.getString(2),row.getString(3),row.getString(4))).list();
         if(workUnits.stream().noneMatch(unit->unit.code().equals(workUnitCode)))return new AssignmentOptions(
                 workUnits,roles,positions,List.of(),List.of());

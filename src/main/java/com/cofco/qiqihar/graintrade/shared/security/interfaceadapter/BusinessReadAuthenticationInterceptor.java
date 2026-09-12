@@ -42,7 +42,14 @@ public class BusinessReadAuthenticationInterceptor implements HandlerInterceptor
     @Override
     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
         String path = request.getRequestURI().substring(request.getContextPath().length());
-        if (required && "GET".equals(request.getMethod()) && !"/api/v1/session/login".equals(path)) {
+        // The security filter authenticates this bootstrap endpoint before business binding exists.
+        boolean identityEntry = path.startsWith("/api/v1/identity/registration-entry/")
+                || "/api/v1/session/login".equals(path)
+                || "/api/v1/identity/invitations/activation-bootstrap".equals(path)
+                || "/api/v1/identity/registration/options".equals(path)
+                || "/api/v1/identity/registration/phone".equals(path)
+                || "/api/v1/identity/phone/bootstrap".equals(path);
+        if (required && "GET".equals(request.getMethod()) && !identityEntry) {
             accessControl.require("BUSINESS_READ", null);
         }
         return true;

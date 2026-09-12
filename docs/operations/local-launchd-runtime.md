@@ -66,3 +66,11 @@ LaunchAgent 只读取正式 runtime 三仓。安装命令使用 APFS clonefile �
 `cofco_app`、`qiqihar_event_consumer_registrar_login` 与当前迁移账号；其他键或组/其他
 用户可读权限会使启动失败。正式本地端口固定为 `8090/63182/63200`，不从敏感配置覆盖。
 不得把该文件或密钥提交到仓库。
+
+## 严格身份候选入口
+
+原 local-stack 仍使用本地身份模式。新增 `COFCO_ENTERPRISE_AUTH_MODE=oidc`
+会让 launch wrapper 选择独立的严格后端前台入口，并在启动前检查 OIDC/投递配置。
+它需要独立监督者和 HTTPS 业务入口，不能直接替换当前三服务 LaunchAgent。
+持久身份库隔离、允许的身份配置键、账号创建和切换回滚约束见
+[persistent-identity-runtime.md](persistent-identity-runtime.md)。

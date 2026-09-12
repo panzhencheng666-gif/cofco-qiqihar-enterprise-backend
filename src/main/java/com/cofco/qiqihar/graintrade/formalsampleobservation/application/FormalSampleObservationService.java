@@ -81,6 +81,15 @@ public class FormalSampleObservationService {
             String keyword,
             Integer year,
             OffsetDateTime observedAt) {
+        return eligibleSamples(domain, productCode, regionCode, objectTypeCode, keyword, year, observedAt, null);
+    }
+
+    @Transactional(readOnly = true)
+    public List<EligibleFormalSample> eligibleSamples(
+            FormalSampleObservationDomain domain, String productCode, String regionCode,
+            String objectTypeCode, String keyword, Integer year, OffsetDateTime observedAt,
+            String requestedScope) {
+        if (requestedScope != null && !"MY_TASKS".equals(requestedScope)) throw invalid("任务范围参数不正确");
         if (domain == null || productCode == null || productCode.isBlank() || observedAt == null) {
             throw invalid("领域、产品和实际观测时间不能为空");
         }
@@ -99,11 +108,15 @@ public class FormalSampleObservationService {
                 .findObjectTypeName(domain, normalizedProduct, normalizedObjectType).isEmpty()) {
             throw invalid("对象类型不适用于当前领域和产品");
         }
-        SecurityPrincipal principal = accessControl.require("BUSINESS_CREATE", regionCode);
+        var scope = "MY_TASKS".equals(requestedScope)
+                ? accessControl.requireTaskReadScope() : accessControl.requireBusinessReadScope();
+        if (regionCode != null && !regionCode.isBlank()) scope.requireRegion(regionCode);
+        boolean administratorOverride = !"MY_TASKS".equals(requestedScope)
+                || accessControl.requireAuthenticated().isRootAdministrator();
         return repository.findEligibleSamples(domain, normalizedProduct, regionCode, normalizedObjectType,
                 keywordPattern(normalizedKeyword),
-                observedAt.atZoneSameInstant(REPORTING_ZONE).toLocalDate(), principal.regionCodes(),
-                principal.subjectId(), principal.permits("FORMAL_SAMPLE_MANAGE"));
+                observedAt.atZoneSameInstant(REPORTING_ZONE).toLocalDate(), scope.regionCodes(),
+                scope.subjectId(), administratorOverride);
     }
 
     @Transactional(readOnly = true)
@@ -123,9 +136,9 @@ public class FormalSampleObservationService {
         if (normalizedPage < 0 || normalizedPage > 100_000 || normalizedSize < 1 || normalizedSize > 100) {
             throw invalid("历史记录分页参数不正确");
         }
-        SecurityPrincipal principal = accessControl.require("BUSINESS_READ", null);
+        var scope = accessControl.requireBusinessReadScope();
         return repository.findHistory(domain, samplePointId, productCode.strip().toUpperCase(),
-                year, normalizedPage, normalizedSize, principal.regionCodes());
+                year, normalizedPage, normalizedSize, scope.regionCodes());
     }
 
     @Transactional
@@ -159,7 +172,7 @@ public class FormalSampleObservationService {
         }
         FormalSampleIdentity lockedIdentity = repository.lockEligibleSample(
                 command.domain(), command.samplePointId(), normalizedProduct,
-                observedOn, principal.regionCodes());
+                observedOn, writeRegions(principal));
         accessControl.require("BUSINESS_CREATE", lockedIdentity.regionCode());
         FormalSampleIdentity identity = lockedIdentity;
         boolean administratorOverride = requireMaintainer(principal, identity);
@@ -188,8 +201,8 @@ public class FormalSampleObservationService {
 
         EligibleFormalSample refreshed = repository.findEligibleSamples(
                         command.domain(), normalizedProduct, identity.regionCode(), null, null, observedOn,
-                        principal.regionCodes(), principal.subjectId(),
-                        principal.permits("FORMAL_SAMPLE_MANAGE")).stream()
+                        writeRegions(principal), principal.subjectId(),
+                        true).stream()
                 .filter(sample -> sample.samplePointId().equals(identity.samplePointId()))
                 .findFirst().orElseThrow(() -> new IllegalStateException(
                         "Saved formal sample observation is missing from the effective projection"));
@@ -274,13 +287,14 @@ public class FormalSampleObservationService {
         }
     }
 
-    private static boolean requireMaintainer(
-            SecurityPrincipal principal, FormalSampleIdentity identity) {
-        if (principal.subjectId().equals(identity.maintainerSubjectId())) return false;
-        if (principal.permits("FORMAL_SAMPLE_MANAGE")) return true;
-        throw new AccessDeniedException(
-                "FORMAL_SAMPLE_MAINTAINER_DENIED",
-                "当前账号不是该正式样本的维护人，不能更新期间数据");
+    private static java.util.Set<String> writeRegions(SecurityPrincipal principal) {
+        return principal.isRootAdministrator() ? java.util.Set.of("*") : principal.regionCodes();
+    }
+
+    private static boolean requireMaintainer(SecurityPrincipal principal, FormalSampleIdentity identity) {
+        // Current assigned region, already authorized above, governs handovers; retain the
+        // historical maintainer only in the audit detail.
+        return principal.isRootAdministrator() && !principal.subjectId().equals(identity.maintainerSubjectId());
     }
 
     private String auditDetail(FormalSampleObservationDomain domain,

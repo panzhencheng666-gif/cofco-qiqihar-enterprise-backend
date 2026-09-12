@@ -24,6 +24,15 @@ class BusinessReadAuthenticationInterceptorTest {
     }
 
     @Test
+    void activationBootstrapDoesNotRequireAnAlreadyBoundBusinessSubject() {
+        AccessControl accessControl = mock(AccessControl.class);
+        var interceptor = new BusinessReadAuthenticationInterceptor(accessControl, true);
+        var request = new MockHttpServletRequest("GET", "/api/v1/identity/invitations/activation-bootstrap");
+        interceptor.preHandle(request, new MockHttpServletResponse(), new Object());
+        verifyNoInteractions(accessControl);
+    }
+
+    @Test
     void controlledOidcLoginEntryIsTheOnlyAnonymousGetUnderTheBusinessApiPrefix() {
         AccessControl accessControl = mock(AccessControl.class);
         BusinessReadAuthenticationInterceptor interceptor =
@@ -32,6 +41,14 @@ class BusinessReadAuthenticationInterceptorTest {
 
         interceptor.preHandle(request, new MockHttpServletResponse(), new Object());
 
+        verifyNoInteractions(accessControl);
+    }
+    @Test
+    void registrationDraftCanBeReadBeforeBusinessBinding() {
+        var accessControl=mock(AccessControl.class);
+        var interceptor=new BusinessReadAuthenticationInterceptor(accessControl,true);
+        interceptor.preHandle(new MockHttpServletRequest("GET","/api/v1/identity/registration/phone"),
+                new MockHttpServletResponse(),new Object());
         verifyNoInteractions(accessControl);
     }
 }

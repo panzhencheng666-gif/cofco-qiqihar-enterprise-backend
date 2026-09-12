@@ -11,6 +11,16 @@ import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 class SeparationOfDutiesPolicyTest {
+    @Test
+    void rootMayReviewOwnSubmissionButProvenanceIsStillRequired() {
+        var root = principal("admin", Set.of(), Set.of("SYSTEM_ADMIN"));
+        var policy = new SeparationOfDutiesPolicy((type, id, action) -> Optional.of("admin"));
+        assertThatCode(() -> policy.requireIndependentApprover("TYPE", "1", "SUBMIT", root)).doesNotThrowAnyException();
+        var missing = new SeparationOfDutiesPolicy((type, id, action) -> Optional.empty());
+        assertThatThrownBy(() -> missing.requireIndependentApprover("TYPE", "1", "SUBMIT", root))
+                .isInstanceOf(AccessDeniedException.class);
+    }
+
 
     @Test
     void explicitSelfApprovalPermissionAllowsTheSubmitterToApprove() {
@@ -38,18 +48,16 @@ class SeparationOfDutiesPolicyTest {
     }
 
     @Test
-    void selfApprovalPermissionWithoutOwnerRoleRemainsBlocked() {
+    void administratorMayApproveOwnSubmissionWithoutOwnerRole() {
         SeparationOfDutiesPolicy policy = new SeparationOfDutiesPolicy(
                 (aggregateType, aggregateId, actionCode) -> Optional.of("other-administrator"));
         SecurityPrincipal administrator = principal(
                 "other-administrator", Set.of("BUSINESS_APPROVE", "BUSINESS_SELF_APPROVE"),
                 Set.of("SYSTEM_ADMIN"));
 
-        assertThatThrownBy(() -> policy.requireIndependentApprover(
+        assertThatCode(() -> policy.requireIndependentApprover(
                 "PRODUCTION_RECORD", "record-3", "PRODUCTION_RECORD_SUBMITTED", administrator))
-                .isInstanceOfSatisfying(AccessDeniedException.class,
-                        exception -> org.assertj.core.api.Assertions.assertThat(exception.code())
-                                .isEqualTo("SELF_APPROVAL_FORBIDDEN"));
+                .doesNotThrowAnyException();
     }
 
     @Test

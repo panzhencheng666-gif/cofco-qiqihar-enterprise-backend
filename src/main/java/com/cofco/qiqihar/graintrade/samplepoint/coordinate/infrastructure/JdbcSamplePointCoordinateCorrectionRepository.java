@@ -133,7 +133,7 @@ public class JdbcSamplePointCoordinateCorrectionRepository {
                 SELECT submitted.detail::text
                 FROM platform.business_audit_event submitted
                 WHERE submitted.aggregate_type=:type AND submitted.action_code=:submitted
-                  AND submitted.work_unit_code=:workUnit
+                  AND (CAST(:workUnit AS text) IS NULL OR submitted.work_unit_code=:workUnit)
                   AND NOT EXISTS (
                     SELECT 1 FROM platform.business_audit_event decided
                     WHERE decided.aggregate_type=submitted.aggregate_type

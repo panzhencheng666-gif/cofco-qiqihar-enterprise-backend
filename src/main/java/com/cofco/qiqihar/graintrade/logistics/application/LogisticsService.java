@@ -52,9 +52,14 @@ public class LogisticsService {
     }
     @Transactional(readOnly=true)
     public PagedResult<LogisticsRecordView> list(String productCode, int pageNumber, int pageSize, Map<String,String> filters) {
+        return list(productCode,pageNumber,pageSize,filters,null);
+    }
+    @Transactional(readOnly=true)
+    public PagedResult<LogisticsRecordView> list(String productCode, int pageNumber, int pageSize, Map<String,String> filters, String requestedScope) {
+        if(requestedScope!=null && !"MY_TASKS".equals(requestedScope))throw invalid();
         if (pageNumber < 0 || pageSize < 1 || filters.keySet().stream().anyMatch(k -> !FILTERS.contains(k))
                 || !pages.allowsListQueryValues("LOGISTICS","MONITORING",productCode,pageSize,filters)) throw invalid();
-        AuthorizedReadScope scope=readScope();
+        AuthorizedReadScope scope="MY_TASKS".equals(requestedScope) && accessControl!=null ? accessControl.requireTaskReadScope():readScope();
         if(filters.get("regionCode")!=null)scope.requireRegion(filters.get("regionCode"));
         PagedResult<LogisticsRecordView> page=repository.findPage(productCode,pageNumber,pageSize,filters,scope.regionCodes());
         return new PagedResult<>(page.items().stream().map(this::authorizedView).toList(),
@@ -159,7 +164,7 @@ public class LogisticsService {
         if(accessControl!=null) regions.forEach(region->accessControl.require(permission,region));
         return principal;
     }
-    private AuthorizedReadScope readScope(){return accessControl==null?AuthorizedReadScope.unrestricted():accessControl.requireReadScope();}
+    private AuthorizedReadScope readScope(){return accessControl==null?AuthorizedReadScope.unrestricted():accessControl.requireBusinessReadScope();}
     private void audit(SecurityPrincipal principal,LogisticsRecordView record,String action){
         if(audit==null)return;
         String regions=repository.regionsForRecord(record.id()).stream().sorted()
@@ -189,6 +194,7 @@ public class LogisticsService {
         if(accessControl==null)return record;
         SecurityPrincipal principal=accessControl.authenticated().orElse(null);
         if(principal==null)return record;
+        boolean regionAllowed=principal.isRootAdministrator() || repository.regionsForRecord(record.id()).stream().allMatch(principal::includesRegion);
         java.util.List<String> actions=record.allowedActions().stream().filter(action -> {
             String permission=switch(action){
                 case "VIEW" -> "BUSINESS_READ";
@@ -200,6 +206,7 @@ public class LogisticsService {
                 default -> null;
             };
             if(permission==null||!principal.permits(permission))return false;
+            if(!"VIEW".equals(action) && !regionAllowed)return false;
             if(separationOfDuties==null)return true;
             return switch(action){
                 case "APPROVE" -> separationOfDuties.canApprove(

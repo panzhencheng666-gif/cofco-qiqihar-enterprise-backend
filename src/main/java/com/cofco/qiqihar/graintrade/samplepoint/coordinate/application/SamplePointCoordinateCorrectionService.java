@@ -179,7 +179,7 @@ public class SamplePointCoordinateCorrectionService {
 
     public List<ReviewView> reviewQueue() {
         SecurityPrincipal principal = access.require("BUSINESS_APPROVE", null);
-        return repository.pendingRequests(principal.workUnitCode()).stream()
+        return repository.pendingRequests(principal.isRootAdministrator() ? null : principal.workUnitCode()).stream()
                 .filter(request -> principal.includesRegion(request.regionCode()))
                 .map(request -> reviewView(request, "PENDING_REVIEW", null, null, null))
                 .toList();
@@ -192,7 +192,7 @@ public class SamplePointCoordinateCorrectionService {
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "SAMPLE_POINT_CORRECTION_REQUEST_NOT_FOUND", "坐标修正申请不存在"));
         access.require("BUSINESS_APPROVE", request.regionCode());
-        if (!principal.workUnitCode().equals(request.workUnitCode())) {
+        if ((!principal.isRootAdministrator() && !principal.workUnitCode().equals(request.workUnitCode()))) {
             throw new ConflictException("SAMPLE_POINT_CORRECTION_WORK_UNIT_MISMATCH",
                     "修正申请不属于当前单位");
         }

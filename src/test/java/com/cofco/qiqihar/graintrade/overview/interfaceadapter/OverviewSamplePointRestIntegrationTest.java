@@ -38,6 +38,7 @@ import tools.jackson.databind.ObjectMapper;
 @AutoConfigureMockMvc
 @UsesProtectedTestDatabase
 class OverviewSamplePointRestIntegrationTest {
+    private static final String DESIGN_ADMIN = "overview-design-administrator";
     private static final String PREFECTURE = "230200";
     private static final String COUNTY = "230202";
     private static final String TOWNSHIP = "230202997";
@@ -79,14 +80,14 @@ class OverviewSamplePointRestIntegrationTest {
                 """.formatted(contractVersion, contractDigest);
         String designId = objectMapper.readTree(mvc.perform(post("/api/v1/design-sample-points")
                         .header("Idempotency-Key", "overview-design-reference-boundary")
-                        .principal(() -> "production-tester")
+                        .principal(() -> DESIGN_ADMIN)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(createRequest))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString())
                 .path("data").path("id").asText();
 
         mvc.perform(put("/api/v1/design-sample-points/{id}", designId)
-                        .principal(() -> "production-tester")
+                        .principal(() -> DESIGN_ADMIN)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"contractVersion":"%s","contractDigest":"%s","expectedVersion":0,
@@ -101,7 +102,7 @@ class OverviewSamplePointRestIntegrationTest {
                 .andExpect(jsonPath("$.data.values.DSP_ADDRESS").value("更新后参考地址"))
                 .andExpect(jsonPath("$.data.version").value(1));
         mvc.perform(get("/api/v1/design-sample-points/{id}", designId)
-                        .principal(() -> "production-tester"))
+                        .principal(() -> DESIGN_ADMIN))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.values.DSP_ADDRESS").value("更新后参考地址"));
 
@@ -130,6 +131,13 @@ class OverviewSamplePointRestIntegrationTest {
         clean();
         insertRegionAndBoundaryFixtures();
         ProtectedTestDatabaseConfiguration.provisionSecurityTestSubjects(jdbc);
+        jdbc.sql("""
+                INSERT INTO platform.security_user(subject_id,display_name,work_unit_code)
+                VALUES(:subject,'总揽设计样本管理员','TEST')
+                ON CONFLICT(subject_id) DO UPDATE SET enabled=true,account_status='ACTIVE',employment_status='ACTIVE';
+                INSERT INTO platform.security_user_role(subject_id,role_code)
+                VALUES(:subject,'BUSINESS_REVIEWER') ON CONFLICT DO NOTHING
+                """).param("subject", DESIGN_ADMIN).update();
         insertSamplePointFixtures();
         insertApprovedSourceFixtures();
     }
@@ -1669,7 +1677,7 @@ class OverviewSamplePointRestIntegrationTest {
     }
 
     @Test
-    void excludesAssociationsWhoseBusinessSourceRegionIsOutsideTheReaderScope() throws Exception {
+    void includesAssociationsOutsideTheReadersResponsibilityRegion() throws Exception {
         insertProductionAtRegion("94000000-0000-0000-0000-000000000108", "CORN", "APPROVED",
                 SURVEY_POINT, "230281");
         jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id='production-tester'").update();
@@ -1688,7 +1696,33 @@ class OverviewSamplePointRestIntegrationTest {
     }
 
     @Test
-    void enforcesExistingRegionAndObjectTypeAuthorization() throws Exception {
+    void includesDistinctMonthAssociationsOutsideTheReadersResponsibilityRegion() throws Exception {
+        insertProductionAtRegion("94000000-0000-0000-0000-000000000108", "CORN", "APPROVED",
+                SURVEY_POINT, "230281");
+        // The detail contract retains the latest record per month. Keep this cross-region
+        // association in a separate month so this test measures visibility, not deduplication.
+        jdbc.sql("""
+                UPDATE production.production_record SET survey_date=DATE '2026-07-05',
+                  reported_at=TIMESTAMPTZ '2026-07-06 08:00:00+08',survey_month=7
+                WHERE record_id='94000000-0000-0000-0000-000000000108'
+                """).update();
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id='production-tester'").update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_region_scope(subject_id,region_code)
+                VALUES('production-tester',:region)
+                """).param("region", VILLAGE).update();
+
+        mvc.perform(get("/api/v1/overview/sample-points/{samplePointId}", SURVEY_POINT)
+                        .principal(() -> "production-tester")
+                        .queryParam("year", "2026")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", VILLAGE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.associations.length()").value(3));
+    }
+
+    @Test
+    void sharesMapRegionsWhileStillValidatingObjectTypes() throws Exception {
         jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id='production-tester'").update();
         jdbc.sql("""
                 INSERT INTO platform.security_user_region_scope(subject_id,region_code)
@@ -1700,8 +1734,7 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("year", "2026")
                         .queryParam("productCode", "CORN")
                         .queryParam("regionCode", "230281"))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+                .andExpect(status().isOk());
 
         mvc.perform(get("/api/v1/overview/sample-points")
                         .principal(() -> "production-tester")

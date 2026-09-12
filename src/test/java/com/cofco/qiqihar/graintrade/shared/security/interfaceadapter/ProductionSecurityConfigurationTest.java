@@ -17,6 +17,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
+import com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService;
 import com.cofco.qiqihar.graintrade.shared.security.application.SecurityPrincipalRepository;
 import com.cofco.qiqihar.graintrade.shared.security.application.SecuritySessionAuditRecorder;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
@@ -81,6 +82,9 @@ class ProductionSecurityConfigurationTest {
 
     @MockitoBean
     JdbcClient jdbc;
+
+    @MockitoBean
+    RegistrationDraftService registrationDrafts;
 
     @Autowired
     ClientRegistrationRepository clientRegistrations;

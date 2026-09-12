@@ -119,7 +119,7 @@ public class EvidencePhotoService {
         var stored = repository.find(id).orElseThrow(() -> new ResourceNotFoundException(
                 "EVIDENCE_PHOTO_NOT_FOUND", "Evidence photo does not exist"));
         if (stored.view().state().equals("ATTACHED")) {
-            accessControl.require("BUSINESS_READ", stored.attachedRegionCode());
+            accessControl.requireBusinessReadScope().requireRegion(stored.attachedRegionCode());
         } else if (!stored.view().uploadedBy().equals(principal.subjectId())) {
             throw new AccessDeniedException("EVIDENCE_PHOTO_ACCESS_DENIED", "Evidence photo access is denied");
         }

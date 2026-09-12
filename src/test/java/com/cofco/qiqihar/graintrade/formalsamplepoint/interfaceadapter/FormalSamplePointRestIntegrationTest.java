@@ -96,6 +96,15 @@ class FormalSamplePointRestIntegrationTest {
     }
 
     @Test
+    void listsDescendantSamplesWithoutFetchingTheGlobalCatalog() throws Exception {
+        mvc.perform(get("/api/v1/formal-sample-points").principal(() -> ADMIN)
+                        .queryParam("regionCode", "230200").queryParam("pageSize", "100"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items[0].id").value(POINT_ID.toString()));
+    }
+
+    @Test
     void readsAuthorizedFormalSamplesAndPhysicallyDeletesReferencedDataWithAuditAndOutbox()
             throws Exception {
         mvc.perform(get("/api/v1/formal-sample-points").principal(() -> ADMIN)

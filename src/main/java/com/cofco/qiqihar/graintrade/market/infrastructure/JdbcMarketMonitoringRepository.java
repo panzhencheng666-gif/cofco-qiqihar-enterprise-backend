@@ -91,7 +91,7 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                 .params(filter.parameters()).query(Long.class).single();
         long offset = Math.multiplyExact((long) query.pageNumber(), query.pageSize());
         List<ListHeader> headers = jdbc.sql(selectedRecords + """
-                        SELECT r.record_id, region.name region_name, object_type.name object_type_name,
+                        SELECT r.record_id, r.region_code, region.name region_name, object_type.name object_type_name,
                                r.trade_date, r.reported_at, r.survey_year, r.survey_month,
                                r.survey_period_precision, r.survey_period_governance_state,
                                r.created_at, r.submitted_at,
@@ -114,7 +114,7 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                         """)
                 .params(filter.parameters()).param("limit", query.pageSize()).param("offset", offset)
                 .query((row, ignored) -> new ListHeader(
-                        row.getString("record_id"), row.getString("region_name"),
+                        row.getString("record_id"), row.getString("region_code"), row.getString("region_name"),
                         row.getString("object_type_name"), row.getObject("trade_date", LocalDate.class),
                         row.getObject("reported_at", OffsetDateTime.class), row.getInt("survey_year"),
                         (Integer) row.getObject("survey_month"), row.getString("survey_period_precision"),
@@ -776,7 +776,7 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
         values.put("MKT_STATUS", row.statusLabel() == null ? row.status().name() : row.statusLabel());
         extensions.forEach((code, value) -> putDistinct(values, code, value));
         facts.forEach((code, value) -> putDistinct(values, code, decimal(value)));
-        return new MarketListRow(row.id(), values, row.status(), configuredActions, row.version());
+        return new MarketListRow(row.id(), values, row.status(), configuredActions, row.version(), row.regionCode());
     }
 
     private Map<String, Map<String, BigDecimal>> facts(List<String> ids) {
@@ -1025,7 +1025,7 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                           BigDecimal carriageBoardAmount, BigDecimal packagingAmount, BigDecimal freightAmount,
                           String packagingForm, BigDecimal actualTradePrice, MarketStatus status,
                           String returnReason, long version) { }
-    private record ListHeader(String id, String regionName, String objectTypeName, LocalDate tradeDate,
+    private record ListHeader(String id, String regionCode, String regionName, String objectTypeName, LocalDate tradeDate,
                               OffsetDateTime reportedAt, int surveyYear, Integer surveyMonth,
                               String surveyPeriodPrecision, String surveyPeriodGovernanceState,
                               OffsetDateTime createdAt, OffsetDateTime submittedAt, BigDecimal purchaseBasePrice,

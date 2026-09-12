@@ -18,6 +18,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,7 +38,7 @@ import tools.jackson.databind.ObjectMapper;
 @UsesProtectedTestDatabase
 class DesignSamplePointRestIntegrationTest {
     private static final String ENDPOINT = "/api/v1/design-sample-points";
-    private static final String ACTOR = "production-tester";
+    private static final String ACTOR = "design-sample-administrator";
     private static final String READER = "design-sample-reader";
     private static final String OTHER_REGION_READER = "design-sample-other-region-reader";
 
@@ -65,19 +66,45 @@ class DesignSamplePointRestIntegrationTest {
                 INSERT INTO platform.work_unit_region_scope(work_unit_code,region_code)
                 VALUES('DESIGN_SAMPLE_TEST','230202') ON CONFLICT DO NOTHING;
                 INSERT INTO platform.security_user(subject_id,display_name,work_unit_code)
-                VALUES(:reader,'设计样本点只读员','DESIGN_SAMPLE_TEST'),
+                VALUES(:actor,'设计样本点管理员','DESIGN_SAMPLE_TEST'),
+                      (:reader,'设计样本点只读员','DESIGN_SAMPLE_TEST'),
                       (:otherReader,'设计样本点其他区域只读员','DESIGN_SAMPLE_TEST')
                 ON CONFLICT(subject_id) DO UPDATE SET enabled=true,work_unit_code=EXCLUDED.work_unit_code;
                 INSERT INTO platform.security_user_role(subject_id,role_code)
-                VALUES(:reader,'REPORTER'),(:otherReader,'REPORTER')
+                VALUES(:actor,'BUSINESS_REVIEWER'),(:reader,'REPORTER'),(:otherReader,'REPORTER')
                 ON CONFLICT(subject_id,role_code,valid_from) DO UPDATE SET valid_until=NULL;
                 INSERT INTO platform.security_user_region_scope(subject_id,region_code)
                 VALUES(:reader,'230202'),(:otherReader,'230208')
                 ON CONFLICT(subject_id,region_code,valid_from) DO UPDATE SET valid_until=NULL
-                """).param("reader", READER)
+                """).param("actor", ACTOR).param("reader", READER)
                 .param("otherReader", OTHER_REGION_READER).update();
         auditBaseline = countEvents("platform.business_audit_event");
         outboxBaseline = countEvents("platform.business_event_outbox");
+    }
+
+    @AfterEach
+    void removeReadOnlySubjects() {
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id IN (:reader,:otherReader)")
+                .param("reader", READER).param("otherReader", OTHER_REGION_READER).update();
+        jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id IN (:reader,:otherReader)")
+                .param("reader", READER).param("otherReader", OTHER_REGION_READER).update();
+        jdbc.sql("DELETE FROM platform.security_user WHERE subject_id IN (:reader,:otherReader)")
+                .param("reader", READER).param("otherReader", OTHER_REGION_READER).update();
+    }
+
+    @Test
+    void listsDescendantSamplesWithoutFetchingTheGlobalCatalog() throws Exception {
+        mvc.perform(post(ENDPOINT).principal(() -> ACTOR)
+                .header("Idempotency-Key", "map-scope-regression")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(request("区域下钻验收", "10", null)))
+                .andExpect(status().isCreated());
+        mvc.perform(get(ENDPOINT).principal(() -> ACTOR).param("regionCode", "230200"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(1));
+        mvc.perform(get(ENDPOINT).principal(() -> ACTOR).param("regionCode", "230203"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(0));
     }
 
     @Test
@@ -311,9 +338,9 @@ class DesignSamplePointRestIntegrationTest {
         mvc.perform(post(ENDPOINT)
                         .header("Idempotency-Key", "design-sample-reader-write")
                         .principal(() -> READER).contentType(MediaType.APPLICATION_JSON)
-                        .content(request("只读越权设计样本点", "10", null)))
+                .content(request("只读越权设计样本点", "10", null)))
                 .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("ACCESS_PERMISSION_DENIED"));
+                .andExpect(jsonPath("$.error.code").value("ADMINISTRATOR_REQUIRED"));
 
         assertThat(count("platform.design_sample_point")).isZero();
         assertThat(countEvents("platform.business_audit_event")).isEqualTo(auditBaseline);
@@ -361,7 +388,7 @@ class DesignSamplePointRestIntegrationTest {
 
     @Test
     @Transactional
-    void preservesReportedCoordinatesAndUsesAnInRegionSchematicUntilCorrected() throws Exception {
+    void preservesReportedCoordinatesAndKeepsTheAddressAnchoredSchematicDisplay() throws Exception {
         jdbc.sql("""
                 UPDATE overview.administrative_boundary
                 SET geometry=ST_Multi(ST_MakeEnvelope(123.4,47.1,124.3,48.0,4326))
@@ -391,8 +418,9 @@ class DesignSamplePointRestIntegrationTest {
                 .content(request("区县示意设计样本", "10",0L)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.longitude").value(123.95))
-                .andExpect(jsonPath("$.data.displayLongitude").value(123.95))
-                .andExpect(jsonPath("$.data.locationMode").value("REPORTED_COORDINATE"));
+                .andExpect(jsonPath("$.data.displayLongitude").value(
+                        org.hamcrest.Matchers.not(123.95)))
+                .andExpect(jsonPath("$.data.locationMode").value("REGION_SCHEMATIC"));
     }
 
     @Test
