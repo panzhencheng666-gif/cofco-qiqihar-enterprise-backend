@@ -48,8 +48,16 @@ class RegistrationDraftServiceTest {
         prepare(); assertTrue(service.completeAuthenticated(session,user("employee","")));
         verify(phones).register(any(),any(),eq("employee"),any(),eq(phone));
     }
+    @Test void emptyRegionsProduceOrdinaryUnboundDraft() {
+        when(sms.verify(challenge,"123456","REGISTER",session.getId())).thenReturn(phone);
+        service.prepare(session,"赵长彬","赵长彬","UNIT",List.of(),phone,challenge,"123456");
+        var capture=org.mockito.ArgumentCaptor.forClass(EmployeeAssignment.class);
+        verify(employees).validateDraft(eq("赵长彬"),capture.capture());
+        assertEquals(List.of("BUSINESS_OPERATOR"),capture.getValue().roleCodes());
+        assertTrue(capture.getValue().regionCodes().isEmpty());
+    }
     @Test void invalidRegionsNeverConsumeVerification() {
-        assertThrows(RuntimeException.class,()->service.prepare(session,"employee","员工","UNIT",List.of(),phone,challenge,"123456"));
+        assertThrows(RuntimeException.class,()->service.prepare(session,"employee","员工","UNIT",Arrays.asList((String)null),phone,challenge,"123456"));
         verifyNoInteractions(sms,phones);
     }
 }

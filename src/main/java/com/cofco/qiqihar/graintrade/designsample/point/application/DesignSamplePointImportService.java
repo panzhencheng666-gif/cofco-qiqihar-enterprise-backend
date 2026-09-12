@@ -76,7 +76,7 @@ public class DesignSamplePointImportService {
     }
 
     public byte[] template(String domainCode) {
-        access.require("BUSINESS_UPDATE", null);
+        access.requireAdministrator();
         return SamplePointMasterWorkbook.create(templateDefinition(domainCode));
     }
 
@@ -109,8 +109,9 @@ public class DesignSamplePointImportService {
     @Transactional
     public SamplePointImportResult importFile(
             String requestedDomain, String idempotencyKey, String filename, String mediaType, byte[] bytes) {
+        access.requireAdministrator();
         requireUpload(idempotencyKey, filename, mediaType, bytes);
-        SecurityPrincipal principal = access.require("BUSINESS_UPDATE", null);
+        SecurityPrincipal principal = access.requireAdministrator();
         DesignSampleContractSnapshot contract = metadata.activeContract();
         SamplePointMasterWorkbook.Template template = templateDefinition(requestedDomain);
         List<SamplePointMasterWorkbook.Row> submitted;
@@ -172,7 +173,7 @@ public class DesignSamplePointImportService {
 
     @Transactional
     public ImportErrorFile errors(UUID importId) {
-        SecurityPrincipal principal = access.require("BUSINESS_UPDATE", null);
+        SecurityPrincipal principal = access.requireAdministrator();
         ImportJob job = jobs.findById(importId)
                 .filter(stored -> "DESIGN_SAMPLE_POINT".equals(stored.job().domainCode()))
                 .orElseThrow(() -> new ClientRequestException(

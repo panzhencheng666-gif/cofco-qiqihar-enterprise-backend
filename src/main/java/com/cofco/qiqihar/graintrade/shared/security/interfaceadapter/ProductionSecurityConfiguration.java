@@ -370,7 +370,7 @@ public class ProductionSecurityConfiguration {
             var session=request.getSession();
             Authentication stableAuthentication=bindStableSubject(authentication,principal);
             audit.record(stableAuthentication.getName(),session.getId(),"LOGIN_SUCCESS","{}");
-            if(principal.roleCodes().contains("SYSTEM_ADMIN")) {
+            if(principal.isRootAdministrator()) {
                 response.sendRedirect(request.getContextPath()+"/");
                 return;
             }

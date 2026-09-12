@@ -25,6 +25,29 @@ public class AccessControl {
         return new AuthorizedReadScope(principal.subjectId(), principal.regionCodes());
     }
 
+    /** Global business browsing never expands the principal's write authority. */
+    @Transactional(readOnly = true)
+    public AuthorizedReadScope requireBusinessReadScope() {
+        SecurityPrincipal principal = require("BUSINESS_READ", null);
+        return new AuthorizedReadScope(principal.subjectId(), java.util.Set.of("*"));
+    }
+
+    @Transactional(readOnly = true)
+    public AuthorizedReadScope requireTaskReadScope() {
+        SecurityPrincipal principal = require("BUSINESS_READ", null);
+        return new AuthorizedReadScope(principal.subjectId(), principal.isRootAdministrator()
+                ? java.util.Set.of("*") : principal.regionCodes());
+    }
+
+    @Transactional(readOnly = true)
+    public SecurityPrincipal requireAdministrator() {
+        SecurityPrincipal principal = requireAuthenticated();
+        if (!principal.isRootAdministrator()) {
+            throw new AccessDeniedException("ADMINISTRATOR_REQUIRED", "仅管理员和管理员权限账号可维护此类信息");
+        }
+        return principal;
+    }
+
     /** Map visibility is shared by enabled accounts; responsibility still governs writes. */
     @Transactional(readOnly = true)
     public AuthorizedReadScope requireOverviewReadScope() {
@@ -72,8 +95,7 @@ public class AccessControl {
     private void requireResponsible(SecurityPrincipal principal,String regionCode,boolean countyReporting) {
         if (principal.isRootAdministrator()) return;
         var owner=principals.responsibleSubject(regionCode,countyReporting);
-        if(owner.isPresent() && !owner.get().equals(principal.subjectId())
-                && !principal.permits("FORMAL_SAMPLE_MANAGE")) {
+        if(owner.isPresent() && !owner.get().equals(principal.subjectId())) {
             throw new AccessDeniedException("REGION_RESPONSIBILITY_DENIED",
                     "该地区由指定负责人填报；整县分属多人时请由县级管理员办理地区填报");
         }

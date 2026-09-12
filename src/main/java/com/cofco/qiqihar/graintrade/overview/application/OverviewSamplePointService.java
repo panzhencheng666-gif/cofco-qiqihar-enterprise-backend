@@ -65,10 +65,25 @@ public class OverviewSamplePointService {
     }
 
     @Transactional(readOnly = true)
+    public List<OverviewSamplePointAggregate> historicalAggregates(Integer year,String productCode,String parentCode,
+            String categoryCode,String typeCode,String query) {
+        int effectiveYear=year==null ? -1 : effectiveYear(year);
+        validateProduct(productCode);
+        if(!blank(parentCode) && (!overview.knownRegion(parentCode)
+                || !aggregateParentRegionLevel(samplePoints.regionLevel(parentCode)))) throw invalid();
+        if(!blank(categoryCode) && !samplePoints.knownCategory(categoryCode)) throw invalid();
+        if(!blank(typeCode) && (blank(categoryCode) || !samplePoints.knownType(categoryCode,typeCode))) throw invalid();
+        var scope=accessControl.requireOverviewReadScope();
+        authorizeNavigation(parentCode,scope);
+        return samplePoints.historicalAggregates(effectiveYear,productCode,parentCode,categoryCode,typeCode,
+                normalizeQuery(query),scope.regionCodes());
+    }
+
+    @Transactional(readOnly = true)
     public List<OverviewSamplePointIcon> historicalIcons(
             Integer year, String productCode, String regionCode,
             String categoryCode, String typeCode, String query) {
-        int effectiveYear = effectiveYear(year);
+        int effectiveYear = year == null ? -1 : effectiveYear(year);
         validateProduct(productCode);
         validateFilter(regionCode, categoryCode, typeCode);
         if (!iconRegionLevel(samplePoints.regionLevel(regionCode))) throw invalid();
@@ -83,7 +98,7 @@ public class OverviewSamplePointService {
     public OverviewHistoricalSamplePointDetail historicalDetail(
             Integer retirementYear, String productCode, UUID samplePointId,
             String regionCode, String categoryCode, String typeCode) {
-        int effectiveYear = effectiveYear(retirementYear);
+        int effectiveYear = retirementYear == null ? -1 : effectiveYear(retirementYear);
         validateProduct(productCode);
         validateFilter(regionCode, categoryCode, typeCode);
         if (samplePointId == null) throw invalid();

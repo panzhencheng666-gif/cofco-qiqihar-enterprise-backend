@@ -71,21 +71,28 @@ public class ProductionRecordService implements ProductionImportPort {
 
     @Transactional(readOnly = true)
     public PagedResult<ProductionListItem> read(ProductionRecordQuery query) {
-        return read(query, true);
+        return read(query, true, null);
     }
 
     @Transactional(readOnly = true)
     public PagedResult<ProductionListItem> readLifecycle(ProductionRecordQuery query) {
-        return read(query, false);
+        return read(query, false, null);
+    }
+
+    @Transactional(readOnly = true)
+    public PagedResult<ProductionListItem> read(ProductionRecordQuery query, String requestedScope) {
+        return read(query, true, requestedScope);
     }
 
     private PagedResult<ProductionListItem> read(
-            ProductionRecordQuery query, boolean currentFormalOnly) {
+            ProductionRecordQuery query, boolean currentFormalOnly, String requestedScope) {
         if (!pageDefinitions.allowsListQueryValues(DOMAIN, query.pageKind(), query.productCode(),
                 query.pageSize(), query.filters())) throw invalidQuery();
         String regionCode = query.filters().get("regionCode");
         if (regionCode != null && !repository.isKnownRegion(regionCode)) throw invalidQuery();
-        AuthorizedReadScope scope = readScope();
+        if (requestedScope != null && !"MY_TASKS".equals(requestedScope)) throw invalidQuery();
+        AuthorizedReadScope scope = "MY_TASKS".equals(requestedScope) && accessControl != null
+                ? accessControl.requireTaskReadScope() : readScope();
         if (regionCode != null) scope.requireRegion(regionCode);
         ProductionRecordQuery authorized = query.authorizedFor(scope.regionCodes());
         PagedResult<ProductionListRow> page = currentFormalOnly
@@ -95,7 +102,7 @@ public class ProductionRecordService implements ProductionImportPort {
                 row.id(), row.values(), ProductionActionPolicy.allowedActions(row.status()).stream()
                         .filter(row.configuredActions()::contains)
                         .filter(action -> actionAllowed(action, "PRODUCTION_RECORD", row.id(),
-                                "PRODUCTION_RECORD_SUBMITTED"))
+                                "PRODUCTION_RECORD_SUBMITTED", row.regionCode()))
                         .toList(), row.version())).toList();
         return new PagedResult<>(items, page.pageNumber(), page.pageSize(), page.totalElements());
     }
@@ -435,12 +442,12 @@ public class ProductionRecordService implements ProductionImportPort {
     private ProductionRecordView view(ProductionRecord record) {
         return new ProductionRecordView(record, ProductionActionPolicy.allowedActions(record.status()).stream()
                 .filter(action -> actionAllowed(action, "PRODUCTION_RECORD", record.id(),
-                        "PRODUCTION_RECORD_SUBMITTED"))
+                        "PRODUCTION_RECORD_SUBMITTED", record.regionCode()))
                 .toList(),
                 evidencePhotos == null ? List.of() : evidencePhotos.productionPhotos(record.id()));
     }
 
-    private boolean actionAllowed(String action, String aggregateType, String aggregateId, String submittedAction) {
+    private boolean actionAllowed(String action, String aggregateType, String aggregateId, String submittedAction, String regionCode) {
         if (accessControl == null) return true;
         SecurityPrincipal principal = accessControl.authenticated().orElse(null);
         if (principal == null) return true; // Explicit unrestricted read identity exists only in test support.
@@ -454,6 +461,7 @@ public class ProductionRecordService implements ProductionImportPort {
             default -> null;
         };
         if (permission == null || !principal.permits(permission)) return false;
+        if (!"VIEW".equals(action) && (regionCode == null || !principal.includesRegion(regionCode))) return false;
         if (separationOfDuties == null) return true;
         return switch (action) {
             case "APPROVE" -> separationOfDuties.canApprove(
@@ -478,7 +486,7 @@ public class ProductionRecordService implements ProductionImportPort {
     }
 
     private AuthorizedReadScope readScope() {
-        return accessControl == null ? AuthorizedReadScope.unrestricted() : accessControl.requireReadScope();
+        return accessControl == null ? AuthorizedReadScope.unrestricted() : accessControl.requireBusinessReadScope();
     }
 
     private void audit(SecurityPrincipal principal, ProductionRecord record, String actionCode) {

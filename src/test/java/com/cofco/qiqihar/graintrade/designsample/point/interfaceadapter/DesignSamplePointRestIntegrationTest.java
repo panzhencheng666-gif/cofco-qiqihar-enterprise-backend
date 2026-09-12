@@ -81,6 +81,21 @@ class DesignSamplePointRestIntegrationTest {
     }
 
     @Test
+    void listsDescendantSamplesWithoutFetchingTheGlobalCatalog() throws Exception {
+        mvc.perform(post(ENDPOINT).principal(() -> ACTOR)
+                .header("Idempotency-Key", "map-scope-regression")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(request("区域下钻验收", "10", null)))
+                .andExpect(status().isCreated());
+        mvc.perform(get(ENDPOINT).principal(() -> ACTOR).param("regionCode", "230200"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(1));
+        mvc.perform(get(ENDPOINT).principal(() -> ACTOR).param("regionCode", "230203"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalElements").value(0));
+    }
+
+    @Test
     void replaysAnIdenticalCreateButRejectsIdempotencyKeyReuseForAnotherPayload()
             throws Exception {
         MvcResult first = mvc.perform(post(ENDPOINT)

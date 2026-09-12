@@ -41,14 +41,14 @@ public class RegionResponsibilityService {
     }
     @Transactional(readOnly=true, isolation=org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
     public RegionResponsibility.Preview preview(String subject,List<String> selected){
-        return calculate(subject,normalize(selected));
+        return calculate(subject,normalize(subject,selected));
     }
     @Transactional
     public RegionResponsibility.Preview save(String subject,List<String> selected,String token,String reason){
         if(token==null||token.length()!=64||reason==null||reason.isBlank()||reason.length()>500)throw invalid();
         access.require("IDENTITY_ADMIN",null);
         repository.lockChange();
-        var before=calculate(subject,normalize(selected));
+        var before=calculate(subject,normalize(subject,selected));
         if(!MessageDigest.isEqual(token.getBytes(StandardCharsets.UTF_8),before.previewToken().getBytes(StandardCharsets.UTF_8)))
             throw new ConflictException("REGION_RESPONSIBILITY_CONFLICT","地区或样本责任已变化，请重新预览后保存");
         var actor=actor();
@@ -72,12 +72,16 @@ public class RegionResponsibilityService {
     private RegionResponsibility.Preview calculate(String subject,List<String> selected){
         SecurityPrincipal actor=actor();
         var employee=identities.employee(subject);
-        if(!actor.roleCodes().contains("SYSTEM_ADMIN") && !actor.workUnitCode().equals(employee.workUnitCode()))
+        if(!actor.isRootAdministrator() && !actor.workUnitCode().equals(employee.workUnitCode()))
             throw new AccessDeniedException("ACCESS_WORK_UNIT_DENIED","无权调整其他工作单位的责任");
         var target=principals.findEnabled(subject).orElseThrow(RegionResponsibilityService::invalid);
         if(!target.permits("BUSINESS_CREATE"))throw invalid();
         var available=identities.assignmentOptions(employee.workUnitCode(),subject).regionCodes();
-        var affected=new TreeSet<>(repository.ownedRegions(subject));affected.addAll(selected);
+        var owned=repository.ownedRegions(subject);
+        var boundRegions=new HashSet<>(employee.regionCodes());
+        boundRegions.removeAll(owned);boundRegions.addAll(selected);
+        AccountRegionPolicy.requireAtMostTen(subject,boundRegions,target.isRootAdministrator());
+        var affected=new TreeSet<>(owned);affected.addAll(selected);
         if(!available.containsAll(selected)||!actor.regionCodes().containsAll(affected))throw new AccessDeniedException(
             "ACCESS_REGION_DENIED","负责地区不在允许分配的范围内");
         var regions=repository.regions(List.copyOf(affected));
@@ -94,7 +98,7 @@ public class RegionResponsibilityService {
             "ACCESS_PERMISSION_DENIED","无权调整地区和样本责任");
         return actor;
     }
-    private static List<String> normalize(List<String> codes){
+    private static List<String> normalize(String subject,List<String> codes){
         if(codes==null||codes.size()>1000||codes.stream().anyMatch(code->code==null||code.isBlank())
                 ||new HashSet<>(codes).size()!=codes.size())throw invalid();
         return codes.stream().sorted().toList();

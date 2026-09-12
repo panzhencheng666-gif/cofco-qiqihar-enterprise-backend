@@ -45,7 +45,7 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
                 row.getString(1),row.getString(2),row.getString(3),row.getString(4),row.getString(5),row.getString(6)))
                 .optional().map(subject -> {
                     Set<String> roleCodes = roles(subject.id());
-                    boolean root = "admin".equals(subject.id()) && roleCodes.contains("SYSTEM_ADMIN");
+                    boolean root = SecurityPrincipal.hasAdministratorRole(roleCodes);
                     return new SecurityPrincipal(
                             subject.id(),subject.displayName(),subject.workUnitCode(),subject.workUnitName(),
                             subject.accountStatus(),subject.employmentStatus(),roleCodes,positions(subject.id()),
@@ -122,11 +122,6 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
                     JOIN covered parent ON parent.region_code = child.parent_code
                 )
                 SELECT region_code FROM covered
-                UNION
-                SELECT county.code FROM platform.region county
-                JOIN unit_authorized unit ON unit.region_code=county.code
-                WHERE county.administrative_level='COUNTY'
-                  AND platform.county_reporting_subject(county.code)=:subjectId
                 ORDER BY region_code
                 """).param("subjectId", subjectId).param("workUnitCode", workUnitCode).query(String.class).list());
     }

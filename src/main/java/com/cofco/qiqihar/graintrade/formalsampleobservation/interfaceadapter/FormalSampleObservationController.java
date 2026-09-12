@@ -37,9 +37,10 @@ public class FormalSampleObservationController {
             @RequestParam(required = false) String objectTypeCode,
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) Integer year,
-            @RequestParam OffsetDateTime observedAt) {
+            @RequestParam OffsetDateTime observedAt,
+            @RequestParam(required = false) String scope) {
         return new ApiResponse<>(service.eligibleSamples(
-                domain, productCode, regionCode, objectTypeCode, keyword, year, observedAt));
+                domain, productCode, regionCode, objectTypeCode, keyword, year, observedAt, scope));
     }
 
     @PostMapping("/observations")

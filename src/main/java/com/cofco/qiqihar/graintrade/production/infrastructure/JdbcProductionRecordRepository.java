@@ -113,7 +113,7 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
                 .param("limit", query.pageSize()).param("offset", offset)
                 .query((row, ignored) -> new ListRow(
                         row.getString("record_id"), row.getString("product_code"),
-                        row.getString("object_type_name"), row.getString("region_name"),
+                        row.getString("object_type_name"), row.getString("region_code"), row.getString("region_name"),
                         row.getString("cultivar_name"), row.getObject("survey_date", LocalDate.class),
                         row.getObject("reported_at", OffsetDateTime.class), row.getInt("survey_year"),
                         (Integer) row.getObject("survey_month"), row.getString("survey_period_precision"),
@@ -384,7 +384,7 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         values.put("PROD_STATUS", row.statusLabel() == null ? row.status().name() : row.statusLabel());
         facts.forEach((code, value) -> values.put(code, decimal(value)));
         submissionMetadata.forEach(values::put);
-        return new ProductionListRow(row.id(), values, row.status(), configuredActions, row.version());
+        return new ProductionListRow(row.id(), values, row.status(), configuredActions, row.version(), row.regionCode());
     }
 
     private Map<String, Map<String, BigDecimal>> categorizedFacts(String id) {
@@ -841,7 +841,7 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
     private record ReviewedTarget(
             UUID samplePointId, String regionCode, BigDecimal longitude,
             BigDecimal latitude, LocalDate effectiveFrom) { }
-    private record ListRow(String id, String productCode, String objectTypeName, String regionName,
+    private record ListRow(String id, String productCode, String objectTypeName, String regionCode, String regionName,
             String cultivarName, LocalDate surveyDate, OffsetDateTime reportedAt, int surveyYear, Integer surveyMonth,
             String surveyPeriodPrecision, String surveyPeriodGovernanceState,
             OffsetDateTime createdAt, OffsetDateTime submittedAt, BigDecimal area, BigDecimal yield,

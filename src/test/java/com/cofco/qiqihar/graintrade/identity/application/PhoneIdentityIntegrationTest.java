@@ -14,13 +14,19 @@ import com.cofco.qiqihar.graintrade.identity.infrastructure.JdbcIdentitySessionI
 import com.cofco.qiqihar.graintrade.shared.security.infrastructure.JdbcSecurityPrincipalRepository;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 
-/** Explicit opt-in runner only: never invokes the database-reset launcher listener. */
+/** Explicit opt-in runner against the protected test database, with its own minimal fixtures. */
 @org.junit.jupiter.api.condition.EnabledIfSystemProperty(named="qiqihar.phone.acceptance",matches="true")
 class PhoneIdentityIntegrationTest {
     static AnnotationConfigApplicationContext context;
     JdbcClient jdbc; PhoneIdentityService identities; SmsChallengeService sms;
     static final String SOURCE="phone-test-source", TARGET="phone-test-target", OTHER="phone-test-other";
-    @BeforeAll static void start(){context=new AnnotationConfigApplicationContext(Config.class);}
+    @BeforeAll static void start(){
+        com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabase.shared().flyway().migrate();
+        context=new AnnotationConfigApplicationContext(Config.class);
+        var jdbc=context.getBean(JdbcClient.class);
+        jdbc.sql("INSERT INTO platform.work_unit(code,name,sort_order) VALUES('TEST','隔离测试单位',9900) ON CONFLICT DO NOTHING").update();
+        jdbc.sql("INSERT INTO platform.work_unit_region_scope(work_unit_code,region_code) VALUES('TEST','230202') ON CONFLICT DO NOTHING").update();
+    }
     @AfterAll static void end(){context.close();}
     @BeforeEach void setup(){
         jdbc=context.getBean(JdbcClient.class);identities=context.getBean(PhoneIdentityService.class);sms=context.getBean(SmsChallengeService.class);
@@ -54,6 +60,60 @@ class PhoneIdentityIntegrationTest {
             .executeWithoutResult(status->{jdbc.sql("SET LOCAL session_replication_role=replica").update();work.run();});
     }
     void grant(String subject,String region){jdbc.sql("INSERT INTO platform.security_user_region_scope(subject_id,region_code,granted_by) VALUES(:s,:r,:s)").param("s",subject).param("r",region).update();}
+    @Test void removingResponsibilityExpiresItsAuthorizationAndReleasesRegion() {
+        jdbc.sql("INSERT INTO platform.region_responsibility(region_code,subject_id,updated_by,reason) VALUES('230202901',:s,:s,'test')").param("s",SOURCE).update();
+        new org.springframework.transaction.support.TransactionTemplate(context.getBean(DataSourceTransactionManager.class)).executeWithoutResult(status -> {
+            var repository=new com.cofco.qiqihar.graintrade.identity.infrastructure.JdbcRegionResponsibilityRepository(jdbc);
+            repository.lockChange();
+            repository.save(SOURCE,List.of(),List.of("230202901"),SOURCE,"撤销责任");
+        });
+        assertThat(jdbc.sql("SELECT platform.employee_region_available('230202901',:s)").param("s",OTHER).query(Boolean.class).single()).isTrue();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.security_user_region_scope WHERE subject_id=:s AND valid_until IS NOT NULL").param("s",SOURCE).query(Long.class).single()).isEqualTo(1);
+    }
+    @Test void sixSelectedRegionsCannotMergeAndSourceRemainsActive() {
+        masterFixture(()->{ for(int i=4;i<=8;i++)jdbc.sql("INSERT INTO platform.region(code,name,administrative_level,parent_code,sort_order) VALUES(:code,:name,'TOWNSHIP','230202',:sort)")
+            .param("sort",991860+i).param("code","23020290"+i).param("name","手机号隔离验收"+i).update(); });
+        masterFixture(()->{for(int i=4;i<=8;i++)grant(SOURCE,"23020290"+i);});
+        var preview=identities.preview(TARGET,"13900000186","browser");
+        assertThatThrownBy(()->identities.merge(TARGET,preview.ticketId(),"browser",PhoneIdentityService.RegionChoice.PHONE)).hasMessageContaining("5");
+        assertThat(identities.login("13900000186").subject()).isEqualTo(SOURCE);
+    }
+    @Test void concurrentRegionGrantsCannotExceedFive() throws Exception {
+        masterFixture(()->{ for(int i=4;i<=8;i++)jdbc.sql("INSERT INTO platform.region(code,name,administrative_level,parent_code,sort_order) VALUES(:code,:name,'TOWNSHIP','230202',:sort)")
+            .param("sort",991860+i).param("code","23020290"+i).param("name","手机号隔离验收"+i).update(); });
+        for(int i=4;i<=6;i++)grant(SOURCE,"23020290"+i);
+        try(var pool=Executors.newFixedThreadPool(2)) {
+            var start=new CountDownLatch(1);
+            java.util.function.Function<String,Callable<Boolean>> action=region->()->{
+                start.await();try{grant(SOURCE,region);return true;}catch(org.springframework.dao.DataIntegrityViolationException expected){return false;}
+            };
+            var first=pool.submit(action.apply("230202907"));var second=pool.submit(action.apply("230202908"));start.countDown();
+            assertThat(List.of(first.get(10,TimeUnit.SECONDS),second.get(10,TimeUnit.SECONDS))).containsExactlyInAnyOrder(true,false);
+        }
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.security_user_region_scope WHERE subject_id=:s AND valid_until IS NULL").param("s",SOURCE).query(Long.class).single()).isEqualTo(5);
+    }
+    @Test void fiveRegionMergePreservesAllChosenRegions() {
+        masterFixture(()->{ for(int i=4;i<=7;i++)jdbc.sql("INSERT INTO platform.region(code,name,administrative_level,parent_code,sort_order) VALUES(:code,:name,'TOWNSHIP','230202',:sort)")
+            .param("sort",991860+i).param("code","23020290"+i).param("name","手机号隔离验收"+i).update(); });
+        for(int i=4;i<=7;i++)grant(SOURCE,"23020290"+i);
+        var preview=identities.preview(TARGET,"13900000186","browser");
+        identities.merge(TARGET,preview.ticketId(),"browser",PhoneIdentityService.RegionChoice.PHONE);
+        assertThat(jdbc.sql("SELECT region_code FROM platform.security_user_region_scope WHERE subject_id=:s AND valid_until IS NULL ORDER BY region_code").param("s",TARGET).query(String.class).list())
+            .containsExactly("230202901","230202904","230202905","230202906","230202907");
+    }
+    @Test void multipleAdministratorRolesHaveTheSameFullCatalogWithoutReservingRegions() {
+        jdbc.sql("UPDATE platform.security_user_role SET role_code='BUSINESS_REVIEWER' WHERE subject_id=:s").param("s",SOURCE).update();
+        jdbc.sql("UPDATE platform.security_user_role SET role_code='SYSTEM_ADMIN' WHERE subject_id=:s").param("s",TARGET).update();
+        var repository=new JdbcSecurityPrincipalRepository(jdbc);
+        var first=repository.findEnabled(SOURCE).orElseThrow();var second=repository.findEnabled(TARGET).orElseThrow();
+        assertThat(first.isRootAdministrator()).isTrue();assertThat(second.isRootAdministrator()).isTrue();
+        assertThat(first.permissionCodes()).containsExactlyInAnyOrderElementsOf(second.permissionCodes());
+        assertThat(first.regionCodes()).containsExactlyInAnyOrderElementsOf(second.regionCodes());
+        assertThat(first.permissionCodes()).contains("IDENTITY_ADMIN","BUSINESS_CREATE");
+        assertThat(jdbc.sql("SELECT platform.employee_region_available('230202901',:s)").param("s",OTHER).query(Boolean.class).single()).isTrue();
+        grant(SOURCE,"230202903");grant(TARGET,"230202903");
+        assertThat(repository.findEnabled(OTHER).orElseThrow().isRootAdministrator()).isFalse();
+    }
     @Test void wrongPurposeSessionExpiredAndReplayFailClosed(){
         UUID id=sms.send("13900000187","LOGIN","browser","client");
         assertThatThrownBy(()->sms.verify(id,"123456","BIND","browser")).isInstanceOf(ClientRequestException.class);

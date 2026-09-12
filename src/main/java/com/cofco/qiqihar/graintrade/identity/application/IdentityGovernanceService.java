@@ -100,7 +100,7 @@ public class IdentityGovernanceService {
                 "INVITED","ACTIVE",requested.roleCodes(),requested.positionCodes(),requested.regionCodes());
         requireAssignableWorkUnit(assignment.workUnitCode());
         requireWorkUnit(actor,assignment.workUnitCode());
-        requireRoleAssignment(assignment.roleCodes());
+        requireRoleAssignment(actor,assignment.roleCodes());
         validate(assignment);
         String requestSha256=invitationTokens.sha256(String.join("\n",
                 subjectId,deliveryAddress.strip().toLowerCase(java.util.Locale.ROOT),
@@ -232,8 +232,11 @@ public class IdentityGovernanceService {
             throw roleDenied();
         requireAssignableWorkUnit(assignment.workUnitCode());
         requireWorkUnit(actor,assignment.workUnitCode());
-        requireRoleAssignment(assignment.roleCodes());
-        validate(assignment);
+        requireRoleAssignment(actor,assignment.roleCodes());
+        validate(assignment,subjectId);
+        var boundRegions=new HashSet<>(assignment.regionCodes());
+        boundRegions.addAll(current.responsibilityRegionCodes());
+        AccountRegionPolicy.requireAtMostTen(subjectId,boundRegions,SecurityPrincipal.hasAdministratorRole(assignment.roleCodes()));
         validateTransition(current,assignment);
         EmployeeProfile updated=repository.update(subjectId,expectedVersion,assignment,actor.subjectId())
                 .orElseThrow(() -> new ConflictException(
@@ -258,7 +261,10 @@ public class IdentityGovernanceService {
         validate(assignment);
     }
 
-    private void validate(EmployeeAssignment assignment) {
+    private void validate(EmployeeAssignment assignment) { validate(assignment,null); }
+
+    private void validate(EmployeeAssignment assignment,String subject) {
+        if(assignment!=null)AccountRegionPolicy.requireAtMostTen(subject,assignment.regionCodes(),SecurityPrincipal.hasAdministratorRole(assignment.roleCodes()));
         if(assignment==null||blank(assignment.displayName())||blank(assignment.workUnitCode())
                 ||!ACCOUNT_STATUSES.contains(assignment.accountStatus())
                 ||!EMPLOYMENT_STATUSES.contains(assignment.employmentStatus())
@@ -289,7 +295,7 @@ public class IdentityGovernanceService {
 
     private static boolean duplicates(List<String> values){return new HashSet<>(values).size()!=values.size();}
     private static boolean systemAdministrator(SecurityPrincipal actor){
-        return actor.roleCodes().contains("SYSTEM_ADMIN");
+        return actor.isRootAdministrator();
     }
     private static void requireWorkUnit(SecurityPrincipal actor,String workUnitCode){
         if(!systemAdministrator(actor)&&!actor.workUnitCode().equals(workUnitCode))throw new AccessDeniedException(
@@ -298,7 +304,8 @@ public class IdentityGovernanceService {
     private static void requireAssignableWorkUnit(String workUnitCode){
         if(!ASSIGNABLE_WORK_UNITS.contains(workUnitCode))throw invalid();
     }
-    private static void requireRoleAssignment(List<String> roleCodes){
+    private static void requireRoleAssignment(SecurityPrincipal actor,List<String> roleCodes){
+        if(SecurityPrincipal.hasAdministratorRole(roleCodes) && !actor.isRootAdministrator())throw roleDenied();
         if(roleCodes.contains(ACCOUNT_OWNER_ROLE))throw new AccessDeniedException(
                 "ACCOUNT_OWNER_ASSIGNMENT_DENIED","平台唯一所有者角色不能通过员工授权分配");
         if(roleCodes.contains(SYSTEM_ADMINISTRATOR_ROLE))throw roleDenied();
@@ -320,7 +327,7 @@ public class IdentityGovernanceService {
     private static AccessDeniedException roleDenied(){return new AccessDeniedException(
             "ACCESS_ROLE_ASSIGNMENT_DENIED","当前账号不能授予系统管理员角色");}
     private static void requireSubject(String subjectId){
-        if(blank(subjectId)||subjectId.length()>120||!subjectId.matches("[A-Za-z0-9._:@-]+"))throw invalid();
+        if(blank(subjectId)||subjectId.length()>120||!subjectId.matches("[\\p{IsHan}A-Za-z0-9._:@-]+"))throw invalid();
     }
     private static void requireIdempotencyKey(String value){
         if(value==null||!value.matches("^[A-Za-z0-9][A-Za-z0-9._:-]{7,159}$"))throw new ClientRequestException(

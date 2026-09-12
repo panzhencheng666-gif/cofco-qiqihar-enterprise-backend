@@ -101,12 +101,14 @@ public class DesignSamplePointService {
     @Transactional
     public DesignSamplePointRepository.CreateResult create(
             String idempotencyKey, DesignSamplePointDraft submitted) {
+        access.requireAdministrator();
         return create(idempotencyKey, submitted, metadata.activeContract());
     }
 
     @Transactional
     DesignSamplePointRepository.CreateResult create(
             String idempotencyKey, DesignSamplePointDraft submitted, DesignSampleContractSnapshot contract) {
+        access.requireAdministrator();
         String key = requiredText(idempotencyKey, 200, "INVALID_IDEMPOTENCY_KEY");
         ValidatedDraft validated = validateForCreate(submitted, contract);
         SecurityPrincipal actor = access.require("BUSINESS_UPDATE", validated.regionCode());
@@ -133,6 +135,7 @@ public class DesignSamplePointService {
     @Transactional
     public DesignSamplePointView update(
             UUID id, long expectedVersion, DesignSamplePointDraft submitted) {
+        access.requireAdministrator();
         if (expectedVersion < 0) throw invalidRequest();
         DesignSamplePointView current = required(id);
         ValidatedDraft validated = validateForCreate(submitted);
@@ -160,6 +163,7 @@ public class DesignSamplePointService {
 
     @Transactional
     public void delete(UUID id, long expectedVersion) {
+        access.requireAdministrator();
         if (expectedVersion < 0) throw invalidRequest();
         DesignSamplePointView current = required(id);
         SecurityPrincipal actor = access.require("BUSINESS_UPDATE", current.regionCode());

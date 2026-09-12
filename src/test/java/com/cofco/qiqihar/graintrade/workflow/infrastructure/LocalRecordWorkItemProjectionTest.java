@@ -212,6 +212,57 @@ class LocalRecordWorkItemProjectionTest {
     }
 
     @Test
+    void deletedSourceStopsAppearingAsPendingWithoutDeletingTaskHistory() {
+        projection.refresh();
+        jdbc.sql("DELETE FROM logistics.route_event WHERE event_id = CAST(:id AS uuid)")
+                .param("id", EVENT_ID).update();
+        assertThat(repository.findPage(WorkItemQuery.of(
+                WorkItemScope.PENDING, null, null, null, null, 0, 20).assignedTo(REVIEWER)).items()).isEmpty();
+        assertThat(jdbc.sql("SELECT count(*) FROM workflow.work_item WHERE source_type='LOGISTICS' AND source_id=:id")
+                .param("id", EVENT_ID).query(Integer.class).single()).isEqualTo(1);
+    }
+
+    @Test
+    void repeatedReadsDoNotRewriteUnchangedTasks() {
+        projection.refresh();
+        String before = taskRevision();
+        for (int i = 0; i < 100; i++) projection.refresh();
+        assertThat(taskRevision()).isEqualTo(before);
+        jdbc.sql("UPDATE logistics.route_event SET status_code = 'DRAFT' WHERE event_id = CAST(:id AS uuid)")
+                .param("id", EVENT_ID).update();
+        projection.refresh();
+        assertThat(taskRevision()).isNotEqualTo(before);
+        assertThat(jdbc.sql("SELECT status_code FROM workflow.work_item WHERE source_type = 'LOGISTICS' AND source_id = :id")
+                .param("id", EVENT_ID).query(String.class).single()).isEqualTo("TO_FILL");
+    }
+
+    @Test
+    void reconciliationUsesFiveStatementsInsteadOfPerRecordRoundTrips() {
+        var statements = new java.util.concurrent.atomic.AtomicInteger();
+        var real = DATABASE.dataSource();
+        var counted = (javax.sql.DataSource) java.lang.reflect.Proxy.newProxyInstance(
+                getClass().getClassLoader(), new Class<?>[]{javax.sql.DataSource.class}, (proxy, method, args) -> {
+                    try {
+                        Object result = method.invoke(real, args);
+                        if (!(result instanceof java.sql.Connection connection)) return result;
+                        return java.lang.reflect.Proxy.newProxyInstance(getClass().getClassLoader(),
+                                new Class<?>[]{java.sql.Connection.class}, (cp, cm, ca) -> {
+                                    if (cm.getName().equals("prepareStatement")) statements.incrementAndGet();
+                                    try { return cm.invoke(connection, ca); }
+                                    catch (java.lang.reflect.InvocationTargetException ex) { throw ex.getCause(); }
+                                });
+                    } catch (java.lang.reflect.InvocationTargetException ex) { throw ex.getCause(); }
+                });
+        new LocalRecordWorkItemProjection(JdbcClient.create(counted)).refresh();
+        assertThat(statements.get()).isEqualTo(5);
+    }
+
+    private String taskRevision() {
+        return jdbc.sql("SELECT xmin::text FROM workflow.work_item WHERE source_type = 'LOGISTICS' AND source_id = :id")
+                .param("id", EVENT_ID).query(String.class).single();
+    }
+
+    @Test
     void preservesAnExternalCreatorWithoutForgingAGovernedSecuritySubject() {
         String externalCreator = "retired-external-operator";
         jdbc.sql("""

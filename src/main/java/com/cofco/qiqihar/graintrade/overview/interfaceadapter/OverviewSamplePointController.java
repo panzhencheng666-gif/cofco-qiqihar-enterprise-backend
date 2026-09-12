@@ -70,6 +70,14 @@ public class OverviewSamplePointController {
         return new ApiResponse<>(service.icons(year, productCode, regionCode, categoryCode, typeCode, query));
     }
 
+    @GetMapping("/api/v1/overview/historical-sample-point-aggregates")
+    ApiResponse<List<OverviewSamplePointAggregate>> historicalAggregates(
+            @RequestParam(required=false) Integer year,@RequestParam String productCode,
+            @RequestParam(required=false) String parentCode,@RequestParam(required=false) String categoryCode,
+            @RequestParam(required=false) String typeCode,@RequestParam(required=false) String query) {
+        return new ApiResponse<>(service.historicalAggregates(year,productCode,parentCode,categoryCode,typeCode,query));
+    }
+
     @GetMapping("/api/v1/overview/historical-sample-point-icons")
     ApiResponse<List<OverviewSamplePointIcon>> historicalIcons(
             @RequestParam(required = false) Integer year,

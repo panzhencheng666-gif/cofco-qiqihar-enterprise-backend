@@ -21,12 +21,12 @@ import org.springframework.web.bind.annotation.*;
 @RestController
 public class LogisticsController {
  private static final Pattern FILTER=Pattern.compile("^filter\\.([A-Za-z0-9_-]+)$");
- private static final Set<String> CORE=Set.of("productCode","pageNumber","pageSize");
+ private static final Set<String> CORE=Set.of("productCode","pageNumber","pageSize","scope");
  private final LogisticsService service; public LogisticsController(LogisticsService service){this.service=service;}
  @GetMapping("/api/v1/logistics-records") ApiResponse<PageResponse> list(@RequestParam MultiValueMap<String,String> parameters){
   StrictQueryParameters p=StrictQueryParameters.parse(parameters,n->CORE.contains(n)||FILTER.matcher(n).matches(),LogisticsController::invalid);
   Map<String,String> filters=new LinkedHashMap<>();p.values().forEach((k,v)->{Matcher m=FILTER.matcher(k);if(m.matches())filters.put(m.group(1),v);});
-  PagedResult<LogisticsRecordView> page=service.list(p.required("productCode"),p.integer("pageNumber",0),p.integer("pageSize",-1),filters);return new ApiResponse<>(PageResponse.from(page));
+  PagedResult<LogisticsRecordView> page=service.list(p.required("productCode"),p.integer("pageNumber",0),p.integer("pageSize",-1),filters,p.optional("scope"));return new ApiResponse<>(PageResponse.from(page));
  }
  @GetMapping("/api/v1/logistics-records/{id}") ApiResponse<RecordResponse> detail(@PathVariable String id){return new ApiResponse<>(RecordResponse.from(service.detail(id)));}
  @GetMapping("/api/v1/logistics-record-definitions") ApiResponse<LogisticsDefinitionView> definition(@RequestParam String productCode){return new ApiResponse<>(service.definition(productCode));}

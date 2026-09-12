@@ -22,9 +22,14 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
 
     @Override
     public boolean validAssignment(EmployeeAssignment value) {
-        if(value.roleCodes().isEmpty()||value.regionCodes().isEmpty())return false;
+        if(value.roleCodes().isEmpty())return false;
+        boolean administrator=com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal.hasAdministratorRole(value.roleCodes());
+        if(value.regionCodes().isEmpty())return (administrator || value.roleCodes().equals(java.util.List.of("BUSINESS_OPERATOR")))
+            && count("SELECT count(*) FROM platform.work_unit WHERE code=:code AND active","code",value.workUnitCode())==1
+            && countIn("SELECT count(*) FROM platform.access_role WHERE code IN (:codes) AND active",value.roleCodes())==value.roleCodes().size()
+            && (value.positionCodes().isEmpty() || countIn("SELECT count(*) FROM platform.position WHERE code IN (:codes) AND active",value.positionCodes())==value.positionCodes().size());
         boolean privileged=value.roleCodes().stream().anyMatch(
-                role->role.equals("SYSTEM_ADMIN")||role.equals("IDENTITY_ADMIN"));
+                role->role.equals("SYSTEM_ADMIN")||role.equals("BUSINESS_REVIEWER")||role.equals("IDENTITY_ADMIN"));
         return count("SELECT count(*) FROM platform.work_unit WHERE code=:code AND active","code",value.workUnitCode())==1
                 && countIn("SELECT count(*) FROM platform.access_role WHERE code IN (:codes) AND active",value.roleCodes())==value.roleCodes().size()
                 && (value.positionCodes().isEmpty()

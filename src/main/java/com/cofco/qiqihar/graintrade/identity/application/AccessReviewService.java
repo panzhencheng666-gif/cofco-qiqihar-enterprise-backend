@@ -20,7 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class AccessReviewService {
     private static final Set<String> GRANT_TYPES=Set.of("ROLE","REGION","POSITION");
     private static final Set<String> DECISIONS=Set.of("RETAIN","REVOKE");
-    private static final Set<String> PROTECTED_GOVERNANCE_ROLES=Set.of("ACCOUNT_OWNER","SYSTEM_ADMIN");
+    private static final Set<String> PROTECTED_GOVERNANCE_ROLES=Set.of("ACCOUNT_OWNER","SYSTEM_ADMIN","BUSINESS_REVIEWER");
     private final AccessReviewRepository repository;
     private final AccessControl access;
     private final BusinessAuditRecorder audit;
@@ -73,7 +73,7 @@ public class AccessReviewService {
                 ||decisions.size()>500||hasDuplicates(decisions)||decisions.stream().anyMatch(this::invalid))throw invalid();
         if(decisions.stream().anyMatch(decision->actor.subjectId().equals(decision.subjectId())))
             throw new AccessDeniedException("ACCESS_REVIEW_SELF_DECISION_DENIED","不能复核本人的权限");
-        if(!actor.roleCodes().contains("SYSTEM_ADMIN")&&decisions.stream().anyMatch(decision ->
+        if(!actor.isRootAdministrator()&&decisions.stream().anyMatch(decision ->
                 "ROLE".equals(decision.grantType())
                         && PROTECTED_GOVERNANCE_ROLES.contains(decision.grantKey())))
             throw new AccessDeniedException(
@@ -106,7 +106,7 @@ public class AccessReviewService {
                 value.subjectId()+"\u0000"+value.grantType()+"\u0000"+value.grantKey()));
     }
     private static boolean mayReview(SecurityPrincipal actor,String workUnitCode) {
-        return actor.roleCodes().contains("SYSTEM_ADMIN")||actor.workUnitCode().equals(workUnitCode);
+        return actor.isRootAdministrator()||actor.workUnitCode().equals(workUnitCode);
     }
     private static void requireReviewScope(SecurityPrincipal actor,String workUnitCode) {
         if(!mayReview(actor,workUnitCode))throw new AccessDeniedException(

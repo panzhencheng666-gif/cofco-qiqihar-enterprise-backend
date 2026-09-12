@@ -1688,6 +1688,32 @@ class OverviewSamplePointRestIntegrationTest {
     }
 
     @Test
+    void includesDistinctMonthAssociationsOutsideTheReadersResponsibilityRegion() throws Exception {
+        insertProductionAtRegion("94000000-0000-0000-0000-000000000108", "CORN", "APPROVED",
+                SURVEY_POINT, "230281");
+        // The detail contract retains the latest record per month. Keep this cross-region
+        // association in a separate month so this test measures visibility, not deduplication.
+        jdbc.sql("""
+                UPDATE production.production_record SET survey_date=DATE '2026-07-05',
+                  reported_at=TIMESTAMPTZ '2026-07-06 08:00:00+08',survey_month=7
+                WHERE record_id='94000000-0000-0000-0000-000000000108'
+                """).update();
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id='production-tester'").update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_region_scope(subject_id,region_code)
+                VALUES('production-tester',:region)
+                """).param("region", VILLAGE).update();
+
+        mvc.perform(get("/api/v1/overview/sample-points/{samplePointId}", SURVEY_POINT)
+                        .principal(() -> "production-tester")
+                        .queryParam("year", "2026")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("regionCode", VILLAGE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.associations.length()").value(3));
+    }
+
+    @Test
     void sharesMapRegionsWhileStillValidatingObjectTypes() throws Exception {
         jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id='production-tester'").update();
         jdbc.sql("""

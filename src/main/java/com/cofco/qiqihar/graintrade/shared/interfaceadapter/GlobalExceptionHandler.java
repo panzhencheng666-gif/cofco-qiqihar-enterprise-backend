@@ -115,6 +115,10 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(org.springframework.dao.DataIntegrityViolationException.class)
     ResponseEntity<ApiErrorResponse> handleInvalidInput(org.springframework.dao.DataIntegrityViolationException exception, HttpServletRequest request) {
         String detail=exception.getMostSpecificCause().getMessage();
+        if(detail!=null && detail.contains("account_region_limit")) {
+            return error(HttpStatus.CONFLICT,"ACCOUNT_REGION_LIMIT",
+                    "每个账号最多绑定 5 个区域，请刷新后重新选择",request);
+        }
         if(detail!=null && detail.contains("region_binding_exclusive")) {
             return error(HttpStatus.CONFLICT,"REGION_ALREADY_ASSIGNED",
                     "该地区已被其他账号绑定，请刷新后选择未占用地区",request);

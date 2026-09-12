@@ -57,7 +57,11 @@ public record SecurityPrincipal(
 
     /** Root status comes from the bound business identity and its active role. */
     public boolean isRootAdministrator() {
-        return "admin".equals(subjectId) && roleCodes.contains("SYSTEM_ADMIN");
+        return hasAdministratorRole(roleCodes);
+    }
+
+    public static boolean hasAdministratorRole(java.util.Collection<String> roles) {
+        return roles.contains("SYSTEM_ADMIN") || roles.contains("BUSINESS_REVIEWER");
     }
 
     public boolean permits(String permissionCode) {

@@ -79,6 +79,7 @@ public class PhoneIdentityService {
         List<Region> sourceRegions=regions(source),targetRegions=regions(target);
         List<String> selected=(choice==RegionChoice.PHONE?sourceRegions:targetRegions).stream().map(Region::code).toList();
         if(selected.isEmpty())throw conflict("MERGE_REGION_REQUIRED","所选账号没有有效负责区域");
+        AccountRegionPolicy.requireAtMostTen(target,selected,principals.findEnabled(target).map(com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal::isRootAdministrator).orElse(false));
         validateUnit(target,selected);
         List<String> responsibilityRegions=jdbc.sql("SELECT region_code FROM platform.region_responsibility WHERE subject_id IN (:subjects)")
                 .param("subjects",List.of(source,target)).query(String.class).list();

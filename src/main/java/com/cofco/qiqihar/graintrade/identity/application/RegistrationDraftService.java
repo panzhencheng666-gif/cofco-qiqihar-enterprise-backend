@@ -20,9 +20,9 @@ public class RegistrationDraftService {
     }
     public void prepare(HttpSession session, String username, String displayName, String unit,
             List<String> regions, String phone, UUID challenge, String code) {
-        if (regions == null || regions.isEmpty() || regions.stream().anyMatch(java.util.Objects::isNull)) throw invalid();
-        var assignment = new EmployeeAssignment(displayName,unit,"ACTIVE","ACTIVE",
-                List.of("BUSINESS_OPERATOR"),List.of(),regions == null ? List.of() : regions);
+        if (regions != null && regions.stream().anyMatch(java.util.Objects::isNull)) throw invalid();
+        var assignment = new EmployeeAssignment(username,unit,"ACTIVE","ACTIVE",
+                List.of("BUSINESS_OPERATOR"),List.of(),List.of());
         employees.validateDraft(username, assignment);
         phones.requireUnboundPhone(phone);
         synchronized (session) {

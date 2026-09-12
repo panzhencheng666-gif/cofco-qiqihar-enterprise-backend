@@ -130,6 +130,106 @@ class SamplePointCoordinateGuardIntegrationTest {
                 .query(Boolean.class).single()).isTrue();
     }
 
+    @Test
+    void resolvesTheLowestNamedRegionOnlyWithinTheSelectedHierarchy() {
+        assertThat(jdbc.sql("SELECT overview.sample_address_anchor('230202',:address)")
+                .param("address", "坐标唯一性测试乡坐标唯一性测试村三组")
+                .query(String.class).single()).isEqualTo(REGION);
+        assertThat(jdbc.sql("SELECT overview.sample_address_anchor('230202',:address)")
+                .param("address", "坐标唯一性测试乡街道12号")
+                .query(String.class).single()).isEqualTo(TOWNSHIP);
+        assertThat(jdbc.sql("SELECT overview.sample_address_anchor('230203',:address)")
+                .param("address", "坐标唯一性测试乡坐标唯一性测试村")
+                .query(String.class).single()).isEqualTo("230203");
+    }
+
+    @Test
+    void formalAddressChangeReanchorsWithoutChangingReportedCoordinates() {
+        jdbc.sql("UPDATE registry.sample_point SET region_code='230202' WHERE sample_point_id=:id")
+                .param("id", OCCUPIED_POINT).update();
+        String reported = jdbc.sql("SELECT ST_AsEWKT(governed_point) FROM registry.sample_point WHERE sample_point_id=:id")
+                .param("id", OCCUPIED_POINT).query(String.class).single();
+        jdbc.sql("""
+                INSERT INTO registry.formal_sample_point_profile(sample_point_id,object_type_code,address,created_by,updated_by)
+                VALUES(:id,'FARMER','坐标唯一性测试乡坐标唯一性测试村','production-tester','production-tester')
+                """).param("id", OCCUPIED_POINT).update();
+        assertThat(jdbc.sql("""
+                SELECT p.display_region_code=:region AND ST_Covers(b.geometry,p.display_point)
+                AND p.location_mode='REGION_SCHEMATIC' AND ST_AsEWKT(p.governed_point)=:reported
+                FROM registry.sample_point p JOIN overview.administrative_boundary_render b
+                ON b.region_code=p.display_region_code WHERE p.sample_point_id=:id
+                """).param("region", REGION).param("reported", reported).param("id", OCCUPIED_POINT)
+                .query(Boolean.class).single()).isTrue();
+        jdbc.sql("UPDATE registry.formal_sample_point_profile SET address='建华区未匹配街道' WHERE sample_point_id=:id")
+                .param("id", OCCUPIED_POINT).update();
+        assertThat(jdbc.sql("SELECT display_region_code FROM registry.sample_point WHERE sample_point_id=:id")
+                .param("id", OCCUPIED_POINT).query(String.class).single()).isEqualTo("230202");
+    }
+
+    @Test
+    void designAddressReanchorsAndKeepsPlacementStableAcrossCoordinateEdits() {
+        UUID id = UUID.randomUUID();
+        jdbc.sql("""
+                INSERT INTO platform.design_sample_point(design_sample_point_id,contract_version,domain_code,
+                  product_code,object_type_code,values_json,sample_name,region_code,governed_point,
+                  idempotency_key,request_digest,created_by,updated_by)
+                VALUES(:id,'design-sample-fields-v1','PRODUCTION','CORN','FARMER',
+                  '{"DSP_ADDRESS":"坐标唯一性测试乡坐标唯一性测试村"}'::jsonb,'地址锚点测试','230202',
+                  ST_SetSRID(ST_MakePoint(124.5,48.5),4326),:key,repeat('a',64),'production-tester','production-tester')
+                """).param("id", id).param("key", "address-"+id).update();
+        String display = jdbc.sql("SELECT ST_AsEWKT(display_point) FROM platform.design_sample_point WHERE design_sample_point_id=:id")
+                .param("id", id).query(String.class).single();
+        jdbc.sql("UPDATE platform.design_sample_point SET governed_point=ST_SetSRID(ST_MakePoint(124.6,48.6),4326) WHERE design_sample_point_id=:id")
+                .param("id", id).update();
+        assertThat(jdbc.sql("""
+                SELECT display_region_code=:region AND ST_AsEWKT(display_point)=:display
+                AND NOT ST_Equals(display_point,governed_point)
+                FROM platform.design_sample_point WHERE design_sample_point_id=:id
+                """).param("region", REGION).param("display", display).param("id", id)
+                .query(Boolean.class).single()).isTrue();
+    }
+
+    @Test
+    void disambiguatesRepeatedVillageNamesUsingTheNamedTownship() {
+        GovernedMasterDataFixtures.insertRegion(jdbc, "230202997", "另一个测试乡", "230202", "TOWNSHIP", 997);
+        GovernedMasterDataFixtures.insertRegion(jdbc, "230202997001", "坐标唯一性测试村", "230202997", "VILLAGE", 1);
+        assertThat(jdbc.sql("SELECT overview.sample_address_anchor('230202',:address)")
+                .param("address", "坐标唯一性测试乡坐标唯一性测试村三组")
+                .query(String.class).single()).isEqualTo(REGION);
+        assertThat(jdbc.sql("SELECT overview.sample_address_anchor('230202',:address)")
+                .param("address", "坐标唯一性测试村三组")
+                .query(String.class).single()).isEqualTo("230202");
+    }
+
+    @Test
+    void missingVillageRenderBoundaryFallsBackWithinTheSelectedHierarchy() {
+        GovernedMasterDataFixtures.insertRegion(jdbc, "230202998002", "无边界测试村", TOWNSHIP, "VILLAGE", 2);
+        jdbc.sql("UPDATE registry.sample_point SET region_code='230202' WHERE sample_point_id=:id")
+                .param("id", OCCUPIED_POINT).update();
+        assertThatCode(() -> jdbc.sql("""
+                INSERT INTO registry.formal_sample_point_profile(sample_point_id,object_type_code,address,created_by,updated_by)
+                VALUES(:id,'FARMER','坐标唯一性测试乡无边界测试村','production-tester','production-tester')
+                """).param("id", OCCUPIED_POINT).update()).doesNotThrowAnyException();
+        assertThat(jdbc.sql("""
+                SELECT ST_Covers(b.geometry,p.display_point)
+                FROM registry.sample_point p JOIN overview.administrative_boundary_render b
+                ON b.region_code=p.display_region_code WHERE sample_point_id=:id
+                """).param("id", OCCUPIED_POINT).query(Boolean.class).single()).isTrue();
+    }
+
+    @Test
+    void mapRevisionChangesWithEditsAndRollsBackWithTheTransaction() {
+        String before = jdbc.sql("SELECT revision::text FROM overview.map_revision").query(String.class).single();
+        jdbc.sql("SAVEPOINT map_edit").update();
+        jdbc.sql("UPDATE registry.sample_point SET canonical_name='地图版本测试' WHERE sample_point_id=:id")
+                .param("id", OCCUPIED_POINT).update();
+        assertThat(jdbc.sql("SELECT revision::text FROM overview.map_revision").query(String.class).single())
+                .isNotEqualTo(before);
+        jdbc.sql("ROLLBACK TO SAVEPOINT map_edit").update();
+        assertThat(jdbc.sql("SELECT revision::text FROM overview.map_revision").query(String.class).single())
+                .isEqualTo(before);
+    }
+
     private void countyBoundary() {
         jdbc.sql("""
                 UPDATE overview.administrative_boundary

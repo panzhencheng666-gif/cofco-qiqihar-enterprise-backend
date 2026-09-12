@@ -10,8 +10,8 @@ public record OverviewSamplePointIcon(
         String iconKey,
         List<RoleRef> roles,
         List<TypeRef> types,
-        double longitude,
-        double latitude,
+        Double longitude,
+        Double latitude,
         String dataQualityReason, String locationMode) {
     public OverviewSamplePointIcon(UUID samplePointId, String name, String regionCode, String iconKey,
             List<RoleRef> roles, List<TypeRef> types, double longitude, double latitude, String dataQualityReason) {

@@ -72,8 +72,8 @@ public class EmployeeRegistrationService {
         validateIdentity(username);
         if(requested==null)throw denied();
         validateRoles(requested.roleCodes());
-        EmployeeAssignment assignment=new EmployeeAssignment(requested.displayName(),requested.workUnitCode(),
-                "ACTIVE","ACTIVE",List.of("BUSINESS_OPERATOR"),requested.positionCodes(),requested.regionCodes());
+        EmployeeAssignment assignment=new EmployeeAssignment(username,requested.workUnitCode(),
+                "ACTIVE","ACTIVE",List.of("BUSINESS_OPERATOR"),List.of(),List.of());
         validateBoundTownship(assignment.regionCodes());
         governance.validateRegistration(assignment);
         // Serialize concurrent username and identity binding claims.
@@ -101,23 +101,31 @@ public class EmployeeRegistrationService {
         return IdentityActivationResult.active(username);
     }
     private void validateBoundTownship(List<String> regions) {
-        validateSingleRegion(regions);
-        String level=jdbc.sql("SELECT administrative_level FROM platform.region WHERE code=:code")
-                .param("code",regions.getFirst()).query(String.class).optional().orElse("");
-        validateTownshipLevel(level);
+        validateRegions(regions);
+        for (String region : regions) {
+            String level=jdbc.sql("SELECT administrative_level FROM platform.region WHERE code=:code")
+                    .param("code",region).query(String.class).optional().orElse("");
+            validateTownshipLevel(level);
+        }
     }
-    static void validateSingleRegion(List<String> regions) {
-        if(regions==null || regions.size()!=1 || regions.getFirst()==null || regions.getFirst().isBlank())
+    static void validateRegions(List<String> regions) {
+        if(regions==null || regions.size()>10
+                || regions.stream().anyMatch(region -> region==null || region.isBlank())
+                || new java.util.HashSet<>(regions).size()!=regions.size())
             throw new com.cofco.qiqihar.graintrade.shared.application.ClientRequestException(
-                    "REGISTRATION_SINGLE_TOWNSHIP_REQUIRED","一个账号只能绑定一个乡镇，请选择一个乡镇");
+                    "REGISTRATION_REGION_LIMIT","绑定区域最多为 10 个不同乡镇；注册时可以不绑定区域");
     }
     static void validateTownshipLevel(String level) {
         if(!"TOWNSHIP".equals(level))throw new com.cofco.qiqihar.graintrade.shared.application.ClientRequestException(
                 "REGISTRATION_TOWNSHIP_REQUIRED","绑定区域必须精确到乡镇，不能选择市、区县或行政村");
     }
     static void validateIdentity(String username) {
-        if(username==null||!username.matches("[A-Za-z0-9._:@-]{1,120}")
-                ||username.equalsIgnoreCase("admin")||username.equalsIgnoreCase("identity-bootstrap"))throw denied();
+        if(username==null||!username.matches("[\\p{IsHan}A-Za-z0-9._:@-]{1,120}"))
+            throw new com.cofco.qiqihar.graintrade.shared.application.ClientRequestException(
+                    "REGISTRATION_USERNAME_INVALID","用户名支持中文、英文字母、数字及 . _ : @ -，不能包含空格，最长120个字符");
+        if(username.equalsIgnoreCase("admin")||username.equalsIgnoreCase("identity-bootstrap"))
+            throw new com.cofco.qiqihar.graintrade.shared.application.ClientRequestException(
+                    "REGISTRATION_USERNAME_RESERVED","该用户名为系统保留账号，请使用其他用户名");
     }
     static void validateRoles(List<String> roles) {
         if(!List.of("BUSINESS_OPERATOR").equals(roles))throw denied();
