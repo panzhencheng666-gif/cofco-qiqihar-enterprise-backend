@@ -70,7 +70,7 @@ class WorkObligationReportRestIntegrationTest {
         jdbc.sql("""
                 INSERT INTO platform.security_user_region_scope(subject_id,region_code,valid_from)
                 VALUES (:operator,'230202','2026-01-01T00:00:00+08:00'),
-                       (:colleague,'230202','2026-01-01T00:00:00+08:00'),
+                       (:colleague,'230203','2026-01-01T00:00:00+08:00'),
                        (:reviewer,'230202','2026-01-01T00:00:00+08:00')
                 ON CONFLICT DO NOTHING
                 """).param("operator", OPERATOR).param("colleague", COLLEAGUE)
@@ -171,6 +171,11 @@ class WorkObligationReportRestIntegrationTest {
                 """).param("reviewer", REVIEWER).update();
         mockMvc.perform(get("/api/v1/work-obligation-reports/exports/{id}/content", exportId)
                         .principal(() -> REVIEWER))
+                .andExpect(status().isOk());
+        jdbc.sql("UPDATE platform.security_user SET enabled=false WHERE subject_id=:reviewer")
+                .param("reviewer", REVIEWER).update();
+        mockMvc.perform(get("/api/v1/work-obligation-reports/exports/{id}/content", exportId)
+                        .principal(() -> REVIEWER))
                 .andExpect(status().isForbidden());
     }
 
@@ -202,6 +207,8 @@ class WorkObligationReportRestIntegrationTest {
     }
 
     private void cleanMutableFixtures() {
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id IN (:operator,:colleague,:reviewer)")
+                .param("operator", OPERATOR).param("colleague", COLLEAGUE).param("reviewer", REVIEWER).update();
         jdbc.sql("DELETE FROM workflow.obligation_report_export WHERE generated_by=:reviewer")
                 .param("reviewer", REVIEWER).update();
         jdbc.sql("DELETE FROM workflow.work_item WHERE source_type='PRODUCTION' AND source_id IN (:ids)")

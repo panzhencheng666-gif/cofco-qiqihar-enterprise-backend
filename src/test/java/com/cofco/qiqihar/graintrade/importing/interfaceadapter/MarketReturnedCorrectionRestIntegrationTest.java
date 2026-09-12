@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade.importing.interfaceadapter;
 
+import com.cofco.qiqihar.graintrade.testsupport.OrdinarySecurityFixture;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -54,6 +55,7 @@ class MarketReturnedCorrectionRestIntegrationTest {
     @Autowired MarketReturnedCorrectionRowService rowService;
     @Autowired InternalSecuritySubjectScope subjects;
     private JdbcClient jdbc;
+    private OrdinarySecurityFixture limitedActor;
     private final java.util.Map<String, com.cofco.qiqihar.graintrade.testsupport.AdministrativeBoundarySnapshot>
             boundaries = new java.util.LinkedHashMap<>();
 
@@ -72,6 +74,7 @@ class MarketReturnedCorrectionRestIntegrationTest {
 
     @AfterEach
     void clean() {
+        if (limitedActor != null) limitedActor.close();
         jdbc.sql("""
                 TRUNCATE platform.import_row_result,platform.import_job,platform.business_audit_event,
                   platform.business_import_draft,market.market_record,evidence.evidence_photo
@@ -100,7 +103,7 @@ class MarketReturnedCorrectionRestIntegrationTest {
                 "CORN", "TRADER", "230200", "其他原因样本", COORDINATE_REASON + "，请复核");
         String soybean = returned("SOYBEAN", "TRADER", "230200", "大豆样本", COORDINATE_REASON);
         String unauthorized = returned("CORN", "TRADER", "231100", "越权地区样本", COORDINATE_REASON);
-        restrictMarketTesterTo("230200");
+        createRestrictedCorrectionReader("230200");
 
         long recordCount = count("market.market_record");
         long auditCount = count("platform.business_audit_event");
@@ -109,7 +112,7 @@ class MarketReturnedCorrectionRestIntegrationTest {
 
         var response = mvc.perform(get("/api/v1/imports/market/returned-corrections/template")
                         .param("productCode", "CORN")
-                        .principal(() -> "market-tester"))
+                        .principal(() -> "ci-correction-reader"))
                 .andExpect(status().isOk())
                 .andReturn().getResponse();
 
@@ -302,26 +305,26 @@ class MarketReturnedCorrectionRestIntegrationTest {
         String stale = returned("CORN", "TRADER", "230200", "版本变化样本", COORDINATE_REASON);
         String wrongProduct = returned("CORN", "TRADER", "230200", "品种篡改样本", COORDINATE_REASON);
         String unauthorized = returned("CORN", "TRADER", "231100", "越权修正样本", COORDINATE_REASON);
-        restrictMarketTesterTo("230200");
+        createRestrictedCorrectionReader("230200");
         Map<String, String> before = snapshots(wrongState, stale, wrongProduct, unauthorized);
 
-        assertThatThrownBy(() -> subjects.callAs("market-tester", () -> rowService.correctAndSubmit(
+        assertThatThrownBy(() -> subjects.callAs("ci-correction-reader", () -> rowService.correctAndSubmit(
                 wrongState, 3, correctionRow(
                         "CORN", "TRADER", "230200", "状态变化样本", "47.5", "123.5"))))
                 .isInstanceOf(ConflictException.class);
-        assertThatThrownBy(() -> subjects.callAs("market-tester", () -> rowService.correctAndSubmit(
+        assertThatThrownBy(() -> subjects.callAs("ci-correction-reader", () -> rowService.correctAndSubmit(
                 stale, 1, correctionRow(
                         "CORN", "TRADER", "230200", "版本变化样本", "47.5", "123.5"))))
                 .isInstanceOf(ConflictException.class);
-        assertThatThrownBy(() -> subjects.callAs("market-tester", () -> rowService.correctAndSubmit(
+        assertThatThrownBy(() -> subjects.callAs("ci-correction-reader", () -> rowService.correctAndSubmit(
                 wrongProduct, 2, correctionRow(
                         "SOYBEAN", "TRADER", "230200", "品种篡改样本", "47.5", "123.5"))))
                 .isInstanceOf(ClientRequestException.class);
-        assertThatThrownBy(() -> subjects.callAs("market-tester", () -> rowService.correctAndSubmit(
+        assertThatThrownBy(() -> subjects.callAs("ci-correction-reader", () -> rowService.correctAndSubmit(
                 UUID.randomUUID().toString(), 2, correctionRow(
                         "CORN", "TRADER", "230200", "编号篡改样本", "47.5", "123.5"))))
                 .isInstanceOf(ResourceNotFoundException.class);
-        assertThatThrownBy(() -> subjects.callAs("market-tester", () -> rowService.correctAndSubmit(
+        assertThatThrownBy(() -> subjects.callAs("ci-correction-reader", () -> rowService.correctAndSubmit(
                 unauthorized, 2, correctionRow(
                         "CORN", "TRADER", "231100", "越权修正样本", "49.5", "126.5"))))
                 .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
@@ -695,12 +698,9 @@ class MarketReturnedCorrectionRestIntegrationTest {
         com.cofco.qiqihar.graintrade.testsupport.GovernedMasterDataFixtures.publishBoundary(jdbc, regionCode);
     }
 
-    private void restrictMarketTesterTo(String regionCode) {
-        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id='market-tester'").update();
-        jdbc.sql("""
-                INSERT INTO platform.security_user_region_scope(subject_id,region_code)
-                VALUES('market-tester',:regionCode)
-                """).param("regionCode", regionCode).update();
+    private void createRestrictedCorrectionReader(String regionCode) {
+        limitedActor = OrdinarySecurityFixture.create(
+                jdbc, "ci-correction-reader", regionCode);
     }
 
     private long count(String table) {

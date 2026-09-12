@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade.importing.interfaceadapter;
 
+import com.cofco.qiqihar.graintrade.testsupport.OrdinarySecurityFixture;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
@@ -541,49 +542,52 @@ class MarketImportRestIntegrationTest {
 
     @Test
     void returnsPerRowErrorsAndRollsBackTheEntireMarketBatch() throws Exception {
-        String firstPhoto = uploadEvidence();
-        String invalidPhoto = uploadEvidence();
-        String csv = String.join(",", MarketImportTemplate.HEADERS) + "\n"
-                + row(firstPhoto, "14.6") + row(invalidPhoto, "not-a-decimal");
+        try (var ordinary = OrdinarySecurityFixture.create(
+                JdbcClient.create(dataSource), "ci-import-other", null)) {
+            String firstPhoto = uploadEvidence();
+            String invalidPhoto = uploadEvidence();
+            String csv = String.join(",", MarketImportTemplate.HEADERS) + "\n"
+                    + row(firstPhoto, "14.6") + row(invalidPhoto, "not-a-decimal");
 
-        String response = mvc.perform(multipart("/api/v1/imports/market")
-                        .file(new MockMultipartFile("file", "market.csv", "text/csv", csv.getBytes(StandardCharsets.UTF_8)))
-                        .param("productCode", "CORN").param("objectTypeCode", "FEED_MILL")
-                        .header("Idempotency-Key", "market-import-invalid-row").principal(() -> "market-tester"))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.importedRows").value(0))
-                .andExpect(jsonPath("$.data.failedRows").value(2))
-                .andReturn().getResponse().getContentAsString();
-        String jobId = response.replaceFirst("(?s).*?\"id\":\"([^\"]+)\".*", "$1");
+            String response = mvc.perform(multipart("/api/v1/imports/market")
+                            .file(new MockMultipartFile("file", "market.csv", "text/csv", csv.getBytes(StandardCharsets.UTF_8)))
+                            .param("productCode", "CORN").param("objectTypeCode", "FEED_MILL")
+                            .header("Idempotency-Key", "market-import-invalid-row").principal(() -> "market-tester"))
+                    .andExpect(status().isCreated())
+                    .andExpect(jsonPath("$.data.importedRows").value(0))
+                    .andExpect(jsonPath("$.data.failedRows").value(2))
+                    .andReturn().getResponse().getContentAsString();
+            String jobId = response.replaceFirst("(?s).*?\"id\":\"([^\"]+)\".*", "$1");
 
-        mvc.perform(get("/api/v1/imports/market/{jobId}/errors", jobId)
-                        .principal(() -> "market-tester"))
-                .andExpect(status().isOk())
-                .andExpect(content().string(org.hamcrest.Matchers.containsString("NOT_IMPORTED_ATOMIC_BATCH")))
-                .andExpect(content().string(org.hamcrest.Matchers.containsString("IMPORT_ROW_VALUE_FORMAT")));
-        assertThat(importErrorDownloadAuditCount(jobId)).isEqualTo(1);
-        mvc.perform(get("/api/v1/imports/market/{jobId}/errors", jobId)
-                        .principal(() -> "production-tester"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("IMPORT_ERROR_FILE_NOT_ALLOWED"));
-        assertThat(importErrorDownloadAuditCount(jobId)).isEqualTo(1);
+            mvc.perform(get("/api/v1/imports/market/{jobId}/errors", jobId)
+                            .principal(() -> "market-tester"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("NOT_IMPORTED_ATOMIC_BATCH")))
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("IMPORT_ROW_VALUE_FORMAT")));
+            assertThat(importErrorDownloadAuditCount(jobId)).isEqualTo(1);
+            mvc.perform(get("/api/v1/imports/market/{jobId}/errors", jobId)
+                            .principal(() -> "ci-import-other"))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.error.code").value("IMPORT_ERROR_FILE_NOT_ALLOWED"));
+            assertThat(importErrorDownloadAuditCount(jobId)).isEqualTo(1);
 
-        String retryResponse = mvc.perform(post("/api/v1/imports/market/{jobId}/retries", jobId)
-                        .principal(() -> "market-tester"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.retryOf").value(jobId))
-                .andExpect(jsonPath("$.data.importedRows").value(0))
-                .andExpect(jsonPath("$.data.failedRows").value(2))
-                .andReturn().getResponse().getContentAsString();
-        String retryJobId = retryResponse.replaceFirst("(?s).*?\"id\":\"([^\"]+)\".*", "$1");
+            String retryResponse = mvc.perform(post("/api/v1/imports/market/{jobId}/retries", jobId)
+                            .principal(() -> "market-tester"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.retryOf").value(jobId))
+                    .andExpect(jsonPath("$.data.importedRows").value(0))
+                    .andExpect(jsonPath("$.data.failedRows").value(2))
+                    .andReturn().getResponse().getContentAsString();
+            String retryJobId = retryResponse.replaceFirst("(?s).*?\"id\":\"([^\"]+)\".*", "$1");
 
-        assertThat(jdbc.sql("SELECT count(*) FROM market.market_record").query(Long.class).single()).isZero();
-        assertThat(jdbc.sql("SELECT count(*) FROM platform.import_row_result WHERE import_job_id=:job")
-                .param("job", UUID.fromString(jobId)).query(Long.class).single()).isEqualTo(2L);
-        assertThat(jdbc.sql("SELECT count(*) FROM platform.import_row_result WHERE import_job_id=:job")
-                .param("job", UUID.fromString(retryJobId)).query(Long.class).single()).isEqualTo(2L);
-        assertThat(jdbc.sql("SELECT count(*) FROM evidence.evidence_photo WHERE state_code='ATTACHED'")
-                .query(Long.class).single()).isZero();
+            assertThat(jdbc.sql("SELECT count(*) FROM market.market_record").query(Long.class).single()).isZero();
+            assertThat(jdbc.sql("SELECT count(*) FROM platform.import_row_result WHERE import_job_id=:job")
+                    .param("job", UUID.fromString(jobId)).query(Long.class).single()).isEqualTo(2L);
+            assertThat(jdbc.sql("SELECT count(*) FROM platform.import_row_result WHERE import_job_id=:job")
+                    .param("job", UUID.fromString(retryJobId)).query(Long.class).single()).isEqualTo(2L);
+            assertThat(jdbc.sql("SELECT count(*) FROM evidence.evidence_photo WHERE state_code='ATTACHED'")
+                    .query(Long.class).single()).isZero();
+        }
     }
 
     private long importErrorDownloadAuditCount(String jobId) {

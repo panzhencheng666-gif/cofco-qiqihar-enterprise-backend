@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade.logistics.interfaceadapter;
 
+import com.cofco.qiqihar.graintrade.testsupport.OrdinarySecurityFixture;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -41,21 +42,27 @@ class LogisticsRestIntegrationTest {
 
     @Test
     void onlyAnIndependentAuthorizedReviewerCanApproveOrReturnALogisticsRecord() throws Exception {
-        String id=create("CORN","RAIL","TEST_RAIL","TEST_ROAD",true);
-        transition(id,"submit",0,null)
-                .andExpect(jsonPath("$.data.allowedActions.length()").value(1))
-                .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"));
-        mvc.perform(post("/api/v1/logistics-records/{id}/approve",id)
-                        .principal(() -> "logistics-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":1}"))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("SELF_APPROVAL_FORBIDDEN"));
-        mvc.perform(post("/api/v1/logistics-records/{id}/return",id)
-                        .principal(() -> "logistics-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":1,\"reason\":\"补充依据\"}"))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("SELF_RETURN_FORBIDDEN"));
-        transition(id,"approve",1,null).andExpect(jsonPath("$.data.status").value("APPROVED"));
+        try (var ordinary = OrdinarySecurityFixture.create(
+                JdbcClient.create(dataSource), "ci-ordinary-reviewer", "230200")) {
+            String id=create("CORN","RAIL","TEST_RAIL","TEST_ROAD",true);
+            mvc.perform(post("/api/v1/logistics-records/{id}/submit",id)
+                            .principal(() -> "ci-ordinary-reviewer").contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"version\":0}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.allowedActions.length()").value(1))
+                    .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"));
+            mvc.perform(post("/api/v1/logistics-records/{id}/approve",id)
+                            .principal(() -> "ci-ordinary-reviewer").contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"version\":1}"))
+                    .andExpect(status().isForbidden())
+                    .andExpect(jsonPath("$.error.code").value("SELF_APPROVAL_FORBIDDEN"));
+            mvc.perform(post("/api/v1/logistics-records/{id}/return",id)
+                            .principal(() -> "ci-ordinary-reviewer").contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"version\":1,\"reason\":\"补充依据\"}"))
+                    .andExpect(status().isForbidden())
+                    .andExpect(jsonPath("$.error.code").value("SELF_RETURN_FORBIDDEN"));
+            transition(id,"approve",1,null).andExpect(jsonPath("$.data.status").value("APPROVED"));
+        }
     }
 
     @Test

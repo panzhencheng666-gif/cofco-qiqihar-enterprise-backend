@@ -50,12 +50,18 @@ class RegionalCropAnnualStatRestIntegrationTest {
                 VALUES(:operator,'地区产情填报员',:unit),(:reader,'地区产情只读员',:unit)
                 ON CONFLICT(subject_id) DO UPDATE SET enabled=true,work_unit_code=EXCLUDED.work_unit_code;
                 INSERT INTO platform.security_user_role(subject_id,role_code)
-                VALUES(:operator,'BUSINESS_OPERATOR'),(:reader,'REPORTER')
+                VALUES(:operator,'SYSTEM_ADMIN'),(:reader,'REPORTER')
                 ON CONFLICT(subject_id,role_code,valid_from) DO UPDATE SET valid_until=NULL;
                 INSERT INTO platform.security_user_region_scope(subject_id,region_code)
-                VALUES(:operator,:prefecture),(:reader,:prefecture)
+                VALUES(:operator,:prefecture)
                 ON CONFLICT(subject_id,region_code,valid_from) DO UPDATE SET valid_until=NULL
                 """).param("unit", UNIT).param("prefecture", PREFECTURE)
+                .param("operator", OPERATOR).param("reader", READER).update();
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void releaseRegionBindings() {
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id IN (:operator,:reader)")
                 .param("operator", OPERATOR).param("reader", READER).update();
     }
 
@@ -190,7 +196,7 @@ class RegionalCropAnnualStatRestIntegrationTest {
         mvc.perform(put("/api/v1/production/regional-annual-stats/{regionCode}", COUNTY)
                         .principal(() -> READER).contentType(MediaType.APPLICATION_JSON).content(valid))
                 .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("ACCESS_PERMISSION_DENIED"));
+                .andExpect(jsonPath("$.error.code").value("ADMINISTRATOR_REQUIRED"));
         mvc.perform(put("/api/v1/production/regional-annual-stats/{regionCode}", PREFECTURE)
                         .principal(() -> OPERATOR).contentType(MediaType.APPLICATION_JSON).content(valid))
                 .andExpect(status().isBadRequest())

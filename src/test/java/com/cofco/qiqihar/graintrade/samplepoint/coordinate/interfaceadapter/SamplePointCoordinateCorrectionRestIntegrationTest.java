@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade.samplepoint.coordinate.interfaceadapter;
 
+import com.cofco.qiqihar.graintrade.testsupport.OrdinarySecurityFixture;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
@@ -61,77 +62,80 @@ class SamplePointCoordinateCorrectionRestIntegrationTest {
 
     @Test
     void exportsUploadsAndIndependentlyAppliesOneInPlaceCorrection() throws Exception {
-        long pointCount = count("registry.sample_point");
-        long productionCount = count("production.production_record");
-        long marketCount = count("market.market_record");
-        byte[] exported = mockMvc.perform(get("/api/v1/sample-point-coordinate-corrections/export")
-                        .principal(() -> "production-tester"))
-                .andExpect(status().isOk())
-                .andReturn().getResponse().getContentAsByteArray();
-        var parsed = SamplePointCoordinateCorrectionWorkbook.read(exported);
-        assertThat(parsed.rows()).extracting(SamplePointCoordinateCorrectionWorkbook.Row::samplePointId)
-                .containsExactlyInAnyOrder(FIRST, SECOND);
+        try (var ordinary = OrdinarySecurityFixture.create(
+                JdbcClient.create(dataSource), "ci-ordinary-reviewer", "230202")) {
+            long pointCount = count("registry.sample_point");
+            long productionCount = count("production.production_record");
+            long marketCount = count("market.market_record");
+            byte[] exported = mockMvc.perform(get("/api/v1/sample-point-coordinate-corrections/export")
+                            .principal(() -> "ci-ordinary-reviewer"))
+                    .andExpect(status().isOk())
+                    .andReturn().getResponse().getContentAsByteArray();
+            var parsed = SamplePointCoordinateCorrectionWorkbook.read(exported);
+            assertThat(parsed.rows()).extracting(SamplePointCoordinateCorrectionWorkbook.Row::samplePointId)
+                    .containsExactlyInAnyOrder(FIRST, SECOND);
 
-        List<SamplePointCoordinateCorrectionWorkbook.Row> corrected = new ArrayList<>();
-        for (var row : parsed.rows()) {
-            if (row.samplePointId().equals(FIRST)) {
-                corrected.add(withDecision(row, SamplePointCoordinateCorrectionWorkbook.KEEP,
-                        null, null, "现场定位复核", "确认该点保留原坐标"));
-            } else {
-                corrected.add(withDecision(row, SamplePointCoordinateCorrectionWorkbook.CHANGE,
-                        new BigDecimal("123.5201"), new BigDecimal("47.9301"),
-                        "现场重新定位", "已核对实际经营地址"));
+            List<SamplePointCoordinateCorrectionWorkbook.Row> corrected = new ArrayList<>();
+            for (var row : parsed.rows()) {
+                if (row.samplePointId().equals(FIRST)) {
+                    corrected.add(withDecision(row, SamplePointCoordinateCorrectionWorkbook.KEEP,
+                            null, null, "现场定位复核", "确认该点保留原坐标"));
+                } else {
+                    corrected.add(withDecision(row, SamplePointCoordinateCorrectionWorkbook.CHANGE,
+                            new BigDecimal("123.5201"), new BigDecimal("47.9301"),
+                            "现场重新定位", "已核对实际经营地址"));
+                }
             }
+            byte[] upload = SamplePointCoordinateCorrectionWorkbook.create(parsed.batchId(), corrected);
+            MockMultipartFile file = new MockMultipartFile("file", "坐标修正.xlsx",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", upload);
+            String requestId = mockMvc.perform(multipart("/api/v1/sample-point-coordinate-corrections")
+                            .file(file).header("Idempotency-Key", "coordinate-correction-happy-1")
+                            .principal(() -> "ci-ordinary-reviewer"))
+                    .andExpect(status().isCreated())
+                    .andExpect(jsonPath("$.data.statusCode").value("PENDING_REVIEW"))
+                    .andExpect(jsonPath("$.data.totalRows").value(2))
+                    .andExpect(jsonPath("$.data.pendingReviewRows").value(1))
+                    .andReturn().getResponse().getContentAsString()
+                    .replaceFirst("(?s).*?\\\"requestId\\\":\\\"([^\\\"]+)\\\".*", "$1");
+
+            assertThat(count("registry.sample_point")).isEqualTo(pointCount);
+            assertThat(count("production.production_record")).isEqualTo(productionCount);
+            assertThat(count("market.market_record")).isEqualTo(marketCount);
+            assertThat(coordinate(SECOND)).isEqualTo("123.51|47.92|0");
+
+            mockMvc.perform(post("/api/v1/sample-point-coordinate-corrections/requests/{id}/review", requestId)
+                            .principal(() -> "ci-ordinary-reviewer").contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"decision\":\"APPROVE\",\"reason\":\"自行复核\"}"))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.error.code")
+                            .value("SAMPLE_POINT_CORRECTION_SELF_REVIEW_FORBIDDEN"));
+            grantAccountOwner("ci-ordinary-reviewer");
+            mockMvc.perform(post("/api/v1/sample-point-coordinate-corrections/requests/{id}/review", requestId)
+                            .principal(() -> "ci-ordinary-reviewer").contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"decision\":\"APPROVE\",\"reason\":\"唯一所有者现场依据完整\"}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.statusCode").value("APPLIED"));
+
+            assertThat(coordinate(SECOND)).isEqualTo("123.5201|47.9301|1");
+            assertThat(count("registry.sample_point")).isEqualTo(pointCount);
+            assertThat(jdbc.sql("""
+                    SELECT count(*) FROM platform.business_event_outbox
+                    WHERE action_code='SAMPLE_POINT_COORDINATE_CORRECTION_APPLIED'
+                      AND aggregate_id=:requestId
+                    """).param("requestId", requestId).query(Long.class).single()).isOne();
+            assertThat(jdbc.sql("""
+                    SELECT count(*) FROM platform.business_audit_event
+                    WHERE action_code='SAMPLE_POINT_COORDINATE_CORRECTION_APPLIED'
+                      AND aggregate_id=:requestId
+                      AND actor_subject_id='ci-ordinary-reviewer'
+                      AND detail->>'privilegedSelfReview'='true'
+                    """).param("requestId", requestId).query(Long.class).single()).isOne();
+            mockMvc.perform(get("/api/v1/sample-point-coordinate-corrections/history")
+                            .principal(() -> "ci-ordinary-reviewer"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data[0].statusCode").value("PENDING_REVIEW"));
         }
-        byte[] upload = SamplePointCoordinateCorrectionWorkbook.create(parsed.batchId(), corrected);
-        MockMultipartFile file = new MockMultipartFile("file", "坐标修正.xlsx",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", upload);
-        String requestId = mockMvc.perform(multipart("/api/v1/sample-point-coordinate-corrections")
-                        .file(file).header("Idempotency-Key", "coordinate-correction-happy-1")
-                        .principal(() -> "production-tester"))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.statusCode").value("PENDING_REVIEW"))
-                .andExpect(jsonPath("$.data.totalRows").value(2))
-                .andExpect(jsonPath("$.data.pendingReviewRows").value(1))
-                .andReturn().getResponse().getContentAsString()
-                .replaceFirst("(?s).*?\\\"requestId\\\":\\\"([^\\\"]+)\\\".*", "$1");
-
-        assertThat(count("registry.sample_point")).isEqualTo(pointCount);
-        assertThat(count("production.production_record")).isEqualTo(productionCount);
-        assertThat(count("market.market_record")).isEqualTo(marketCount);
-        assertThat(coordinate(SECOND)).isEqualTo("123.51|47.92|0");
-
-        mockMvc.perform(post("/api/v1/sample-point-coordinate-corrections/requests/{id}/review", requestId)
-                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"decision\":\"APPROVE\",\"reason\":\"自行复核\"}"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code")
-                        .value("SAMPLE_POINT_CORRECTION_SELF_REVIEW_FORBIDDEN"));
-        grantAccountOwner("production-tester");
-        mockMvc.perform(post("/api/v1/sample-point-coordinate-corrections/requests/{id}/review", requestId)
-                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"decision\":\"APPROVE\",\"reason\":\"唯一所有者现场依据完整\"}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.statusCode").value("APPLIED"));
-
-        assertThat(coordinate(SECOND)).isEqualTo("123.5201|47.9301|1");
-        assertThat(count("registry.sample_point")).isEqualTo(pointCount);
-        assertThat(jdbc.sql("""
-                SELECT count(*) FROM platform.business_event_outbox
-                WHERE action_code='SAMPLE_POINT_COORDINATE_CORRECTION_APPLIED'
-                  AND aggregate_id=:requestId
-                """).param("requestId", requestId).query(Long.class).single()).isOne();
-        assertThat(jdbc.sql("""
-                SELECT count(*) FROM platform.business_audit_event
-                WHERE action_code='SAMPLE_POINT_COORDINATE_CORRECTION_APPLIED'
-                  AND aggregate_id=:requestId
-                  AND actor_subject_id='production-tester'
-                  AND detail->>'privilegedSelfReview'='true'
-                """).param("requestId", requestId).query(Long.class).single()).isOne();
-        mockMvc.perform(get("/api/v1/sample-point-coordinate-corrections/history")
-                        .principal(() -> "production-tester"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].statusCode").value("PENDING_REVIEW"));
     }
 
     @Test

@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade.importing.interfaceadapter;
 
+import com.cofco.qiqihar.graintrade.testsupport.OrdinarySecurityFixture;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
@@ -438,54 +439,57 @@ class ProductionImportRestIntegrationTest {
 
     @Test
     void validatesRowsDownloadsErrorsAndRetriesWithoutDuplicatingTheOriginalImport() throws Exception {
-        mvc.perform(get("/api/v1/imports/production/template").principal(() -> "production-tester"))
-                .andExpect(status().isOk()).andExpect(content().string(
-                        "productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_SURVEYOR_NAME,PROD_SURVEYOR_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId\n"));
+        try (var ordinary = OrdinarySecurityFixture.create(
+                JdbcClient.create(dataSource), "ci-import-other", null)) {
+            mvc.perform(get("/api/v1/imports/production/template").principal(() -> "production-tester"))
+                    .andExpect(status().isOk()).andExpect(content().string(
+                            "productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_SURVEYOR_NAME,PROD_SURVEYOR_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId\n"));
 
-        String csv = """
-                productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_SURVEYOR_NAME,PROD_SURVEYOR_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId
-                CORN,FARMER,230200,,2026-07-31,10.5,20,导入填报员,王雷,13800000000,13900000000,47.3543,123.9182,%s
-                CORN,FARMER,230200,,bad-date,5,30,导入填报员,王雷,13800000000,13900000000,47.3543,123.9182,00000000-0000-0000-0000-000000000023
-                """.formatted(PHOTO_ID);
-        mvc.perform(multipart("/api/v1/imports/production").file(new MockMultipartFile("file", "outside.csv", "text/csv", """
-                        productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_SURVEYOR_NAME,PROD_SURVEYOR_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId
-                        CORN,FARMER,231100,,2026-07-31,10,20,导入填报员,王雷,13800000000,13900000000,47.3543,123.9182,00000000-0000-0000-0000-000000000024
-                        """.getBytes(StandardCharsets.UTF_8)))
-                        .param("productCode", "CORN").param("objectTypeCode", "FARMER")
-                        .header("Idempotency-Key", "outside-scope-import").principal(() -> "limited-importer"))
-                .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
-        MockMultipartFile file = new MockMultipartFile("file", "production.csv", "text/csv",
-                csv.getBytes(StandardCharsets.UTF_8));
-        String response = mvc.perform(multipart("/api/v1/imports/production").file(file)
-                        .param("productCode", "CORN").param("objectTypeCode", "FARMER")
-                        .header("Idempotency-Key", "production-import-1").principal(() -> "production-tester"))
-                .andExpect(status().isCreated()).andExpect(jsonPath("$.data.statusCode").value("COMPLETED_WITH_ERRORS"))
-                .andExpect(jsonPath("$.data.importedRows").value(0)).andExpect(jsonPath("$.data.failedRows").value(2))
-                .andReturn().getResponse().getContentAsString();
-        UUID jobId = UUID.fromString(response.replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1"));
+            String csv = """
+                    productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_SURVEYOR_NAME,PROD_SURVEYOR_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId
+                    CORN,FARMER,230200,,2026-07-31,10.5,20,导入填报员,王雷,13800000000,13900000000,47.3543,123.9182,%s
+                    CORN,FARMER,230200,,bad-date,5,30,导入填报员,王雷,13800000000,13900000000,47.3543,123.9182,00000000-0000-0000-0000-000000000023
+                    """.formatted(PHOTO_ID);
+            mvc.perform(multipart("/api/v1/imports/production").file(new MockMultipartFile("file", "outside.csv", "text/csv", """
+                            productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_SURVEYOR_NAME,PROD_SURVEYOR_PHONE,PROD_SAMPLE_CONTACT,PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId
+                            CORN,FARMER,231100,,2026-07-31,10,20,导入填报员,王雷,13800000000,13900000000,47.3543,123.9182,00000000-0000-0000-0000-000000000024
+                            """.getBytes(StandardCharsets.UTF_8)))
+                            .param("productCode", "CORN").param("objectTypeCode", "FARMER")
+                            .header("Idempotency-Key", "outside-scope-import").principal(() -> "limited-importer"))
+                    .andExpect(status().isForbidden()).andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+            MockMultipartFile file = new MockMultipartFile("file", "production.csv", "text/csv",
+                    csv.getBytes(StandardCharsets.UTF_8));
+            String response = mvc.perform(multipart("/api/v1/imports/production").file(file)
+                            .param("productCode", "CORN").param("objectTypeCode", "FARMER")
+                            .header("Idempotency-Key", "production-import-1").principal(() -> "production-tester"))
+                    .andExpect(status().isCreated()).andExpect(jsonPath("$.data.statusCode").value("COMPLETED_WITH_ERRORS"))
+                    .andExpect(jsonPath("$.data.importedRows").value(0)).andExpect(jsonPath("$.data.failedRows").value(2))
+                    .andReturn().getResponse().getContentAsString();
+            UUID jobId = UUID.fromString(response.replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1"));
 
-        mvc.perform(get("/api/v1/imports/production/{jobId}/errors", jobId).principal(() -> "production-tester"))
-                .andExpect(status().isOk()).andExpect(content().string(org.hamcrest.Matchers.containsString("IMPORT_ROW_VALUE_FORMAT")));
-        assertThat(importErrorDownloadAuditCount(jobId)).isEqualTo(1);
-        mvc.perform(get("/api/v1/imports/production/{jobId}/errors", jobId)
-                        .principal(() -> "market-tester"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("IMPORT_ERROR_FILE_NOT_ALLOWED"));
-        assertThat(importErrorDownloadAuditCount(jobId)).isEqualTo(1);
+            mvc.perform(get("/api/v1/imports/production/{jobId}/errors", jobId).principal(() -> "production-tester"))
+                    .andExpect(status().isOk()).andExpect(content().string(org.hamcrest.Matchers.containsString("IMPORT_ROW_VALUE_FORMAT")));
+            assertThat(importErrorDownloadAuditCount(jobId)).isEqualTo(1);
+            mvc.perform(get("/api/v1/imports/production/{jobId}/errors", jobId)
+                            .principal(() -> "ci-import-other"))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.error.code").value("IMPORT_ERROR_FILE_NOT_ALLOWED"));
+            assertThat(importErrorDownloadAuditCount(jobId)).isEqualTo(1);
 
-        mvc.perform(multipart("/api/v1/imports/production").file(file)
-                        .param("productCode", "CORN").param("objectTypeCode", "FARMER")
-                        .header("Idempotency-Key", "production-import-1").principal(() -> "production-tester"))
-                .andExpect(status().isCreated()).andExpect(jsonPath("$.data.id").value(jobId.toString()))
-                .andExpect(jsonPath("$.data.importedRows").value(0));
-        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record").query(Long.class).single()).isZero();
+            mvc.perform(multipart("/api/v1/imports/production").file(file)
+                            .param("productCode", "CORN").param("objectTypeCode", "FARMER")
+                            .header("Idempotency-Key", "production-import-1").principal(() -> "production-tester"))
+                    .andExpect(status().isCreated()).andExpect(jsonPath("$.data.id").value(jobId.toString()))
+                    .andExpect(jsonPath("$.data.importedRows").value(0));
+            assertThat(jdbc.sql("SELECT count(*) FROM production.production_record").query(Long.class).single()).isZero();
 
-        mvc.perform(post("/api/v1/imports/production/{jobId}/retries", jobId).principal(() -> "production-tester"))
-                .andExpect(status().isCreated()).andExpect(jsonPath("$.data.retryOf").value(jobId.toString()))
-                .andExpect(jsonPath("$.data.importedRows").value(0)).andExpect(jsonPath("$.data.failedRows").value(2));
-        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record").query(Long.class).single()).isZero();
-        assertThat(jdbc.sql("SELECT action_code FROM platform.business_audit_event ORDER BY occurred_at,event_id")
-                .query(String.class).list()).contains("IMPORT_JOB_COMPLETED");
+            mvc.perform(post("/api/v1/imports/production/{jobId}/retries", jobId).principal(() -> "production-tester"))
+                    .andExpect(status().isCreated()).andExpect(jsonPath("$.data.retryOf").value(jobId.toString()))
+                    .andExpect(jsonPath("$.data.importedRows").value(0)).andExpect(jsonPath("$.data.failedRows").value(2));
+            assertThat(jdbc.sql("SELECT count(*) FROM production.production_record").query(Long.class).single()).isZero();
+            assertThat(jdbc.sql("SELECT action_code FROM platform.business_audit_event ORDER BY occurred_at,event_id")
+                    .query(String.class).list()).contains("IMPORT_JOB_COMPLETED");
+        }
     }
 
     private long importErrorDownloadAuditCount(UUID jobId) {

@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade.samplepoint.network.interfaceadapter;
 
+import com.cofco.qiqihar.graintrade.testsupport.OrdinarySecurityFixture;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -866,29 +867,37 @@ class AnnualSampleNetworkRestIntegrationTest {
 
     @Test
     void preventsTheAnnualNetworkSubmitterFromApprovingTheirOwnList() throws Exception {
-        mvc.perform(post("/api/v1/sample-networks/{year}", 2028)
-                        .principal(() -> REVIEWER)
-                        .contentType(MediaType.APPLICATION_JSON).content("{}"))
-                .andExpect(status().isCreated());
-        mvc.perform(put("/api/v1/sample-networks/{year}/members/{samplePointId}",
-                        2028, VILLAGE_SAMPLE_POINT).principal(() -> REVIEWER)
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"designVillageRegionCode":"%s","relationType":"EXACT_VILLAGE",
-                                 "statusCode":"ACTIVE","sourceCode":"NEW",
-                                 "reason":"2028年真实在网样本","version":0}
-                                """.formatted(VILLAGE_ONE)))
-                .andExpect(status().isOk());
-        mvc.perform(post("/api/v1/sample-networks/{year}/submit", 2028)
-                        .principal(() -> REVIEWER).contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":0}"))
-                .andExpect(status().isOk());
+        jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:subject")
+                .param("subject", REVIEWER).update();
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id=:subject")
+                .param("subject", OPERATOR).update();
+        try (var ordinary = OrdinarySecurityFixture.create(
+                jdbc, REVIEWER, null)) {
 
-        mvc.perform(post("/api/v1/sample-networks/{year}/review", 2028)
-                        .principal(() -> REVIEWER).contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":1,\"decision\":\"APPROVE\",\"reason\":\"自审不允许\"}"))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("SELF_APPROVAL_FORBIDDEN"));
+            mvc.perform(post("/api/v1/sample-networks/{year}", 2028)
+                            .principal(() -> REVIEWER)
+                            .contentType(MediaType.APPLICATION_JSON).content("{}"))
+                    .andExpect(status().isCreated());
+            mvc.perform(put("/api/v1/sample-networks/{year}/members/{samplePointId}",
+                            2028, VILLAGE_SAMPLE_POINT).principal(() -> REVIEWER)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {"designVillageRegionCode":"%s","relationType":"EXACT_VILLAGE",
+                                     "statusCode":"ACTIVE","sourceCode":"NEW",
+                                     "reason":"2028年真实在网样本","version":0}
+                                    """.formatted(VILLAGE_ONE)))
+                    .andExpect(status().isOk());
+            mvc.perform(post("/api/v1/sample-networks/{year}/submit", 2028)
+                            .principal(() -> REVIEWER).contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"version\":0}"))
+                    .andExpect(status().isOk());
+
+            mvc.perform(post("/api/v1/sample-networks/{year}/review", 2028)
+                            .principal(() -> REVIEWER).contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"version\":1,\"decision\":\"APPROVE\",\"reason\":\"自审不允许\"}"))
+                    .andExpect(status().isForbidden())
+                    .andExpect(jsonPath("$.error.code").value("SELF_APPROVAL_FORBIDDEN"));
+        }
     }
 
     @Test

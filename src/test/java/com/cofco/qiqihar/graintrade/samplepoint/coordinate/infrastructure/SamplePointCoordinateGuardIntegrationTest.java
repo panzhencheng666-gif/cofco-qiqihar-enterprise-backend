@@ -191,8 +191,8 @@ class SamplePointCoordinateGuardIntegrationTest {
 
     @Test
     void disambiguatesRepeatedVillageNamesUsingTheNamedTownship() {
-        GovernedMasterDataFixtures.insertRegion(jdbc, "230202997", "另一个测试乡", "230202", "TOWNSHIP", 997);
-        GovernedMasterDataFixtures.insertRegion(jdbc, "230202997001", "坐标唯一性测试村", "230202997", "VILLAGE", 1);
+        GovernedMasterDataFixtures.insertRegion(jdbc, "230202996", "另一个测试乡", "230202", "TOWNSHIP", 997);
+        GovernedMasterDataFixtures.insertRegion(jdbc, "230202996001", "坐标唯一性测试村", "230202996", "VILLAGE", 1);
         assertThat(jdbc.sql("SELECT overview.sample_address_anchor('230202',:address)")
                 .param("address", "坐标唯一性测试乡坐标唯一性测试村三组")
                 .query(String.class).single()).isEqualTo(REGION);

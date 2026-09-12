@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade.production.interfaceadapter;
 
+import com.cofco.qiqihar.graintrade.testsupport.OrdinarySecurityFixture;
 import static org.hamcrest.Matchers.hasItem;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -117,9 +118,6 @@ class ProductionRecordRestIntegrationTest {
                 TRUNCATE platform.business_import_draft_evidence,
                   platform.import_job_photo,evidence.evidence_photo
                 """).update();
-        jdbc.sql("DELETE FROM overview.administrative_boundary "
-                        + "WHERE source_url='urn:test:production-sample-point'")
-                .update();
         boundarySnapshot.restore(jdbc);
     }
 
@@ -349,7 +347,7 @@ class ProductionRecordRestIntegrationTest {
                         .content("{\"version\":0}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"))
-                .andExpect(jsonPath("$.data.allowedActions.length()").value(1))
+                .andExpect(jsonPath("$.data.allowedActions.length()").value(3))
                 .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"));
         mockMvc.perform(post("/api/v1/production-records/{id}/return", id)
                         .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
@@ -413,29 +411,32 @@ class ProductionRecordRestIntegrationTest {
 
     @Test
     void forbidsTheSubmittingEmployeeFromApprovingTheSameRecord() throws Exception {
-        String id = create(validDraftBody());
-        mockMvc.perform(post("/api/v1/production-records/{id}/submit", id)
-                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":0}"))
-                .andExpect(status().isOk());
+        try (var ordinary = OrdinarySecurityFixture.create(
+                JdbcClient.create(dataSource), "ci-ordinary-reviewer", "230202")) {
+            String id = create(validDraftBody());
+            mockMvc.perform(post("/api/v1/production-records/{id}/submit", id)
+                            .principal(() -> "ci-ordinary-reviewer").contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"version\":0}"))
+                    .andExpect(status().isOk());
 
-        mockMvc.perform(post("/api/v1/production-records/{id}/approve", id)
-                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":1}"))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("SELF_APPROVAL_FORBIDDEN"));
-        mockMvc.perform(post("/api/v1/production-records/{id}/return", id)
-                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":1,\"reason\":\"补充依据\"}"))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("SELF_RETURN_FORBIDDEN"));
+            mockMvc.perform(post("/api/v1/production-records/{id}/approve", id)
+                            .principal(() -> "ci-ordinary-reviewer").contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"version\":1}"))
+                    .andExpect(status().isForbidden())
+                    .andExpect(jsonPath("$.error.code").value("SELF_APPROVAL_FORBIDDEN"));
+            mockMvc.perform(post("/api/v1/production-records/{id}/return", id)
+                            .principal(() -> "ci-ordinary-reviewer").contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"version\":1,\"reason\":\"补充依据\"}"))
+                    .andExpect(status().isForbidden())
+                    .andExpect(jsonPath("$.error.code").value("SELF_RETURN_FORBIDDEN"));
 
-        mockMvc.perform(post("/api/v1/production-records/{id}/approve", id)
-                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":1}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("APPROVED"));
+            mockMvc.perform(post("/api/v1/production-records/{id}/approve", id)
+                            .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"version\":1}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.status").value("APPROVED"));
 
+        }
     }
 
     @Test
