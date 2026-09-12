@@ -124,8 +124,10 @@ class BusinessReadRegionIsolationIntegrationTest {
     }
 
     @Test
-    void subjectCanReadOnlyItsAssignedRegionAcrossBusinessReads() throws Exception {
-        assertForbidden("/api/v1/production-records/" + PRODUCTION_B);
+    void subjectCanBrowseAllBusinessRecordsWhileTasksRemainRegionScoped() throws Exception {
+        mockMvc.perform(get("/api/v1/production-records/" + PRODUCTION_B)
+                        .principal(() -> READER_A))
+                .andExpect(status().isOk());
         mockMvc.perform(get("/api/v1/production-records")
                         .principal(() -> READER_A)
                         .queryParam("productCode", "CORN")
@@ -134,9 +136,11 @@ class BusinessReadRegionIsolationIntegrationTest {
                         .queryParam("pageSize", "20"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString(PRODUCTION_A)))
-                .andExpect(content().string(not(containsString(PRODUCTION_B))));
+                .andExpect(content().string(containsString(PRODUCTION_B)));
 
-        assertForbidden("/api/v1/market-records/" + MARKET_B);
+        mockMvc.perform(get("/api/v1/market-records/" + MARKET_B)
+                        .principal(() -> READER_A))
+                .andExpect(status().isOk());
         mockMvc.perform(get("/api/v1/market-records")
                         .principal(() -> READER_A)
                         .queryParam("productCode", "CORN")
@@ -145,7 +149,7 @@ class BusinessReadRegionIsolationIntegrationTest {
                         .queryParam("pageSize", "20"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString(MARKET_A)))
-                .andExpect(content().string(not(containsString(MARKET_B))));
+                .andExpect(content().string(containsString(MARKET_B)));
 
         mockMvc.perform(get("/api/v1/market-records")
                         .principal(() -> READER_A)
@@ -155,8 +159,8 @@ class BusinessReadRegionIsolationIntegrationTest {
                         .queryParam("pageSize", "20"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString(QUALITY_A)))
-                .andExpect(content().string(not(containsString(QUALITY_B))))
-                .andExpect(content().string(not(containsString(QUALITY_ORPHAN))));
+                .andExpect(content().string(containsString(QUALITY_B)))
+                .andExpect(content().string(containsString(QUALITY_ORPHAN)));
         mockMvc.perform(get("/api/v1/market-records")
                         .principal(() -> READER_B)
                         .queryParam("productCode", "RICE")
@@ -165,10 +169,12 @@ class BusinessReadRegionIsolationIntegrationTest {
                         .queryParam("pageSize", "20"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString(QUALITY_B)))
-                .andExpect(content().string(not(containsString(QUALITY_A))))
-                .andExpect(content().string(not(containsString(QUALITY_ORPHAN))));
+                .andExpect(content().string(containsString(QUALITY_A)))
+                .andExpect(content().string(containsString(QUALITY_ORPHAN)));
 
-        assertForbidden("/api/v1/logistics-records/" + LOGISTICS_B);
+        mockMvc.perform(get("/api/v1/logistics-records/" + LOGISTICS_B)
+                        .principal(() -> READER_A))
+                .andExpect(status().isOk());
         mockMvc.perform(get("/api/v1/logistics-records")
                         .principal(() -> READER_A)
                         .queryParam("productCode", "CORN")
@@ -176,10 +182,12 @@ class BusinessReadRegionIsolationIntegrationTest {
                         .queryParam("pageSize", "20"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString(LOGISTICS_A)))
-                .andExpect(content().string(not(containsString(LOGISTICS_B))))
-                .andExpect(content().string(not(containsString(LOGISTICS_CROSS))));
+                .andExpect(content().string(containsString(LOGISTICS_B)))
+                .andExpect(content().string(containsString(LOGISTICS_CROSS)));
 
-        assertForbidden("/api/v1/logistics-records/" + LOGISTICS_A, READER_B);
+        mockMvc.perform(get("/api/v1/logistics-records/" + LOGISTICS_A)
+                        .principal(() -> READER_B))
+                .andExpect(status().isOk());
         mockMvc.perform(get("/api/v1/logistics-records")
                         .principal(() -> READER_B)
                         .queryParam("productCode", "CORN")
@@ -187,8 +195,8 @@ class BusinessReadRegionIsolationIntegrationTest {
                         .queryParam("pageSize", "20"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString(LOGISTICS_B)))
-                .andExpect(content().string(not(containsString(LOGISTICS_A))))
-                .andExpect(content().string(not(containsString(LOGISTICS_CROSS))));
+                .andExpect(content().string(containsString(LOGISTICS_A)))
+                .andExpect(content().string(containsString(LOGISTICS_CROSS)));
 
         mockMvc.perform(get("/api/v1/supply-accounts")
                         .principal(() -> READER_A)
@@ -262,7 +270,8 @@ class BusinessReadRegionIsolationIntegrationTest {
                         .queryParam("pageNumber", "0")
                         .queryParam("pageSize", "20"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.items.length()").value(0));
+                .andExpect(content().string(containsString(PRODUCTION_A)))
+                .andExpect(content().string(containsString(PRODUCTION_B)));
         mockMvc.perform(get("/api/v1/overview/regions")
                         .principal(() -> EMPTY_READER)
                         .queryParam("productCode", "CORN")
@@ -272,7 +281,7 @@ class BusinessReadRegionIsolationIntegrationTest {
     }
 
     @Test
-    void qualityProjectionCannotBorrowRegionAuthorizationFromDifferentProductSource() throws Exception {
+    void globalBusinessBrowsingIncludesEveryMatchingQualityProjection() throws Exception {
         mockMvc.perform(get("/api/v1/market-records")
                         .principal(() -> READER_A)
                         .queryParam("productCode", "RICE")
@@ -281,9 +290,9 @@ class BusinessReadRegionIsolationIntegrationTest {
                         .queryParam("pageSize", "20"))
                 .andExpect(status().isOk())
                 .andExpect(content().string(containsString(QUALITY_A)))
-                .andExpect(content().string(not(containsString(QUALITY_PRODUCT_MISMATCH))))
-                .andExpect(jsonPath("$.data.items.length()").value(1))
-                .andExpect(jsonPath("$.data.totalElements").value(1));
+                .andExpect(content().string(containsString(QUALITY_PRODUCT_MISMATCH)))
+                .andExpect(jsonPath("$.data.items.length()").value(4))
+                .andExpect(jsonPath("$.data.totalElements").value(4));
     }
 
     @Test
@@ -317,7 +326,9 @@ class BusinessReadRegionIsolationIntegrationTest {
                         .queryParam("regionCode", REGION_B)
                         .queryParam("periodCode", PERIOD))
                 .andExpect(status().isOk());
-        assertForbidden("/api/v1/production-records/" + PRODUCTION_B);
+        mockMvc.perform(get("/api/v1/production-records/" + PRODUCTION_B)
+                        .principal(() -> READER_A))
+                .andExpect(status().isOk());
     }
 
     private void assertForbidden(String path) throws Exception {

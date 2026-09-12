@@ -63,6 +63,16 @@ class AuthenticatedReporterContractIntegrationTest {
                 """).param("author", AUTHOR).param("colleague", COLLEAGUE)
                 .param("outsider", OUTSIDER).update();
         jdbc.sql("""
+                INSERT INTO platform.access_role(code,name,active,sort_order)
+                VALUES ('TEST_AUTOMATION','自动化测试角色',true,9999)
+                ON CONFLICT(code) DO UPDATE SET active=true
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.access_role_permission(role_code,permission_code)
+                SELECT 'TEST_AUTOMATION',code FROM platform.access_permission WHERE active
+                ON CONFLICT DO NOTHING
+                """).update();
+        jdbc.sql("""
                 INSERT INTO platform.security_user_role(subject_id,role_code)
                 VALUES (:author,'TEST_AUTOMATION'),(:author,'SYSTEM_ADMIN'),
                        (:colleague,'TEST_AUTOMATION'),(:colleague,'SYSTEM_ADMIN'),

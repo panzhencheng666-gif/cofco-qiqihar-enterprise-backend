@@ -31,6 +31,7 @@ import tools.jackson.databind.ObjectMapper;
 @AutoConfigureMockMvc
 @UsesProtectedTestDatabase
 class SampleIdentityMergeRestIntegrationTest {
+    private static final String ORDINARY_REVIEWER = "identity-merge-ordinary";
     private static final String XLSX =
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     private static final UUID POINT_A = UUID.fromString("95500000-0000-0000-0000-000000000001");
@@ -83,6 +84,7 @@ class SampleIdentityMergeRestIntegrationTest {
         seedRecord(RECORD_A, POINT_A, 100);
         seedRecord(RECORD_B, POINT_B, 200);
         seedUniqueOwner();
+        seedOrdinaryReviewer();
     }
 
     @Test
@@ -175,10 +177,10 @@ class SampleIdentityMergeRestIntegrationTest {
     @Test
     void forbidsOrdinarySelfReviewButAllowsTheAuditedUniqueOwnerException() throws Exception {
         UUID ordinaryRequest = submitMerge(
-                "production-tester", "market-tester", "identity-merge-ordinary-self");
+                ORDINARY_REVIEWER, "market-tester", "identity-merge-ordinary-self");
         mvc.perform(post("/api/v1/sample-point-identities/merge-requests/{requestId}/review",
                         ordinaryRequest)
-                        .principal(() -> "production-tester")
+                        .principal(() -> ORDINARY_REVIEWER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"decision":"APPROVE","reason":"提交人尝试审核本人申请"}
@@ -297,5 +299,34 @@ class SampleIdentityMergeRestIntegrationTest {
                 WHERE work_unit_code='TEST'
                 ON CONFLICT DO NOTHING
                 """).update();
+    }
+
+    private void seedOrdinaryReviewer() {
+        jdbc.sql("""
+                INSERT INTO platform.security_user(subject_id,display_name,work_unit_code,enabled)
+                VALUES(:subject,'身份归并普通员工','TEST',true)
+                ON CONFLICT(subject_id) DO UPDATE SET enabled=true,account_status='ACTIVE',
+                  employment_status='ACTIVE',termination_effective_at=NULL
+                """).param("subject", ORDINARY_REVIEWER).update();
+        jdbc.sql("""
+                INSERT INTO platform.access_role(code,name,active,sort_order)
+                VALUES ('IDENTITY_MERGE_TEST','身份归并测试角色',true,9997)
+                ON CONFLICT(code) DO UPDATE SET active=true
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.access_role_permission(role_code,permission_code)
+                SELECT 'IDENTITY_MERGE_TEST',code FROM platform.access_permission WHERE active
+                ON CONFLICT DO NOTHING
+                """).update();
+        jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:subject")
+                .param("subject", ORDINARY_REVIEWER).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_role(subject_id,role_code)
+                VALUES(:subject,'IDENTITY_MERGE_TEST')
+                """).param("subject", ORDINARY_REVIEWER).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_region_scope(subject_id,region_code)
+                VALUES(:subject,'230208') ON CONFLICT DO NOTHING
+                """).param("subject", ORDINARY_REVIEWER).update();
     }
 }

@@ -284,7 +284,7 @@ class FormalSampleObservationRestIntegrationTest {
     }
 
     @Test
-    void hidesUnassignedSamplesFromOrdinaryOperators() throws Exception {
+    void keepsRegionAssignedSamplesVisibleWithoutLegacyMaintainerAssignment() throws Exception {
         jdbc.sql("""
                 UPDATE registry.sample_point
                 SET maintainer_subject_id=NULL WHERE sample_point_id=:samplePointId
@@ -299,7 +299,7 @@ class FormalSampleObservationRestIntegrationTest {
                         .queryParam("year", "2026")
                         .queryParam("observedAt", "2026-08-28T10:15:00+08:00"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(0));
+                .andExpect(jsonPath("$.data.length()").value(1));
     }
 
     @Test
@@ -326,7 +326,7 @@ class FormalSampleObservationRestIntegrationTest {
                         .queryParam("year", "2026")
                         .queryParam("observedAt", "2026-08-28T10:15:00+08:00"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(0));
+                .andExpect(jsonPath("$.data.length()").value(1));
 
         mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
                         .principal(() -> ACTOR)
@@ -598,7 +598,7 @@ class FormalSampleObservationRestIntegrationTest {
                         .queryParam("year", "2026")
                         .queryParam("observedAt", "2026-08-28T10:15:00+08:00"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.length()").value(0));
+                .andExpect(jsonPath("$.data.length()").value(1));
 
         mvc.perform(post("/api/v1/formal-sample-observations/observations")
                         .principal(() -> SAME_REGION_ACTOR)

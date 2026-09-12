@@ -76,7 +76,7 @@ class FormalSamplePointRestIntegrationTest {
                 .param("subject", RESTRICTED).update();
         jdbc.sql("""
                 INSERT INTO platform.security_user_role(subject_id,role_code)
-                VALUES(:subject,'BUSINESS_OPERATOR') ON CONFLICT DO NOTHING
+                VALUES(:subject,'REPORTER') ON CONFLICT DO NOTHING
                 """).param("subject", RESTRICTED).update();
         jdbc.sql("""
                 INSERT INTO platform.security_user_region_scope(subject_id,region_code)
@@ -93,6 +93,10 @@ class FormalSamplePointRestIntegrationTest {
                 + "ON registry.sample_point").update();
         jdbc.sql("DROP FUNCTION IF EXISTS registry.reject_formal_sample_retirement_for_test()")
                 .update();
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id=:subject")
+                .param("subject", RESTRICTED).update();
+        jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:subject")
+                .param("subject", RESTRICTED).update();
     }
 
     @Test
@@ -180,7 +184,7 @@ class FormalSamplePointRestIntegrationTest {
                 .param("subject", RESTRICTED).update();
         jdbc.sql("""
                 INSERT INTO platform.security_user_role(subject_id,role_code)
-                VALUES(:subject,'SYSTEM_ADMIN')
+                VALUES(:subject,'BUSINESS_OPERATOR')
                 """).param("subject", RESTRICTED).update();
         jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id=:subject")
                 .param("subject", RESTRICTED).update();
@@ -190,8 +194,7 @@ class FormalSamplePointRestIntegrationTest {
                 """).param("subject", RESTRICTED).update();
         mvc.perform(get("/api/v1/formal-sample-points/{id}", POINT_ID)
                         .principal(() -> RESTRICTED))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+                .andExpect(status().isOk());
         mvc.perform(delete("/api/v1/formal-sample-points/{id}", POINT_ID)
                         .principal(() -> RESTRICTED).queryParam("expectedVersion", "0"))
                 .andExpect(status().isForbidden())
