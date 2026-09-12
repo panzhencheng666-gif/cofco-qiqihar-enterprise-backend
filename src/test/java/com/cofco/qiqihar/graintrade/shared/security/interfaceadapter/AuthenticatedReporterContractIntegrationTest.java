@@ -64,9 +64,7 @@ class AuthenticatedReporterContractIntegrationTest {
                 .param("outsider", OUTSIDER).update();
         jdbc.sql("""
                 INSERT INTO platform.security_user_role(subject_id,role_code)
-                VALUES (:author,'TEST_AUTOMATION'),(:author,'SYSTEM_ADMIN'),
-                       (:colleague,'TEST_AUTOMATION'),(:colleague,'SYSTEM_ADMIN'),
-                       (:outsider,'TEST_AUTOMATION'),(:outsider,'SYSTEM_ADMIN')
+                VALUES (:author,'TEST_AUTOMATION'),(:colleague,'TEST_AUTOMATION'),(:outsider,'TEST_AUTOMATION')
                 """).param("author", AUTHOR).param("colleague", COLLEAGUE)
                 .param("outsider", OUTSIDER).update();
         jdbc.sql("""

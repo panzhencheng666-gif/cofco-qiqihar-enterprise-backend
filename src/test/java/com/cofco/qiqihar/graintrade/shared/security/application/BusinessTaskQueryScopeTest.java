@@ -21,6 +21,10 @@ class BusinessTaskQueryScopeTest {
     private final PageDefinitionQuery pages = mock(PageDefinitionQuery.class);
 
     private void scopes(Set<String> tasks) {
+        var principal = new com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal(
+                "employee", "UNIT", Set.of("BUSINESS_READ"), tasks);
+        when(access.requireAuthenticated()).thenReturn(principal);
+        when(access.authenticated()).thenReturn(Optional.of(principal));
         when(access.requireBusinessReadScope()).thenReturn(new AuthorizedReadScope("employee", Set.of("*")));
         when(access.requireTaskReadScope()).thenReturn(new AuthorizedReadScope("employee", tasks));
         when(pages.allowsListQueryValues(anyString(), anyString(), anyString(), anyInt(), anyMap())).thenReturn(true);

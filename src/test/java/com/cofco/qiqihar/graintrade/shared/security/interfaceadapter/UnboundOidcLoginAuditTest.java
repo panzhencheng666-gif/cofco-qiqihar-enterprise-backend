@@ -2,6 +2,7 @@ package com.cofco.qiqihar.graintrade.shared.security.interfaceadapter;
 
 import com.cofco.qiqihar.graintrade.shared.security.application.SecurityPrincipalRepository;
 import com.cofco.qiqihar.graintrade.shared.security.application.SecuritySessionAuditRecorder;
+import com.cofco.qiqihar.graintrade.shared.security.application.RegistrationDraftCompletion;
 import java.time.Instant;
 import java.util.List;
 import java.util.Set;
@@ -24,9 +25,9 @@ class UnboundOidcLoginAuditTest {
         var audit=mock(SecuritySessionAuditRecorder.class);
         var type=Class.forName(ProductionSecurityConfiguration.class.getName()+"$EnterpriseAuthenticationSuccessHandler");
         var constructor=type.getDeclaredConstructor(SecurityPrincipalRepository.class,
-                SecuritySessionAuditRecorder.class,Set.class,Set.class,com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService.class);
+                SecuritySessionAuditRecorder.class,Set.class,Set.class,RegistrationDraftCompletion.class);
         constructor.setAccessible(true);
-        var handler=(AuthenticationSuccessHandler)constructor.newInstance(principals,audit,Set.of("pwd"),Set.of(),mock(com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService.class));
+        var handler=(AuthenticationSuccessHandler)constructor.newInstance(principals,audit,Set.of("pwd"),Set.of(),mock(RegistrationDraftCompletion.class));
         var now=Instant.now();
         var id=OidcIdToken.withTokenValue("test-only").issuer("https://issuer.example.test")
                 .subject("unbound-subject").issuedAt(now).expiresAt(now.plusSeconds(300))
@@ -46,9 +47,9 @@ class UnboundOidcLoginAuditTest {
         var audit=mock(SecuritySessionAuditRecorder.class);
         var type=Class.forName(ProductionSecurityConfiguration.class.getName()+"$EnterpriseAuthenticationSuccessHandler");
         var constructor=type.getDeclaredConstructor(SecurityPrincipalRepository.class,
-                SecuritySessionAuditRecorder.class,Set.class,Set.class,com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService.class);
+                SecuritySessionAuditRecorder.class,Set.class,Set.class,RegistrationDraftCompletion.class);
         constructor.setAccessible(true);
-        var handler=(AuthenticationSuccessHandler)constructor.newInstance(principals,audit,Set.of("pwd"),Set.of(),mock(com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService.class));
+        var handler=(AuthenticationSuccessHandler)constructor.newInstance(principals,audit,Set.of("pwd"),Set.of(),mock(RegistrationDraftCompletion.class));
         var now=Instant.now();
         var id=OidcIdToken.withTokenValue("test-only").issuer("https://issuer.example.test")
                 .subject("unbound-subject").issuedAt(now).expiresAt(now.plusSeconds(300))
@@ -68,9 +69,9 @@ class UnboundOidcLoginAuditTest {
         var audit=mock(SecuritySessionAuditRecorder.class);
         var type=Class.forName(ProductionSecurityConfiguration.class.getName()+"$EnterpriseAuthenticationSuccessHandler");
         var constructor=type.getDeclaredConstructor(SecurityPrincipalRepository.class,
-                SecuritySessionAuditRecorder.class,Set.class,Set.class,com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService.class);
+                SecuritySessionAuditRecorder.class,Set.class,Set.class,RegistrationDraftCompletion.class);
         constructor.setAccessible(true);
-        var handler=(AuthenticationSuccessHandler)constructor.newInstance(principals,audit,Set.of("pwd"),Set.of(),mock(com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService.class));
+        var handler=(AuthenticationSuccessHandler)constructor.newInstance(principals,audit,Set.of("pwd"),Set.of(),mock(RegistrationDraftCompletion.class));
         var now=Instant.now();
         var id=OidcIdToken.withTokenValue("test-only").issuer("https://issuer.example.test")
                 .subject("new-identity").issuedAt(now).expiresAt(now.plusSeconds(300)).build();
@@ -126,9 +127,9 @@ class UnboundOidcLoginAuditTest {
         var audit=mock(SecuritySessionAuditRecorder.class);
         var type=Class.forName(ProductionSecurityConfiguration.class.getName()+"$EnterpriseAuthenticationSuccessHandler");
         var constructor=type.getDeclaredConstructor(SecurityPrincipalRepository.class,
-                SecuritySessionAuditRecorder.class,Set.class,Set.class,com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService.class);
+                SecuritySessionAuditRecorder.class,Set.class,Set.class,RegistrationDraftCompletion.class);
         constructor.setAccessible(true);
-        var handler=(AuthenticationSuccessHandler)constructor.newInstance(principals,audit,Set.of("pwd"),Set.of(),mock(com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService.class));
+        var handler=(AuthenticationSuccessHandler)constructor.newInstance(principals,audit,Set.of("pwd"),Set.of(),mock(RegistrationDraftCompletion.class));
         var now=Instant.now();
         var id=OidcIdToken.withTokenValue("test-only").issuer("https://issuer.example.test")
                 .subject("real-admin-provider-subject").issuedAt(now).expiresAt(now.plusSeconds(300))

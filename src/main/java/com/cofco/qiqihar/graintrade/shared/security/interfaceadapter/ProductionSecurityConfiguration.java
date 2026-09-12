@@ -127,7 +127,7 @@ public class ProductionSecurityConfiguration {
             HttpSecurity http,
             SecurityStartupInvariant startupInvariant,
             JdbcClient jdbc,
-            com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService registrationDrafts,
+            com.cofco.qiqihar.graintrade.shared.security.application.RegistrationDraftCompletion registrationDrafts,
             @Value("${QIQIHAR_SMS_ENABLED:false}") boolean smsEnabled,
             SecurityPrincipalRepository principals,
             SecuritySessionAuditRecorder sessionAudit,
@@ -224,7 +224,7 @@ public class ProductionSecurityConfiguration {
                 FilterChain filterChain) throws ServletException, IOException {
             Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
             if (protectedApi(request) && authenticated(authentication)) {
-                if (authentication instanceof com.cofco.qiqihar.graintrade.shared.security.domain.PhoneAuthenticationToken phone) {
+                if (authentication instanceof PhoneAuthenticationToken phone) {
                     long version=jdbc.sql("SELECT session_version FROM platform.security_user WHERE subject_id=:subject")
                             .param("subject",phone.getName()).query(Long.class).optional().orElse(-1L);
                     if(!smsEnabled||version!=phone.sessionVersion()) {
@@ -300,12 +300,12 @@ public class ProductionSecurityConfiguration {
         private final SecuritySessionAuditRecorder audit;
         private final Set<String> acceptedAmr;
         private final Set<String> acceptedAcr;
-        private final com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService drafts;
+        private final com.cofco.qiqihar.graintrade.shared.security.application.RegistrationDraftCompletion drafts;
         private final AuthenticationSuccessHandler delegate=new SavedRequestAwareAuthenticationSuccessHandler();
 
         private EnterpriseAuthenticationSuccessHandler(SecurityPrincipalRepository principals,
                 SecuritySessionAuditRecorder audit,Set<String> acceptedAmr,Set<String> acceptedAcr,
-                com.cofco.qiqihar.graintrade.identity.application.RegistrationDraftService drafts) {
+                com.cofco.qiqihar.graintrade.shared.security.application.RegistrationDraftCompletion drafts) {
             this.principals=principals;
             this.audit=audit;
             this.acceptedAmr=acceptedAmr;

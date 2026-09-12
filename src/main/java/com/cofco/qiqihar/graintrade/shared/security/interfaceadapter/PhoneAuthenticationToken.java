@@ -1,4 +1,4 @@
-package com.cofco.qiqihar.graintrade.shared.security.domain;
+package com.cofco.qiqihar.graintrade.shared.security.interfaceadapter;
 
 import java.util.List;
 import org.springframework.security.authentication.AbstractAuthenticationToken;

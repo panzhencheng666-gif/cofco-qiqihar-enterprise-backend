@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.identity.application;
 
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
+import com.cofco.qiqihar.graintrade.shared.security.application.RegistrationDraftCompletion;
 import jakarta.servlet.http.HttpSession;
 import java.time.Instant;
 import java.util.List;
@@ -10,7 +11,7 @@ import org.springframework.stereotype.Service;
 
 /** Verified registration intent stays in the same browser session through the OIDC callback. */
 @Service
-public class RegistrationDraftService {
+public class RegistrationDraftService implements RegistrationDraftCompletion {
     private static final String KEY = RegistrationDraftService.class.getName();
     private final EmployeeRegistrationService employees;
     private final PhoneIdentityService phones;
@@ -35,7 +36,7 @@ public class RegistrationDraftService {
                     reusable ? previous.expiresAt() : Instant.now().plusSeconds(600)));
         }
     }
-    public void failed(HttpSession session,String message) { session.setAttribute(KEY+".error",message); }
+    @Override public void failed(HttpSession session,String message) { session.setAttribute(KEY+".error",message); }
     public String error(HttpSession session) { return java.util.Objects.toString(session.getAttribute(KEY+".error"),""); }
     public java.util.Map<String,Object> state(HttpSession session) {
         Draft draft=(Draft)session.getAttribute(KEY);
@@ -44,7 +45,7 @@ public class RegistrationDraftService {
                 "workUnitCode",draft.assignment().workUnitCode(),"regionCodes",draft.assignment().regionCodes(),
                 "displayName",draft.assignment().displayName());
     }
-    public boolean complete(HttpSession session, OidcUser user) {
+    @Override public boolean complete(HttpSession session, OidcUser user) {
         return complete(session,user,true);
     }
     public boolean completeAuthenticated(HttpSession session, OidcUser user) {

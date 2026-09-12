@@ -4,7 +4,7 @@ import com.cofco.qiqihar.graintrade.identity.application.*;
 import com.cofco.qiqihar.graintrade.shared.application.*;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import com.cofco.qiqihar.graintrade.shared.security.application.SecurityPrincipalRepository;
-import com.cofco.qiqihar.graintrade.shared.security.domain.PhoneAuthenticationToken;
+import com.cofco.qiqihar.graintrade.shared.security.interfaceadapter.PhoneAuthenticationToken;
 import jakarta.servlet.http.*;
 import java.time.Instant;
 import java.util.*;

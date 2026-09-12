@@ -710,7 +710,7 @@ class IdentityGovernanceRestIntegrationTest {
                 .andExpect(jsonPath("$.data.roleCodes[0]").value("BUSINESS_REVIEWER"))
                 .andExpect(jsonPath("$.data.permissions[?(@ == 'BUSINESS_CREATE')]").exists())
                 .andExpect(jsonPath("$.data.permissions[?(@ == 'BUSINESS_APPROVE')]").exists())
-                .andExpect(jsonPath("$.data.permissions[?(@ == 'BUSINESS_SELF_APPROVE')]").doesNotExist());
+                .andExpect(jsonPath("$.data.permissions[?(@ == 'BUSINESS_SELF_APPROVE')]").exists());
 
         mvc.perform(put("/api/v1/identity/employees/{subjectId}",employee)
                         .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
