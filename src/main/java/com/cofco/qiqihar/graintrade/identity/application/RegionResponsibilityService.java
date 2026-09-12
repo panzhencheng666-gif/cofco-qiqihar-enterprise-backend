@@ -82,7 +82,8 @@ public class RegionResponsibilityService {
         boundRegions.removeAll(owned);boundRegions.addAll(selected);
         AccountRegionPolicy.requireAtMostTen(subject,boundRegions,target.isRootAdministrator());
         var affected=new TreeSet<>(owned);affected.addAll(selected);
-        if(!available.containsAll(selected)||!actor.regionCodes().containsAll(affected))throw new AccessDeniedException(
+        if(!available.containsAll(selected)||(!actor.isRootAdministrator()
+                && !actor.regionCodes().containsAll(affected)))throw new AccessDeniedException(
             "ACCESS_REGION_DENIED","负责地区不在允许分配的范围内");
         var regions=repository.regions(List.copyOf(affected));
         var samples=repository.samples(List.copyOf(affected),selected,subject,employee.displayName());

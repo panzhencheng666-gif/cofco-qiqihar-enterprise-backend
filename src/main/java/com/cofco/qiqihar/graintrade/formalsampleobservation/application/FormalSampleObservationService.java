@@ -111,10 +111,12 @@ public class FormalSampleObservationService {
         var scope = "MY_TASKS".equals(requestedScope)
                 ? accessControl.requireTaskReadScope() : accessControl.requireBusinessReadScope();
         if (regionCode != null && !regionCode.isBlank()) scope.requireRegion(regionCode);
+        boolean administratorOverride = !"MY_TASKS".equals(requestedScope)
+                || accessControl.requireAuthenticated().isRootAdministrator();
         return repository.findEligibleSamples(domain, normalizedProduct, regionCode, normalizedObjectType,
                 keywordPattern(normalizedKeyword),
                 observedAt.atZoneSameInstant(REPORTING_ZONE).toLocalDate(), scope.regionCodes(),
-                scope.subjectId(), true);
+                scope.subjectId(), administratorOverride);
     }
 
     @Transactional(readOnly = true)

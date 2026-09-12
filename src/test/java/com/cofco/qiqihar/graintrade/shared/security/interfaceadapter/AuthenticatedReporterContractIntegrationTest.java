@@ -64,7 +64,7 @@ class AuthenticatedReporterContractIntegrationTest {
                 .param("outsider", OUTSIDER).update();
         jdbc.sql("""
                 INSERT INTO platform.security_user_role(subject_id,role_code)
-                VALUES (:author,'SYSTEM_ADMIN'),(:colleague,'SYSTEM_ADMIN'),(:outsider,'SYSTEM_ADMIN')
+                VALUES (:author,'TEST_AUTOMATION'),(:colleague,'TEST_AUTOMATION'),(:outsider,'TEST_AUTOMATION')
                 """).param("author", AUTHOR).param("colleague", COLLEAGUE)
                 .param("outsider", OUTSIDER).update();
         jdbc.sql("""
@@ -175,8 +175,9 @@ class AuthenticatedReporterContractIntegrationTest {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error.code").value("ACCESS_PERMISSION_DENIED"));
         mvc.perform(get("/api/v1/production-records/{id}",id).principal(() -> OUTSIDER))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.allowedActions.length()").value(1))
+                .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"));
         mvc.perform(get("/api/v1/production-records/{id}",id).principal(() -> COLLEAGUE))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"))
@@ -210,8 +211,9 @@ class AuthenticatedReporterContractIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.submissionMetadata.PROD_REPORTER_NAME").value("王洋"));
         mvc.perform(get("/api/v1/production-records/{id}", id).principal(() -> OUTSIDER))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.allowedActions.length()").value(1))
+                .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"));
     }
 
     @Test

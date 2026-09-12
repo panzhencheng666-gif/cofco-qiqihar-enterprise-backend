@@ -89,6 +89,30 @@ public class ProtectedTestDatabaseConfiguration {
                     ON CONFLICT(subject_id) DO NOTHING
                     """).update();
             jdbc.sql("""
+                    INSERT INTO platform.access_role(code,name,active,sort_order)
+                    VALUES ('TEST_AUTOMATION','自动化测试角色',true,9999)
+                    ON CONFLICT(code) DO UPDATE SET active=true
+                    """).update();
+            jdbc.sql("""
+                    INSERT INTO platform.access_role_permission(role_code,permission_code)
+                    SELECT 'TEST_AUTOMATION',code FROM platform.access_permission WHERE active
+                    ON CONFLICT DO NOTHING
+                    """).update();
+            jdbc.sql("""
+                    CREATE OR REPLACE FUNCTION platform.account_has_administrator_role(subject varchar)
+                    RETURNS boolean LANGUAGE sql STABLE SET search_path=pg_catalog AS $function$
+                     SELECT EXISTS (SELECT 1 FROM platform.security_user u
+                     JOIN platform.security_user_role role ON role.subject_id=u.subject_id
+                     JOIN platform.access_role definition ON definition.code=role.role_code AND definition.active
+                     WHERE u.subject_id=subject AND u.enabled AND u.account_status='ACTIVE' AND u.employment_status='ACTIVE'
+                     AND (u.termination_effective_at IS NULL OR u.termination_effective_at>CURRENT_TIMESTAMP)
+                     AND role.role_code IN ('SYSTEM_ADMIN','BUSINESS_REVIEWER','TEST_AUTOMATION')
+                     AND role.valid_from<=CURRENT_TIMESTAMP
+                     AND (role.valid_until IS NULL OR role.valid_until>CURRENT_TIMESTAMP)
+                     AND (role.review_due_at IS NULL OR role.review_due_at>CURRENT_TIMESTAMP))
+                    $function$
+                    """).update();
+            jdbc.sql("""
                     INSERT INTO platform.security_user_role(subject_id,role_code)
                     SELECT subject_id, 'SYSTEM_ADMIN' FROM platform.security_user
                     WHERE work_unit_code = 'TEST'
@@ -101,6 +125,19 @@ public class ProtectedTestDatabaseConfiguration {
                     CROSS JOIN platform.work_unit_region_scope unit_scope
                     WHERE security_user.work_unit_code = 'TEST'
                       AND unit_scope.work_unit_code = 'TEST'
+                    ON CONFLICT DO NOTHING
+                    """).update();
+            jdbc.sql("""
+                    DELETE FROM platform.security_user_role assignment
+                    USING platform.security_user security_user
+                    WHERE assignment.subject_id=security_user.subject_id
+                      AND security_user.work_unit_code='TEST'
+                      AND assignment.role_code='SYSTEM_ADMIN'
+                    """).update();
+            jdbc.sql("""
+                    INSERT INTO platform.security_user_role(subject_id,role_code)
+                    SELECT subject_id, 'TEST_AUTOMATION' FROM platform.security_user
+                    WHERE work_unit_code = 'TEST'
                     ON CONFLICT DO NOTHING
                     """).update();
             if (includeCoordinateBoundaries

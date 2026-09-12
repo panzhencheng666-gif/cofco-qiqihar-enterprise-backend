@@ -39,6 +39,7 @@ import tools.jackson.databind.ObjectMapper;
 @Import(FormalSampleObservationRestIntegrationTest.FixedClockConfiguration.class)
 class FormalSampleObservationRestIntegrationTest {
     private static final String ACTOR = "production-tester";
+    private static final String ADMINISTRATOR = "formal-observation-administrator";
     private static final String RESTRICTED_ACTOR = "formal-observation-restricted";
     private static final String SAME_REGION_ACTOR = "formal-observation-same-region";
     private static final UUID SAMPLE_POINT_ID =
@@ -68,6 +69,15 @@ class FormalSampleObservationRestIntegrationTest {
         clearFixture();
         formalObservationAuditCountBefore = formalObservationAuditCount();
         boundarySnapshot = AdministrativeBoundarySnapshot.capture(jdbc, "230221");
+        jdbc.sql("""
+                INSERT INTO platform.security_user(subject_id,display_name,work_unit_code,enabled)
+                SELECT :subject,'观测管理测试员',work_unit_code,true FROM platform.security_user
+                WHERE subject_id=:actor
+                ON CONFLICT(subject_id) DO UPDATE SET enabled=true,account_status='ACTIVE',
+                  employment_status='ACTIVE',termination_effective_at=NULL
+                """).param("subject", ADMINISTRATOR).param("actor", ACTOR).update();
+        jdbc.sql("INSERT INTO platform.security_user_role(subject_id,role_code) VALUES(:subject,'BUSINESS_REVIEWER')")
+                .param("subject", ADMINISTRATOR).update();
         jdbc.sql("""
                 INSERT INTO platform.security_user(subject_id,display_name,work_unit_code,enabled)
                 SELECT :subject,'受限观测测试员',work_unit_code,true FROM platform.security_user
@@ -218,6 +228,7 @@ class FormalSampleObservationRestIntegrationTest {
         mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
                         .principal(() -> ACTOR)
                         .queryParam("domain", "PRODUCTION")
+                        .queryParam("scope", "MY_TASKS")
                         .queryParam("productCode", "CORN")
                         .queryParam("regionCode", "230221")
                         .queryParam("year", "2026")
@@ -263,6 +274,7 @@ class FormalSampleObservationRestIntegrationTest {
         mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
                         .principal(() -> SAME_REGION_ACTOR)
                         .queryParam("domain", "PRODUCTION")
+                        .queryParam("scope", "MY_TASKS")
                         .queryParam("productCode", "CORN")
                         .queryParam("year", "2026")
                         .queryParam("observedAt", "2026-08-28T10:15:00+08:00"))
@@ -281,6 +293,7 @@ class FormalSampleObservationRestIntegrationTest {
         mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
                         .principal(() -> SAME_REGION_ACTOR)
                         .queryParam("domain", "PRODUCTION")
+                        .queryParam("scope", "MY_TASKS")
                         .queryParam("productCode", "CORN")
                         .queryParam("regionCode", "230221")
                         .queryParam("year", "2026")
@@ -541,15 +554,11 @@ class FormalSampleObservationRestIntegrationTest {
     }
 
     @Test
-    void concurrentOrdinaryWritesCannotClaimAnUnassignedSample() throws Exception {
+    void onlyTheAssignedRegionOperatorCanClaimAnUnassignedSample() throws Exception {
         jdbc.sql("""
                 UPDATE registry.sample_point
                 SET maintainer_subject_id=NULL WHERE sample_point_id=:samplePointId
                 """).param("samplePointId", SAMPLE_POINT_ID).update();
-        jdbc.sql("""
-                UPDATE platform.security_user_region_scope
-                SET region_code='230221' WHERE subject_id=:subject
-                """).param("subject", RESTRICTED_ACTOR).update();
         java.util.concurrent.ExecutorService executor =
                 java.util.concurrent.Executors.newFixedThreadPool(2);
         java.util.concurrent.CountDownLatch ready = new java.util.concurrent.CountDownLatch(2);
@@ -563,7 +572,7 @@ class FormalSampleObservationRestIntegrationTest {
             start.countDown();
 
             assertThat(java.util.stream.Stream.of(first.get(), second.get()).sorted().toList())
-                    .containsExactly(403, 403);
+                    .containsExactly(201, 404);
         } finally {
             executor.shutdownNow();
         }
@@ -573,16 +582,17 @@ class FormalSampleObservationRestIntegrationTest {
                 WHERE sample_point_id=:samplePointId
                 """).param("samplePointId", SAMPLE_POINT_ID).query(String.class).optional())
                 .isEmpty();
-        assertThat(formalObservationAuditCount()).isEqualTo(formalObservationAuditCountBefore);
+        assertThat(formalObservationAuditCount()).isEqualTo(formalObservationAuditCountBefore + 1);
     }
 
     @Test
-    void rejectsSameRegionNonMaintainerWithoutBusinessOrAuditSideEffects() throws Exception {
+    void allowsTheAssignedRegionOperatorToFillAnExistingSample() throws Exception {
         long recordsBefore = productionRecordCount();
 
         mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
                         .principal(() -> SAME_REGION_ACTOR)
                         .queryParam("domain", "PRODUCTION")
+                        .queryParam("scope", "MY_TASKS")
                         .queryParam("productCode", "CORN")
                         .queryParam("regionCode", "230221")
                         .queryParam("year", "2026")
@@ -595,11 +605,10 @@ class FormalSampleObservationRestIntegrationTest {
                         .header("Idempotency-Key", "non-maintainer-write-1")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(minimalProductionObservationRequest()))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("FORMAL_SAMPLE_MAINTAINER_DENIED"));
+                .andExpect(status().isCreated());
 
         assertThat(productionRecordCount()).isEqualTo(recordsBefore);
-        assertThat(formalObservationAuditCount()).isEqualTo(formalObservationAuditCountBefore);
+        assertThat(formalObservationAuditCount()).isEqualTo(formalObservationAuditCountBefore + 1);
     }
 
     @Test
@@ -635,48 +644,23 @@ class FormalSampleObservationRestIntegrationTest {
     }
 
     @Test
-    @org.springframework.transaction.annotation.Transactional
-    void authorizationReassignmentRevokesOldMaintainerAndEnablesNewMaintainer() throws Exception {
-        // Roll back the county responsibility, transferred samples and grants together.
-        jdbc.sql("""
-                INSERT INTO platform.work_unit(code,name,sort_order)
-                VALUES('QIQIHAR_BUSINESS','地区责任测试单位',9980) ON CONFLICT DO NOTHING
-                """).update();
-        jdbc.sql("UPDATE platform.security_user SET work_unit_code='QIQIHAR_BUSINESS' WHERE subject_id IN (:subjects)")
-                .param("subjects", java.util.List.of(ACTOR, SAME_REGION_ACTOR)).update();
-        jdbc.sql("""
-                INSERT INTO platform.work_unit_region_scope(work_unit_code,region_code)
-                SELECT work_unit_code,'230221' FROM platform.security_user WHERE subject_id=:actor
-                ON CONFLICT DO NOTHING
-                """).param("actor", ACTOR).update();
-        assignObservationResponsibility(SAME_REGION_ACTOR);
+    void sampleMaintainerReassignmentKeepsTheBoundRegionOperatorEligible() throws Exception {
+        jdbc.sql("UPDATE registry.sample_point SET maintainer_subject_id=:subject WHERE sample_point_id=:id")
+                .param("subject", SAME_REGION_ACTOR).param("id", SAMPLE_POINT_ID).update();
         assertThat(jdbc.sql("SELECT maintainer_subject_id FROM registry.sample_point WHERE sample_point_id=:id")
                 .param("id", SAMPLE_POINT_ID).query(String.class).single()).isEqualTo(SAME_REGION_ACTOR);
         mvc.perform(post("/api/v1/formal-sample-observations/observations")
                         .principal(() -> SAME_REGION_ACTOR).header("Idempotency-Key", "new-maintainer")
                         .contentType(MediaType.APPLICATION_JSON).content(minimalProductionObservationRequest()))
                 .andExpect(status().isCreated());
-        assignObservationResponsibility(ACTOR);
+        jdbc.sql("UPDATE registry.sample_point SET maintainer_subject_id=:subject WHERE sample_point_id=:id")
+                .param("subject", ACTOR).param("id", SAMPLE_POINT_ID).update();
         assertThat(jdbc.sql("SELECT maintainer_subject_id FROM registry.sample_point WHERE sample_point_id=:id")
                 .param("id", SAMPLE_POINT_ID).query(String.class).single()).isEqualTo(ACTOR);
         mvc.perform(post("/api/v1/formal-sample-observations/observations")
                         .principal(() -> SAME_REGION_ACTOR).header("Idempotency-Key", "old-maintainer-new-write")
                         .contentType(MediaType.APPLICATION_JSON).content(minimalProductionObservationRequest()))
-                .andExpect(status().isForbidden());
-    }
-
-    private void assignObservationResponsibility(String subject) throws Exception {
-        String path = "/api/v1/identity/employees/" + subject + "/region-responsibility";
-        String preview = mvc.perform(post(path + "/preview").principal(() -> ACTOR)
-                        .contentType(MediaType.APPLICATION_JSON).content("{\"regionCodes\":[\"230221\"]}"))
-                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
-        String token = objectMapper.readTree(preview).path("data").path("previewToken").asText();
-        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put(path)
-                        .principal(() -> ACTOR).contentType(MediaType.APPLICATION_JSON)
-                        .content(objectMapper.writeValueAsString(java.util.Map.of(
-                                "regionCodes", java.util.List.of("230221"), "previewToken", token,
-                                "reason", "观测样本责任调整"))))
-                .andExpect(status().isOk());
+                .andExpect(status().isCreated());
     }
 
     @Test
@@ -688,7 +672,7 @@ class FormalSampleObservationRestIntegrationTest {
                 .param("samplePointId", SAMPLE_POINT_ID).update();
 
         mvc.perform(post("/api/v1/formal-sample-observations/observations")
-                        .principal(() -> ACTOR)
+                        .principal(() -> ADMINISTRATOR)
                         .header("Idempotency-Key", "administrator-override-1")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(minimalProductionObservationRequest()))
@@ -701,10 +685,11 @@ class FormalSampleObservationRestIntegrationTest {
                 WHERE aggregate_type='FORMAL_SAMPLE_OBSERVATION'
                   AND action_code='FORMAL_SAMPLE_OBSERVATION_SAVED'
                   AND aggregate_id=(SELECT observation_id::text FROM platform.formal_sample_observation
-                    WHERE actor_subject_id='production-tester' AND idempotency_key='administrator-override-1')
-                """).query((row, index) -> java.util.List.of(
+                    WHERE actor_subject_id=:administrator AND idempotency_key='administrator-override-1')
+                """).param("administrator", ADMINISTRATOR)
+                .query((row, index) -> java.util.List.of(
                         row.getString(1), row.getString(2), row.getString(3), row.getString(4))).single())
-                .containsExactly(SAMPLE_POINT_ID.toString(), SAME_REGION_ACTOR, ACTOR, "true");
+                .containsExactly(SAMPLE_POINT_ID.toString(), SAME_REGION_ACTOR, ADMINISTRATOR, "true");
     }
 
     @Test
@@ -1234,12 +1219,12 @@ class FormalSampleObservationRestIntegrationTest {
     }
 
     @Test
-    void preventsCrossRegionSampleEnumerationAndWrites() throws Exception {
+    void allowsCrossRegionBrowsingButPreventsCrossRegionWrites() throws Exception {
         mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
                         .principal(() -> RESTRICTED_ACTOR).queryParam("domain", "PRODUCTION")
                         .queryParam("productCode", "CORN").queryParam("year", "2026")
                         .queryParam("observedAt", "2026-08-28T10:15:00+08:00"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.length()").value(0));
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.length()").value(1));
         String request = """
                 {"domain":"PRODUCTION","samplePointId":"%s","productCode":"CORN",
                  "observedAt":"2026-08-28T10:15:00+08:00","payload":{"productCode":"CORN",
@@ -1260,8 +1245,8 @@ class FormalSampleObservationRestIntegrationTest {
                         .queryParam("productCode", "CORN")
                         .queryParam("year", "2026"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.totalElements").value(0))
-                .andExpect(jsonPath("$.data.items.length()").value(0));
+                .andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.items.length()").value(1));
         assertThat(jdbc.sql("SELECT count(*) FROM platform.formal_sample_observation WHERE actor_subject_id=:actor")
                 .param("actor", RESTRICTED_ACTOR).query(Long.class).single()).isZero();
     }
@@ -1483,6 +1468,10 @@ class FormalSampleObservationRestIntegrationTest {
 
     private void clearFixture() {
         if (jdbc == null) return;
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id=:subject")
+                .param("subject", ADMINISTRATOR).update();
+        jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:subject")
+                .param("subject", ADMINISTRATOR).update();
         jdbc.sql("DELETE FROM production.production_record WHERE record_id=:recordId")
                 .param("recordId", FUTURE_PRODUCTION_RECORD_ID).update();
         jdbc.sql("DELETE FROM market.market_record WHERE record_id=:recordId")

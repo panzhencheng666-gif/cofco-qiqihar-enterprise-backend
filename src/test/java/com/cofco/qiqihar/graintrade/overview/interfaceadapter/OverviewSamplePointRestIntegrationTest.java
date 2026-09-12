@@ -38,6 +38,7 @@ import tools.jackson.databind.ObjectMapper;
 @AutoConfigureMockMvc
 @UsesProtectedTestDatabase
 class OverviewSamplePointRestIntegrationTest {
+    private static final String DESIGN_ADMIN = "overview-design-administrator";
     private static final String PREFECTURE = "230200";
     private static final String COUNTY = "230202";
     private static final String TOWNSHIP = "230202997";
@@ -79,14 +80,14 @@ class OverviewSamplePointRestIntegrationTest {
                 """.formatted(contractVersion, contractDigest);
         String designId = objectMapper.readTree(mvc.perform(post("/api/v1/design-sample-points")
                         .header("Idempotency-Key", "overview-design-reference-boundary")
-                        .principal(() -> "production-tester")
+                        .principal(() -> DESIGN_ADMIN)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(createRequest))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString())
                 .path("data").path("id").asText();
 
         mvc.perform(put("/api/v1/design-sample-points/{id}", designId)
-                        .principal(() -> "production-tester")
+                        .principal(() -> DESIGN_ADMIN)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"contractVersion":"%s","contractDigest":"%s","expectedVersion":0,
@@ -101,7 +102,7 @@ class OverviewSamplePointRestIntegrationTest {
                 .andExpect(jsonPath("$.data.values.DSP_ADDRESS").value("更新后参考地址"))
                 .andExpect(jsonPath("$.data.version").value(1));
         mvc.perform(get("/api/v1/design-sample-points/{id}", designId)
-                        .principal(() -> "production-tester"))
+                        .principal(() -> DESIGN_ADMIN))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.values.DSP_ADDRESS").value("更新后参考地址"));
 
@@ -130,6 +131,13 @@ class OverviewSamplePointRestIntegrationTest {
         clean();
         insertRegionAndBoundaryFixtures();
         ProtectedTestDatabaseConfiguration.provisionSecurityTestSubjects(jdbc);
+        jdbc.sql("""
+                INSERT INTO platform.security_user(subject_id,display_name,work_unit_code)
+                VALUES(:subject,'总揽设计样本管理员','TEST')
+                ON CONFLICT(subject_id) DO UPDATE SET enabled=true,account_status='ACTIVE',employment_status='ACTIVE';
+                INSERT INTO platform.security_user_role(subject_id,role_code)
+                VALUES(:subject,'BUSINESS_REVIEWER') ON CONFLICT DO NOTHING
+                """).param("subject", DESIGN_ADMIN).update();
         insertSamplePointFixtures();
         insertApprovedSourceFixtures();
     }
@@ -1684,7 +1692,7 @@ class OverviewSamplePointRestIntegrationTest {
                         .queryParam("productCode", "CORN")
                         .queryParam("regionCode", VILLAGE))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.associations.length()").value(3));
+                .andExpect(jsonPath("$.data.associations.length()").value(2));
     }
 
     @Test

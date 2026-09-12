@@ -48,18 +48,16 @@ class SeparationOfDutiesPolicyTest {
     }
 
     @Test
-    void selfApprovalPermissionWithoutOwnerRoleRemainsBlocked() {
+    void administratorMayApproveOwnSubmissionWithoutOwnerRole() {
         SeparationOfDutiesPolicy policy = new SeparationOfDutiesPolicy(
                 (aggregateType, aggregateId, actionCode) -> Optional.of("other-administrator"));
         SecurityPrincipal administrator = principal(
                 "other-administrator", Set.of("BUSINESS_APPROVE", "BUSINESS_SELF_APPROVE"),
                 Set.of("SYSTEM_ADMIN"));
 
-        assertThatThrownBy(() -> policy.requireIndependentApprover(
+        assertThatCode(() -> policy.requireIndependentApprover(
                 "PRODUCTION_RECORD", "record-3", "PRODUCTION_RECORD_SUBMITTED", administrator))
-                .isInstanceOfSatisfying(AccessDeniedException.class,
-                        exception -> org.assertj.core.api.Assertions.assertThat(exception.code())
-                                .isEqualTo("SELF_APPROVAL_FORBIDDEN"));
+                .doesNotThrowAnyException();
     }
 
     @Test

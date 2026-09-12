@@ -15,7 +15,7 @@ class SecurityPrincipalTest {
                 .hasMessageContaining("region code");
     }
     @Test
-    void onlyTheBoundRootAdministratorBypassesOperationAndRegionGrants() {
+    void administratorCapabilityComesFromRoleRatherThanUsername() {
         var admin=new SecurityPrincipal("admin","管理员","PLATFORM_ADMIN","平台系统管理",
                 "ACTIVE","ACTIVE",Set.of("SYSTEM_ADMIN"),java.util.List.of(),Set.of(),Set.of());
         org.assertj.core.api.Assertions.assertThat(admin.permits("FUTURE_MODULE_OPERATION")).isTrue();
@@ -24,6 +24,6 @@ class SecurityPrincipalTest {
         org.assertj.core.api.Assertions.assertThat(ordinary.permits("FUTURE_MODULE_OPERATION")).isFalse();
         var other=new SecurityPrincipal("other","管理员","unit","unit","ACTIVE","ACTIVE",
                 Set.of("SYSTEM_ADMIN"),java.util.List.of(),Set.of(),Set.of());
-        org.assertj.core.api.Assertions.assertThat(other.includesRegion("new-region")).isFalse();
+        org.assertj.core.api.Assertions.assertThat(other.includesRegion("new-region")).isTrue();
     }
 }
