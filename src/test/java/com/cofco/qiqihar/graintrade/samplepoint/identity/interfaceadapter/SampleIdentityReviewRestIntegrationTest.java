@@ -24,6 +24,7 @@ import org.springframework.test.web.servlet.MockMvc;
 @AutoConfigureMockMvc
 @UsesProtectedTestDatabase
 class SampleIdentityReviewRestIntegrationTest {
+    private static final String ORDINARY_REVIEWER = "identity-review-ordinary";
     private static final UUID TARGET = UUID.fromString("95300000-0000-0000-0000-000000000001");
     @Autowired MockMvc mvc;
     @Autowired DataSource dataSource;
@@ -46,7 +47,8 @@ class SampleIdentityReviewRestIntegrationTest {
                 """).update();
         seedCandidate();
         seedAccountOwner();
-        draftId = seedPendingDraft("production-tester");
+        seedOrdinaryReviewer();
+        draftId = seedPendingDraft(ORDINARY_REVIEWER);
     }
 
     @AfterEach
@@ -55,6 +57,10 @@ class SampleIdentityReviewRestIntegrationTest {
     }
 
     private void clearIdentityFixtures() {
+        if (jdbc != null) {
+            jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id=:subject")
+                    .param("subject", ORDINARY_REVIEWER).update();
+        }
         jdbc.sql("""
                 TRUNCATE platform.business_import_draft_evidence,platform.import_row_result,
                   platform.business_import_draft,platform.import_job_photo,platform.import_job,
@@ -164,7 +170,7 @@ class SampleIdentityReviewRestIntegrationTest {
     @Test
     void rejectsOrdinarySelfReview() throws Exception {
         mvc.perform(post("/api/v1/sample-point-identities/reviews/{draftId}/decisions", draftId)
-                        .principal(() -> "production-tester")
+                        .principal(() -> ORDINARY_REVIEWER)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"decision":"CONFIRM_DISTINCT","expectedVersion":0,
@@ -538,5 +544,34 @@ class SampleIdentityReviewRestIntegrationTest {
                 INSERT INTO platform.security_user_region_scope(subject_id,region_code)
                 VALUES('wang-yang','230208') ON CONFLICT DO NOTHING
                 """).update();
+    }
+
+    private void seedOrdinaryReviewer() {
+        jdbc.sql("""
+                INSERT INTO platform.security_user(subject_id,display_name,work_unit_code,enabled)
+                VALUES(:subject,'身份核验普通员工','TEST',true)
+                ON CONFLICT(subject_id) DO UPDATE SET enabled=true,account_status='ACTIVE',
+                  employment_status='ACTIVE',termination_effective_at=NULL
+                """).param("subject", ORDINARY_REVIEWER).update();
+        jdbc.sql("""
+                INSERT INTO platform.access_role(code,name,active,sort_order)
+                VALUES ('IDENTITY_REVIEW_TEST','身份核验测试角色',true,9998)
+                ON CONFLICT(code) DO UPDATE SET active=true
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.access_role_permission(role_code,permission_code)
+                SELECT 'IDENTITY_REVIEW_TEST',code FROM platform.access_permission WHERE active
+                ON CONFLICT DO NOTHING
+                """).update();
+        jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:subject")
+                .param("subject", ORDINARY_REVIEWER).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_role(subject_id,role_code)
+                VALUES(:subject,'IDENTITY_REVIEW_TEST')
+                """).param("subject", ORDINARY_REVIEWER).update();
+        jdbc.sql("""
+                INSERT INTO platform.security_user_region_scope(subject_id,region_code)
+                VALUES(:subject,'230208') ON CONFLICT DO NOTHING
+                """).param("subject", ORDINARY_REVIEWER).update();
     }
 }

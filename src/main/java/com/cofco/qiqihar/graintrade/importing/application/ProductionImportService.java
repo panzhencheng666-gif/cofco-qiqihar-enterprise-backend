@@ -188,7 +188,7 @@ public class ProductionImportService implements QueuedImportProcessor {
     public ImportJobView retry(UUID importJobId) {
         SecurityPrincipal principal = accessControl.require("BUSINESS_IMPORT", null);
         var prior = ordinary(importJobId);
-        if (!prior.job().requestedBy().equals(principal.subjectId())) {
+        if (!principal.isRootAdministrator() && !prior.job().requestedBy().equals(principal.subjectId())) {
             throw new ConflictException("IMPORT_RETRY_NOT_ALLOWED", "Import job belongs to a different subject");
         }
         if ("FAILED".equals(prior.job().statusCode())) {
@@ -216,7 +216,7 @@ public class ProductionImportService implements QueuedImportProcessor {
     public ImportErrorFile errors(UUID importJobId) {
         SecurityPrincipal principal = accessControl.require("BUSINESS_IMPORT", null);
         ImportJob job = ordinary(importJobId).job();
-        if (!job.requestedBy().equals(principal.subjectId())) {
+        if (!principal.isRootAdministrator() && !job.requestedBy().equals(principal.subjectId())) {
             throw new ConflictException("IMPORT_ERROR_FILE_NOT_ALLOWED", "Import job belongs to a different subject");
         }
         List<String> headers = job.rows().isEmpty()
@@ -239,7 +239,7 @@ public class ProductionImportService implements QueuedImportProcessor {
     public ImportJobView status(UUID importJobId) {
         SecurityPrincipal principal = accessControl.require("BUSINESS_IMPORT", null);
         ImportJobRepository.StoredImportJob stored = ordinary(importJobId);
-        if (!stored.job().requestedBy().equals(principal.subjectId())) {
+        if (!principal.isRootAdministrator() && !stored.job().requestedBy().equals(principal.subjectId())) {
             throw new ConflictException(
                     "IMPORT_JOB_NOT_ALLOWED", "Import job belongs to a different subject");
         }
@@ -272,7 +272,7 @@ public class ProductionImportService implements QueuedImportProcessor {
         var stored = repository.findById(jobId)
                 .filter(value -> value.job().domainCode().equals(ProductionImportTemplate.DOMAIN))
                 .orElseThrow(() -> new ClientRequestException("IMPORT_JOB_NOT_FOUND", "Import job does not exist"));
-        if (!stored.job().requestedBy().equals(principal.subjectId())) {
+        if (!principal.isRootAdministrator() && !stored.job().requestedBy().equals(principal.subjectId())) {
             throw new ConflictException("IMPORT_JOB_NOT_ALLOWED", "Import job belongs to a different subject");
         }
         return stored;

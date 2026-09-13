@@ -37,8 +37,8 @@ public class RegionalCropSummaryService {
         if (!Set.of("COUNTY", "PREFECTURE").contains(region.administrativeLevel())) {
             throw invalid("REGIONAL_CROP_SUMMARY_REGION_INVALID", "地区汇总仅支持地级市或区县");
         }
-        SecurityPrincipal principal = access.require("BUSINESS_READ", regionCode);
-        return summaries.summarize(year, product, regionCode, principal.regionCodes())
+        var scope = access.requireBusinessReadScope();
+        return summaries.summarize(year, product, regionCode, scope.regionCodes())
                 .orElseThrow(() -> invalid("REGIONAL_CROP_SUMMARY_SCOPE_EMPTY", "当前辖区没有可汇总的区县"));
     }
 

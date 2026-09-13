@@ -47,8 +47,8 @@ public class IdentityGovernanceController {
     }
 
     @GetMapping("/assignment-options")
-    ApiResponse<AssignmentOptions> assignmentOptions(@RequestParam String workUnitCode) {
-        return new ApiResponse<>(service.assignmentOptions(workUnitCode));
+    ApiResponse<AssignmentOptions> assignmentOptions(@RequestParam String workUnitCode,@RequestParam(required=false) String subjectId) {
+        return new ApiResponse<>(service.assignmentOptions(workUnitCode,subjectId));
     }
 
     @PostMapping

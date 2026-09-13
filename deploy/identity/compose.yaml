@@ -1,0 +1,61 @@
+name: cofco-persistent-identity
+services:
+  identity-db:
+    image: ${COFCO_IDENTITY_POSTGRES_IMAGE:?Set a reviewed PostgreSQL 17 image digest}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cofco_identity
+      POSTGRES_USER: cofco_identity
+      POSTGRES_PASSWORD_FILE: /run/secrets/database_password
+    secrets:
+      - database_password
+    volumes:
+      - identity_database:/var/lib/postgresql/data
+    networks:
+      - identity
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U cofco_identity -d cofco_identity']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  keycloak:
+    image: ${COFCO_IDENTITY_KEYCLOAK_IMAGE:?Set a reviewed Keycloak image digest}
+    restart: unless-stopped
+    entrypoint: [/bin/bash, /opt/cofco/start-keycloak.sh]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://identity-db:5432/cofco_identity
+      KC_DB_USERNAME: cofco_identity
+      KC_HOSTNAME: ${COFCO_IDENTITY_HTTPS_ORIGIN:?Set the approved HTTPS identity origin}
+      KC_HOSTNAME_STRICT: 'true'
+      KC_HTTP_ENABLED: 'false'
+      KC_HTTPS_CERTIFICATE_FILE: /run/secrets/tls_certificate
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /run/secrets/tls_private_key
+      KC_HEALTH_ENABLED: 'true'
+    ports:
+      - '127.0.0.1:28443:8443'
+    secrets:
+      - database_password
+      - tls_certificate
+      - tls_private_key
+    volumes:
+      - ./start-keycloak.sh:/opt/cofco/start-keycloak.sh:ro
+    networks:
+      - identity
+    depends_on:
+      identity-db:
+        condition: service_healthy
+secrets:
+  database_password:
+    file: ${COFCO_IDENTITY_DATABASE_PASSWORD_FILE:?Set an owner-only secret file}
+  tls_certificate:
+    file: ${COFCO_IDENTITY_TLS_CERTIFICATE_FILE:?Set the trusted TLS certificate file}
+  tls_private_key:
+    file: ${COFCO_IDENTITY_TLS_PRIVATE_KEY_FILE:?Set the owner-only TLS private key file}
+volumes:
+  identity_database:
+    external: true
+    name: cofco_identity_persistent_v1
+networks:
+  identity:
+    driver: bridge

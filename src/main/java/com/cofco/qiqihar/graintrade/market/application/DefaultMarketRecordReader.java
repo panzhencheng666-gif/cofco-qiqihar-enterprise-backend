@@ -44,7 +44,7 @@ public class DefaultMarketRecordReader implements MarketRecordReader {
                     "Market record query is not allowed by the page definition");
         }
         AuthorizedReadScope scope = accessControl == null
-                ? AuthorizedReadScope.unrestricted() : accessControl.requireReadScope();
+                ? AuthorizedReadScope.unrestricted() : accessControl.requireBusinessReadScope();
         return repository.findPage(query.authorizedFor(scope.regionCodes()));
     }
 }

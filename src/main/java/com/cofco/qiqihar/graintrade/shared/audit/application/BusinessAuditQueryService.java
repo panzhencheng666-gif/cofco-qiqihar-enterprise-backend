@@ -41,9 +41,9 @@ public class BusinessAuditQueryService {
         }
         SecurityPrincipal principal = access.require("AUDIT_READ", null);
         String workUnit = requestedWorkUnit == null || requestedWorkUnit.isBlank()
-                ? principal.workUnitCode()
+                ? (principal.isRootAdministrator() ? null : principal.workUnitCode())
                 : requestedWorkUnit.trim();
-        if (!workUnit.equals(principal.workUnitCode()) && !principal.roleCodes().contains("SYSTEM_ADMIN")) {
+        if (!principal.isRootAdministrator() && !workUnit.equals(principal.workUnitCode()) && !principal.roleCodes().contains("SYSTEM_ADMIN")) {
             throw new AccessDeniedException("ACCESS_WORK_UNIT_DENIED", "Work unit is outside the assigned scope");
         }
         PagedResult<BusinessAuditView> result = reader.find(
@@ -54,7 +54,7 @@ public class BusinessAuditQueryService {
                 occurredTo,
                 pageNumber,
                 pageSize);
-        audit.record(principal, "BUSINESS_AUDIT", workUnit, "AUDIT_EVENTS_READ", clock.instant(), "{}");
+        audit.record(principal, "BUSINESS_AUDIT", workUnit == null ? "ALL_UNITS" : workUnit, "AUDIT_EVENTS_READ", clock.instant(), "{}");
         return result;
     }
 

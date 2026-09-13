@@ -49,6 +49,11 @@ public class JdbcRegionResponsibilityRepository implements RegionResponsibilityR
     public void save(String subject,List<String> selected,List<String> affected,String actor,String reason){
         for(String code:affected){
             boolean chosen=selected.contains(code);
+            if(!chosen)jdbc.sql("""
+                UPDATE platform.security_user_region_scope SET valid_until=now()
+                WHERE subject_id=:subject AND region_code=:code AND valid_from<=now()
+                    AND (valid_until IS NULL OR valid_until>now())
+                """).param("subject",subject).param("code",code).update();
             jdbc.sql("""
                 INSERT INTO platform.region_responsibility(region_code,subject_id,updated_by,reason)
                 VALUES(:code,:subject,:actor,:reason)

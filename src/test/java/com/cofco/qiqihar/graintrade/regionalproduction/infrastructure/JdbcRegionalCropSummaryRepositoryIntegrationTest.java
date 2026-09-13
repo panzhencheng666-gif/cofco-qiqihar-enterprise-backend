@@ -106,6 +106,7 @@ class JdbcRegionalCropSummaryRepositoryIntegrationTest {
         var plan = jdbc.sql("EXPLAIN (ANALYZE, BUFFERS) "
                         + JdbcRegionalCropSummaryRepository.SUMMARY_SQL)
                 .param("regionCode", PREFECTURE)
+                .param("unrestricted", false)
                 .param("authorizedRegions", Set.of(COUNTY_ONE, COUNTY_TWO))
                 .param("productCode", "SOYBEAN").param("year", 2026).param("previousYear", 2025)
                 .query(String.class).list();

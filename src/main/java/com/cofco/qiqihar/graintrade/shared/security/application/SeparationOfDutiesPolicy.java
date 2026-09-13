@@ -56,7 +56,7 @@ public class SeparationOfDutiesPolicy {
     }
 
     private static boolean hasAccountOwnerSelfReviewPrivilege(SecurityPrincipal principal) {
-        return principal.roleCodes().contains(ACCOUNT_OWNER_ROLE)
-                && principal.permits(SELF_APPROVAL_PERMISSION);
+        return principal.isRootAdministrator() || (principal.roleCodes().contains(ACCOUNT_OWNER_ROLE)
+                && principal.permits(SELF_APPROVAL_PERMISSION));
     }
 }

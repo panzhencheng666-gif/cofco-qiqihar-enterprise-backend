@@ -43,11 +43,16 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
                        OR security_user.termination_effective_at > CURRENT_TIMESTAMP)
                 """).param("subjectId", subjectId).query((row, index) -> new SecuritySubject(
                 row.getString(1),row.getString(2),row.getString(3),row.getString(4),row.getString(5),row.getString(6)))
-                .optional().map(subject -> new SecurityPrincipal(
-                        subject.id(),subject.displayName(),subject.workUnitCode(),subject.workUnitName(),
-                        subject.accountStatus(),subject.employmentStatus(),roles(subject.id()),positions(subject.id()),
-                        permissions(subject.id()),regions(subject.id(),subject.workUnitCode()),
-                        assignedRegions(subject.id(),subject.workUnitCode())));
+                .optional().map(subject -> {
+                    Set<String> roleCodes = roles(subject.id());
+                    boolean root = SecurityPrincipal.hasAdministratorRole(roleCodes);
+                    return new SecurityPrincipal(
+                            subject.id(),subject.displayName(),subject.workUnitCode(),subject.workUnitName(),
+                            subject.accountStatus(),subject.employmentStatus(),roleCodes,positions(subject.id()),
+                            root ? allPermissions() : permissions(subject.id()),
+                            root ? allRegions() : regions(subject.id(),subject.workUnitCode()),
+                            assignedRegions(subject.id(),subject.workUnitCode()));
+                });
     }
 
     @Override
@@ -64,6 +69,16 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
                   AND (valid_until IS NULL OR CURRENT_TIMESTAMP<valid_until)
                 """).param("issuer",issuer).param("providerSubject",providerSubject)
                 .query(String.class).optional().flatMap(this::findEnabled);
+    }
+
+    private Set<String> allPermissions() {
+        return new LinkedHashSet<>(jdbc.sql("SELECT code FROM platform.access_permission WHERE active ORDER BY code")
+                .query(String.class).list());
+    }
+
+    private Set<String> allRegions() {
+        return new LinkedHashSet<>(jdbc.sql("SELECT code FROM platform.region ORDER BY code")
+                .query(String.class).list());
     }
 
     private Set<String> permissions(String subjectId) {
@@ -107,11 +122,6 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
                     JOIN covered parent ON parent.region_code = child.parent_code
                 )
                 SELECT region_code FROM covered
-                UNION
-                SELECT county.code FROM platform.region county
-                JOIN unit_authorized unit ON unit.region_code=county.code
-                WHERE county.administrative_level='COUNTY'
-                  AND platform.county_reporting_subject(county.code)=:subjectId
                 ORDER BY region_code
                 """).param("subjectId", subjectId).param("workUnitCode", workUnitCode).query(String.class).list());
     }

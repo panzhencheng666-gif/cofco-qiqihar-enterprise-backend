@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade.market.interfaceadapter;
 
+import com.cofco.qiqihar.graintrade.testsupport.OrdinarySecurityFixture;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
@@ -218,35 +219,38 @@ class MarketMonitoringRestIntegrationTest {
 
     @Test
     void onlyAnIndependentAuthorizedReviewerCanApproveOrReturnAMarketRecord() throws Exception {
-        String id = create("CORN", "FEED_MILL", "MOISTURE");
-        mockMvc.perform(post("/api/v1/market-records/{id}/submit", id)
-                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":0}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.allowedActions.length()").value(1))
-                .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"));
+        try (var ordinary = OrdinarySecurityFixture.create(
+                JdbcClient.create(dataSource), "ci-ordinary-reviewer", "230200")) {
+            String id = create("CORN", "FEED_MILL", "MOISTURE");
+            mockMvc.perform(post("/api/v1/market-records/{id}/submit", id)
+                            .principal(() -> "ci-ordinary-reviewer").contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"version\":0}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.allowedActions.length()").value(1))
+                    .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"));
 
-        mockMvc.perform(post("/api/v1/market-records/{id}/approve", id)
-                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":1}"))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("SELF_APPROVAL_FORBIDDEN"));
-        mockMvc.perform(post("/api/v1/market-records/{id}/return", id)
-                        .principal(() -> "market-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":1,\"reason\":\"补充依据\"}"))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("SELF_RETURN_FORBIDDEN"));
+            mockMvc.perform(post("/api/v1/market-records/{id}/approve", id)
+                            .principal(() -> "ci-ordinary-reviewer").contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"version\":1}"))
+                    .andExpect(status().isForbidden())
+                    .andExpect(jsonPath("$.error.code").value("SELF_APPROVAL_FORBIDDEN"));
+            mockMvc.perform(post("/api/v1/market-records/{id}/return", id)
+                            .principal(() -> "ci-ordinary-reviewer").contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"version\":1,\"reason\":\"补充依据\"}"))
+                    .andExpect(status().isForbidden())
+                    .andExpect(jsonPath("$.error.code").value("SELF_RETURN_FORBIDDEN"));
 
-        mockMvc.perform(post("/api/v1/market-records/{id}/approve", id)
-                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":1}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("APPROVED"));
-        assertThat(JdbcClient.create(dataSource).sql("""
-                SELECT count(*) FROM market.market_record
-                WHERE record_id=:id AND status_code='APPROVED'
-                  AND party_id IS NULL AND sample_point_id IS NOT NULL
-                """).param("id", id).query(Long.class).single()).isEqualTo(1L);
+            mockMvc.perform(post("/api/v1/market-records/{id}/approve", id)
+                            .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"version\":1}"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.status").value("APPROVED"));
+            assertThat(JdbcClient.create(dataSource).sql("""
+                    SELECT count(*) FROM market.market_record
+                    WHERE record_id=:id AND status_code='APPROVED'
+                      AND party_id IS NULL AND sample_point_id IS NOT NULL
+                    """).param("id", id).query(Long.class).single()).isEqualTo(1L);
+        }
     }
 
     @Test

@@ -55,7 +55,7 @@ class SupplyBalanceRestIntegrationTest {
                 VALUES(:operator,'BUSINESS_OPERATOR'),(:reader,'REPORTER')
                 ON CONFLICT(subject_id,role_code,valid_from) DO UPDATE SET valid_until=NULL;
                 INSERT INTO platform.security_user_region_scope(subject_id,region_code)
-                VALUES(:operator,:prefecture),(:reader,:prefecture)
+                VALUES(:operator,:prefecture)
                 ON CONFLICT(subject_id,region_code,valid_from) DO UPDATE SET valid_until=NULL
                 """).param("unit", UNIT).param("prefecture", PREFECTURE)
                 .param("operator", OPERATOR).param("reader", READER).update();
@@ -65,6 +65,12 @@ class SupplyBalanceRestIntegrationTest {
                 VALUES(:one,2026,'RICE',150000,100,:actor,:actor),
                       (:two,2026,'RICE',300000,100,:actor,:actor)
                 """).param("one", COUNTY_ONE).param("two", COUNTY_TWO).param("actor", OPERATOR).update();
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void releaseRegionBindings() {
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id IN (:operator,:reader)")
+                .param("operator", OPERATOR).param("reader", READER).update();
     }
 
     @Test

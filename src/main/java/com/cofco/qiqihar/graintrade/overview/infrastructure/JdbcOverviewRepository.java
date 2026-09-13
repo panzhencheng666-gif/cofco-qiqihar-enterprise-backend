@@ -55,11 +55,20 @@ public class JdbcOverviewRepository implements OverviewRepository {
               SELECT monitoring_scope.region_code FROM monitoring_scope
               WHERE CAST(:region AS varchar) IS NULL
                  OR monitoring_scope.region_code IN (SELECT code FROM requested_scope)
+            ), point_boundaries AS MATERIALIZED (
+              SELECT render.region_code, ST_GeomFromGeoJSON(render.geo_json) geometry
+              FROM overview.administrative_boundary_render render
+              WHERE render.region_code=CAST(:region AS varchar)
+                 OR EXISTS (SELECT 1 FROM registry.sample_point candidate
+                   WHERE candidate.region_code=render.region_code
+                     AND candidate.deletion_state='ACTIVE'
+                     AND candidate.approval_state='APPROVED'
+                     AND candidate.location_state='VALID'
+                     AND candidate.display_point IS NOT NULL)
             ), current_valid_sample(sample_point_id) AS MATERIALIZED (
               SELECT point.sample_point_id
               FROM registry.sample_point point
-              JOIN (SELECT region_code,ST_GeomFromGeoJSON(geo_json) geometry
-                    FROM overview.administrative_boundary_render) boundary
+              JOIN point_boundaries boundary
                 ON boundary.region_code=point.region_code
               WHERE point.deletion_state='ACTIVE'
                 AND point.approval_state='APPROVED'
@@ -70,8 +79,7 @@ public class JdbcOverviewRepository implements OverviewRepository {
                   point.region_code IN (SELECT code FROM scope)
                   OR point.region_code IN (SELECT code FROM requested_ancestors)
                     AND EXISTS(
-                      SELECT 1 FROM (SELECT region_code,ST_GeomFromGeoJSON(geo_json) geometry
-                          FROM overview.administrative_boundary_render) requested_boundary
+                      SELECT 1 FROM point_boundaries requested_boundary
                       WHERE requested_boundary.region_code=CAST(:region AS varchar)
                         AND ST_Covers(requested_boundary.geometry,point.display_point)))
               UNION ALL SELECT '00000000-0000-0000-0000-000000000000'::uuid

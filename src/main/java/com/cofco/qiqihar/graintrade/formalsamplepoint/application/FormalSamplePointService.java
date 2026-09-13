@@ -70,7 +70,7 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
         }
         String region = optional(regionCode, 12);
         String search = optional(keyword, 200);
-        AuthorizedReadScope scope = access.requireReadScope();
+        AuthorizedReadScope scope = access.requireBusinessReadScope();
         if (region != null) scope.requireRegion(region);
         return repository.findPage(
                 region, search, pageNumber, pageSize, scope.regionCodes());
@@ -78,7 +78,7 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
 
     @Transactional(readOnly = true)
     public FormalSamplePointView get(UUID id) {
-        AuthorizedReadScope scope = access.requireReadScope();
+        AuthorizedReadScope scope = access.requireBusinessReadScope();
         FormalSamplePointView point = required(id);
         scope.requireRegion(point.regionCode());
         return point;
@@ -86,7 +86,7 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
 
     @Transactional
     public FormalSamplePointView create(FormalSamplePointDraft submitted) {
-        SecurityPrincipal actor = access.require("FORMAL_SAMPLE_MANAGE", null);
+        SecurityPrincipal actor = access.require("BUSINESS_CREATE", null);
         FormalSamplePointDraft draft = validateForCreate(submitted);
         Instant now = clock.instant();
         UUID id = UUID.randomUUID();
@@ -105,7 +105,7 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
 
     FormalSamplePointDraft validateForCreate(FormalSamplePointDraft submitted) {
         FormalSamplePointDraft draft = normalize(submitted);
-        access.require("FORMAL_SAMPLE_MANAGE", draft.regionCode());
+        access.require("BUSINESS_CREATE", draft.regionCode());
         String responsible = principals.responsibleSubject(draft.regionCode(), false).orElse(null);
         if (draft.maintainerSubjectId() != null
                 && !Objects.equals(draft.maintainerSubjectId(), responsible)) {
@@ -131,13 +131,14 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
                     "正式样本已发生变化，请刷新后重试");
         }
         FormalSamplePointDraft draft = normalize(submitted);
-        access.require(actor.permits("FORMAL_SAMPLE_MANAGE")
-                ? "FORMAL_SAMPLE_MANAGE" : "BUSINESS_CREATE", draft.regionCode());
+        access.require("BUSINESS_CREATE", draft.regionCode());
+        String responsible = maintainerForRegion(draft.regionCode());
         if (draft.maintainerSubjectId() != null
-                && !Objects.equals(current.maintainerSubjectId(), draft.maintainerSubjectId())) {
+                && !Objects.equals(current.maintainerSubjectId(), draft.maintainerSubjectId())
+                && !Objects.equals(responsible, draft.maintainerSubjectId())) {
             throw responsibilityOnly();
         }
-        draft = withMaintainer(draft, maintainerForRegion(current, draft.regionCode()));
+        draft = withMaintainer(draft, responsible);
         requireValidReferences(draft);
         coordinateGuard.lockAndRequireAvailableForRegion(
                 id, draft.longitude(), draft.latitude(), draft.regionCode());
@@ -178,9 +179,8 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
                 coordinate(submitted.longitude(), new BigDecimal("-180"), new BigDecimal("180"), 10),
                 coordinate(submitted.latitude(), new BigDecimal("-90"), new BigDecimal("90"), 9),
                 submitted.address() == null ? null : required(submitted.address(), 500));
-        access.require(actor.permits("FORMAL_SAMPLE_MANAGE")
-                ? "FORMAL_SAMPLE_MANAGE" : "BUSINESS_CREATE", draft.regionCode());
-        String maintainer = maintainerForRegion(current, draft.regionCode());
+        access.require("BUSINESS_CREATE", draft.regionCode());
+        String maintainer = maintainerForRegion(draft.regionCode());
         if (maintainer != null && !maintainer.isBlank()) {
             requireValidMaintainer(maintainer, draft.regionCode());
         }
@@ -211,10 +211,8 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
         throw responsibilityOnly();
     }
 
-    private String maintainerForRegion(FormalSamplePointView current, String regionCode) {
-        if (Objects.equals(current.regionCode(), regionCode)) return current.maintainerSubjectId();
-        // V177 synchronizes assigned destinations; retain legacy ownership in unassigned regions.
-        return principals.responsibleSubject(regionCode, false).orElse(current.maintainerSubjectId());
+    private String maintainerForRegion(String regionCode) {
+        return principals.responsibleSubject(regionCode, false).orElse(null);
     }
 
     private static AccessDeniedException responsibilityOnly() {
@@ -231,8 +229,7 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
     public void retire(UUID id, long expectedVersion, String submittedReason) {
         if (expectedVersion < 0) throw invalid();
         FormalSamplePointView point = required(id);
-        SecurityPrincipal actor = access.require(
-                "FORMAL_SAMPLE_DELETE", point.regionCode());
+        SecurityPrincipal actor = requireEditor(point);
         if (point.version() != expectedVersion) {
             throw new ConflictException(
                     "FORMAL_SAMPLE_POINT_VERSION_CONFLICT",
@@ -254,8 +251,7 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
     public void delete(UUID id, long expectedVersion) {
         if (expectedVersion < 0) throw invalid();
         FormalSamplePointView point = required(id);
-        SecurityPrincipal actor = access.require(
-                "FORMAL_SAMPLE_DELETE", point.regionCode());
+        SecurityPrincipal actor = requireEditor(point);
         switch (repository.delete(
                 id, expectedVersion, point.regionCode(), actor.subjectId())) {
             case DELETED -> { }
@@ -280,16 +276,7 @@ public class FormalSamplePointService implements FormalSampleLocationWriter {
     }
 
     private SecurityPrincipal requireEditor(FormalSamplePointView current) {
-        SecurityPrincipal actor = access.require("BUSINESS_READ", current.regionCode());
-        if (actor.permits("FORMAL_SAMPLE_MANAGE")) {
-            return access.require("FORMAL_SAMPLE_MANAGE", current.regionCode());
-        }
-        access.require("BUSINESS_CREATE", current.regionCode());
-        if (!actor.subjectId().equals(current.maintainerSubjectId())) {
-            throw new AccessDeniedException("FORMAL_SAMPLE_MAINTAINER_DENIED",
-                    "当前账号不是该正式样本的维护人，不能修改样本数据");
-        }
-        return actor;
+        return access.require("BUSINESS_CREATE", current.regionCode());
     }
 
     private FormalSamplePointView required(UUID id) {

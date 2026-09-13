@@ -47,14 +47,15 @@ public class RegionalCropAnnualStatService {
         if (!"PREFECTURE".equals(prefecture.administrativeLevel())) {
             throw invalid("REGIONAL_ANNUAL_STAT_PREFECTURE_INVALID", "查询地区必须为地级市");
         }
-        SecurityPrincipal principal = access.require("BUSINESS_READ", null);
-        return repository.findAll(year, product, prefectureCode, principal.regionCodes());
+        var scope = access.requireBusinessReadScope();
+        return repository.findAll(year, product, prefectureCode, scope.regionCodes());
     }
 
     @Transactional
     public RegionalCropAnnualStat upsert(
             String regionCode, int year, String productCode,
             BigDecimal plantedAreaMu, BigDecimal yieldPerMuKg, long expectedVersion) {
+        access.requireAdministrator();
         validateYear(year);
         String product = validateProduct(productCode);
         RegionalCropAnnualStatRepository.RegionDescriptor region = requireRegion(regionCode);

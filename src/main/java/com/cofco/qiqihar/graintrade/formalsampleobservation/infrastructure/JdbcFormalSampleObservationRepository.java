@@ -333,7 +333,7 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                     WHERE record.sample_point_id=:samplePointId AND record.product_code=:productCode
                       AND record.status_code='APPROVED'
                       AND record.survey_period_governance_state='CONFIRMED'
-                      AND point.region_code IN (:authorizedRegionCodes)
+                      AND (:unrestricted OR point.region_code IN (:authorizedRegionCodes))
                     """;
             case MARKET -> """
                     SELECT record.record_id::text source_record_id,record.reported_at observed_at,
@@ -374,7 +374,7 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                     WHERE record.sample_point_id=:samplePointId AND record.product_code=:productCode
                       AND record.status_code='APPROVED'
                       AND record.survey_period_governance_state='CONFIRMED'
-                      AND point.region_code IN (:authorizedRegionCodes)
+                      AND (:unrestricted OR point.region_code IN (:authorizedRegionCodes))
                     """;
             case LOGISTICS -> """
                     SELECT event.event_id::text source_record_id,event.reported_at observed_at,
@@ -398,7 +398,7 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                     WHERE event.sample_point_id=:samplePointId AND event.product_code=:productCode
                       AND event.status_code='APPROVED'
                       AND event.survey_period_governance_state='CONFIRMED'
-                      AND point.region_code IN (:authorizedRegionCodes)
+                      AND (:unrestricted OR point.region_code IN (:authorizedRegionCodes))
                     """.formatted(LOGISTICS_PUBLIC_VALUES_SQL);
         };
         long total = jdbc.sql("""
@@ -407,7 +407,8 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                 )
                 SELECT COUNT(*) FROM all_history WHERE survey_year=:year
                 """).param("samplePointId", samplePointId).param("productCode", productCode)
-                .param("authorizedRegionCodes", authorizedRegionCodes).param("year", year)
+                .param("authorizedRegionCodes", authorizedRegionCodes)
+                .param("unrestricted", authorizedRegionCodes.contains("*")).param("year", year)
                 .query(Long.class).single();
         List<FormalSampleObservationHistoryItem> items = new java.util.ArrayList<>();
         jdbc.sql("""
@@ -418,7 +419,8 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                 ORDER BY observed_at DESC,official_saved_at DESC,source_record_id DESC
                 OFFSET :offset ROWS FETCH NEXT :pageSize ROWS ONLY
                 """).param("samplePointId", samplePointId).param("productCode", productCode)
-                .param("authorizedRegionCodes", authorizedRegionCodes).param("year", year)
+                .param("authorizedRegionCodes", authorizedRegionCodes)
+                .param("unrestricted", authorizedRegionCodes.contains("*")).param("year", year)
                 .param("offset", pageNumber * pageSize).param("pageSize", pageSize)
                 .query((row, ignored) -> {
                     return new FormalSampleObservationHistoryItem(
@@ -475,10 +477,11 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                   AND point.governed_point IS NOT NULL
                   AND point.effective_from<=:observedOn
                   AND (point.effective_to IS NULL OR point.effective_to>=:observedOn)
-                  AND point.region_code IN (:authorizedRegionCodes)
+                  AND (:unrestricted OR point.region_code IN (:authorizedRegionCodes))
                 FOR UPDATE
                 """).param("samplePointId", samplePointId).param("observedOn", observedOn)
                 .param("authorizedRegionCodes", authorizedRegionCodes)
+                .param("unrestricted", authorizedRegionCodes.contains("*"))
                 .query(String.class).optional().orElseThrow(JdbcFormalSampleObservationRepository::unavailable);
         EligibleFormalSample eligible = findEligibleSamples(
                         domain, productCode, regionCode, null, null, observedOn,

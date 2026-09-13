@@ -177,7 +177,7 @@ public class MarketImportService implements QueuedImportProcessor {
                 .filter(stored -> !returnedCorrections.supports(stored.sourceContent()))
                 .orElseThrow(() -> new ClientRequestException("IMPORT_JOB_NOT_FOUND", "Import job does not exist"))
                 .job();
-        if (!job.requestedBy().equals(principal.subjectId())) {
+        if (!principal.isRootAdministrator() && !job.requestedBy().equals(principal.subjectId())) {
             throw new ConflictException("IMPORT_ERROR_FILE_NOT_ALLOWED", "Import job belongs to a different subject");
         }
         List<String> headers = job.rows().isEmpty()
@@ -225,7 +225,7 @@ public class MarketImportService implements QueuedImportProcessor {
                 .filter(stored -> stored.job().domainCode().equals(MarketImportTemplate.DOMAIN))
                 .filter(stored -> !returnedCorrections.supports(stored.sourceContent()))
                 .orElseThrow(() -> new ClientRequestException("IMPORT_JOB_NOT_FOUND", "Import job does not exist"));
-        if (!prior.job().requestedBy().equals(principal.subjectId())) {
+        if (!principal.isRootAdministrator() && !prior.job().requestedBy().equals(principal.subjectId())) {
             throw new ConflictException("IMPORT_RETRY_NOT_ALLOWED", "Import job belongs to a different subject");
         }
         if ("FAILED".equals(prior.job().statusCode())) {
@@ -281,7 +281,7 @@ public class MarketImportService implements QueuedImportProcessor {
         var stored = jobs.findById(jobId)
                 .filter(value -> value.job().domainCode().equals(MarketImportTemplate.DOMAIN))
                 .orElseThrow(() -> new ClientRequestException("IMPORT_JOB_NOT_FOUND", "Import job does not exist"));
-        if (!stored.job().requestedBy().equals(principal.subjectId())) {
+        if (!principal.isRootAdministrator() && !stored.job().requestedBy().equals(principal.subjectId())) {
             throw new ConflictException("IMPORT_JOB_NOT_ALLOWED", "Import job belongs to a different subject");
         }
         return stored;

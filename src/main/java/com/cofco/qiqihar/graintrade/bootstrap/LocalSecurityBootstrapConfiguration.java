@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.bootstrap;
 
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
@@ -10,6 +11,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 /** Repeatable local-only identity bootstrap; production profiles never create this subject. */
 @Configuration(proxyBeanMethods = false)
 @Profile("local")
+@ConditionalOnProperty(name = "qiqihar.local.bootstrap.enabled", havingValue = "true", matchIfMissing = true)
 public class LocalSecurityBootstrapConfiguration {
 
     @Bean

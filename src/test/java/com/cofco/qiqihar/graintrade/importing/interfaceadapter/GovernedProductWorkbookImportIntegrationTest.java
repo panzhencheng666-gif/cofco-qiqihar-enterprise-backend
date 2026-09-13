@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade.importing.interfaceadapter;
 
+import com.cofco.qiqihar.graintrade.testsupport.OrdinarySecurityFixture;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
@@ -110,6 +111,7 @@ class GovernedProductWorkbookImportIntegrationTest {
 
     @AfterEach
     void cleanCrossPeriodSampleIdentityFixture() {
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id='governed-limited-importer'").update();
         jdbc.sql("""
                 DELETE FROM production.production_record
                 WHERE sample_point_id IN (
@@ -1153,111 +1155,114 @@ class GovernedProductWorkbookImportIntegrationTest {
 
     @Test
     void supplementsMissingPhotosAgainstOriginalImportedRecordsWithoutCreatingBusinessDuplicates() throws Exception {
-        byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
-                        .param("format", "xlsx").param("productCode", "CORN")
-                        .principal(() -> "production-tester"))
-                .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
-        List<String> labels = withoutTrailingBlanks(XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
-        BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, "PRODUCTION");
-        BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
-                "PRODUCTION", "产情", "CORN", null, context.contractVersion(), context.contractDigest(),
-                labels, labels, List.of());
-        List<String> imported = sparse(labels, "样本点名称", "地区", "照片补充成功样本", "成功现场.png");
-        List<String> rejected = sparse(labels, "样本点名称", "地区", "照片补充失败样本", "失败现场.png");
-        for (Map.Entry<String, String> value : completeProductionValues().entrySet()) {
-            imported = withValue(imported, labels, value.getKey(), value.getValue());
-            rejected = withValue(rejected, labels, value.getKey(), value.getValue());
+        try (var ordinary = OrdinarySecurityFixture.create(
+                JdbcClient.create(dataSource), "ci-import-other", null)) {
+            byte[] downloaded = mvc.perform(get("/api/v1/imports/production/template")
+                            .param("format", "xlsx").param("productCode", "CORN")
+                            .principal(() -> "production-tester"))
+                    .andExpect(status().isOk()).andReturn().getResponse().getContentAsByteArray();
+            List<String> labels = withoutTrailingBlanks(XlsxTable.parseWorksheet(downloaded, 1, 256).getFirst());
+            BusinessImportWorkbook.Context context = BusinessImportWorkbook.context(downloaded, "PRODUCTION");
+            BusinessImportWorkbook.Template template = new BusinessImportWorkbook.Template(
+                    "PRODUCTION", "产情", "CORN", null, context.contractVersion(), context.contractDigest(),
+                    labels, labels, List.of());
+            List<String> imported = sparse(labels, "样本点名称", "地区", "照片补充成功样本", "成功现场.png");
+            List<String> rejected = sparse(labels, "样本点名称", "地区", "照片补充失败样本", "失败现场.png");
+            for (Map.Entry<String, String> value : completeProductionValues().entrySet()) {
+                imported = withValue(imported, labels, value.getKey(), value.getValue());
+                rejected = withValue(rejected, labels, value.getKey(), value.getValue());
+            }
+            rejected = withValue(rejected, labels, "纬度（度）", "95");
+
+            String importResponse = mvc.perform(multipart("/api/v1/imports/production")
+                            .file(new MockMultipartFile("file", "产情-玉米-照片补充.xlsx", XLSX,
+                                    createCurrentWorkbook(template, List.of(imported))))
+                            .param("productCode", "CORN")
+                            .header("Idempotency-Key", "production-photo-supplement")
+                            .principal(() -> "production-tester"))
+                    .andExpect(status().isCreated())
+                    .andExpect(jsonPath("$.data.importedRows").value(1))
+                    .andExpect(jsonPath("$.data.failedRows").value(0))
+                    .andReturn().getResponse().getContentAsString();
+            String jobId = importResponse.replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+            String rejectedResponse = mvc.perform(multipart("/api/v1/imports/production")
+                            .file(new MockMultipartFile("file", "产情-玉米-照片补充失败.xlsx", XLSX,
+                                    createCurrentWorkbook(template, List.of(rejected))))
+                            .param("productCode", "CORN")
+                            .header("Idempotency-Key", "production-photo-supplement-rejected")
+                            .principal(() -> "production-tester"))
+                    .andExpect(status().isCreated())
+                    .andExpect(jsonPath("$.data.importedRows").value(0))
+                    .andExpect(jsonPath("$.data.failedRows").value(1))
+                    .andReturn().getResponse().getContentAsString();
+            String rejectedJobId = rejectedResponse.replaceFirst(
+                    "(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
+            Map<String, Object> before = jdbc.sql("""
+                    SELECT record_id,version,status_code FROM production.production_record
+                    """).query().singleRow();
+
+            mvc.perform(get("/api/v1/imports/production/{jobId}/photo-manifest", jobId)
+                            .principal(() -> "production-tester"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.totalFileCount").value(1))
+                    .andExpect(jsonPath("$.data.eligibleFileCount").value(1))
+                    .andExpect(jsonPath("$.data.deferredFileCount").value(0))
+                    .andExpect(jsonPath("$.data.totalTargetAttachments").value(1))
+                    .andExpect(jsonPath("$.data.attachedTargetAttachments").value(0));
+
+            mvc.perform(multipart("/api/v1/imports/production/{jobId}/photos", jobId)
+                            .file(new MockMultipartFile("file", "成功现场.png", "image/png", pngBytes()))
+                            .principal(() -> "production-tester"))
+                    .andExpect(status().isCreated())
+                    .andExpect(jsonPath("$.data.statusCode").value("ATTACHED"))
+                    .andExpect(jsonPath("$.data.targetRecords").value(1))
+                    .andExpect(jsonPath("$.data.newAttachments").value(1))
+                    .andExpect(jsonPath("$.data.alreadyAttached").value(0));
+
+            assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
+                    .query(Long.class).single()).isOne();
+            assertThat(jdbc.sql("SELECT count(*) FROM evidence.evidence_photo WHERE state_code='ATTACHED'")
+                    .query(Long.class).single()).isOne();
+            assertThat(jdbc.sql("SELECT count(*) FROM platform.import_job_photo")
+                    .query(Long.class).single()).isZero();
+            Map<String, Object> after = jdbc.sql("""
+                    SELECT record_id,version,status_code FROM production.production_record
+                    """).query().singleRow();
+            assertThat(after).isEqualTo(before);
+
+            mvc.perform(get("/api/v1/production-records/{id}", before.get("record_id"))
+                            .principal(() -> "production-tester"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.evidencePhotos.length()").value(1))
+                    .andExpect(jsonPath("$.data.evidencePhotos[0].originalFilename").value("成功现场.png"));
+
+            mvc.perform(multipart("/api/v1/imports/production/{jobId}/photos", jobId)
+                            .file(new MockMultipartFile("file", "成功现场.png", "image/png", pngBytes()))
+                            .principal(() -> "production-tester"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.statusCode").value("ALREADY_ATTACHED"))
+                    .andExpect(jsonPath("$.data.newAttachments").value(0))
+                    .andExpect(jsonPath("$.data.alreadyAttached").value(1));
+
+            mvc.perform(multipart("/api/v1/imports/production/{jobId}/photos", rejectedJobId)
+                            .file(new MockMultipartFile("file", "失败现场.png", "image/png", pngBytes()))
+                            .principal(() -> "production-tester"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.statusCode").value("DEFERRED_NO_RECORD"))
+                    .andExpect(jsonPath("$.data.failedRows").value(1));
+            assertThat(jdbc.sql("SELECT count(*) FROM evidence.evidence_photo")
+                    .query(Long.class).single()).isOne();
+
+            mvc.perform(get("/api/v1/imports/production/{jobId}/photo-manifest", jobId)
+                            .principal(() -> "ci-import-other"))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.error.code").value("IMPORT_PHOTO_SUPPLEMENT_NOT_ALLOWED"));
+            assertThat(jdbc.sql("""
+                    SELECT count(*) FROM platform.business_audit_event
+                    WHERE aggregate_type='IMPORT_JOB' AND aggregate_id=:job
+                      AND action_code='IMPORT_PHOTO_SUPPLEMENTED'
+                    """).param("job", jobId).query(Long.class).single()).isOne();
         }
-        rejected = withValue(rejected, labels, "纬度（度）", "95");
-
-        String importResponse = mvc.perform(multipart("/api/v1/imports/production")
-                        .file(new MockMultipartFile("file", "产情-玉米-照片补充.xlsx", XLSX,
-                                createCurrentWorkbook(template, List.of(imported))))
-                        .param("productCode", "CORN")
-                        .header("Idempotency-Key", "production-photo-supplement")
-                        .principal(() -> "production-tester"))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.importedRows").value(1))
-                .andExpect(jsonPath("$.data.failedRows").value(0))
-                .andReturn().getResponse().getContentAsString();
-        String jobId = importResponse.replaceFirst("(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
-        String rejectedResponse = mvc.perform(multipart("/api/v1/imports/production")
-                        .file(new MockMultipartFile("file", "产情-玉米-照片补充失败.xlsx", XLSX,
-                                createCurrentWorkbook(template, List.of(rejected))))
-                        .param("productCode", "CORN")
-                        .header("Idempotency-Key", "production-photo-supplement-rejected")
-                        .principal(() -> "production-tester"))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.importedRows").value(0))
-                .andExpect(jsonPath("$.data.failedRows").value(1))
-                .andReturn().getResponse().getContentAsString();
-        String rejectedJobId = rejectedResponse.replaceFirst(
-                "(?s).*?\\\"id\\\":\\\"([^\\\"]+)\\\".*", "$1");
-        Map<String, Object> before = jdbc.sql("""
-                SELECT record_id,version,status_code FROM production.production_record
-                """).query().singleRow();
-
-        mvc.perform(get("/api/v1/imports/production/{jobId}/photo-manifest", jobId)
-                        .principal(() -> "production-tester"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.totalFileCount").value(1))
-                .andExpect(jsonPath("$.data.eligibleFileCount").value(1))
-                .andExpect(jsonPath("$.data.deferredFileCount").value(0))
-                .andExpect(jsonPath("$.data.totalTargetAttachments").value(1))
-                .andExpect(jsonPath("$.data.attachedTargetAttachments").value(0));
-
-        mvc.perform(multipart("/api/v1/imports/production/{jobId}/photos", jobId)
-                        .file(new MockMultipartFile("file", "成功现场.png", "image/png", pngBytes()))
-                        .principal(() -> "production-tester"))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.statusCode").value("ATTACHED"))
-                .andExpect(jsonPath("$.data.targetRecords").value(1))
-                .andExpect(jsonPath("$.data.newAttachments").value(1))
-                .andExpect(jsonPath("$.data.alreadyAttached").value(0));
-
-        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record")
-                .query(Long.class).single()).isOne();
-        assertThat(jdbc.sql("SELECT count(*) FROM evidence.evidence_photo WHERE state_code='ATTACHED'")
-                .query(Long.class).single()).isOne();
-        assertThat(jdbc.sql("SELECT count(*) FROM platform.import_job_photo")
-                .query(Long.class).single()).isZero();
-        Map<String, Object> after = jdbc.sql("""
-                SELECT record_id,version,status_code FROM production.production_record
-                """).query().singleRow();
-        assertThat(after).isEqualTo(before);
-
-        mvc.perform(get("/api/v1/production-records/{id}", before.get("record_id"))
-                        .principal(() -> "production-tester"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.evidencePhotos.length()").value(1))
-                .andExpect(jsonPath("$.data.evidencePhotos[0].originalFilename").value("成功现场.png"));
-
-        mvc.perform(multipart("/api/v1/imports/production/{jobId}/photos", jobId)
-                        .file(new MockMultipartFile("file", "成功现场.png", "image/png", pngBytes()))
-                        .principal(() -> "production-tester"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.statusCode").value("ALREADY_ATTACHED"))
-                .andExpect(jsonPath("$.data.newAttachments").value(0))
-                .andExpect(jsonPath("$.data.alreadyAttached").value(1));
-
-        mvc.perform(multipart("/api/v1/imports/production/{jobId}/photos", rejectedJobId)
-                        .file(new MockMultipartFile("file", "失败现场.png", "image/png", pngBytes()))
-                        .principal(() -> "production-tester"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.statusCode").value("DEFERRED_NO_RECORD"))
-                .andExpect(jsonPath("$.data.failedRows").value(1));
-        assertThat(jdbc.sql("SELECT count(*) FROM evidence.evidence_photo")
-                .query(Long.class).single()).isOne();
-
-        mvc.perform(get("/api/v1/imports/production/{jobId}/photo-manifest", jobId)
-                        .principal(() -> "market-tester"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("IMPORT_PHOTO_SUPPLEMENT_NOT_ALLOWED"));
-        assertThat(jdbc.sql("""
-                SELECT count(*) FROM platform.business_audit_event
-                WHERE aggregate_type='IMPORT_JOB' AND aggregate_id=:job
-                  AND action_code='IMPORT_PHOTO_SUPPLEMENTED'
-                """).param("job", jobId).query(Long.class).single()).isOne();
     }
 
     @Test

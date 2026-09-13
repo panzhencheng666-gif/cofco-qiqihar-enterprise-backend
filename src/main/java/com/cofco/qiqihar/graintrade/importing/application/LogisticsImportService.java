@@ -132,7 +132,7 @@ public class LogisticsImportService implements QueuedImportProcessor {
     public ImportJobView retry(UUID importJobId) {
         SecurityPrincipal principal = access.require("BUSINESS_IMPORT", null);
         var stored = ownedOrdinary(importJobId, principal);
-        if (!stored.job().requestedBy().equals(principal.subjectId()))
+        if (!principal.isRootAdministrator() && !stored.job().requestedBy().equals(principal.subjectId()))
             throw new ConflictException("IMPORT_RETRY_NOT_ALLOWED", "Import job belongs to a different subject");
         if ("FAILED".equals(stored.job().statusCode())) {
             String retryKey = "retry-" + UUID.randomUUID();
@@ -294,7 +294,7 @@ public class LogisticsImportService implements QueuedImportProcessor {
                 .filter(value -> value.job().domainCode().equals(LogisticsImportTemplate.DOMAIN))
                 .orElseThrow(() -> new ClientRequestException("IMPORT_JOB_NOT_FOUND", "Import job does not exist"));
         ImportJob job = stored.job();
-        if (!job.requestedBy().equals(principal.subjectId()))
+        if (!principal.isRootAdministrator() && !job.requestedBy().equals(principal.subjectId()))
             throw new ConflictException("IMPORT_ERROR_FILE_NOT_ALLOWED", "Import job belongs to a different subject");
         return stored;
     }

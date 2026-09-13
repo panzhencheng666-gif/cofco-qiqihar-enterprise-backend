@@ -253,7 +253,10 @@ public class JdbcDesignSamplePointRepository implements DesignSamplePointReposit
         add(where, parameters, "domain_code", "domainCode", query.domainCode());
         add(where, parameters, "product_code", "productCode", query.productCode());
         add(where, parameters, "object_type_code", "objectTypeCode", query.objectTypeCode());
-        add(where, parameters, "region_code", "regionCode", query.regionCode());
+        if (query.regionCode() != null) {
+            where.append(" AND point.region_code IN (WITH RECURSIVE selected_regions(code) AS (SELECT code FROM platform.region WHERE code=:regionCode UNION SELECT child.code FROM platform.region child JOIN selected_regions parent ON child.parent_code=parent.code) SELECT code FROM selected_regions)");
+            parameters.put("regionCode", query.regionCode());
+        }
         if (query.keyword() != null) {
             where.append(" AND lower(point.sample_name) LIKE :keyword");
             parameters.put("keyword", "%" + query.keyword().toLowerCase(java.util.Locale.ROOT) + "%");

@@ -99,16 +99,21 @@ public class MarketMonitoringService {
 
     @Transactional(readOnly = true)
     public PagedResult<MarketListItem> list(MarketRecordQuery query) {
-        return list(query, true);
+        return list(query, true, null);
     }
 
     @Transactional(readOnly = true)
     public PagedResult<MarketListItem> listLifecycle(MarketRecordQuery query) {
-        return list(query, false);
+        return list(query, false, null);
+    }
+
+    @Transactional(readOnly = true)
+    public PagedResult<MarketListItem> list(MarketRecordQuery query, String requestedScope) {
+        return list(query, true, requestedScope);
     }
 
     private PagedResult<MarketListItem> list(
-            MarketRecordQuery query, boolean currentFormalOnly) {
+            MarketRecordQuery query, boolean currentFormalOnly, String requestedScope) {
         try {
             Math.multiplyExact((long) query.pageNumber(), query.pageSize());
         } catch (ArithmeticException exception) {
@@ -120,7 +125,9 @@ public class MarketMonitoringService {
         }
         String regionCode = query.filters().get("regionCode");
         if (regionCode != null && !repository.isKnownRegion(regionCode)) throw invalidQuery();
-        AuthorizedReadScope scope = readScope();
+        if (requestedScope != null && !"MY_TASKS".equals(requestedScope)) throw invalidQuery();
+        AuthorizedReadScope scope = "MY_TASKS".equals(requestedScope) && accessControl != null
+                ? accessControl.requireTaskReadScope() : readScope();
         if (regionCode != null) scope.requireRegion(regionCode);
         MarketRecordQuery authorized = query.authorizedFor(scope.regionCodes());
         PagedResult<MarketListRow> page = currentFormalOnly
@@ -129,7 +136,7 @@ public class MarketMonitoringService {
         List<MarketListItem> items = page.items().stream().map(row -> new MarketListItem(
                 row.id(), publicValues(row.values()), MarketActionPolicy.allowedActions(row.status()).stream()
                         .filter(row.configuredActions()::contains)
-                        .filter(action -> actionAllowed(action, row.id()))
+                        .filter(action -> actionAllowed(action, row.id(), row.regionCode()))
                         .toList(), row.version())).toList();
         return new PagedResult<>(items, page.pageNumber(), page.pageSize(), page.totalElements());
     }
@@ -734,7 +741,7 @@ public class MarketMonitoringService {
         return new MarketRecordView(record, values,
                 evidencePhotos == null ? List.of() : evidencePhotos.marketPhotos(record.id()),
                 MarketActionPolicy.allowedActions(record.status()).stream()
-                        .filter(action -> actionAllowed(action, record.id())).toList());
+                        .filter(action -> actionAllowed(action, record.id(), record.regionCode())).toList());
     }
 
     private static List<MarketCoreFieldDefinition> publicCoreFields(
@@ -752,7 +759,7 @@ public class MarketMonitoringService {
         return visible;
     }
 
-    private boolean actionAllowed(String action, String recordId) {
+    private boolean actionAllowed(String action, String recordId, String regionCode) {
         if (accessControl == null) return true;
         SecurityPrincipal principal = accessControl.authenticated().orElse(null);
         if (principal == null) return true;
@@ -766,6 +773,7 @@ public class MarketMonitoringService {
             default -> null;
         };
         if (permission == null || !principal.permits(permission)) return false;
+        if (!"VIEW".equals(action) && (regionCode == null || !principal.includesRegion(regionCode))) return false;
         if (separationOfDuties == null) return true;
         return switch (action) {
             case "APPROVE" -> separationOfDuties.canApprove(
@@ -828,7 +836,7 @@ public class MarketMonitoringService {
     }
 
     private AuthorizedReadScope readScope() {
-        return accessControl == null ? AuthorizedReadScope.unrestricted() : accessControl.requireReadScope();
+        return accessControl == null ? AuthorizedReadScope.unrestricted() : accessControl.requireBusinessReadScope();
     }
 
     private void audit(SecurityPrincipal principal, MarketMonitoringRecord record, String actionCode) {

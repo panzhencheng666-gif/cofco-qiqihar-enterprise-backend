@@ -97,6 +97,8 @@ class FormalSamplePointWriteRestIntegrationTest {
 
     @AfterEach
     void tearDown() {
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id=:subject")
+                .param("subject", RESTRICTED).update();
         jdbc.sql("DELETE FROM platform.region_responsibility").update();
         jdbc.sql("DROP TRIGGER IF EXISTS reject_formal_sample_audit_for_test "
                 + "ON platform.business_audit_event").update();
@@ -705,40 +707,35 @@ class FormalSamplePointWriteRestIntegrationTest {
         mvc.perform(put("/api/v1/formal-sample-points/{id}", UUID.randomUUID())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(draft("未认证更新", "230202", "龙沙区地址", "123.94", "47.31",
-                                "FARMER", 0L)))
+                                "FARMER", 0L, RESTRICTED)))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.error.code").value("AUTHENTICATION_REQUIRED"));
 
         mvc.perform(post("/api/v1/formal-sample-points")
                         .principal(() -> RESTRICTED).contentType(MediaType.APPLICATION_JSON)
                         .content(draft("无权新建", "230202", "龙沙区地址", "123.94", "47.31",
-                                "FARMER", null)))
+                                "FARMER", null, RESTRICTED)))
                 .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("ACCESS_PERMISSION_DENIED"));
+                .andExpect(jsonPath("$.error.code").value("REGION_RESPONSIBILITY_DENIED"));
 
-        jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:subject")
-                .param("subject", RESTRICTED).update();
-        jdbc.sql("""
-                INSERT INTO platform.security_user_role(subject_id,role_code)
-                VALUES(:subject,'SYSTEM_ADMIN')
-                """).param("subject", RESTRICTED).update();
+        responsibility(RESTRICTED);
         mvc.perform(post("/api/v1/formal-sample-points")
                         .principal(() -> RESTRICTED).contentType(MediaType.APPLICATION_JSON)
                         .content(draft("跨区新建", "230203", "建华区地址", "124.00", "47.40",
-                                "FARMER", null)))
+                                "FARMER", null, RESTRICTED)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
 
         MvcResult created = mvc.perform(post("/api/v1/formal-sample-points")
                         .principal(() -> RESTRICTED).contentType(MediaType.APPLICATION_JSON)
                         .content(draft("区内样本", "230202", "龙沙区地址", "123.94", "47.31",
-                                "FARMER", null)))
+                                "FARMER", null, RESTRICTED)))
                 .andExpect(status().isCreated()).andReturn();
         UUID id = responseId(created);
         mvc.perform(put("/api/v1/formal-sample-points/{id}", id)
                         .principal(() -> RESTRICTED).contentType(MediaType.APPLICATION_JSON)
                         .content(draft("跨区更新", "230203", "建华区地址", "124.00", "47.40",
-                                "FARMER", 0L)))
+                                "FARMER", 0L, RESTRICTED)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
     }

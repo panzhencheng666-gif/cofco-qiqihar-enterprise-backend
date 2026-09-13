@@ -102,7 +102,7 @@ public class GovernedDraftImportService {
 
     public ImportJobView retryFailedRows(
             ImportJobRepository.StoredImportJob prior, SecurityPrincipal principal) {
-        if (!prior.job().requestedBy().equals(principal.subjectId())) {
+        if (!principal.isRootAdministrator() && !prior.job().requestedBy().equals(principal.subjectId())) {
             throw new ConflictException("IMPORT_RETRY_NOT_ALLOWED", "导入任务属于其他账号，不能重试");
         }
         DraftSource original = decode(prior.sourceContent());

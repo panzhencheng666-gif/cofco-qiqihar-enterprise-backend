@@ -55,6 +55,16 @@ class JdbcWorkItemRepositoryTest {
                 .param("reviewer", REVIEWER)
                 .update();
         jdbc.sql("""
+                INSERT INTO production.production_record(record_id,product_code,object_type_code,
+                  region_code,survey_date,reported_at,status_code,last_modified_by)
+                VALUES('production-source-record-1','CORN','FARMER','230202',current_date,now(),'DRAFT',:owner)
+                """).param("owner", OWNER).update();
+        jdbc.sql("""
+                INSERT INTO market.market_record(record_id,product_code,object_type_code,
+                  region_code,trade_date,reported_at,purchase_base_price,sale_base_price,trade_direction,status_code,last_modified_by)
+                VALUES('market-source-record-1','SOYBEAN','TRADER','230202',current_date,now(),2000,2100,'BOTH','PENDING_REVIEW',:owner)
+                """).param("owner", OWNER).update();
+        jdbc.sql("""
                 INSERT INTO workflow.workflow_node (code, label)
                 VALUES ('WORK_TEST_NODE', '经营部复核')
                 """).update();
@@ -108,6 +118,8 @@ class JdbcWorkItemRepositoryTest {
     @AfterEach
     void deleteFixtures() {
         jdbc.sql("DELETE FROM workflow.work_item").update();
+        jdbc.sql("DELETE FROM production.production_record WHERE record_id='production-source-record-1'").update();
+        jdbc.sql("DELETE FROM market.market_record WHERE record_id='market-source-record-1'").update();
         jdbc.sql("DELETE FROM workflow.responsible_party WHERE external_code IN (:codes)")
                 .param("codes", java.util.List.of(OWNER, WORK_UNIT)).update();
         jdbc.sql("DELETE FROM workflow.workflow_node WHERE code = 'WORK_TEST_NODE'").update();

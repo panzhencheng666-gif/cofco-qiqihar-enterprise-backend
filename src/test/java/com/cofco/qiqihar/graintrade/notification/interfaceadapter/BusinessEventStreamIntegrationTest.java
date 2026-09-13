@@ -68,7 +68,7 @@ class BusinessEventStreamIntegrationTest {
                 INSERT INTO platform.security_user(subject_id,display_name,work_unit_code)
                 VALUES(:reader,'实时事件测试员工',:unit)
                 """).param("reader", READER).param("unit", WORK_UNIT).update();
-        jdbc.sql("INSERT INTO platform.security_user_role(subject_id,role_code) VALUES(:reader,'SYSTEM_ADMIN')")
+        jdbc.sql("INSERT INTO platform.security_user_role(subject_id,role_code) VALUES(:reader,'BUSINESS_OPERATOR')")
                 .param("reader", READER).update();
         jdbc.sql("""
                 INSERT INTO platform.security_user_region_scope(subject_id,region_code)

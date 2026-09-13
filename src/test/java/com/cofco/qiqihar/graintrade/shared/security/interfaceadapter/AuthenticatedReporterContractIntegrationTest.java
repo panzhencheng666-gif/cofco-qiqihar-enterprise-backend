@@ -63,8 +63,20 @@ class AuthenticatedReporterContractIntegrationTest {
                 """).param("author", AUTHOR).param("colleague", COLLEAGUE)
                 .param("outsider", OUTSIDER).update();
         jdbc.sql("""
+                INSERT INTO platform.access_role(code,name,active,sort_order)
+                VALUES ('TEST_AUTOMATION','自动化测试角色',true,9999)
+                ON CONFLICT(code) DO UPDATE SET active=true
+                """).update();
+        jdbc.sql("""
+                INSERT INTO platform.access_role_permission(role_code,permission_code)
+                SELECT 'TEST_AUTOMATION',code FROM platform.access_permission WHERE active
+                ON CONFLICT DO NOTHING
+                """).update();
+        jdbc.sql("""
                 INSERT INTO platform.security_user_role(subject_id,role_code)
-                VALUES (:author,'SYSTEM_ADMIN'),(:colleague,'SYSTEM_ADMIN'),(:outsider,'SYSTEM_ADMIN')
+                VALUES (:author,'TEST_AUTOMATION'),(:author,'SYSTEM_ADMIN'),
+                       (:colleague,'TEST_AUTOMATION'),(:colleague,'SYSTEM_ADMIN'),
+                       (:outsider,'TEST_AUTOMATION'),(:outsider,'SYSTEM_ADMIN')
                 """).param("author", AUTHOR).param("colleague", COLLEAGUE)
                 .param("outsider", OUTSIDER).update();
         jdbc.sql("""
@@ -73,6 +85,11 @@ class AuthenticatedReporterContractIntegrationTest {
                 """).param("author", AUTHOR).param("colleague", COLLEAGUE)
                 .param("outsider", OUTSIDER).param("region", REGION)
                 .param("outsideRegion", OUTSIDE_REGION).update();
+        jdbc.sql("""
+                DELETE FROM platform.security_user_role
+                WHERE subject_id IN (:author,:colleague,:outsider) AND role_code='SYSTEM_ADMIN'
+                """).param("author", AUTHOR).param("colleague", COLLEAGUE)
+                .param("outsider", OUTSIDER).update();
         jdbc.sql("""
                 INSERT INTO platform.position(code,name,active,sort_order)
                 VALUES ('IDENTITY_CONTRACT_REPORTER','区域业务专员',true,9970)
@@ -115,6 +132,8 @@ class AuthenticatedReporterContractIntegrationTest {
 
     @Test
     void accountLifecycleAndEffectiveDatedGrantsTakeEffectOnTheNextRequest() throws Exception {
+        jdbc.sql("UPDATE platform.security_user_region_scope SET valid_until=now()-interval '1 second' WHERE subject_id=:colleague")
+                .param("colleague", COLLEAGUE).update();
         jdbc.sql("UPDATE platform.security_user SET account_status='SUSPENDED' WHERE subject_id=:author")
                 .param("author", AUTHOR).update();
         mvc.perform(get("/api/v1/session/me").principal(() -> AUTHOR))
@@ -175,8 +194,9 @@ class AuthenticatedReporterContractIntegrationTest {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.error.code").value("ACCESS_PERMISSION_DENIED"));
         mvc.perform(get("/api/v1/production-records/{id}",id).principal(() -> OUTSIDER))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.allowedActions.length()").value(1))
+                .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"));
         mvc.perform(get("/api/v1/production-records/{id}",id).principal(() -> COLLEAGUE))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"))
@@ -210,8 +230,9 @@ class AuthenticatedReporterContractIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.submissionMetadata.PROD_REPORTER_NAME").value("王洋"));
         mvc.perform(get("/api/v1/production-records/{id}", id).principal(() -> OUTSIDER))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.allowedActions.length()").value(1))
+                .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"));
     }
 
     @Test

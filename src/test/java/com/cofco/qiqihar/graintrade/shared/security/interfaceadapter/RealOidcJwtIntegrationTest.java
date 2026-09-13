@@ -14,6 +14,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import com.cofco.qiqihar.graintrade.shared.security.application.SecurityPrincipalRepository;
 import com.cofco.qiqihar.graintrade.shared.security.application.SecuritySessionAuditRecorder;
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
+import com.cofco.qiqihar.graintrade.shared.security.application.RegistrationDraftCompletion;
 import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
@@ -337,6 +338,11 @@ class RealOidcJwtIntegrationTest {
         @Bean
         SecuritySessionAuditRecorder sessionAudit() {
             return SESSION_AUDIT;
+        }
+
+        @Bean
+        RegistrationDraftCompletion registrationDraftCompletion() {
+            return mock(RegistrationDraftCompletion.class);
         }
 
         @Bean

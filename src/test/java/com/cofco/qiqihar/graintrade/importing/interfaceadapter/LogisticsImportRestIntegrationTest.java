@@ -1,5 +1,6 @@
 package com.cofco.qiqihar.graintrade.importing.interfaceadapter;
 
+import com.cofco.qiqihar.graintrade.testsupport.OrdinarySecurityFixture;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
@@ -122,46 +123,49 @@ class LogisticsImportRestIntegrationTest {
 
     @Test
     void rejectsOneInvalidRowWithoutWritingTheOtherwiseValidRow() throws Exception {
-        var definition = logisticsDefinition();
-        List<String> valid = LogisticsImportTemplate.codes(definition).stream().map(this::value).toList();
-        List<String> invalid = LogisticsImportTemplate.codes(definition).stream()
-                .map(code -> code.equals("LOG_ROUTE_VOLUME") ? "not-a-number" : value(code)).toList();
-        byte[] workbook = BusinessImportWorkbook.create(
-                LogisticsImportTemplate.workbook(definition), List.of(valid, invalid));
+        try (var ordinary = OrdinarySecurityFixture.create(
+                JdbcClient.create(dataSource), "ci-import-other", null)) {
+            var definition = logisticsDefinition();
+            List<String> valid = LogisticsImportTemplate.codes(definition).stream().map(this::value).toList();
+            List<String> invalid = LogisticsImportTemplate.codes(definition).stream()
+                    .map(code -> code.equals("LOG_ROUTE_VOLUME") ? "not-a-number" : value(code)).toList();
+            byte[] workbook = BusinessImportWorkbook.create(
+                    LogisticsImportTemplate.workbook(definition), List.of(valid, invalid));
 
-        String response = mvc.perform(multipart("/api/v1/imports/logistics")
-                        .file(new MockMultipartFile("file", "logistics.xlsx",
-                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
-                        .param("productCode", "CORN")
-                        .header("Idempotency-Key", "logistics-xlsx-invalid")
-                        .principal(() -> "logistics-tester"))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.importedRows").value(0))
-                .andExpect(jsonPath("$.data.failedRows").value(2))
-                .andReturn().getResponse().getContentAsString();
-        String jobId = response.replaceFirst("(?s).*?\"id\":\"([^\"]+)\".*", "$1");
+            String response = mvc.perform(multipart("/api/v1/imports/logistics")
+                            .file(new MockMultipartFile("file", "logistics.xlsx",
+                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", workbook))
+                            .param("productCode", "CORN")
+                            .header("Idempotency-Key", "logistics-xlsx-invalid")
+                            .principal(() -> "logistics-tester"))
+                    .andExpect(status().isCreated())
+                    .andExpect(jsonPath("$.data.importedRows").value(0))
+                    .andExpect(jsonPath("$.data.failedRows").value(2))
+                    .andReturn().getResponse().getContentAsString();
+            String jobId = response.replaceFirst("(?s).*?\"id\":\"([^\"]+)\".*", "$1");
 
-        mvc.perform(get("/api/v1/imports/logistics/{jobId}/errors", jobId)
-                        .principal(() -> "logistics-tester"))
-                .andExpect(status().isOk())
-                .andExpect(content().string(org.hamcrest.Matchers.containsString("INVALID_LOGISTICS_RECORD")));
-        assertThat(jdbc.sql("""
-                SELECT count(*) FROM platform.business_audit_event
-                WHERE aggregate_type='IMPORT_JOB' AND aggregate_id=:id
-                  AND action_code='IMPORT_ERROR_FILE_DOWNLOADED'
-                """).param("id", jobId).query(Long.class).single()).isEqualTo(1);
-        mvc.perform(get("/api/v1/imports/logistics/{jobId}/errors", jobId)
-                .principal(() -> "production-tester"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.error.code").value("IMPORT_ERROR_FILE_NOT_ALLOWED"));
-        assertThat(jdbc.sql("""
-                SELECT count(*) FROM platform.business_audit_event
-                WHERE aggregate_type='IMPORT_JOB' AND aggregate_id=:id
-                  AND action_code='IMPORT_ERROR_FILE_DOWNLOADED'
-                """).param("id", jobId).query(Long.class).single()).isEqualTo(1);
+            mvc.perform(get("/api/v1/imports/logistics/{jobId}/errors", jobId)
+                            .principal(() -> "logistics-tester"))
+                    .andExpect(status().isOk())
+                    .andExpect(content().string(org.hamcrest.Matchers.containsString("INVALID_LOGISTICS_RECORD")));
+            assertThat(jdbc.sql("""
+                    SELECT count(*) FROM platform.business_audit_event
+                    WHERE aggregate_type='IMPORT_JOB' AND aggregate_id=:id
+                      AND action_code='IMPORT_ERROR_FILE_DOWNLOADED'
+                    """).param("id", jobId).query(Long.class).single()).isEqualTo(1);
+            mvc.perform(get("/api/v1/imports/logistics/{jobId}/errors", jobId)
+                    .principal(() -> "ci-import-other"))
+                    .andExpect(status().isConflict())
+                    .andExpect(jsonPath("$.error.code").value("IMPORT_ERROR_FILE_NOT_ALLOWED"));
+            assertThat(jdbc.sql("""
+                    SELECT count(*) FROM platform.business_audit_event
+                    WHERE aggregate_type='IMPORT_JOB' AND aggregate_id=:id
+                      AND action_code='IMPORT_ERROR_FILE_DOWNLOADED'
+                    """).param("id", jobId).query(Long.class).single()).isEqualTo(1);
 
-        assertThat(jdbc.sql("SELECT count(*) FROM logistics.route_event")
-                .query(Long.class).single()).isZero();
+            assertThat(jdbc.sql("SELECT count(*) FROM logistics.route_event")
+                    .query(Long.class).single()).isZero();
+        }
     }
 
     @Test

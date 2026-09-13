@@ -283,7 +283,7 @@ public class JdbcFormalSamplePointRepository implements FormalSamplePointReposit
             }
         }
         if (regionCode != null) {
-            sql.append(" AND point.region_code=:regionCode");
+            sql.append(" AND point.region_code IN (WITH RECURSIVE selected_regions(code) AS (SELECT code FROM platform.region WHERE code=:regionCode UNION SELECT child.code FROM platform.region child JOIN selected_regions parent ON child.parent_code=parent.code) SELECT code FROM selected_regions)");
             parameters.put("regionCode", regionCode);
         }
         if (keyword != null) {

@@ -39,6 +39,14 @@ public class ProtectedTestDatabaseConfiguration {
                         ? AuthorizedReadScope.unrestricted()
                         : super.requireReadScope();
             }
+
+            @Override
+            public AuthorizedReadScope requireBusinessReadScope() {
+                return currentSubject.subjectId().isEmpty()
+                        ? AuthorizedReadScope.unrestricted()
+                        : super.requireBusinessReadScope();
+            }
+
         };
     }
 
@@ -91,7 +99,9 @@ public class ProtectedTestDatabaseConfiguration {
             jdbc.sql("""
                     INSERT INTO platform.security_user_role(subject_id,role_code)
                     SELECT subject_id, 'SYSTEM_ADMIN' FROM platform.security_user
-                    WHERE work_unit_code = 'TEST'
+                    WHERE subject_id IN (
+                      'production-tester','market-tester','logistics-tester','supply-reviewer',
+                      'data-fault-test','metadata-fault-test')
                     ON CONFLICT DO NOTHING
                     """).update();
             jdbc.sql("""
@@ -99,7 +109,9 @@ public class ProtectedTestDatabaseConfiguration {
                     SELECT security_user.subject_id, unit_scope.region_code
                     FROM platform.security_user
                     CROSS JOIN platform.work_unit_region_scope unit_scope
-                    WHERE security_user.work_unit_code = 'TEST'
+                    WHERE security_user.subject_id IN (
+                      'production-tester','market-tester','logistics-tester','supply-reviewer',
+                      'data-fault-test','metadata-fault-test')
                       AND unit_scope.work_unit_code = 'TEST'
                     ON CONFLICT DO NOTHING
                     """).update();

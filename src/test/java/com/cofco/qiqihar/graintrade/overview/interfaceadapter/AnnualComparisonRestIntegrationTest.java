@@ -258,12 +258,12 @@ class AnnualComparisonRestIntegrationTest {
     }
 
     @Test
-    void failsClosedForAnUnassignedRegion() throws Exception {
+    void allowsGlobalReadForAnUnassignedRegion() throws Exception {
         mvc.perform(get("/api/v1/overview/annual-comparisons").principal(() -> READER)
                         .queryParam("productCode", "SOYBEAN").queryParam("regionCode", OTHER_REGION)
                         .queryParam("periodCode", PERIOD).queryParam("indicatorCode", "MARKET_AVERAGE_TRADE_PRICE"))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.regionCode").value(OTHER_REGION));
     }
 
     @Test

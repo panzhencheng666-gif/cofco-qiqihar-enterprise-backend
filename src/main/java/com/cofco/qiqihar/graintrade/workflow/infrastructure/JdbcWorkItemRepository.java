@@ -103,6 +103,22 @@ public class JdbcWorkItemRepository implements WorkItemRepository {
         StringBuilder sql = new StringBuilder(query.scope() == WorkItemScope.PENDING
                 ? " WHERE item.completed_at IS NULL"
                 : " WHERE item.completed_at IS NOT NULL");
+        if (query.scope() == WorkItemScope.PENDING) {
+            // Historical projection rows survive source cleanup, but cannot remain actionable.
+            sql.append("""
+                     AND CASE item.source_type
+                       WHEN 'PRODUCTION' THEN EXISTS (
+                         SELECT 1 FROM production.production_record source WHERE source.record_id=item.source_id)
+                       WHEN 'MARKET' THEN EXISTS (
+                         SELECT 1 FROM market.market_record source WHERE source.record_id=item.source_id)
+                       WHEN 'LOGISTICS' THEN EXISTS (
+                         SELECT 1 FROM logistics.route_event source WHERE source.event_id=CASE
+                           WHEN item.source_id ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+                           THEN item.source_id::uuid END)
+                       ELSE true
+                     END
+                    """);
+        }
         if (query.status() != null) sql.append(" AND item.status_code = :status");
         if (query.domain() != null) sql.append(" AND item.business_domain = :domain");
         if (query.regionId() != null) sql.append(" AND item.region_code = :regionId");

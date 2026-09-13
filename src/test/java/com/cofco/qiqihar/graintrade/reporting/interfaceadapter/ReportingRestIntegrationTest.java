@@ -67,13 +67,14 @@ class ReportingRestIntegrationTest {
                 """).update();
         jdbc.sql("""
                 INSERT INTO platform.security_user_region_scope(subject_id,region_code)
-                VALUES ('reporter','230200'),('publisher','230200'),
+                VALUES ('reporter','230200'),
                        ('limited-reporter','230202'),('outside-unit-reporter','231100')
                 """).update();
     }
 
     @AfterEach void cleanAfterEach() {
         clean();
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id IN ('reporter','publisher','limited-reporter','outside-unit-reporter')").update();
         ProtectedTestDatabaseConfiguration.provisionSecurityTestSubjects(jdbc);
     }
 
@@ -103,6 +104,8 @@ class ReportingRestIntegrationTest {
                 .andExpect(content().contentTypeCompatibleWith("text/csv"))
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("报告名称")))
                 .andExpect(content().string(org.hamcrest.Matchers.containsString("核定数据条数")));
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id='reporter'").update();
+        jdbc.sql("INSERT INTO platform.security_user_region_scope(subject_id,region_code) VALUES('publisher','230200')").update();
         mvc.perform(post("/api/v1/reports/previews/{id}/publications",preview).principal(() -> "publisher").contentType(MediaType.APPLICATION_JSON).content("{\"exportTaskId\":\""+export+"\",\"expectedVersion\":0}"))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.data.previewId").value(preview));
         assertThat(jdbc.sql("SELECT count(*) FROM reporting.report_audit_event").query(Long.class).single()).isEqualTo(3L);

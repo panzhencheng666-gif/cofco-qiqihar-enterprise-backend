@@ -55,12 +55,21 @@ public record SecurityPrincipal(
         }
     }
 
+    /** Root status comes from the bound business identity and its active role. */
+    public boolean isRootAdministrator() {
+        return hasAdministratorRole(roleCodes);
+    }
+
+    public static boolean hasAdministratorRole(java.util.Collection<String> roles) {
+        return roles.contains("SYSTEM_ADMIN") || roles.contains("BUSINESS_REVIEWER");
+    }
+
     public boolean permits(String permissionCode) {
-        return permissionCodes.contains(permissionCode);
+        return isRootAdministrator() || permissionCodes.contains(permissionCode);
     }
 
     public boolean includesRegion(String regionCode) {
-        return regionCodes.contains(regionCode);
+        return isRootAdministrator() || regionCodes.contains(regionCode);
     }
 
     public record PositionAssignment(String code, String name, boolean primaryPosition) {
