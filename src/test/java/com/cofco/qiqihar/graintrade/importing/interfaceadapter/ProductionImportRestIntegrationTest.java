@@ -84,6 +84,7 @@ class ProductionImportRestIntegrationTest {
 
     @AfterEach
     void cleanAfterEach() {
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id='limited-importer'").update();
         jdbc.sql("""
                 TRUNCATE platform.import_row_result,platform.import_job,platform.business_audit_event,
                   production.production_record,evidence.evidence_photo RESTART IDENTITY CASCADE

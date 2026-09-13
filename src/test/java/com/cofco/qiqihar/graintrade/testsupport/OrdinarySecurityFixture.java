@@ -15,7 +15,7 @@ public final class OrdinarySecurityFixture implements AutoCloseable {
     public static OrdinarySecurityFixture create(JdbcClient jdbc, String subject, String region) {
         jdbc.sql("""
                 INSERT INTO platform.access_role(code,name,active,sort_order)
-                VALUES('ORDINARY_CI_REVIEW','普通员工测试权限',true,9997)
+                VALUES('ORDINARY_CI_REVIEW','普通员工测试权限',true,19997)
                 ON CONFLICT(code) DO NOTHING;
                 INSERT INTO platform.access_role_permission(role_code,permission_code)
                 SELECT 'ORDINARY_CI_REVIEW',code FROM platform.access_permission
@@ -39,5 +39,13 @@ public final class OrdinarySecurityFixture implements AutoCloseable {
                 .param("subject", subject).update();
         jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:subject")
                 .param("subject", subject).update();
+        jdbc.sql("""
+                DELETE FROM platform.access_role_permission
+                WHERE role_code='ORDINARY_CI_REVIEW' AND NOT EXISTS (
+                  SELECT 1 FROM platform.security_user_role WHERE role_code='ORDINARY_CI_REVIEW');
+                DELETE FROM platform.access_role
+                WHERE code='ORDINARY_CI_REVIEW' AND NOT EXISTS (
+                  SELECT 1 FROM platform.security_user_role WHERE role_code='ORDINARY_CI_REVIEW')
+                """).update();
     }
 }
