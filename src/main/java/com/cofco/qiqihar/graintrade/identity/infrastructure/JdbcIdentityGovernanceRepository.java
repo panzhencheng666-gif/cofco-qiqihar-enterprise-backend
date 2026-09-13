@@ -164,7 +164,7 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
                 SELECT region.code,region.name,region.administrative_level,region.parent_code
                 FROM platform.region region
                 JOIN authorized_region authorized ON authorized.code=region.code
-                WHERE (region.administrative_level='TOWNSHIP'
+                WHERE ((region.administrative_level='TOWNSHIP'
                    OR (region.administrative_level='COUNTY'
                      AND EXISTS (
                        SELECT 1 FROM platform.monitoring_scope_region governed
@@ -179,6 +179,19 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
                          FROM platform.region child
                          JOIN descendant parent ON child.parent_code=parent.code)
                        SELECT 1 FROM descendant WHERE administrative_level='TOWNSHIP')))
+                   OR EXISTS (
+                     SELECT 1 FROM platform.security_user_region_scope existing
+                     JOIN platform.security_user_role role ON role.subject_id=existing.subject_id
+                     JOIN platform.access_role definition ON definition.code=role.role_code AND definition.active
+                     WHERE existing.subject_id=CAST(:subject AS varchar)
+                       AND existing.region_code=region.code
+                       AND role.role_code IN ('SYSTEM_ADMIN','BUSINESS_REVIEWER','IDENTITY_ADMIN')
+                       AND CURRENT_TIMESTAMP>=existing.valid_from
+                       AND (existing.valid_until IS NULL OR CURRENT_TIMESTAMP<existing.valid_until)
+                       AND (existing.review_due_at IS NULL OR CURRENT_TIMESTAMP<existing.review_due_at)
+                       AND CURRENT_TIMESTAMP>=role.valid_from
+                       AND (role.valid_until IS NULL OR CURRENT_TIMESTAMP<role.valid_until)
+                       AND (role.review_due_at IS NULL OR CURRENT_TIMESTAMP<role.review_due_at)))
                 AND platform.employee_region_available(region.code,CAST(:subject AS varchar))
                 ORDER BY region.code
                 """).param("unit",workUnitCode).param("subject",subjectId,java.sql.Types.VARCHAR).query((row,index)->new AssignmentOptions.RegionOption(

@@ -882,6 +882,47 @@ class IdentityGovernanceRestIntegrationTest {
     }
 
     @Test
+    void assignmentOptionsPreserveExistingPrivilegedScopeWithoutOfferingItToOtherEmployees() throws Exception {
+        jdbc.sql("""
+                INSERT INTO platform.security_user(subject_id,display_name,work_unit_code,enabled)
+                VALUES(:subject,'范围回显管理员',:unit,true)
+                """).param("subject",employee).param("unit",WORK_UNIT).update();
+        jdbc.sql("INSERT INTO platform.security_user_role(subject_id,role_code) VALUES(:subject,'BUSINESS_REVIEWER')")
+                .param("subject",employee).update();
+        jdbc.sql("INSERT INTO platform.security_user_region_scope(subject_id,region_code) VALUES(:subject,'230202')")
+                .param("subject",employee).update();
+        mvc.perform(put("/api/v1/identity/employees/{subjectId}",employee)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"version":0,"displayName":"范围回显管理员","workUnitCode":"QIQIHAR_BUSINESS",
+                                 "accountStatus":"ACTIVE","employmentStatus":"ACTIVE","positionCodes":[],
+                                 "roleCodes":["BUSINESS_REVIEWER"],"regionCodes":["230202"]}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.regionCodes[0]").value("230202"));
+        mvc.perform(get("/api/v1/identity/employees/{subjectId}",employee)
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.regionCodes[0]").value("230202"));
+        mvc.perform(get("/api/v1/identity/employees/assignment-options")
+                        .param("workUnitCode",WORK_UNIT).param("subjectId",employee)
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.regionCodes[?(@ == '230202')]").exists());
+        mvc.perform(get("/api/v1/identity/employees/assignment-options")
+                        .param("workUnitCode",WORK_UNIT).principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.regionCodes[?(@ == '230202')]").isEmpty());
+        jdbc.sql("UPDATE platform.security_user_role SET role_code='BUSINESS_OPERATOR' WHERE subject_id=:subject")
+                .param("subject",employee).update();
+        mvc.perform(get("/api/v1/identity/employees/assignment-options")
+                        .param("workUnitCode",WORK_UNIT).param("subjectId",employee)
+                        .principal(() -> "production-tester"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.regionCodes[?(@ == '230202')]").isEmpty());
+    }
+
+    @Test
     void assignmentOptionsExpandWorkUnitRootsToAssignableTownshipAnchors() throws Exception {
         jdbc.sql("DELETE FROM platform.work_unit_region_scope WHERE work_unit_code=:unit")
                 .param("unit",WORK_UNIT).update();
