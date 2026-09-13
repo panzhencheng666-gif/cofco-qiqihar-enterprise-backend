@@ -45,6 +45,8 @@ class SampleIdentityMergeRestIntegrationTest {
 
     @AfterEach
     void removeIdentityMergeFixtures() {
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id=:subject")
+                .param("subject", ORDINARY_REVIEWER).update();
         jdbc.sql("""
                 TRUNCATE registry.sample_subject_resolution_audit,
                   registry.sample_subject_resolution_revision,registry.sample_subject_resolution_item,
