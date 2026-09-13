@@ -32,7 +32,7 @@ server:
   forward-headers-strategy: framework
   servlet:
     session:
-      timeout: ${QIQIHAR_SESSION_TIMEOUT:30m}
+      timeout: ${QIQIHAR_SESSION_TIMEOUT:8h}
       cookie:
         name: COFCO_SESSION
         http-only: true
