@@ -55,12 +55,14 @@ public class RegionalPublicDataRefreshWorker {
                 }
                 String body = response.body();
                 String excerpt = excerpt(body);
-                String hash = sha256(body);
                 if ("OPEN_METEO".equals(source.parserKey())) {
                     BigDecimal temperature = number(body, "temperature_2m");
                     BigDecimal precipitation = number(body, "precipitation");
                     BigDecimal soil = number(body, "soil_moisture_0_to_1cm").multiply(new BigDecimal("100"));
                     Instant observed = observedAt(body, now);
+                    String hash = sha256(temperature.toPlainString() + "|"
+                            + precipitation.toPlainString() + "|" + soil.toPlainString()
+                            + "|" + observed);
                     String risk = risk(temperature, precipitation, soil);
                     String assessment = "气温" + temperature + "℃，降水" + precipitation
                             + "毫米，表层土壤含水率约" + soil.setScale(1) + "%；" + risk;
@@ -68,6 +70,7 @@ public class RegionalPublicDataRefreshWorker {
                             temperature, precipitation, soil, risk, assessment, now, hash, excerpt);
                 } else {
                     var metrics = RegionalPublicCropPageParser.parse(source.parserKey(), body);
+                    String hash = sha256(metrics.isEmpty() ? excerpt : metrics.toString());
                     if (!metrics.isEmpty()) repository.recordCropMetrics(source.id(), metrics, now);
                     repository.recordPageSuccess(source.id(), now, hash, excerpt);
                 }

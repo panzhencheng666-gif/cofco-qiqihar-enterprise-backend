@@ -98,10 +98,17 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
         var status = jdbc.sql("""
                 SELECT max(last_attempt_at) AS last_attempt,max(last_success_at) AS last_success,
                        min(next_refresh_at) AS next_refresh,
-                       bool_and(last_status IN ('SUCCESS','BOOTSTRAP_VERIFIED','BOOTSTRAP_REFERENCE')) AS healthy
+                       CASE
+                         WHEN NOT bool_and(last_status IN (
+                           'SUCCESS','SUCCESS_CHANGED','SUCCESS_UNCHANGED',
+                           'BOOTSTRAP_VERIFIED','BOOTSTRAP_REFERENCE')) THEN 'PARTIAL'
+                         WHEN bool_or(last_status='SUCCESS_CHANGED') THEN 'SUCCESS_CHANGED'
+                         WHEN bool_and(last_status='SUCCESS_UNCHANGED') THEN 'SUCCESS_UNCHANGED'
+                         ELSE 'SUCCESS'
+                       END AS refresh_result
                 FROM production.regional_public_source WHERE active AND root_region_code IN (:root,'*')
                 """).param("root", root).query((rs, n) -> new RegionalAgricultureProfile.RefreshStatus(
-                        "每日 08:30", rs.getBoolean("healthy") ? "SUCCESS" : "PARTIAL",
+                        "每日 08:30", rs.getString("refresh_result"),
                         instant(rs.getTimestamp("last_attempt")), instant(rs.getTimestamp("last_success")),
                         instant(rs.getTimestamp("next_refresh")))).single();
         return new Context(observations, status, weather, indicators, policies, sources);
@@ -167,7 +174,12 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
     private void updateSuccess(String id, Instant now, String hash, String excerpt) {
         jdbc.sql("""
                 UPDATE production.regional_public_source SET last_attempt_at=:now,last_success_at=:now,
-                  next_refresh_at=:next,last_status='SUCCESS',last_error=NULL,
+                  next_refresh_at=:next,
+                  last_status=CASE
+                    WHEN last_content_hash IS NULL OR last_content_hash<>:hash THEN 'SUCCESS_CHANGED'
+                    ELSE 'SUCCESS_UNCHANGED'
+                  END,
+                  last_error=NULL,
                   last_content_hash=:hash,last_excerpt=:excerpt WHERE source_id=:id
                 """).param("now", Timestamp.from(now)).param("next", Timestamp.from(nextDailyRefresh(now)))
                 .param("hash", hash).param("excerpt", excerpt).param("id", id).update();
