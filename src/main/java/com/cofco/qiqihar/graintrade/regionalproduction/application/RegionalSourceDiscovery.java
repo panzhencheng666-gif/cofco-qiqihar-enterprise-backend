@@ -17,6 +17,7 @@ import tools.jackson.databind.json.JsonMapper;
 /** Daily public-web discovery is separate from revisiting registered documents. */
 @Component
 public class RegionalSourceDiscovery {
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(RegionalSourceDiscovery.class);
     private final JdbcClient jdbc;
     private final String key;
     private final String searx;
@@ -87,6 +88,7 @@ public class RegionalSourceDiscovery {
             } catch(InterruptedException e) {
                 Thread.currentThread().interrupt();
             } catch(Exception e) {
+                LOG.warn("Regional source discovery failed [root={}]",root,e);
                 status(id,now,"SEARCH_FAILED","联网搜索未完成，保留历史资料并稍后重试；本轮已登记"+accepted+"个候选来源。",accepted);
             }
         });
