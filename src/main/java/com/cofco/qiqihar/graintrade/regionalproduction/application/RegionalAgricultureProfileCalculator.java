@@ -13,7 +13,7 @@ import org.springframework.stereotype.Component;
 public class RegionalAgricultureProfileCalculator {
     private static final List<String> PRODUCTS = List.of("CORN", "SOYBEAN", "RICE");
     private static final Map<String, String> NAMES = Map.of(
-            "CORN", "玉米", "SOYBEAN", "大豆", "RICE", "水稻");
+            "CORN", "玉米", "SOYBEAN", "大豆", "RICE", "稻谷");
 
     public RegionalAgricultureProfile calculate(
             String regionCode,

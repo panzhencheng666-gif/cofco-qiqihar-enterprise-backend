@@ -118,6 +118,26 @@ public class RegionalAgricultureProfileService {
                 explanation += "单产采用上级" + historicalYield.dataYear() + "年同作物公开面积和产量计算值"
                         + yield + "公斤/亩；依据：" + historicalYield.method() + "。";
             }
+            if (yield == null && "PREFECTURE".equals(region.administrativeLevel())
+                    && (scope.isUnrestricted() || scope.regionCodes().contains(region.code()))) {
+                var outputs = history.stream().filter(i -> i.label().equals(name + "产量")
+                        && "万吨".equals(i.unit()) && i.value().signum() > 0)
+                        .sorted(java.util.Comparator.comparingInt(RegionalAgricultureProfile.Indicator::dataYear).reversed()).toList();
+                for (var output : outputs) {
+                    var past = summaries.summarize(output.dataYear(), product, region.code(), scope.regionCodes()).orElse(null);
+                    if (past == null || past.plantedAreaMu() == null || past.plantedAreaMu().signum() <= 0) continue;
+                    yield = output.value().multiply(new BigDecimal("10000000"))
+                            .divide(past.plantedAreaMu(), 8, java.math.RoundingMode.HALF_UP);
+                    modeled = true;
+                    explanation += "同年口径推导：" + output.dataYear() + "年" + output.sourceName()
+                            + "公开" + name + "总产" + output.value().stripTrailingZeros().toPlainString()
+                            + "万吨×10000000÷同年地区年度面积" + past.plantedAreaMu().stripTrailingZeros().toPlainString()
+                            + "亩=" + yield + "公斤/亩（" + output.sourceUrl() + "）。"
+                            + "这是两类资料结合的估算单产，假设统计地域与播种面积口径一致，口径差异会影响结果；"
+                            + year + "年使用当前面积与该单产基线估算，并非公开发布的当年总产。";
+                    break;
+                }
+            }
             if (area != null && yield != null) {
                 if (explanation.isBlank()) explanation = "采用地区年度正式面积与单产";
                 resolved.add(new RegionalAgricultureProfileCalculator.Observation(product, area, yield,
