@@ -44,7 +44,7 @@ public class RegionalSourceDiscovery {
                 status(id,now,"SEARCH_NOT_CONFIGURED","尚未配置后台搜索服务；固定来源核验仍运行，不能视为已完成全网检索",0);
                 return;
             }
-            int accepted=0, count=0;
+            int accepted=0, count=0, failedEngines=0;
             try {
                 int year=now.atZone(java.time.ZoneId.of("Asia/Shanghai")).getYear();
                 for (String topic : List.of("统计公报 农业", "种植 蔬菜 畜牧 产量", "农业 政策 气象 灾害", "粮食 调入 调出 铁路 货运 物流园", "农产品 冷链 仓储 加工")) {
@@ -58,6 +58,7 @@ public class RegionalSourceDiscovery {
                     var json=JsonMapper.builder().build().readTree(response.body());
                     var results=searx.isBlank() ? json.path("web").path("results") : json.path("results");
                     if(!results.isArray()) throw new IllegalStateException("搜索服务返回格式异常");
+                    failedEngines += json.path("unresponsive_engines").size();
                     for(var item:results) {
                         count++;
                         String title=item.path("title").asText("");
@@ -80,13 +81,19 @@ public class RegionalSourceDiscovery {
                                 .param("parser",parser).param("type",title.matches(".*(?:政策|补贴|补助|通知|实施方案).* ".trim()) ? "POLICY" : "AGRICULTURE").update();
                     }
                 }
-                status(id,now,"SEARCH_SUCCESS","联网检索5个主题，返回"+count+"条结果；新增"+accepted+"个相关来源。来源另行读取正文，搜索成功不等于全部数据已核验。",accepted);
+                status(id,now,searchState(count,failedEngines),"联网检索5个主题，返回"+count+"条结果；新增"+accepted+"个相关来源。"
+                        + (failedEngines > 0 ? "有"+failedEngines+"次搜索引擎响应失败，未视为全部检索完成。" : "")
+                        + "来源另行读取正文，搜索成功不等于全部数据已核验。",accepted);
             } catch(InterruptedException e) {
                 Thread.currentThread().interrupt();
             } catch(Exception e) {
                 status(id,now,"SEARCH_FAILED","联网搜索未完成，保留历史资料并稍后重试；本轮已登记"+accepted+"个候选来源。",accepted);
             }
         });
+    }
+
+    static String searchState(int results, int failedEngines) {
+        return failedEngines == 0 ? "SEARCH_SUCCESS" : results > 0 ? "SEARCH_PARTIAL" : "SEARCH_FAILED";
     }
 
     static boolean publicHttps(String value) {

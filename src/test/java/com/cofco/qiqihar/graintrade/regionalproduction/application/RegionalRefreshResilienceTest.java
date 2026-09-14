@@ -90,6 +90,7 @@ class RegionalRefreshResilienceTest {
                     org.springframework.boot.autoconfigure.task.TaskSchedulingAutoConfiguration.class);
             context.registerBean(RegionalSourceDiscovery.class, () -> discovery);
             context.registerBean(RegionalPublicDataRepository.class, () -> mock(RegionalPublicDataRepository.class));
+            context.registerBean(RegionalEstimateBatchService.class, () -> mock(RegionalEstimateBatchService.class));
             context.registerBean(RegionalPublicDataRefreshWorker.class);
             context.registerBean(BusinessProbe.class, () -> probe);
             context.refresh();

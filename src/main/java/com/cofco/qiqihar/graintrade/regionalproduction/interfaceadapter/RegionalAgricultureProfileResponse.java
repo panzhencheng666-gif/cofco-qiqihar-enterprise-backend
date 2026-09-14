@@ -21,16 +21,21 @@ public record RegionalAgricultureProfileResponse(
         List<RegionalAgricultureProfile.Indicator> indicators,
         List<RegionalAgricultureProfile.Policy> policies,
         List<RegionalAgricultureProfile.Source> sources,
-        List<CropResponse> crops) {
+        List<CropResponse> crops,
+        com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalEstimateBatch estimateBatch) {
 
     static RegionalAgricultureProfileResponse from(RegionalAgricultureProfile value) {
+        return from(value, null);
+    }
+    static RegionalAgricultureProfileResponse from(RegionalAgricultureProfile value,
+            com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalEstimateBatch batch) {
         return new RegionalAgricultureProfileResponse(
                 value.regionCode(), value.regionName(), value.administrativeLevel(), value.year(),
                 value.automatic(), value.generatedAt(), value.coverageDescription(),
                 value.regionFacts(),
                 value.sourceSummary(), value.calculationMethod(), value.refreshStatus(),
                 value.weather(), value.indicators(), value.policies(), value.sources(),
-                value.crops().stream().map(CropResponse::from).toList());
+                value.crops().stream().map(CropResponse::from).toList(), batch);
     }
 
     public record CropResponse(

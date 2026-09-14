@@ -1,0 +1,30 @@
+use_default_settings:
+  engines:
+    keep_only:
+      - bing
+      - baidu
+      - 360search
+      - sogou
+      - sogou wechat
+server:
+  secret_key: CHANGE_BEFORE_START
+  limiter: false
+  image_proxy: false
+search:
+  formats: [html, json]
+  default_lang: zh-CN
+outgoing:
+  request_timeout: 10.0
+  max_request_timeout: 15.0
+engines:
+  - name: bing
+    disabled: false
+    base_url: https://cn.bing.com
+  - name: baidu
+    disabled: false
+  - name: 360search
+    disabled: false
+  - name: sogou
+    disabled: false
+  - name: sogou wechat
+    disabled: false

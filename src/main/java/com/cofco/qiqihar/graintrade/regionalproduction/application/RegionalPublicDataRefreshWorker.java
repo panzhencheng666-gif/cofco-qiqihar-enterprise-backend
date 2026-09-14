@@ -26,14 +26,22 @@ public class RegionalPublicDataRefreshWorker {
     private static final Pattern TIME = Pattern.compile("\\\"time\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
     private final RegionalPublicDataRepository repository;
     private final RegionalSourceDiscovery discovery;
+    private final RegionalEstimateBatchService estimateBatches;
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(8)).followRedirects(HttpClient.Redirect.NORMAL).build();
 
     private final HttpClient discoveredHttp = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8)).build();
 
     public RegionalPublicDataRefreshWorker(RegionalPublicDataRepository repository, RegionalSourceDiscovery discovery) {
+        this(repository, discovery, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public RegionalPublicDataRefreshWorker(RegionalPublicDataRepository repository, RegionalSourceDiscovery discovery,
+            RegionalEstimateBatchService estimateBatches) {
         this.repository = repository;
         this.discovery = discovery;
+        this.estimateBatches = estimateBatches;
     }
 
     @Scheduled(cron = "${qiqihar.regional-public-data.daily-cron:0 30 8 * * *}", zone = "Asia/Shanghai",
@@ -112,6 +120,7 @@ public class RegionalPublicDataRefreshWorker {
                 repository.recordFailure(source.id(), now, exception.getMessage());
             }
         }
+        if (estimateBatches != null && !Thread.currentThread().isInterrupted()) estimateBatches.refresh(Instant.now());
     }
 
     static BigDecimal number(String json, String field) {
