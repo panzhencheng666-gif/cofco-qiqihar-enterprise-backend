@@ -30,4 +30,17 @@ class RegionalEstimateFailureTest {
         assertThat(RegionalSourceDiscovery.searchState(0,2)).isEqualTo("SEARCH_FAILED");
         assertThat(RegionalSourceDiscovery.searchState(0,0)).isEqualTo("SEARCH_SUCCESS");
     }
+    @org.junit.jupiter.api.Test void discoverySeparatesReportPeriodFromCurrentEvents() {
+        var queries=RegionalSourceDiscovery.discoveryQueries("大兴安岭",2026);
+        org.assertj.core.api.Assertions.assertThat(queries).hasSize(7)
+            .contains("大兴安岭 2025年 国民经济和社会发展统计公报", "大兴安岭 2023年 国民经济和社会发展统计公报")
+            .anyMatch(q -> q.contains("2026 农业 政策"));
+    }
+
+    @org.junit.jupiter.api.Test void discoveryDoesNotPromoteCountyStatisticsToTheirParentCity() {
+        org.assertj.core.api.Assertions.assertThat(RegionalSourceDiscovery.isRootAnnualReport("2025年黑河市国民经济和社会发展统计公报", "黑河")).isTrue();
+        org.assertj.core.api.Assertions.assertThat(RegionalSourceDiscovery.isRootAnnualReport("2025年黑河市孙吴县国民经济和社会发展统计公报", "黑河")).isFalse();
+        org.assertj.core.api.Assertions.assertThat(RegionalSourceDiscovery.isRootAnnualReport("2025年大兴安岭地区国民经济和社会发展统计公报", "大兴安岭")).isTrue();
+    }
+
 }
