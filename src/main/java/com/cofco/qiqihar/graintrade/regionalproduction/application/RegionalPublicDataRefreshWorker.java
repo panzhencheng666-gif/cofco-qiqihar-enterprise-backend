@@ -75,10 +75,17 @@ public class RegionalPublicDataRefreshWorker {
         return new BigDecimal(matcher.group(1));
     }
 
-    private static Instant observedAt(String json, Instant fallback) {
+    static Instant observedAt(String json, Instant fallback) {
         Matcher matcher = TIME.matcher(json);
-        if (!matcher.find()) return fallback;
-        return LocalDateTime.parse(matcher.group(1)).atZone(ZoneId.of("Asia/Shanghai")).toInstant();
+        while (matcher.find()) {
+            try {
+                return LocalDateTime.parse(matcher.group(1))
+                        .atZone(ZoneId.of("Asia/Shanghai")).toInstant();
+            } catch (java.time.format.DateTimeParseException ignored) {
+                // The current_units object also contains time="iso8601"; continue to current.time.
+            }
+        }
+        return fallback;
     }
 
     private static String risk(BigDecimal temperature, BigDecimal precipitation, BigDecimal soil) {

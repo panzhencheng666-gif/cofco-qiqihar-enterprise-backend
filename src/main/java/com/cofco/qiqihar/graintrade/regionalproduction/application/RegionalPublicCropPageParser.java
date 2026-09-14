@@ -22,7 +22,7 @@ final class RegionalPublicCropPageParser {
 
     private static List<RegionalPublicDataRepository.PublicCropMetric> heihe(String text) {
         int year = year(text);
-        String outputPart = after(text, "粮食产量");
+        String outputPart = afterLast(text, "粮食产量");
         return List.of(
                 metric(year, "CORN", named(text, "玉米", "万亩"), named(outputPart, "玉米", "亿斤"), "万亩/亿斤"),
                 metric(year, "SOYBEAN", named(text, "大豆", "万亩"), named(outputPart, "大豆", "亿斤"), "万亩/亿斤"),
@@ -64,13 +64,18 @@ final class RegionalPublicCropPageParser {
     }
 
     private static BigDecimal named(String text, String crop, String unit) {
-        Matcher matcher = Pattern.compile(Pattern.quote(crop) + "\\s*([0-9.]+)" + Pattern.quote(unit)).matcher(text);
+        Matcher matcher = Pattern.compile(Pattern.quote(crop) + "\\s*([0-9.]+)\\s*" + Pattern.quote(unit)).matcher(text);
         if (!matcher.find()) throw new IllegalArgumentException(crop + unit + " missing");
         return new BigDecimal(matcher.group(1));
     }
 
     private static String after(String text, String marker) {
         int index = text.indexOf(marker);
+        return index < 0 ? text : text.substring(index);
+    }
+
+    private static String afterLast(String text, String marker) {
+        int index = text.lastIndexOf(marker);
         return index < 0 ? text : text.substring(index);
     }
 }

@@ -8,8 +8,8 @@ class RegionalPublicCropPageParserTest {
     @Test
     void normalizesHeiheOfficialReportUnitsIntoModelMetrics() {
         var metrics = RegionalPublicCropPageParser.parse("HEIHE_REPORT", """
-                2025年 粮食作物播种面积2800.3万亩，其中，大豆2026.4万亩、玉米713.9万亩、稻谷15.5万亩。
-                粮食产量118.9亿斤，其中，大豆52.9亿斤、玉米62.4亿斤、稻谷1.4亿斤。
+                2025年 粮食产量。粮食作物播种面积2800.3 万亩，其中，大豆2026.4 万亩、玉米713.9 万亩、稻谷15.5 万亩。
+                粮食产量 118.9 亿斤，其中，大豆52.9 亿斤、玉米62.4 亿斤、稻谷1.4 亿斤。
                 """);
         assertThat(metrics).hasSize(3);
         assertThat(metrics.get(0).productCode()).isEqualTo("CORN");
