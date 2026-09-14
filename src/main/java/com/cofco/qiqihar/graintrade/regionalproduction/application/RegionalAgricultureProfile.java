@@ -10,8 +10,13 @@ public record RegionalAgricultureProfile(
         int year,
         boolean automatic,
         String generatedAt,
+        String coverageDescription,
         String sourceSummary,
         String calculationMethod,
+        RefreshStatus refreshStatus,
+        Weather weather,
+        List<Policy> policies,
+        List<Source> sources,
         List<Crop> crops) {
 
     public record Crop(
@@ -23,11 +28,34 @@ public record RegionalAgricultureProfile(
             BigDecimal totalOutputKg,
             BigDecimal structurePercent,
             String basis,
+            String formula,
+            BigDecimal confidencePercent,
+            BigDecimal uncertaintyLowKg,
+            BigDecimal uncertaintyHighKg,
             List<Forecast> forecasts) {}
 
     public record Forecast(
             int year,
             BigDecimal plantedAreaMu,
             BigDecimal yieldPerMuKg,
-            BigDecimal totalOutputKg) {}
+            BigDecimal totalOutputKg,
+            String formula,
+            BigDecimal confidencePercent) {}
+
+    public record RefreshStatus(
+            String cadence, String status, String lastAttemptAt,
+            String lastSuccessAt, String nextRefreshAt) {}
+
+    public record Weather(
+            BigDecimal meanTemperatureC, BigDecimal precipitationMm,
+            BigDecimal soilMoisturePercent, String risk, String assessment,
+            String observedAt, String sourceId) {}
+
+    public record Policy(
+            String title, String publishedOn, String sourceName,
+            String sourceUrl, String affectedCrops, String impact) {}
+
+    public record Source(
+            String id, String type, String name, String url,
+            String publishedOn, String fetchedAt, String status, String evidence) {}
 }

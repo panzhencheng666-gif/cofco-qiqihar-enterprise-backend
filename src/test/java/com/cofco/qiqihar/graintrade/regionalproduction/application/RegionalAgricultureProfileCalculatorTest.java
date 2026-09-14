@@ -11,7 +11,7 @@ class RegionalAgricultureProfileCalculatorTest {
             new RegionalAgricultureProfileCalculator();
 
     @Test
-    void keepsObservedValuesEstimatesMissingCropsAndBuildsThreeYearForecast() {
+    void keepsObservedValuesEstimatesMissingCropsAndForecastsOnlyNextYear() {
         var profile = calculator.calculate(
                 "230200", "齐齐哈尔市", "PREFECTURE", 2026,
                 new BigDecimal("42400000000"),
@@ -26,15 +26,19 @@ class RegionalAgricultureProfileCalculatorTest {
         assertThat(profile.crops().get(1).dataKind()).isEqualTo("MODEL_ESTIMATE");
         assertThat(profile.crops()).allSatisfy(crop -> {
             assertThat(crop.structurePercent()).isNotNull();
-            assertThat(crop.forecasts()).hasSize(3);
+            assertThat(crop.forecasts()).hasSize(1);
             assertThat(crop.forecasts()).extracting(RegionalAgricultureProfile.Forecast::year)
-                    .containsExactly(2027, 2028, 2029);
+                    .containsExactly(2027);
+            assertThat(crop.confidencePercent()).isBetween(new BigDecimal("0"), new BigDecimal("100"));
+            assertThat(crop.uncertaintyLowKg()).isLessThan(crop.totalOutputKg());
+            assertThat(crop.uncertaintyHighKg()).isGreaterThan(crop.totalOutputKg());
+            assertThat(crop.formula()).contains("面积", "单产");
         });
         assertThat(profile.crops().stream()
                 .map(RegionalAgricultureProfile.Crop::structurePercent)
                 .reduce(BigDecimal.ZERO, BigDecimal::add))
                 .isEqualByComparingTo("100.00");
-        assertThat(profile.calculationMethod()).contains("结构系数", "复合增长");
+        assertThat(profile.calculationMethod()).contains("当年缺项", "明年");
         assertThat(profile.automatic()).isTrue();
     }
 
@@ -51,5 +55,20 @@ class RegionalAgricultureProfileCalculatorTest {
             assertThat(crop.totalOutputKg()).isPositive();
         });
         assertThat(profile.sourceSummary()).contains("公开行政区边界");
+    }
+
+    @Test
+    void villageCalculationExplainsAncestorAllocationAndHasLowerConfidence() {
+        var profile = calculator.calculate(
+                "230221123456", "示例村", "VILLAGE", 2026,
+                new BigDecimal("6666667"), List.of());
+
+        assertThat(profile.administrativeLevel()).isEqualTo("VILLAGE");
+        assertThat(profile.coverageDescription()).contains("行政村");
+        assertThat(profile.crops()).allSatisfy(crop -> {
+            assertThat(crop.basis()).contains("上级地区", "边界面积");
+            assertThat(crop.confidencePercent()).isLessThan(new BigDecimal("70"));
+            assertThat(crop.forecasts()).hasSize(1);
+        });
     }
 }

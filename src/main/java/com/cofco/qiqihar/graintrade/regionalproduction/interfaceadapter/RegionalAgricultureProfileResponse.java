@@ -12,14 +12,21 @@ public record RegionalAgricultureProfileResponse(
         int year,
         boolean automatic,
         String generatedAt,
+        String coverageDescription,
         String sourceSummary,
         String calculationMethod,
+        RegionalAgricultureProfile.RefreshStatus refreshStatus,
+        RegionalAgricultureProfile.Weather weather,
+        List<RegionalAgricultureProfile.Policy> policies,
+        List<RegionalAgricultureProfile.Source> sources,
         List<CropResponse> crops) {
 
     static RegionalAgricultureProfileResponse from(RegionalAgricultureProfile value) {
         return new RegionalAgricultureProfileResponse(
                 value.regionCode(), value.regionName(), value.administrativeLevel(), value.year(),
-                value.automatic(), value.generatedAt(), value.sourceSummary(), value.calculationMethod(),
+                value.automatic(), value.generatedAt(), value.coverageDescription(),
+                value.sourceSummary(), value.calculationMethod(), value.refreshStatus(),
+                value.weather(), value.policies(), value.sources(),
                 value.crops().stream().map(CropResponse::from).toList());
     }
 
@@ -32,21 +39,29 @@ public record RegionalAgricultureProfileResponse(
             String totalOutputKg,
             String structurePercent,
             String basis,
+            String formula,
+            String confidencePercent,
+            String uncertaintyLowKg,
+            String uncertaintyHighKg,
             List<ForecastResponse> forecasts) {
         static CropResponse from(RegionalAgricultureProfile.Crop value) {
             return new CropResponse(
                     value.productCode(), value.productName(), value.dataKind(), decimal(value.plantedAreaMu()),
                     decimal(value.yieldPerMuKg()), decimal(value.totalOutputKg()),
-                    decimal(value.structurePercent()), value.basis(),
+                    decimal(value.structurePercent()), value.basis(), value.formula(),
+                    decimal(value.confidencePercent()), decimal(value.uncertaintyLowKg()),
+                    decimal(value.uncertaintyHighKg()),
                     value.forecasts().stream().map(ForecastResponse::from).toList());
         }
     }
 
     public record ForecastResponse(
-            int year, String plantedAreaMu, String yieldPerMuKg, String totalOutputKg) {
+            int year, String plantedAreaMu, String yieldPerMuKg, String totalOutputKg,
+            String formula, String confidencePercent) {
         static ForecastResponse from(RegionalAgricultureProfile.Forecast value) {
             return new ForecastResponse(value.year(), decimal(value.plantedAreaMu()),
-                    decimal(value.yieldPerMuKg()), decimal(value.totalOutputKg()));
+                    decimal(value.yieldPerMuKg()), decimal(value.totalOutputKg()),
+                    value.formula(), decimal(value.confidencePercent()));
         }
     }
 

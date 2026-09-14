@@ -177,7 +177,7 @@ class RegionalCropAnnualStatRestIntegrationTest {
     }
 
     @Test
-    void automaticallyBuildsThreeCropStructureAndForecastWithoutAdditionalFilling() throws Exception {
+    void automaticallyBuildsThreeCropStructureAndNextYearForecastWithoutAdditionalFilling() throws Exception {
         mvc.perform(put("/api/v1/production/regional-annual-stats/{regionCode}", COUNTY)
                         .principal(() -> OPERATOR).contentType(MediaType.APPLICATION_JSON)
                         .content("""
@@ -198,8 +198,12 @@ class RegionalCropAnnualStatRestIntegrationTest {
                 .andExpect(jsonPath("$.data.crops[1].productCode").value("SOYBEAN"))
                 .andExpect(jsonPath("$.data.crops[1].dataKind").value("MODEL_ESTIMATE"))
                 .andExpect(jsonPath("$.data.crops[2].productCode").value("RICE"))
-                .andExpect(jsonPath("$.data.crops[0].forecasts.length()").value(3))
-                .andExpect(jsonPath("$.data.crops[0].forecasts[0].year").value(2027));
+                .andExpect(jsonPath("$.data.crops[0].forecasts.length()").value(1))
+                .andExpect(jsonPath("$.data.crops[0].forecasts[0].year").value(2027))
+                .andExpect(jsonPath("$.data.crops[0].formula").isNotEmpty())
+                .andExpect(jsonPath("$.data.crops[0].confidencePercent").value("92.0000"))
+                .andExpect(jsonPath("$.data.refreshStatus.cadence").value("每日"))
+                .andExpect(jsonPath("$.data.sources.length()").value(4));
     }
 
     @Test

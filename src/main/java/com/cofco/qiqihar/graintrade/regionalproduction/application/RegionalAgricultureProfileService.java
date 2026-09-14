@@ -17,6 +17,7 @@ public class RegionalAgricultureProfileService {
     private final RegionalCropSummaryRepository summaries;
     private final RegionalAgricultureBoundaryRepository boundaries;
     private final RegionalAgricultureProfileCalculator calculator;
+    private final RegionalPublicDataRepository publicData;
     private final AccessControl access;
 
     public RegionalAgricultureProfileService(
@@ -24,11 +25,13 @@ public class RegionalAgricultureProfileService {
             RegionalCropSummaryRepository summaries,
             RegionalAgricultureBoundaryRepository boundaries,
             RegionalAgricultureProfileCalculator calculator,
+            RegionalPublicDataRepository publicData,
             AccessControl access) {
         this.annualStats = annualStats;
         this.summaries = summaries;
         this.boundaries = boundaries;
         this.calculator = calculator;
+        this.publicData = publicData;
         this.access = access;
     }
 
@@ -43,6 +46,7 @@ public class RegionalAgricultureProfileService {
             throw invalid("REGIONAL_PROFILE_REGION_UNSUPPORTED", "地区不在齐齐哈尔、黑河、呼伦贝尔或大兴安岭范围内");
         }
         var scope = access.requireBusinessReadScope();
+        var publicContext = publicData.load(root(region.code()), year);
         List<RegionalAgricultureProfileCalculator.Observation> observations = new ArrayList<>();
         if (Set.of("PREFECTURE", "COUNTY").contains(region.administrativeLevel())) {
             for (String product : PRODUCTS) {
@@ -54,10 +58,22 @@ public class RegionalAgricultureProfileService {
                                         "REGIONAL_OFFICIAL")));
             }
         }
+        if ("PREFECTURE".equals(region.administrativeLevel()) && observations.isEmpty()) {
+            observations.addAll(publicContext.observations());
+        }
         BigDecimal boundaryArea = boundaries.areaSquareMetres(region.code())
                 .orElseThrow(() -> invalid("REGIONAL_PROFILE_BOUNDARY_MISSING", "所选地区缺少可用于模型推算的公开边界"));
-        return calculator.calculate(region.code(), region.name(), region.administrativeLevel(),
+        var calculated = calculator.calculate(region.code(), region.name(), region.administrativeLevel(),
                 year, boundaryArea, observations);
+        return new RegionalAgricultureProfile(
+                calculated.regionCode(), calculated.regionName(), calculated.administrativeLevel(),
+                calculated.year(), calculated.automatic(), calculated.generatedAt(),
+                calculated.coverageDescription(),
+                publicContext.sources().isEmpty()
+                        ? calculated.sourceSummary()
+                        : "公开统计、行政区边界、逐日天气和政策证据自动融合；缺项由模型补齐",
+                calculated.calculationMethod(), publicContext.refreshStatus(), publicContext.weather(),
+                publicContext.policies(), publicContext.sources(), calculated.crops());
     }
 
     private static String root(String code) {
