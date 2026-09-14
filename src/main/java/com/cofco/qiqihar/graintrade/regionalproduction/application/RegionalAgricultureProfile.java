@@ -63,7 +63,7 @@ public record RegionalAgricultureProfile(
     public record Indicator(
             String category, String label, BigDecimal value, String unit,
             int dataYear, String dataKind, String method,
-            String sourceName, String sourceUrl) {}
+            String sourceName, String sourceUrl, String verifiedAt) {}
 
     public record Policy(
             String title, String publishedOn, String sourceName,

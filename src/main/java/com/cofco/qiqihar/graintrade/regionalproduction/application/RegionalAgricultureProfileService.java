@@ -78,7 +78,7 @@ public class RegionalAgricultureProfileService {
                         ? calculated.sourceSummary()
                         : "公开统计、行政区边界、逐日天气和政策证据自动融合；缺项由模型补齐",
                 calculated.calculationMethod(), publicContext.refreshStatus(), publicContext.weather(),
-                publicContext.indicators(),
+                RegionalDerivedIndicatorCalculator.complete(publicContext.indicators()),
                 publicContext.policies(), publicContext.sources(), calculated.crops());
     }
 

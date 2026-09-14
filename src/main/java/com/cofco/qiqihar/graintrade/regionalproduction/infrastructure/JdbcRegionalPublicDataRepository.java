@@ -84,7 +84,8 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
         var indicators = jdbc.sql("""
                 SELECT indicator.category,indicator.label,indicator.value,indicator.unit,
                        indicator.data_year,indicator.data_kind,indicator.method,
-                       source.source_name,source.source_url
+                       source.source_name,source.source_url,
+                       greatest(indicator.fetched_at,source.last_success_at) AS verified_at
                 FROM production.regional_public_indicator indicator
                 JOIN production.regional_public_source source ON source.source_id=indicator.source_id
                 WHERE source.active AND indicator.root_region_code=:root
@@ -92,7 +93,8 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
                 """).param("root", root).query((rs, n) -> new RegionalAgricultureProfile.Indicator(
                         rs.getString("category"), rs.getString("label"), rs.getBigDecimal("value"),
                         rs.getString("unit"), rs.getInt("data_year"), rs.getString("data_kind"),
-                        rs.getString("method"), rs.getString("source_name"), rs.getString("source_url"))).list();
+                        rs.getString("method"), rs.getString("source_name"), rs.getString("source_url"),
+                        instant(rs.getTimestamp("verified_at")))).list();
         var status = jdbc.sql("""
                 SELECT max(last_attempt_at) AS last_attempt,max(last_success_at) AS last_success,
                        min(next_refresh_at) AS next_refresh,
