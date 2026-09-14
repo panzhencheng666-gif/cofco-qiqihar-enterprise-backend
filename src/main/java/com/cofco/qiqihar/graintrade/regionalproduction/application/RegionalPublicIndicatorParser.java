@@ -55,6 +55,16 @@ public final class RegionalPublicIndicatorParser {
         };
         if (!text.contains(rootName)) throw new IllegalArgumentException("来源与登记地区不匹配");
         List<Metric> result = new ArrayList<>();
+        for (String mode : List.of("铁路", "公路", "水路")) {
+            extract(result, text, year, "LOGISTICS", mode + "货运量", mode + "货运量", "OUTPUT");
+            extract(result, text, year, "LOGISTICS", mode + "货物周转量", mode + "货物周转量", "TURNOVER");
+        }
+        extract(result, text, year, "LOGISTICS", "铁路营业里程", "铁路(?:营业|运营)里程", "DISTANCE");
+        extract(result, text, year, "LOGISTICS", "公路通车里程", "公路(?:通车|营业|总)里程", "DISTANCE");
+        // Freight includes all goods; it must never be labelled grain outflow.
+        for (String flow : List.of("调入", "调出")) {
+            extract(result, text, year, "FLOW", "粮食" + flow + "量", "粮食" + flow + "量", "OUTPUT");
+        }
         String agri = text;
         int begin = text.indexOf("二、农");
         if (begin >= 0) {
@@ -126,8 +136,10 @@ public final class RegionalPublicIndicatorParser {
             String label, String subject, String measure) {
         String units = switch (measure) {
             case "AREA" -> "万公顷|公顷|万亩|亩";
-            case "OUTPUT" -> "亿斤|万公斤|万吨|吨|公斤";
+            case "OUTPUT" -> "亿吨|亿斤|万公斤|万吨|吨|公斤";
             case "MONEY" -> "亿元|万元";
+            case "TURNOVER" -> "亿吨公里|万吨公里|吨公里";
+            case "DISTANCE" -> "万公里|公里";
             case "COUNT" -> "万头|万只|头|只";
             case "PEOPLE" -> "万人|人";
             case "POWER" -> "万千瓦|千瓦";
@@ -149,6 +161,7 @@ public final class RegionalPublicIndicatorParser {
         BigDecimal factor = switch (sourceUnit) {
             case "万公顷" -> new BigDecimal("15"); case "公顷" -> new BigDecimal("0.0015");
             case "亩" -> new BigDecimal("0.0001"); case "亿斤" -> new BigDecimal("5");
+            case "亿吨" -> new BigDecimal("10000");
             case "吨" -> new BigDecimal("0.0001"); case "公斤" -> new BigDecimal("0.0000001");
             case "万公斤" -> new BigDecimal("0.001"); case "万元" -> new BigDecimal("0.0001");
             default -> BigDecimal.ONE;

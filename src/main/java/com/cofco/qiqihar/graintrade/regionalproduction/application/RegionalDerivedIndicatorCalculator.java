@@ -54,6 +54,18 @@ final class RegionalDerivedIndicatorCalculator {
         ratio(completed, byLabel, "绿色认证面积占粮食面积比重", "BRAND", "%",
                 "绿色食品认证面积", "粮食计划播种面积", bd("100"));
 
+        var inflow = byLabel.get("粮食调入量");
+        var outflow = byLabel.get("粮食调出量");
+        if (inflow != null && outflow != null && inflow.dataYear() == outflow.dataYear()
+                && inflow.unit().equals(outflow.unit()) && inflow.dataKind().equals("OBSERVED")
+                && outflow.dataKind().equals("OBSERVED") && inflow.sourceUrl().equals(outflow.sourceUrl())) {
+            var net = inflow.value().subtract(outflow.value());
+            completed.add(derived("FLOW", "粮食净流入量", net, inflow.unit(), inflow, outflow,
+                    "采用同一来源、同一年度的粮食跨地区调入和调出量：调入" + inflow.value() + inflow.unit()
+                    + "－调出" + outflow.value() + outflow.unit() + "=" + net + inflow.unit()
+                    + "；正值为净流入、负值为净流出；不以总货运量或生产余缺替代"));
+        }
+
         completed.sort(Comparator.comparing(RegionalAgricultureProfile.Indicator::category)
                 .thenComparing(RegionalAgricultureProfile.Indicator::label));
         return List.copyOf(completed);

@@ -47,7 +47,7 @@ public class RegionalSourceDiscovery {
             int accepted=0, count=0;
             try {
                 int year=now.atZone(java.time.ZoneId.of("Asia/Shanghai")).getYear();
-                for (String topic : List.of("统计公报 农业", "种植 蔬菜 畜牧 产量", "农业 政策 气象 灾害")) {
+                for (String topic : List.of("统计公报 农业", "种植 蔬菜 畜牧 产量", "农业 政策 气象 灾害", "粮食 调入 调出 铁路 货运 物流园", "农产品 冷链 仓储 加工")) {
                     String query=URLEncoder.encode(name+" "+year+" "+topic,StandardCharsets.UTF_8);
                     URI uri=URI.create(searx.isBlank() ? "https://api.search.brave.com/res/v1/web/search?q="+query+"&count=10"
                             : searx.replaceAll("/$","")+"/search?q="+query+"&format=json");
@@ -63,7 +63,7 @@ public class RegionalSourceDiscovery {
                         String title=item.path("title").asText("");
                         String url=item.path("url").asText("");
                         String description=item.path(searx.isBlank()?"description":"content").asText("");
-                        if (!title.contains(name) || !(title+description).matches(".*(?:农业|农牧|粮食|种植|蔬菜|畜牧|统计公报|农作物).*")) continue;
+                        if (!title.contains(name) || !(title+description).matches(".*(?:农业|农牧|粮食|种植|蔬菜|畜牧|铁路|物流|统计公报|农作物).*")) continue;
                         if (!publicHttps(url)) continue;
                         String parser=title.contains("国民经济和社会发展统计公报") ? switch(root) {
                             case "230200"->"ANNUAL_QQHR";case "231100"->"ANNUAL_HEIHE";
@@ -80,7 +80,7 @@ public class RegionalSourceDiscovery {
                                 .param("parser",parser).param("type",title.matches(".*(?:政策|补贴|补助|通知|实施方案).* ".trim()) ? "POLICY" : "AGRICULTURE").update();
                     }
                 }
-                status(id,now,"SEARCH_SUCCESS","联网检索3个主题，返回"+count+"条结果；新增"+accepted+"个相关来源。来源另行读取正文，搜索成功不等于全部数据已核验。",accepted);
+                status(id,now,"SEARCH_SUCCESS","联网检索5个主题，返回"+count+"条结果；新增"+accepted+"个相关来源。来源另行读取正文，搜索成功不等于全部数据已核验。",accepted);
             } catch(Exception e) {
                 status(id,now,"SEARCH_FAILED","联网搜索未完成，保留历史资料并稍后重试；本轮已登记"+accepted+"个候选来源。",accepted);
             }

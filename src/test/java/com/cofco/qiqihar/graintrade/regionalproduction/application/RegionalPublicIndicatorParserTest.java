@@ -23,4 +23,11 @@ class RegionalPublicIndicatorParserTest {
   var values=RegionalPublicIndicatorParser.parse("ANNUAL_QQHR","2025年齐齐哈尔市国民经济和社会发展统计公报 二、农业 大豆产量10万吨。三、工业 番茄产量20万吨");
   assertThat(values).noneMatch(i->i.label().contains("番茄"));
  }
+    @org.junit.jupiter.api.Test void separatesAllGoodsFreightFromGrainFlows() {
+        var metrics=RegionalPublicIndicatorParser.parse("ANNUAL_HLBE",
+            "2025年呼伦贝尔市国民经济和社会发展统计公报。铁路货运量1.05亿吨，铁路货物周转量400.84亿吨公里。粮食调入量12万吨，粮食调出量20万吨。");
+        assertThat(metrics.stream().filter(m -> m.label().equals("铁路货运量")).findFirst().orElseThrow().value()).isEqualByComparingTo("10500");
+        assertThat(metrics.stream().filter(m -> m.label().equals("铁路货物周转量")).findFirst().orElseThrow().unit()).isEqualTo("亿吨公里");
+        assertThat(metrics.stream().filter(m -> m.label().equals("粮食调出量")).findFirst().orElseThrow().value()).isEqualByComparingTo("20");
+    }
 }
