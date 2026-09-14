@@ -4,6 +4,8 @@ import com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalAgric
 import com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalAgricultureProfileCalculator;
 import com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalPublicDataRepository;
 import java.math.BigDecimal;
+import com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalPublicIndicatorParser;
+import org.springframework.transaction.annotation.Transactional;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
@@ -42,6 +44,7 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
                 FROM production.regional_public_crop_metric metric
                 JOIN production.regional_public_source source ON source.source_id=metric.source_id AND source.active
                 JOIN latest ON latest.product_code=metric.product_code AND latest.data_year=metric.data_year
+                WHERE source.root_region_code=:root
                 GROUP BY metric.product_code,metric.data_year
                 ORDER BY metric.product_code
                 """).param("root", root).param("year", requestedYear)
@@ -69,9 +72,9 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
                 WHERE active AND source_type='POLICY' AND root_region_code IN (:root,'*')
                 ORDER BY published_on DESC NULLS LAST
                 """).param("root", root).query((rs, n) -> new RegionalAgricultureProfile.Policy(
-                        rs.getString("evidence").contains("强农惠农") ? "2026年强农惠农富农政策清单" : "2026年中央一号文件农业部署",
+                        rs.getString("source_name"),
                         date(rs.getDate("published_on")), rs.getString("source_name"), rs.getString("source_url"),
-                        "玉米、大豆、水稻", rs.getString("evidence"))).list();
+                        "适用范围以原文为准", rs.getString("evidence"))).list();
         var weather = jdbc.sql("""
                 SELECT mean_temperature_c,precipitation_mm,soil_moisture_percent,risk,
                        assessment,observed_at,source_id
@@ -85,12 +88,19 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
                 SELECT indicator.category,indicator.label,indicator.value,indicator.unit,
                        indicator.data_year,indicator.data_kind,indicator.method,
                        source.source_name,source.source_url,
-                       greatest(indicator.fetched_at,source.last_success_at) AS verified_at
-                FROM production.regional_public_indicator indicator
+                       indicator.fetched_at AS verified_at
+                FROM (
+                  SELECT DISTINCT ON (i.label) i.*
+                  FROM production.regional_public_indicator i
+                  JOIN production.regional_public_source s ON s.source_id=i.source_id
+                  WHERE s.active AND i.root_region_code=:root AND i.data_year<=:year
+                    AND i.method NOT LIKE '%待核对计划原始来源%'
+                  ORDER BY i.label,i.data_year DESC,s.reliability_weight DESC,i.fetched_at DESC
+                ) indicator
                 JOIN production.regional_public_source source ON source.source_id=indicator.source_id
                 WHERE source.active AND indicator.root_region_code=:root
                 ORDER BY indicator.sort_order,indicator.label
-                """).param("root", root).query((rs, n) -> new RegionalAgricultureProfile.Indicator(
+                """).param("root", root).param("year", requestedYear).query((rs, n) -> new RegionalAgricultureProfile.Indicator(
                         rs.getString("category"), rs.getString("label"), rs.getBigDecimal("value"),
                         rs.getString("unit"), rs.getInt("data_year"), rs.getString("data_kind"),
                         rs.getString("method"), rs.getString("source_name"), rs.getString("source_url"),
@@ -115,6 +125,21 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
     }
 
     @Override
+    public List<RegionalAgricultureProfile.Indicator> history(String root, int year) {
+        return jdbc.sql("""
+                SELECT DISTINCT ON (i.label,i.unit,i.data_year) i.*,s.source_name,s.source_url
+                FROM production.regional_public_indicator i
+                JOIN production.regional_public_source s ON s.source_id=i.source_id
+                WHERE s.active AND i.root_region_code=:root AND i.data_year<=:year
+                  AND i.data_kind='OBSERVED' AND i.indicator_id LIKE 'auto-%'
+                ORDER BY i.label,i.unit,i.data_year,s.reliability_weight DESC,i.fetched_at DESC
+                """).param("root", root).param("year", year).query((rs,n) -> new RegionalAgricultureProfile.Indicator(
+                        rs.getString("category"),rs.getString("label"),rs.getBigDecimal("value"),rs.getString("unit"),
+                        rs.getInt("data_year"),rs.getString("data_kind"),rs.getString("method"),
+                        rs.getString("source_name"),rs.getString("source_url"),instant(rs.getTimestamp("fetched_at")))).list();
+    }
+
+    @Override
     public List<DueSource> due(Instant now) {
         return jdbc.sql("""
                 SELECT source_id,root_region_code,source_type,source_name,source_url,parser_key
@@ -129,6 +154,8 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
     @Override
     public void recordPageSuccess(String id, Instant now, String hash, String excerpt) {
         updateSuccess(id, now, hash, excerpt);
+        jdbc.sql("UPDATE production.regional_public_source SET evidence=:text WHERE source_id=:id")
+                .param("text", excerpt).param("id",id).update();
     }
 
     @Override
@@ -147,6 +174,26 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
                     .param("area", metric.plantedAreaMu()).param("yield", metric.yieldPerMuKg())
                     .param("output", metric.totalOutputKg()).param("evidence", metric.evidence())
                     .param("now", Timestamp.from(now)).update();
+        }
+    }
+
+    @Override
+    @Transactional
+    public void recordIndicators(String id, List<RegionalPublicIndicatorParser.Metric> metrics, Instant now) {
+        for (var metric : metrics) {
+            jdbc.sql("""
+                    INSERT INTO production.regional_public_indicator(
+                      indicator_id,root_region_code,category,label,value,unit,data_year,data_kind,
+                      method,source_id,fetched_at)
+                    SELECT 'auto-' || md5(:id || ':' || :year || ':' || :label),root_region_code,
+                      :category,:label,:value,:unit,:year,:kind,:method,source_id,:now
+                    FROM production.regional_public_source WHERE source_id=:id
+                    ON CONFLICT(indicator_id) DO UPDATE SET
+                      value=excluded.value,unit=excluded.unit,data_kind=excluded.data_kind,
+                      method=excluded.method,fetched_at=excluded.fetched_at
+                    """).param("id", id).param("year", metric.year()).param("category", metric.category())
+                    .param("label", metric.label()).param("value", metric.value()).param("unit", metric.unit())
+                    .param("kind", metric.kind()).param("method", metric.method()).param("now", Timestamp.from(now)).update();
         }
     }
 
@@ -190,7 +237,8 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
         jdbc.sql("""
                 UPDATE production.regional_public_source SET last_attempt_at=:now,next_refresh_at=:next,
                   last_status='FAILED_USING_LAST_SUCCESS',last_error=:message WHERE source_id=:id
-                """).param("now", Timestamp.from(now)).param("next", Timestamp.from(now.plus(1, ChronoUnit.HOURS)))
+                """).param("now", Timestamp.from(now)).param("next", Timestamp.from(now.plus(1, ChronoUnit.HOURS).isBefore(nextDailyRefresh(now))
+                        ? now.plus(1, ChronoUnit.HOURS) : nextDailyRefresh(now)))
                 .param("message", message == null ? "unknown" : message.substring(0, Math.min(500, message.length())))
                 .param("id", id).update();
     }

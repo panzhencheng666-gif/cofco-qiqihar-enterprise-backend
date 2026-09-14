@@ -1,0 +1,119 @@
+package com.cofco.qiqihar.graintrade.regionalproduction.application;
+
+import java.net.URI;
+import java.net.URLEncoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.stereotype.Component;
+import tools.jackson.databind.json.JsonMapper;
+
+/** Daily public-web discovery is separate from revisiting registered documents. */
+@Component
+public class RegionalSourceDiscovery {
+    private final JdbcClient jdbc;
+    private final String key;
+    private final String searx;
+    private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8)).build();
+    private static final Map<String,String> ROOTS = Map.of("230200","齐齐哈尔","231100","黑河","150700","呼伦贝尔","232700","大兴安岭");
+    public RegionalSourceDiscovery(JdbcClient jdbc,
+            @Value("${qiqihar.regional-public-data.search-key:${BRAVE_SEARCH_API_KEY:}}") String key,
+            @Value("${qiqihar.regional-public-data.searx-url:${SEARXNG_URL:}}") String searx) {
+        this.jdbc=jdbc; this.key=key; this.searx=searx;
+    }
+
+    public void markDailyDue(Instant now) {
+        jdbc.sql("UPDATE production.regional_public_source SET next_refresh_at=:now WHERE active")
+                .param("now",java.sql.Timestamp.from(now)).update();
+    }
+
+    public void discover(Instant now) {
+        ROOTS.forEach((root,name) -> {
+            String id="search-"+root;
+            Boolean due=jdbc.sql("SELECT next_refresh_at IS NULL OR next_refresh_at<=:now FROM production.regional_public_source WHERE source_id=:id")
+                    .param("now",java.sql.Timestamp.from(now)).param("id",id).query(Boolean.class).optional().orElse(false);
+            if (!due) return;
+            if (key.isBlank() && searx.isBlank()) {
+                status(id,now,"SEARCH_NOT_CONFIGURED","尚未配置后台搜索服务；固定来源核验仍运行，不能视为已完成全网检索",0);
+                return;
+            }
+            int accepted=0, count=0;
+            try {
+                int year=now.atZone(java.time.ZoneId.of("Asia/Shanghai")).getYear();
+                for (String topic : List.of("统计公报 农业", "种植 蔬菜 畜牧 产量", "农业 政策 气象 灾害")) {
+                    String query=URLEncoder.encode(name+" "+year+" "+topic,StandardCharsets.UTF_8);
+                    URI uri=URI.create(searx.isBlank() ? "https://api.search.brave.com/res/v1/web/search?q="+query+"&count=10"
+                            : searx.replaceAll("/$","")+"/search?q="+query+"&format=json");
+                    var request=HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(20)).header("Accept","application/json");
+                    if (searx.isBlank()) request.header("X-Subscription-Token",key);
+                    var response=http.send(request.GET().build(),HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    if(response.statusCode()!=200) throw new IllegalStateException("搜索服务HTTP "+response.statusCode());
+                    var json=JsonMapper.builder().build().readTree(response.body());
+                    var results=searx.isBlank() ? json.path("web").path("results") : json.path("results");
+                    if(!results.isArray()) throw new IllegalStateException("搜索服务返回格式异常");
+                    for(var item:results) {
+                        count++;
+                        String title=item.path("title").asText("");
+                        String url=item.path("url").asText("");
+                        String description=item.path(searx.isBlank()?"description":"content").asText("");
+                        if (!title.contains(name) || !(title+description).matches(".*(?:农业|农牧|粮食|种植|蔬菜|畜牧|统计公报|农作物).*")) continue;
+                        if (!publicHttps(url)) continue;
+                        String parser=title.contains("国民经济和社会发展统计公报") ? switch(root) {
+                            case "230200"->"ANNUAL_QQHR";case "231100"->"ANNUAL_HEIHE";
+                            case "150700"->"ANNUAL_HLBE";default->"ANNUAL_DXAL";
+                        } : "GENERIC_PAGE";
+                        accepted+=jdbc.sql("""
+                            INSERT INTO production.regional_public_source(source_id,root_region_code,source_type,
+                              source_name,source_url,parser_key,evidence,last_status,source_class,reliability_weight)
+                            SELECT 'search-found-'||md5(:root||:url),:root,:type,:title,:url,:parser,
+                              '联网搜索发现；须以正文为依据，搜索摘要不直接作为统计数值。','WAITING_FOR_SOURCE_SYNC','PUBLIC_WEB',0.5
+                            WHERE NOT EXISTS(SELECT 1 FROM production.regional_public_source WHERE root_region_code=:root AND source_url=:url)
+                            ON CONFLICT(source_id) DO NOTHING
+                            """).param("root",root).param("url",url).param("title",title.substring(0,Math.min(200,title.length())))
+                                .param("parser",parser).param("type",title.matches(".*(?:政策|补贴|补助|通知|实施方案).* ".trim()) ? "POLICY" : "AGRICULTURE").update();
+                    }
+                }
+                status(id,now,"SEARCH_SUCCESS","联网检索3个主题，返回"+count+"条结果；新增"+accepted+"个相关来源。来源另行读取正文，搜索成功不等于全部数据已核验。",accepted);
+            } catch(Exception e) {
+                status(id,now,"SEARCH_FAILED","联网搜索未完成，保留历史资料并稍后重试；本轮已登记"+accepted+"个候选来源。",accepted);
+            }
+        });
+    }
+
+    static boolean publicHttps(String value) {
+        try {
+            var uri=URI.create(value);
+            if(!"https".equalsIgnoreCase(uri.getScheme()) || uri.getHost()==null || uri.getUserInfo()!=null
+                    || (uri.getPort()!=-1 && uri.getPort()!=443)) return false;
+            for(var ip:java.net.InetAddress.getAllByName(uri.getHost())) {
+                if(ip.isAnyLocalAddress() || ip.isLoopbackAddress() || ip.isLinkLocalAddress() || ip.isSiteLocalAddress() || ip.isMulticastAddress()) return false;
+                byte[] bytes=ip.getAddress();
+                if(bytes.length==16 && (bytes[0]&0xfe)==0xfc) return false;
+            }
+            return true;
+        } catch(Exception ignored) { return false; }
+    }
+
+    private void status(String id,Instant now,String state,String explanation,int added) {
+        var local=now.atZone(java.time.ZoneId.of("Asia/Shanghai"));
+        Instant next=local.toLocalDate().plusDays(1).atTime(8,30).atZone(local.getZone()).toInstant();
+        if(!state.equals("SEARCH_SUCCESS")) {
+            Instant today=local.toLocalDate().atTime(8,30).atZone(local.getZone()).toInstant();
+            if(today.isAfter(now)) next=today;
+            if(now.plusSeconds(3600).isBefore(next)) next=now.plusSeconds(3600);
+        }
+        jdbc.sql("""
+            UPDATE production.regional_public_source SET last_status=:state,evidence=:explanation,last_attempt_at=:now,
+              last_success_at=CASE WHEN :state='SEARCH_SUCCESS' THEN :now ELSE last_success_at END,next_refresh_at=:next
+            WHERE source_id=:id
+            """).param("id",id).param("state",state).param("explanation",explanation)
+                .param("now",java.sql.Timestamp.from(now)).param("next",java.sql.Timestamp.from(next)).update();
+    }
+}

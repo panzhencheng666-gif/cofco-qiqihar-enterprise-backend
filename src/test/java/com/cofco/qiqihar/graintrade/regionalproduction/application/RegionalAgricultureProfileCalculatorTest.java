@@ -1,100 +1,35 @@
 package com.cofco.qiqihar.graintrade.regionalproduction.application;
 
 import static org.assertj.core.api.Assertions.assertThat;
-
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class RegionalAgricultureProfileCalculatorTest {
-    private final RegionalAgricultureProfileCalculator calculator =
-            new RegionalAgricultureProfileCalculator();
-
-    @Test
-    void keepsObservedValuesEstimatesMissingCropsAndForecastsOnlyNextYear() {
-        var profile = calculator.calculate(
-                "230200", "齐齐哈尔市", "PREFECTURE", 2026,
-                new BigDecimal("42400000000"),
-                List.of(new RegionalAgricultureProfileCalculator.Observation(
-                        "CORN", new BigDecimal("17844200"),
-                        new BigDecimal("650"), "REGIONAL_OFFICIAL")));
-
-        assertThat(profile.crops()).extracting(RegionalAgricultureProfile.Crop::productCode)
-                .containsExactly("CORN", "SOYBEAN", "RICE");
-        assertThat(profile.crops().get(0).dataKind()).isEqualTo("OBSERVED");
-        assertThat(profile.crops().get(0).plantedAreaMu()).isEqualByComparingTo("17844200");
-        assertThat(profile.crops().get(1).dataKind()).isEqualTo("MODEL_ESTIMATE");
-        assertThat(profile.crops()).allSatisfy(crop -> {
-            assertThat(crop.structurePercent()).isNotNull();
-            assertThat(crop.forecasts()).hasSize(1);
-            assertThat(crop.forecasts()).extracting(RegionalAgricultureProfile.Forecast::year)
-                    .containsExactly(2027);
-            assertThat(crop.confidencePercent()).isBetween(new BigDecimal("0"), new BigDecimal("100"));
-            assertThat(crop.uncertaintyLowKg()).isLessThan(crop.totalOutputKg());
-            assertThat(crop.uncertaintyHighKg()).isGreaterThan(crop.totalOutputKg());
-            assertThat(crop.formula()).contains("面积", "单产");
-        });
-        assertThat(profile.crops().stream()
-                .map(RegionalAgricultureProfile.Crop::structurePercent)
-                .reduce(BigDecimal.ZERO, BigDecimal::add))
-                .isEqualByComparingTo("100.00");
-        assertThat(profile.calculationMethod()).contains("当年缺项", "明年");
-        assertThat(profile.automatic()).isTrue();
+    private final RegionalAgricultureProfileCalculator calculator = new RegionalAgricultureProfileCalculator();
+    @Test void preservesKnownInputsWithoutInventingOtherCrops() {
+        var profile=calculator.calculate("230200","齐齐哈尔市","PREFECTURE",2026,new BigDecimal("42400000000"),
+            List.of(new RegionalAgricultureProfileCalculator.Observation("CORN",new BigDecimal("2000"),new BigDecimal("600"),"REGIONAL_OFFICIAL")));
+        assertThat(profile.crops()).hasSize(1);
+        var crop=profile.crops().getFirst();
+        assertThat(crop.totalOutputKg()).isEqualByComparingTo("1200000");
+        assertThat(crop.structurePercent()).isEqualByComparingTo("100");
+        assertThat(crop.confidencePercent()).isNull();
+        assertThat(crop.uncertaintyLowKg()).isNull();
+        assertThat(crop.forecasts()).extracting(RegionalAgricultureProfile.Forecast::year).containsExactly(2027);
     }
-
-    @Test
-    void producesCalculatedValuesFromBoundaryAreaWhenNoAnnualObservationExists() {
-        var profile = calculator.calculate(
-                "232700", "大兴安岭地区", "PREFECTURE", 2026,
-                new BigDecimal("83000000000"), List.of());
-
-        assertThat(profile.crops()).hasSize(3).allSatisfy(crop -> {
-            assertThat(crop.dataKind()).isEqualTo("MODEL_ESTIMATE");
-            assertThat(crop.plantedAreaMu()).isPositive();
-            assertThat(crop.yieldPerMuKg()).isPositive();
-            assertThat(crop.totalOutputKg()).isPositive();
-        });
-        assertThat(profile.sourceSummary()).contains("公开行政区边界");
+    @Test void boundaryAloneDoesNotInventCultivationOrYield() {
+        assertThat(calculator.calculate("232700","大兴安岭地区","PREFECTURE",2026,
+                new BigDecimal("83000000000"),List.of()).crops()).isEmpty();
     }
-
-    @Test
-    void villageCalculationExplainsAncestorAllocationAndHasLowerConfidence() {
-        var profile = calculator.calculate(
-                "230221123456", "示例村", "VILLAGE", 2026,
-                new BigDecimal("6666667"), List.of());
-
-        assertThat(profile.administrativeLevel()).isEqualTo("VILLAGE");
-        assertThat(profile.coverageDescription()).contains("行政村");
-        assertThat(profile.crops()).allSatisfy(crop -> {
-            assertThat(crop.basis()).contains("上级地区", "边界面积");
-            assertThat(crop.confidencePercent()).isLessThan(new BigDecimal("70"));
-            assertThat(crop.forecasts()).hasSize(1);
-        });
-    }
-
-    @Test
-    void appliesAndExplainsWeatherAndPolicyFactorsInNextYearForecast() {
-        var profile = calculator.calculate(
-                "231100", "黑河市", "PREFECTURE", 2026,
-                new BigDecimal("68000000000"), List.of(),
-                new RegionalAgricultureProfileCalculator.ForecastContext(
-                        new BigDecimal("0.970"), true));
-
-        assertThat(profile.crops()).allSatisfy(crop ->
-                assertThat(crop.forecasts().getFirst().formula())
-                        .contains("天气修正", "政策修正", "0.970"));
-    }
-
-    @Test
-    void explainsReliabilityWeightedFusionWhenSourcesDisagree() {
-        var profile = calculator.calculate(
-                "150700", "呼伦贝尔市", "PREFECTURE", 2026,
-                new BigDecimal("252000000000"),
-                List.of(new RegionalAgricultureProfileCalculator.Observation(
-                        "SOYBEAN", new BigDecimal("12800000"), new BigDecimal("155"),
-                        "PUBLIC_MULTI_SOURCE", 2026, 3)));
-
-        assertThat(profile.crops().stream().filter(crop -> crop.productCode().equals("SOYBEAN"))
-                .findFirst().orElseThrow().basis()).contains("3个公开渠道", "可靠度加权");
+    @Test void usesFittedRatesAndKeepsUncalibratedWeatherNeutral() {
+        var profile=calculator.calculate("230200","齐齐哈尔市","PREFECTURE",2026,new BigDecimal("1000"),
+            List.of(new RegionalAgricultureProfileCalculator.Observation("CORN",new BigDecimal("2000"),new BigDecimal("600"),"REGIONAL_OFFICIAL")),
+            new RegionalAgricultureProfileCalculator.ForecastContext(new BigDecimal("0.970"),true,
+                Map.of("CORN:area",new BigDecimal("0.1"),"CORN:yield",new BigDecimal("0.05"))));
+        var prediction=profile.crops().getFirst().forecasts().getFirst();
+        assertThat(prediction.totalOutputKg()).isEqualByComparingTo("1386000");
+        assertThat(prediction.formula()).contains("1.100000","1.050000","尚无校准因果系数").doesNotContain("0.970");
     }
 }

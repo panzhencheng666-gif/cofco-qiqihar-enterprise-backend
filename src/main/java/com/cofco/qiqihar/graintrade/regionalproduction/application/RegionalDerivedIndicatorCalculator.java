@@ -65,7 +65,9 @@ final class RegionalDerivedIndicatorCalculator {
             String denominatorLabel, BigDecimal scale) {
         var numerator = byLabel.get(numeratorLabel);
         var denominator = byLabel.get(denominatorLabel);
-        if (numerator == null || denominator == null || denominator.value().signum() == 0) return;
+        if (numerator == null || denominator == null || denominator.value().signum() == 0
+                || numerator.dataYear() != denominator.dataYear()
+                || numerator.dataKind().equals("CONTEXT") || denominator.dataKind().equals("CONTEXT")) return;
         BigDecimal value = numerator.value().divide(denominator.value(), 8, RoundingMode.HALF_UP)
                 .multiply(scale).setScale(2, RoundingMode.HALF_UP);
         output.add(derived(category, label, value, unit, numerator, denominator,
@@ -80,7 +82,9 @@ final class RegionalDerivedIndicatorCalculator {
             BigDecimal numeratorMultiplier, String denominatorLabel, BigDecimal denominatorMultiplier) {
         var numerator = byLabel.get(numeratorLabel);
         var denominator = byLabel.get(denominatorLabel);
-        if (numerator == null || denominator == null || denominator.value().signum() == 0) return;
+        if (numerator == null || denominator == null || denominator.value().signum() == 0
+                || numerator.dataYear() != denominator.dataYear()
+                || numerator.dataKind().equals("CONTEXT") || denominator.dataKind().equals("CONTEXT")) return;
         BigDecimal value = numerator.value().multiply(numeratorMultiplier)
                 .divide(denominator.value().multiply(denominatorMultiplier), 2, RoundingMode.HALF_UP);
         output.add(derived(category, label, value, unit, numerator, denominator,

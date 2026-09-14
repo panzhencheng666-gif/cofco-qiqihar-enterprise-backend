@@ -14,12 +14,6 @@ public class RegionalAgricultureProfileCalculator {
     private static final List<String> PRODUCTS = List.of("CORN", "SOYBEAN", "RICE");
     private static final Map<String, String> NAMES = Map.of(
             "CORN", "玉米", "SOYBEAN", "大豆", "RICE", "水稻");
-    private static final Map<String, BigDecimal> DEFAULT_YIELD = Map.of(
-            "CORN", bd("610"), "SOYBEAN", bd("155"), "RICE", bd("520"));
-    private static final Map<String, BigDecimal> AREA_GROWTH = Map.of(
-            "CORN", bd("0.012"), "SOYBEAN", bd("0.018"), "RICE", bd("0.005"));
-    private static final Map<String, BigDecimal> YIELD_GROWTH = Map.of(
-            "CORN", bd("0.008"), "SOYBEAN", bd("0.010"), "RICE", bd("0.006"));
 
     public RegionalAgricultureProfile calculate(
             String regionCode,
@@ -40,35 +34,30 @@ public class RegionalAgricultureProfileCalculator {
             BigDecimal boundaryAreaSquareMetres,
             List<Observation> observations,
             ForecastContext forecastContext) {
-        Map<String, BigDecimal> shares = shares(regionCode);
         Map<String, Observation> observed = new LinkedHashMap<>();
         observations.forEach(value -> observed.put(value.productCode(), value));
-        BigDecimal inferredTotalArea = inferTotalArea(regionCode, boundaryAreaSquareMetres, shares, observed);
 
         record Working(String code, String kind, BigDecimal area, BigDecimal yield, String basis) {}
-        List<Working> working = PRODUCTS.stream().map(code -> {
+        List<Working> working = PRODUCTS.stream().filter(code -> observed.containsKey(code)
+                && observed.get(code).plantedAreaMu() != null && observed.get(code).yieldPerMuKg() != null
+                && observed.get(code).plantedAreaMu().signum() > 0).map(code -> {
             Observation value = observed.get(code);
-            if (value != null && value.plantedAreaMu() != null) {
-                BigDecimal baseYield = value.yieldPerMuKg() == null ? DEFAULT_YIELD.get(code) : value.yieldPerMuKg();
+            {
+                BigDecimal baseYield = value.yieldPerMuKg();
                 int gap = value.dataYear() == null ? 0 : Math.max(0, year - value.dataYear());
-                BigDecimal area = compound(value.plantedAreaMu(), AREA_GROWTH.get(code), gap);
-                BigDecimal yield = compound(baseYield, YIELD_GROWTH.get(code), gap);
-                String kind = value.yieldPerMuKg() == null || gap > 0 ? "MODEL_ESTIMATE" : "OBSERVED";
+                BigDecimal area = compound(value.plantedAreaMu(), forecastContext.rate(code + ":area"), gap);
+                BigDecimal yield = compound(baseYield, forecastContext.rate(code + ":yield"), gap);
+                String kind = !"REGIONAL_OFFICIAL".equals(value.sourceKind()) || gap > 0 ? "MODEL_ESTIMATE" : "OBSERVED";
                 return new Working(code, kind, area, yield,
-                        gap > 0
+                        value.explanation() != null ? value.explanation() : gap > 0
                                 ? "采用" + value.dataYear() + "年" + sourceBasis(value)
-                                        + "为基线，按复合趋势率补算" + year + "年缺项"
+                                        + "为基线，按历史数据选定的趋势补算" + year + "年缺项"
                                 : value.yieldPerMuKg() == null
-                                ? "面积采用地区正式数据，单产由多年均值模型补齐"
+                                ? "面积采用地区正式数据，单产暂用未校准参考参数补齐"
                                 : value.sourceCount() > 1
                                 ? sourceBasis(value) + "，面积和单产采用可靠度加权结果"
                                 : "采用地区年度正式数据自动汇总");
             }
-            return new Working(code, "MODEL_ESTIMATE",
-                    inferredTotalArea.multiply(shares.get(code)), DEFAULT_YIELD.get(code),
-                    administrativeLevel.equals("VILLAGE") || administrativeLevel.equals("TOWNSHIP")
-                            ? "继承上级地区公开统计，按所选地区边界面积、耕作系数和品种结构权重自动分摊"
-                            : "依据公开行政区边界面积、区域耕作系数和三品种结构系数推算");
         }).toList();
         BigDecimal totalArea = working.stream().map(Working::area).reduce(BigDecimal.ZERO, BigDecimal::add);
         List<RegionalAgricultureProfile.Crop> crops = new ArrayList<>();
@@ -80,29 +69,26 @@ public class RegionalAgricultureProfileCalculator {
                     : value.area().multiply(bd("100")).divide(totalArea, 2, RoundingMode.HALF_UP);
             allocatedPercent = allocatedPercent.add(percent);
             BigDecimal output = value.area().multiply(value.yield()).setScale(4, RoundingMode.HALF_UP);
-            BigDecimal confidence = confidence(administrativeLevel, value.kind());
-            BigDecimal uncertainty = BigDecimal.ONE.subtract(
-                    confidence.divide(bd("100"), 4, RoundingMode.HALF_UP));
+
             crops.add(new RegionalAgricultureProfile.Crop(
                     value.code(), NAMES.get(value.code()), value.kind(), scale(value.area()),
                     scale(value.yield()), output, percent, value.basis(),
                     "总产=播种面积×亩均单产；结构占比=本品种面积÷三品种面积合计",
-                    confidence, scale(output.multiply(BigDecimal.ONE.subtract(uncertainty))),
-                    scale(output.multiply(BigDecimal.ONE.add(uncertainty))),
+                    null, null, null,
                     forecasts(year, value.code(), value.area(), value.yield(), forecastContext)));
         }
         return new RegionalAgricultureProfile(
                 regionCode, regionName, administrativeLevel, year, true, Instant.now().toString(),
                 switch (administrativeLevel) {
-                    case "VILLAGE" -> "行政村级自动估算：继承上级公开统计并按本村边界面积和区域系数分摊";
-                    case "TOWNSHIP" -> "乡镇级自动估算：继承上级公开统计并按本乡镇边界面积和区域系数分摊";
+                    case "VILLAGE" -> "行政村级自动估算：继承上级公开统计并按本村与上级边界面积比例分摊（均匀密度假设）";
+                    case "TOWNSHIP" -> "乡镇级自动估算：继承上级公开统计并按本乡镇与上级边界面积比例分摊（均匀密度假设）";
                     default -> "地区公开统计与模型补算覆盖";
                 },
                 null,
                 observations.isEmpty()
                         ? "公开行政区边界与系统统计模型自动生成"
                         : "地区年度正式数据优先，缺项由公开行政区边界与统计模型自动补齐",
-                "结构系数和面积权重补算当年缺项；趋势、天气与政策修正系数仅推算明年",
+                "公开历史值和面积密度补算当年缺项；历史趋势或最近值延续预测明年；依据不足的作物不生成数值",
                 new RegionalAgricultureProfile.RefreshStatus(
                         "每日 08:30", "WAITING_FOR_SOURCE_SYNC", null, null, null),
                 null, List.of(), List.of(), List.of(),
@@ -112,72 +98,21 @@ public class RegionalAgricultureProfileCalculator {
     private static List<RegionalAgricultureProfile.Forecast> forecasts(
             int year, String productCode, BigDecimal area, BigDecimal yield,
             ForecastContext context) {
-        BigDecimal areaFactor = BigDecimal.ONE.add(AREA_GROWTH.get(productCode));
-        BigDecimal yieldFactor = BigDecimal.ONE.add(YIELD_GROWTH.get(productCode));
-        BigDecimal policyFactor = context.policyAvailable()
-                ? switch (productCode) {
-                    case "SOYBEAN" -> bd("1.012");
-                    case "CORN" -> bd("1.008");
-                    default -> bd("1.005");
-                }
-                : BigDecimal.ONE;
+        BigDecimal areaFactor = BigDecimal.ONE.add(context.rate(productCode + ":area"));
+        BigDecimal yieldFactor = BigDecimal.ONE.add(context.rate(productCode + ":yield"));
+        // No empirically fitted causal coefficient exists for policy/weather yet.
+        BigDecimal policyFactor = BigDecimal.ONE;
         BigDecimal nextArea = area.multiply(areaFactor);
         BigDecimal nextYield = yield.multiply(yieldFactor)
-                .multiply(context.weatherFactor()).multiply(policyFactor);
+                .multiply(policyFactor);
         return List.of(new RegionalAgricultureProfile.Forecast(
                 year + 1, scale(nextArea), scale(nextYield),
                 nextArea.multiply(nextYield).setScale(4, RoundingMode.HALF_UP),
-                "明年总产=当年面积×" + areaFactor.setScale(3)
-                        + "（面积趋势）×当年单产×" + yieldFactor.setScale(3)
-                        + "（单产趋势）×" + context.weatherFactor().setScale(3)
-                        + "（天气修正）×" + policyFactor.setScale(3) + "（政策修正）",
-                bd("58.00")));
-    }
-
-    private static BigDecimal inferTotalArea(
-            String regionCode,
-            BigDecimal boundaryAreaSquareMetres,
-            Map<String, BigDecimal> shares,
-            Map<String, Observation> observations) {
-        List<BigDecimal> estimates = observations.values().stream()
-                .filter(value -> value.plantedAreaMu() != null && value.plantedAreaMu().signum() > 0)
-                .map(value -> value.plantedAreaMu().divide(shares.get(value.productCode()), 8, RoundingMode.HALF_UP))
-                .toList();
-        if (!estimates.isEmpty()) {
-            return estimates.stream().reduce(BigDecimal.ZERO, BigDecimal::add)
-                    .divide(BigDecimal.valueOf(estimates.size()), 8, RoundingMode.HALF_UP);
-        }
-        BigDecimal cultivatedRatio = switch (root(regionCode)) {
-            case "230200" -> bd("0.42");
-            case "231100" -> bd("0.28");
-            case "150700" -> bd("0.18");
-            case "232700" -> bd("0.035");
-            default -> bd("0.15");
-        };
-        return boundaryAreaSquareMetres.divide(bd("666.6666667"), 8, RoundingMode.HALF_UP)
-                .multiply(cultivatedRatio);
-    }
-
-    private static Map<String, BigDecimal> shares(String regionCode) {
-        return switch (root(regionCode)) {
-            case "231100" -> map("0.40", "0.55", "0.05");
-            case "150700" -> map("0.55", "0.35", "0.10");
-            case "232700" -> map("0.36", "0.52", "0.12");
-            default -> map("0.62", "0.30", "0.08");
-        };
-    }
-
-    private static String root(String regionCode) {
-        if (regionCode == null || regionCode.length() < 4) return "";
-        if (regionCode.startsWith("2302")) return "230200";
-        if (regionCode.startsWith("2311")) return "231100";
-        if (regionCode.startsWith("1507")) return "150700";
-        if (regionCode.startsWith("2327")) return "232700";
-        return regionCode.length() >= 6 ? regionCode.substring(0, 6) : regionCode;
-    }
-
-    private static Map<String, BigDecimal> map(String corn, String soybean, String rice) {
-        return Map.of("CORN", bd(corn), "SOYBEAN", bd(soybean), "RICE", bd(rice));
+                "明年总产=当年面积×" + areaFactor.setScale(6, RoundingMode.HALF_UP)
+                        + "（面积趋势）×当年单产×" + yieldFactor.setScale(6, RoundingMode.HALF_UP)
+                        + "（单产趋势）×" + BigDecimal.ONE.setScale(6, RoundingMode.HALF_UP)
+                        + "（天气修正）×" + policyFactor.setScale(6, RoundingMode.HALF_UP) + "（政策修正）；趋势由历史公开值拟合；缺历史则延续最近值；天气与政策仅作背景，尚无校准因果系数",
+                null));
     }
 
     private static BigDecimal scale(BigDecimal value) {
@@ -188,17 +123,6 @@ public class RegionalAgricultureProfileCalculator {
         BigDecimal result = value;
         for (int index = 0; index < years; index++) result = result.multiply(BigDecimal.ONE.add(rate));
         return result;
-    }
-
-    private static BigDecimal confidence(String level, String kind) {
-        if ("OBSERVED".equals(kind)) return bd("92.00");
-        return switch (level) {
-            case "PREFECTURE" -> bd("72.00");
-            case "COUNTY" -> bd("66.00");
-            case "TOWNSHIP" -> bd("59.00");
-            case "VILLAGE" -> bd("52.00");
-            default -> bd("50.00");
-        };
     }
 
     private static String sourceBasis(Observation value) {
@@ -217,7 +141,11 @@ public class RegionalAgricultureProfileCalculator {
             BigDecimal yieldPerMuKg,
             String sourceKind,
             Integer dataYear,
-            int sourceCount) {
+            int sourceCount, String explanation) {
+        public Observation(String productCode, BigDecimal plantedAreaMu, BigDecimal yieldPerMuKg,
+                String sourceKind, Integer dataYear, int sourceCount) {
+            this(productCode, plantedAreaMu, yieldPerMuKg, sourceKind, dataYear, sourceCount, null);
+        }
         public Observation(String productCode, BigDecimal plantedAreaMu,
                 BigDecimal yieldPerMuKg, String sourceKind) {
             this(productCode, plantedAreaMu, yieldPerMuKg, sourceKind, null, 1);
@@ -229,9 +157,14 @@ public class RegionalAgricultureProfileCalculator {
         }
     }
 
-    public record ForecastContext(BigDecimal weatherFactor, boolean policyAvailable) {
+    public record ForecastContext(BigDecimal weatherFactor, boolean policyAvailable, Map<String, BigDecimal> rates) {
+        public ForecastContext(BigDecimal weatherFactor, boolean policyAvailable) {
+            this(weatherFactor, policyAvailable, Map.of());
+        }
+        public BigDecimal rate(String key) { return rates.getOrDefault(key, BigDecimal.ZERO); }
         public ForecastContext {
             if (weatherFactor == null) weatherFactor = BigDecimal.ONE;
+            if (rates == null) rates = Map.of();
         }
 
         static ForecastContext neutral() {

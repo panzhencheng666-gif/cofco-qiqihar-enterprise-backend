@@ -1,6 +1,8 @@
 package com.cofco.qiqihar.graintrade.regionalproduction.application;
 
 import java.math.BigDecimal;
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.text.PDFTextStripper;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -24,16 +26,22 @@ public class RegionalPublicDataRefreshWorker {
     private static final Pattern NUMBER = Pattern.compile("\\\"%s\\\"\\s*:\\s*(-?[0-9.]+)");
     private static final Pattern TIME = Pattern.compile("\\\"time\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
     private final RegionalPublicDataRepository repository;
+    private final RegionalSourceDiscovery discovery;
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(8)).followRedirects(HttpClient.Redirect.NORMAL).build();
 
-    public RegionalPublicDataRefreshWorker(RegionalPublicDataRepository repository) {
+    private final HttpClient discoveredHttp = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8)).build();
+
+    public RegionalPublicDataRefreshWorker(RegionalPublicDataRepository repository, RegionalSourceDiscovery discovery) {
         this.repository = repository;
+        this.discovery = discovery;
     }
 
     @Scheduled(cron = "${qiqihar.regional-public-data.daily-cron:0 30 8 * * *}", zone = "Asia/Shanghai")
     public void refreshDueSources() {
-        refresh(Instant.now());
+        var now = Instant.now();
+        discovery.markDailyDue(now);
+        refresh(now);
     }
 
     @Scheduled(initialDelayString = "${qiqihar.regional-public-data.initial-delay:5s}",
@@ -42,18 +50,33 @@ public class RegionalPublicDataRefreshWorker {
         refresh(Instant.now());
     }
 
-    private void refresh(Instant now) {
+    private synchronized void refresh(Instant now) {
+        discovery.discover(now);
         for (var source : repository.due(now)) {
+            if (source.parserKey().equals("WEB_DISCOVERY")) continue;
             try {
+                if (source.id().startsWith("search-found-") && !RegionalSourceDiscovery.publicHttps(source.url()))
+                    throw new IllegalArgumentException("联网来源地址不符合公开网页访问条件");
                 var request = HttpRequest.newBuilder(URI.create(source.url()))
                         .timeout(Duration.ofSeconds(20))
                         .header("User-Agent", "COFCO-Qiqihar-RegionalData/1.0 (+daily-public-data-sync)")
                         .GET().build();
-                var response = http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                var response = (source.id().startsWith("search-found-") ? discoveredHttp : http)
+                        .send(request, HttpResponse.BodyHandlers.ofByteArray());
                 if (response.statusCode() < 200 || response.statusCode() >= 300) {
                     throw new IllegalStateException("HTTP " + response.statusCode());
                 }
-                String body = response.body();
+                byte[] bytes = response.body();
+                if (bytes.length > 20_000_000) throw new IllegalArgumentException("来源文件超过20MB读取上限");
+                String body;
+                if (response.headers().firstValue("content-type").orElse("").contains("application/pdf")
+                        || source.url().endsWith(".pdf")) {
+                    try (var document = Loader.loadPDF(bytes)) {
+                        body = new PDFTextStripper().getText(document);
+                    }
+                } else {
+                    body = new String(bytes, StandardCharsets.UTF_8);
+                }
                 String excerpt = excerpt(body);
                 if ("OPEN_METEO".equals(source.parserKey())) {
                     BigDecimal temperature = number(body, "temperature_2m");
@@ -65,14 +88,21 @@ public class RegionalPublicDataRefreshWorker {
                             + "|" + observed);
                     String risk = risk(temperature, precipitation, soil);
                     String assessment = "气温" + temperature + "℃，降水" + precipitation
-                            + "毫米，表层土壤含水率约" + soil.setScale(1) + "%；" + risk;
+                            + "毫米，表层土壤含水率约" + soil.setScale(1, java.math.RoundingMode.HALF_UP) + "%；" + risk;
                     repository.recordWeatherSuccess(source.id(), source.rootRegionCode(), observed,
                             temperature, precipitation, soil, risk, assessment, now, hash, excerpt);
                 } else {
                     var metrics = RegionalPublicCropPageParser.parse(source.parserKey(), body);
-                    String hash = sha256(metrics.isEmpty() ? excerpt : metrics.toString());
+                    var indicators = RegionalPublicIndicatorParser.parse(source.parserKey(), body);
+                    if (source.parserKey().startsWith("ANNUAL_") && indicators.isEmpty())
+                        throw new IllegalStateException("已获取页面，但未识别出匹配年份的农业指标；保留旧值，不标为核验无变化");
+                    String hash = sha256(!indicators.isEmpty() ? indicators.toString()
+                            : metrics.isEmpty() ? excerpt : metrics.toString());
+                    if (!indicators.isEmpty()) repository.recordIndicators(source.id(), indicators, now);
                     if (!metrics.isEmpty()) repository.recordCropMetrics(source.id(), metrics, now);
-                    repository.recordPageSuccess(source.id(), now, hash, excerpt);
+                    repository.recordPageSuccess(source.id(), now, hash, indicators.isEmpty() ? excerpt
+                            : indicators.stream().limit(6).map(i -> i.year()+"年"+i.label()+i.value()+i.unit())
+                                .collect(java.util.stream.Collectors.joining("；")));
                 }
             } catch (Exception exception) {
                 repository.recordFailure(source.id(), now, exception.getMessage());
@@ -100,17 +130,23 @@ public class RegionalPublicDataRefreshWorker {
     }
 
     private static String risk(BigDecimal temperature, BigDecimal precipitation, BigDecimal soil) {
-        if (temperature.compareTo(BigDecimal.ZERO) < 0) return "低温霜冻风险，单产修正偏谨慎";
+        if (temperature.compareTo(BigDecimal.ZERO) < 0) return "低温提示，需结合当地预警核实";
         if (soil.compareTo(new BigDecimal("15")) < 0) return "表层墒情偏低，存在干旱风险";
         if (precipitation.compareTo(new BigDecimal("25")) > 0) return "短时降水偏强，关注渍涝风险";
-        return "当前天气指标处于常规模型区间";
+        return "未触发系统简易温度、降水和墒情提示阈值";
     }
 
     private static String excerpt(String body) {
+        if (body.stripLeading().startsWith("{")) return "天气接口已读取；结构化气象指标单独展示。";
         String text = body.replaceAll("(?s)<script.*?</script>|<style.*?</style>", " ")
                 .replaceAll("<[^>]+>", " ").replace("&nbsp;", " ")
                 .replaceAll("\\s+", " ").trim();
-        return text.substring(0, Math.min(600, text.length()));
+        String focused = java.util.Arrays.stream(text.split("[。；]"))
+                .filter(sentence -> sentence.matches(".*(?:农业|粮食|耕地|补贴|补助|农田|种植|畜牧|乡村).*"))
+                .filter(sentence -> sentence.length() < 500).limit(4)
+                .collect(java.util.stream.Collectors.joining("；"));
+        return focused.isBlank() ? "已访问公开网页；正文未提取到适合展示的农业摘要，请查看原文。"
+                : focused.substring(0, Math.min(600, focused.length()));
     }
 
     private static String sha256(String value) throws Exception {
