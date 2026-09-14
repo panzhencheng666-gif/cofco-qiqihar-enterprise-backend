@@ -177,6 +177,32 @@ class RegionalCropAnnualStatRestIntegrationTest {
     }
 
     @Test
+    void automaticallyBuildsThreeCropStructureAndForecastWithoutAdditionalFilling() throws Exception {
+        mvc.perform(put("/api/v1/production/regional-annual-stats/{regionCode}", COUNTY)
+                        .principal(() -> OPERATOR).contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"dataYear":2026,"productCode":"CORN",
+                                 "plantedAreaMu":"17844200.0000","yieldPerMuKg":"650.0000",
+                                 "expectedVersion":0}
+                                """))
+                .andExpect(status().isOk());
+
+        mvc.perform(get("/api/v1/overview/regional-agriculture-profile")
+                        .principal(() -> OPERATOR).queryParam("year", "2026")
+                        .queryParam("regionCode", PREFECTURE))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.automatic").value(true))
+                .andExpect(jsonPath("$.data.crops.length()").value(3))
+                .andExpect(jsonPath("$.data.crops[0].productCode").value("CORN"))
+                .andExpect(jsonPath("$.data.crops[0].dataKind").value("OBSERVED"))
+                .andExpect(jsonPath("$.data.crops[1].productCode").value("SOYBEAN"))
+                .andExpect(jsonPath("$.data.crops[1].dataKind").value("MODEL_ESTIMATE"))
+                .andExpect(jsonPath("$.data.crops[2].productCode").value("RICE"))
+                .andExpect(jsonPath("$.data.crops[0].forecasts.length()").value(3))
+                .andExpect(jsonPath("$.data.crops[0].forecasts[0].year").value(2027));
+    }
+
+    @Test
     void rejectsStaleVersionInvalidFieldsAndUnauthorizedWrites() throws Exception {
         String valid = """
                 {"dataYear":2026,"productCode":"RICE","plantedAreaMu":"1.0000",
