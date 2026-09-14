@@ -56,8 +56,8 @@ public final class RegionalPublicIndicatorParser {
         if (!text.contains(rootName)) throw new IllegalArgumentException("来源与登记地区不匹配");
         List<Metric> result = new ArrayList<>();
         for (String mode : List.of("铁路", "公路", "水路")) {
-            extract(result, text, year, "LOGISTICS", mode + "货运量", mode + "货运量", "OUTPUT");
-            extract(result, text, year, "LOGISTICS", mode + "货物周转量", mode + "货物周转量", "TURNOVER");
+            extract(result, text, year, "LOGISTICS", mode + "货运量", "(?<![、和])" + mode + "货运量", "OUTPUT");
+            extract(result, text, year, "LOGISTICS", mode + "货物周转量", "(?<![、和])" + mode + "货物周转量", "TURNOVER");
         }
         extract(result, text, year, "LOGISTICS", "铁路营业里程", "铁路(?:营业|运营)里程", "DISTANCE");
         extract(result, text, year, "LOGISTICS", "公路通车里程", "公路(?:通车|营业|总)里程", "DISTANCE");

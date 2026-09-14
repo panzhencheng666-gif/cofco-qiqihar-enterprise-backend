@@ -25,8 +25,9 @@ class RegionalPublicIndicatorParserTest {
  }
     @org.junit.jupiter.api.Test void separatesAllGoodsFreightFromGrainFlows() {
         var metrics=RegionalPublicIndicatorParser.parse("ANNUAL_HLBE",
-            "2025年呼伦贝尔市国民经济和社会发展统计公报。铁路货运量1.05亿吨，铁路货物周转量400.84亿吨公里。粮食调入量12万吨，粮食调出量20万吨。");
+            "2025年呼伦贝尔市国民经济和社会发展统计公报。铁路、公路货运量2.01亿吨。公路货运量0.96亿吨。铁路货运量1.05亿吨，铁路货物周转量400.84亿吨公里。粮食调入量12万吨，粮食调出量20万吨。");
         assertThat(metrics.stream().filter(m -> m.label().equals("铁路货运量")).findFirst().orElseThrow().value()).isEqualByComparingTo("10500");
+        assertThat(metrics.stream().filter(m -> m.label().equals("公路货运量")).findFirst().orElseThrow().value()).isEqualByComparingTo("9600");
         assertThat(metrics.stream().filter(m -> m.label().equals("铁路货物周转量")).findFirst().orElseThrow().unit()).isEqualTo("亿吨公里");
         assertThat(metrics.stream().filter(m -> m.label().equals("粮食调出量")).findFirst().orElseThrow().value()).isEqualByComparingTo("20");
     }
