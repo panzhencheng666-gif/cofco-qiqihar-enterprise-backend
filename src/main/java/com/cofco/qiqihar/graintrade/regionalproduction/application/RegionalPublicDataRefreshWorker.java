@@ -6,7 +6,6 @@ import org.apache.pdfbox.text.PDFTextStripper;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Duration;
@@ -37,15 +36,17 @@ public class RegionalPublicDataRefreshWorker {
         this.discovery = discovery;
     }
 
-    @Scheduled(cron = "${qiqihar.regional-public-data.daily-cron:0 30 8 * * *}", zone = "Asia/Shanghai")
-    public void refreshDueSources() {
+    @Scheduled(cron = "${qiqihar.regional-public-data.daily-cron:0 30 8 * * *}", zone = "Asia/Shanghai",
+            scheduler = "regionalPublicDataScheduler")
+    public synchronized void refreshDueSources() {
         var now = Instant.now();
         discovery.markDailyDue(now);
         refresh(now);
     }
 
     @Scheduled(initialDelayString = "${qiqihar.regional-public-data.initial-delay:5s}",
-            fixedDelayString = "${qiqihar.regional-public-data.retry-delay:1h}")
+            fixedDelayString = "${qiqihar.regional-public-data.retry-delay:1h}",
+            scheduler = "regionalPublicDataScheduler")
     public void retryDueSources() {
         refresh(Instant.now());
     }
@@ -53,6 +54,7 @@ public class RegionalPublicDataRefreshWorker {
     private synchronized void refresh(Instant now) {
         discovery.discover(now);
         for (var source : repository.due(now)) {
+            if (Thread.currentThread().isInterrupted()) return;
             if (source.parserKey().equals("WEB_DISCOVERY")) continue;
             try {
                 if (source.id().startsWith("search-found-") && !RegionalSourceDiscovery.publicHttps(source.url()))
@@ -61,13 +63,12 @@ public class RegionalPublicDataRefreshWorker {
                         .timeout(Duration.ofSeconds(20))
                         .header("User-Agent", "COFCO-Qiqihar-RegionalData/1.0 (+daily-public-data-sync)")
                         .GET().build();
-                var response = (source.id().startsWith("search-found-") ? discoveredHttp : http)
-                        .send(request, HttpResponse.BodyHandlers.ofByteArray());
+                var response = RegionalPublicHttp.send(
+                        source.id().startsWith("search-found-") ? discoveredHttp : http, request, 20_000_000);
                 if (response.statusCode() < 200 || response.statusCode() >= 300) {
                     throw new IllegalStateException("HTTP " + response.statusCode());
                 }
                 byte[] bytes = response.body();
-                if (bytes.length > 20_000_000) throw new IllegalArgumentException("来源文件超过20MB读取上限");
                 String body;
                 if (response.headers().firstValue("content-type").orElse("").contains("application/pdf")
                         || source.url().endsWith(".pdf")) {
@@ -104,6 +105,9 @@ public class RegionalPublicDataRefreshWorker {
                             : indicators.stream().limit(6).map(i -> i.year()+"年"+i.label()+i.value()+i.unit())
                                 .collect(java.util.stream.Collectors.joining("；")));
                 }
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+                return;
             } catch (Exception exception) {
                 repository.recordFailure(source.id(), now, exception.getMessage());
             }

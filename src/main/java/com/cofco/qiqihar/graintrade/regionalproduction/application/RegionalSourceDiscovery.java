@@ -4,7 +4,6 @@ import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -36,6 +35,7 @@ public class RegionalSourceDiscovery {
 
     public void discover(Instant now) {
         ROOTS.forEach((root,name) -> {
+            if (Thread.currentThread().isInterrupted()) return;
             String id="search-"+root;
             Boolean due=jdbc.sql("SELECT next_refresh_at IS NULL OR next_refresh_at<=:now FROM production.regional_public_source WHERE source_id=:id")
                     .param("now",java.sql.Timestamp.from(now)).param("id",id).query(Boolean.class).optional().orElse(false);
@@ -53,7 +53,7 @@ public class RegionalSourceDiscovery {
                             : searx.replaceAll("/$","")+"/search?q="+query+"&format=json");
                     var request=HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(20)).header("Accept","application/json");
                     if (searx.isBlank()) request.header("X-Subscription-Token",key);
-                    var response=http.send(request.GET().build(),HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                    var response=RegionalPublicHttp.send(http, request.GET().build(), 2_000_000);
                     if(response.statusCode()!=200) throw new IllegalStateException("搜索服务HTTP "+response.statusCode());
                     var json=JsonMapper.builder().build().readTree(response.body());
                     var results=searx.isBlank() ? json.path("web").path("results") : json.path("results");
@@ -81,6 +81,8 @@ public class RegionalSourceDiscovery {
                     }
                 }
                 status(id,now,"SEARCH_SUCCESS","联网检索5个主题，返回"+count+"条结果；新增"+accepted+"个相关来源。来源另行读取正文，搜索成功不等于全部数据已核验。",accepted);
+            } catch(InterruptedException e) {
+                Thread.currentThread().interrupt();
             } catch(Exception e) {
                 status(id,now,"SEARCH_FAILED","联网搜索未完成，保留历史资料并稍后重试；本轮已登记"+accepted+"个候选来源。",accepted);
             }
