@@ -5,4 +5,13 @@ import java.util.Optional;
 
 public interface RegionalAgricultureBoundaryRepository {
     Optional<BigDecimal> areaSquareMetres(String regionCode);
+
+    RegionFacts facts(String regionCode);
+
+    record RegionFacts(
+            BigDecimal areaSquareMetres,
+            int directChildCount,
+            int countyCount,
+            int townshipCount,
+            int villageCount) {}
 }

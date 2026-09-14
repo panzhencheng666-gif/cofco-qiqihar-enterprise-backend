@@ -71,4 +71,30 @@ class RegionalAgricultureProfileCalculatorTest {
             assertThat(crop.forecasts()).hasSize(1);
         });
     }
+
+    @Test
+    void appliesAndExplainsWeatherAndPolicyFactorsInNextYearForecast() {
+        var profile = calculator.calculate(
+                "231100", "黑河市", "PREFECTURE", 2026,
+                new BigDecimal("68000000000"), List.of(),
+                new RegionalAgricultureProfileCalculator.ForecastContext(
+                        new BigDecimal("0.970"), true));
+
+        assertThat(profile.crops()).allSatisfy(crop ->
+                assertThat(crop.forecasts().getFirst().formula())
+                        .contains("天气修正", "政策修正", "0.970"));
+    }
+
+    @Test
+    void explainsReliabilityWeightedFusionWhenSourcesDisagree() {
+        var profile = calculator.calculate(
+                "150700", "呼伦贝尔市", "PREFECTURE", 2026,
+                new BigDecimal("252000000000"),
+                List.of(new RegionalAgricultureProfileCalculator.Observation(
+                        "SOYBEAN", new BigDecimal("12800000"), new BigDecimal("155"),
+                        "PUBLIC_MULTI_SOURCE", 2026, 3)));
+
+        assertThat(profile.crops().stream().filter(crop -> crop.productCode().equals("SOYBEAN"))
+                .findFirst().orElseThrow().basis()).contains("3个公开渠道", "可靠度加权");
+    }
 }

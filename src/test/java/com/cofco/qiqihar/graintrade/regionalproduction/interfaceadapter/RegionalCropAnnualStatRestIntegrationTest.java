@@ -202,8 +202,14 @@ class RegionalCropAnnualStatRestIntegrationTest {
                 .andExpect(jsonPath("$.data.crops[0].forecasts[0].year").value(2027))
                 .andExpect(jsonPath("$.data.crops[0].formula").isNotEmpty())
                 .andExpect(jsonPath("$.data.crops[0].confidencePercent").value("92.0000"))
-                .andExpect(jsonPath("$.data.refreshStatus.cadence").value("每日"))
-                .andExpect(jsonPath("$.data.sources.length()").value(4));
+                .andExpect(jsonPath("$.data.refreshStatus.cadence").value("每日 08:30"))
+                .andExpect(jsonPath("$.data.regionFacts.areaSquareKilometres").isNumber())
+                .andExpect(jsonPath("$.data.regionFacts.directChildCount").isNumber())
+                .andExpect(jsonPath("$.data.regionFacts.countyCount").isNumber())
+                .andExpect(jsonPath("$.data.regionFacts.townshipCount").isNumber())
+                .andExpect(jsonPath("$.data.regionFacts.villageCount").isNumber())
+                .andExpect(jsonPath("$.data.indicators.length()").value(5))
+                .andExpect(jsonPath("$.data.sources.length()").value(5));
     }
 
     @Test

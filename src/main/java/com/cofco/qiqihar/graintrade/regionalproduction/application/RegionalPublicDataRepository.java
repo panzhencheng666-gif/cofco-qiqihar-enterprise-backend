@@ -24,6 +24,7 @@ public interface RegionalPublicDataRepository {
             List<RegionalAgricultureProfileCalculator.Observation> observations,
             RegionalAgricultureProfile.RefreshStatus refreshStatus,
             RegionalAgricultureProfile.Weather weather,
+            List<RegionalAgricultureProfile.Indicator> indicators,
             List<RegionalAgricultureProfile.Policy> policies,
             List<RegionalAgricultureProfile.Source> sources) {}
 

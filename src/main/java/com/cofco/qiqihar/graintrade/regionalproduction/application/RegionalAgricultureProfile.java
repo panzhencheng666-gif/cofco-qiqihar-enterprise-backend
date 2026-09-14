@@ -11,13 +11,22 @@ public record RegionalAgricultureProfile(
         boolean automatic,
         String generatedAt,
         String coverageDescription,
+        RegionFacts regionFacts,
         String sourceSummary,
         String calculationMethod,
         RefreshStatus refreshStatus,
         Weather weather,
+        List<Indicator> indicators,
         List<Policy> policies,
         List<Source> sources,
         List<Crop> crops) {
+
+    public record RegionFacts(
+            BigDecimal areaSquareKilometres,
+            int directChildCount,
+            int countyCount,
+            int townshipCount,
+            int villageCount) {}
 
     public record Crop(
             String productCode,
@@ -51,11 +60,17 @@ public record RegionalAgricultureProfile(
             BigDecimal soilMoisturePercent, String risk, String assessment,
             String observedAt, String sourceId) {}
 
+    public record Indicator(
+            String category, String label, BigDecimal value, String unit,
+            int dataYear, String dataKind, String method,
+            String sourceName, String sourceUrl) {}
+
     public record Policy(
             String title, String publishedOn, String sourceName,
             String sourceUrl, String affectedCrops, String impact) {}
 
     public record Source(
             String id, String type, String name, String url,
+            String sourceClass, BigDecimal reliabilityWeight,
             String publishedOn, String fetchedAt, String status, String evidence) {}
 }

@@ -42,4 +42,27 @@ public class JdbcRegionalAgricultureBoundaryRepository implements RegionalAgricu
                 FROM anchor
                 """).param("regionCode", regionCode).query(BigDecimal.class).optional();
     }
+
+    @Override
+    public RegionFacts facts(String regionCode) {
+        BigDecimal area = areaSquareMetres(regionCode).orElse(BigDecimal.ZERO);
+        return jdbc.sql("""
+                WITH RECURSIVE descendants AS (
+                  SELECT code,parent_code,administrative_level FROM platform.region WHERE code=:regionCode
+                  UNION ALL
+                  SELECT child.code,child.parent_code,child.administrative_level
+                  FROM platform.region child JOIN descendants parent ON child.parent_code=parent.code
+                )
+                SELECT count(*) FILTER (WHERE parent_code=:regionCode) AS direct_children,
+                       count(*) FILTER (WHERE administrative_level='COUNTY') AS counties,
+                       count(*) FILTER (WHERE administrative_level='TOWNSHIP') AS townships,
+                       count(*) FILTER (WHERE administrative_level='VILLAGE') AS villages
+                FROM descendants WHERE code<>:regionCode
+                """).param("regionCode", regionCode).query((rs, row) -> new RegionFacts(
+                        area,
+                        rs.getInt("direct_children"),
+                        rs.getInt("counties"),
+                        rs.getInt("townships"),
+                        rs.getInt("villages"))).single();
+    }
 }

@@ -28,6 +28,18 @@ public class RegionalAgricultureProfileCalculator {
             int year,
             BigDecimal boundaryAreaSquareMetres,
             List<Observation> observations) {
+        return calculate(regionCode, regionName, administrativeLevel, year,
+                boundaryAreaSquareMetres, observations, ForecastContext.neutral());
+    }
+
+    public RegionalAgricultureProfile calculate(
+            String regionCode,
+            String regionName,
+            String administrativeLevel,
+            int year,
+            BigDecimal boundaryAreaSquareMetres,
+            List<Observation> observations,
+            ForecastContext forecastContext) {
         Map<String, BigDecimal> shares = shares(regionCode);
         Map<String, Observation> observed = new LinkedHashMap<>();
         observations.forEach(value -> observed.put(value.productCode(), value));
@@ -44,9 +56,12 @@ public class RegionalAgricultureProfileCalculator {
                 String kind = value.yieldPerMuKg() == null || gap > 0 ? "MODEL_ESTIMATE" : "OBSERVED";
                 return new Working(code, kind, area, yield,
                         gap > 0
-                                ? "采用" + value.dataYear() + "年公开值为基线，按复合趋势率补算" + year + "年缺项"
+                                ? "采用" + value.dataYear() + "年" + sourceBasis(value)
+                                        + "为基线，按复合趋势率补算" + year + "年缺项"
                                 : value.yieldPerMuKg() == null
                                 ? "面积采用地区正式数据，单产由多年均值模型补齐"
+                                : value.sourceCount() > 1
+                                ? sourceBasis(value) + "，面积和单产采用可靠度加权结果"
                                 : "采用地区年度正式数据自动汇总");
             }
             return new Working(code, "MODEL_ESTIMATE",
@@ -74,7 +89,7 @@ public class RegionalAgricultureProfileCalculator {
                     "总产=播种面积×亩均单产；结构占比=本品种面积÷三品种面积合计",
                     confidence, scale(output.multiply(BigDecimal.ONE.subtract(uncertainty))),
                     scale(output.multiply(BigDecimal.ONE.add(uncertainty))),
-                    forecasts(year, value.code(), value.area(), value.yield())));
+                    forecasts(year, value.code(), value.area(), value.yield(), forecastContext)));
         }
         return new RegionalAgricultureProfile(
                 regionCode, regionName, administrativeLevel, year, true, Instant.now().toString(),
@@ -83,24 +98,39 @@ public class RegionalAgricultureProfileCalculator {
                     case "TOWNSHIP" -> "乡镇级自动估算：继承上级公开统计并按本乡镇边界面积和区域系数分摊";
                     default -> "地区公开统计与模型补算覆盖";
                 },
+                null,
                 observations.isEmpty()
                         ? "公开行政区边界与系统统计模型自动生成"
                         : "地区年度正式数据优先，缺项由公开行政区边界与统计模型自动补齐",
                 "结构系数和面积权重补算当年缺项；趋势、天气与政策修正系数仅推算明年",
                 new RegionalAgricultureProfile.RefreshStatus(
-                        "每日", "WAITING_FOR_SOURCE_SYNC", null, null, null),
-                null, List.of(), List.of(),
+                        "每日 08:30", "WAITING_FOR_SOURCE_SYNC", null, null, null),
+                null, List.of(), List.of(), List.of(),
                 List.copyOf(crops));
     }
 
     private static List<RegionalAgricultureProfile.Forecast> forecasts(
-            int year, String productCode, BigDecimal area, BigDecimal yield) {
-        BigDecimal nextArea = area.multiply(BigDecimal.ONE.add(AREA_GROWTH.get(productCode)));
-        BigDecimal nextYield = yield.multiply(BigDecimal.ONE.add(YIELD_GROWTH.get(productCode)));
+            int year, String productCode, BigDecimal area, BigDecimal yield,
+            ForecastContext context) {
+        BigDecimal areaFactor = BigDecimal.ONE.add(AREA_GROWTH.get(productCode));
+        BigDecimal yieldFactor = BigDecimal.ONE.add(YIELD_GROWTH.get(productCode));
+        BigDecimal policyFactor = context.policyAvailable()
+                ? switch (productCode) {
+                    case "SOYBEAN" -> bd("1.012");
+                    case "CORN" -> bd("1.008");
+                    default -> bd("1.005");
+                }
+                : BigDecimal.ONE;
+        BigDecimal nextArea = area.multiply(areaFactor);
+        BigDecimal nextYield = yield.multiply(yieldFactor)
+                .multiply(context.weatherFactor()).multiply(policyFactor);
         return List.of(new RegionalAgricultureProfile.Forecast(
                 year + 1, scale(nextArea), scale(nextYield),
                 nextArea.multiply(nextYield).setScale(4, RoundingMode.HALF_UP),
-                "明年总产=当年补算面积×(1+面积趋势率)×当年补算单产×(1+单产趋势率)",
+                "明年总产=当年面积×" + areaFactor.setScale(3)
+                        + "（面积趋势）×当年单产×" + yieldFactor.setScale(3)
+                        + "（单产趋势）×" + context.weatherFactor().setScale(3)
+                        + "（天气修正）×" + policyFactor.setScale(3) + "（政策修正）",
                 bd("58.00")));
     }
 
@@ -171,6 +201,12 @@ public class RegionalAgricultureProfileCalculator {
         };
     }
 
+    private static String sourceBasis(Observation value) {
+        return value.sourceCount() > 1
+                ? value.sourceCount() + "个公开渠道按来源可靠度融合"
+                : "公开资料";
+    }
+
     private static BigDecimal bd(String value) {
         return new BigDecimal(value);
     }
@@ -180,10 +216,26 @@ public class RegionalAgricultureProfileCalculator {
             BigDecimal plantedAreaMu,
             BigDecimal yieldPerMuKg,
             String sourceKind,
-            Integer dataYear) {
+            Integer dataYear,
+            int sourceCount) {
         public Observation(String productCode, BigDecimal plantedAreaMu,
                 BigDecimal yieldPerMuKg, String sourceKind) {
-            this(productCode, plantedAreaMu, yieldPerMuKg, sourceKind, null);
+            this(productCode, plantedAreaMu, yieldPerMuKg, sourceKind, null, 1);
+        }
+
+        public Observation(String productCode, BigDecimal plantedAreaMu,
+                BigDecimal yieldPerMuKg, String sourceKind, Integer dataYear) {
+            this(productCode, plantedAreaMu, yieldPerMuKg, sourceKind, dataYear, 1);
+        }
+    }
+
+    public record ForecastContext(BigDecimal weatherFactor, boolean policyAvailable) {
+        public ForecastContext {
+            if (weatherFactor == null) weatherFactor = BigDecimal.ONE;
+        }
+
+        static ForecastContext neutral() {
+            return new ForecastContext(BigDecimal.ONE, false);
         }
     }
 }

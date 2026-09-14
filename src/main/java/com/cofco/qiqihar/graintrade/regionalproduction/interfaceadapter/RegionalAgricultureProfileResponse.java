@@ -13,10 +13,12 @@ public record RegionalAgricultureProfileResponse(
         boolean automatic,
         String generatedAt,
         String coverageDescription,
+        RegionalAgricultureProfile.RegionFacts regionFacts,
         String sourceSummary,
         String calculationMethod,
         RegionalAgricultureProfile.RefreshStatus refreshStatus,
         RegionalAgricultureProfile.Weather weather,
+        List<RegionalAgricultureProfile.Indicator> indicators,
         List<RegionalAgricultureProfile.Policy> policies,
         List<RegionalAgricultureProfile.Source> sources,
         List<CropResponse> crops) {
@@ -25,8 +27,9 @@ public record RegionalAgricultureProfileResponse(
         return new RegionalAgricultureProfileResponse(
                 value.regionCode(), value.regionName(), value.administrativeLevel(), value.year(),
                 value.automatic(), value.generatedAt(), value.coverageDescription(),
+                value.regionFacts(),
                 value.sourceSummary(), value.calculationMethod(), value.refreshStatus(),
-                value.weather(), value.policies(), value.sources(),
+                value.weather(), value.indicators(), value.policies(), value.sources(),
                 value.crops().stream().map(CropResponse::from).toList());
     }
 

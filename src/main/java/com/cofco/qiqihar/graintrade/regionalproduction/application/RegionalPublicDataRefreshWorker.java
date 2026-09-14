@@ -31,10 +31,18 @@ public class RegionalPublicDataRefreshWorker {
         this.repository = repository;
     }
 
-    @Scheduled(initialDelayString = "${qiqihar.regional-public-data.initial-delay:5s}",
-            fixedDelayString = "${qiqihar.regional-public-data.poll-delay:30m}")
+    @Scheduled(cron = "${qiqihar.regional-public-data.daily-cron:0 30 8 * * *}", zone = "Asia/Shanghai")
     public void refreshDueSources() {
-        Instant now = Instant.now();
+        refresh(Instant.now());
+    }
+
+    @Scheduled(initialDelayString = "${qiqihar.regional-public-data.initial-delay:5s}",
+            fixedDelayString = "${qiqihar.regional-public-data.retry-delay:1h}")
+    public void retryDueSources() {
+        refresh(Instant.now());
+    }
+
+    private void refresh(Instant now) {
         for (var source : repository.due(now)) {
             try {
                 var request = HttpRequest.newBuilder(URI.create(source.url()))

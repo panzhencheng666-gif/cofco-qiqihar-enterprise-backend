@@ -22,29 +22,47 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
     @Override
     public Context load(String root, int requestedYear) {
         var observations = jdbc.sql("""
-                SELECT DISTINCT ON (metric.product_code)
-                       metric.product_code,metric.planted_area_mu,metric.yield_per_mu_kg,metric.data_year
+                WITH latest AS (
+                  SELECT metric.product_code,max(metric.data_year) AS data_year
+                  FROM production.regional_public_crop_metric metric
+                  JOIN production.regional_public_source source ON source.source_id=metric.source_id
+                  WHERE source.active AND source.root_region_code=:root AND metric.data_year<=:year
+                  GROUP BY metric.product_code
+                )
+                SELECT metric.product_code,metric.data_year,
+                       sum(metric.planted_area_mu*source.reliability_weight)
+                         FILTER (WHERE metric.planted_area_mu IS NOT NULL)
+                         / nullif(sum(source.reliability_weight)
+                         FILTER (WHERE metric.planted_area_mu IS NOT NULL),0) AS planted_area_mu,
+                       sum(metric.yield_per_mu_kg*source.reliability_weight)
+                         FILTER (WHERE metric.yield_per_mu_kg IS NOT NULL)
+                         / nullif(sum(source.reliability_weight)
+                         FILTER (WHERE metric.yield_per_mu_kg IS NOT NULL),0) AS yield_per_mu_kg,
+                       count(DISTINCT metric.source_id) AS source_count
                 FROM production.regional_public_crop_metric metric
-                JOIN production.regional_public_source source ON source.source_id=metric.source_id
-                WHERE source.root_region_code=:root AND metric.data_year<=:year
-                ORDER BY metric.product_code,metric.data_year DESC,metric.fetched_at DESC
+                JOIN production.regional_public_source source ON source.source_id=metric.source_id AND source.active
+                JOIN latest ON latest.product_code=metric.product_code AND latest.data_year=metric.data_year
+                GROUP BY metric.product_code,metric.data_year
+                ORDER BY metric.product_code
                 """).param("root", root).param("year", requestedYear)
                 .query((rs, n) -> new RegionalAgricultureProfileCalculator.Observation(
                         rs.getString("product_code"), rs.getBigDecimal("planted_area_mu"),
-                        rs.getBigDecimal("yield_per_mu_kg"), "PUBLIC_SOURCE", rs.getInt("data_year")))
+                        rs.getBigDecimal("yield_per_mu_kg"), "PUBLIC_MULTI_SOURCE", rs.getInt("data_year"),
+                        rs.getInt("source_count")))
                 .list();
         var sources = jdbc.sql("""
-                SELECT source_id,source_type,source_name,source_url,published_on,
-                       last_success_at,last_status,evidence,last_excerpt
+                SELECT source_id,source_type,source_name,source_url,source_class,reliability_weight,published_on,
+                       last_success_at,last_status,evidence
                 FROM production.regional_public_source
                 WHERE active AND root_region_code IN (:root,'*')
                 ORDER BY CASE source_type WHEN 'AGRICULTURE' THEN 1 WHEN 'WEATHER' THEN 2 ELSE 3 END,
                          published_on DESC NULLS LAST,source_id
                 """).param("root", root).query((rs, n) -> new RegionalAgricultureProfile.Source(
                         rs.getString("source_id"), rs.getString("source_type"), rs.getString("source_name"),
-                        rs.getString("source_url"), date(rs.getDate("published_on")),
+                        rs.getString("source_url"), rs.getString("source_class"),
+                        rs.getBigDecimal("reliability_weight"), date(rs.getDate("published_on")),
                         instant(rs.getTimestamp("last_success_at")), rs.getString("last_status"),
-                        rs.getString("last_excerpt") == null ? rs.getString("evidence") : rs.getString("last_excerpt")))
+                        rs.getString("evidence")))
                 .list();
         var policies = jdbc.sql("""
                 SELECT source_name,source_url,published_on,evidence FROM production.regional_public_source
@@ -62,17 +80,29 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
                         rs.getBigDecimal("mean_temperature_c"), rs.getBigDecimal("precipitation_mm"),
                         rs.getBigDecimal("soil_moisture_percent"), rs.getString("risk"),
                         rs.getString("assessment"), instant(rs.getTimestamp("observed_at")),
-                        rs.getString("source_id"))).optional().orElse(null);
+                rs.getString("source_id"))).optional().orElse(null);
+        var indicators = jdbc.sql("""
+                SELECT indicator.category,indicator.label,indicator.value,indicator.unit,
+                       indicator.data_year,indicator.data_kind,indicator.method,
+                       source.source_name,source.source_url
+                FROM production.regional_public_indicator indicator
+                JOIN production.regional_public_source source ON source.source_id=indicator.source_id
+                WHERE source.active AND indicator.root_region_code=:root
+                ORDER BY indicator.sort_order,indicator.label
+                """).param("root", root).query((rs, n) -> new RegionalAgricultureProfile.Indicator(
+                        rs.getString("category"), rs.getString("label"), rs.getBigDecimal("value"),
+                        rs.getString("unit"), rs.getInt("data_year"), rs.getString("data_kind"),
+                        rs.getString("method"), rs.getString("source_name"), rs.getString("source_url"))).list();
         var status = jdbc.sql("""
                 SELECT max(last_attempt_at) AS last_attempt,max(last_success_at) AS last_success,
                        min(next_refresh_at) AS next_refresh,
                        bool_and(last_status IN ('SUCCESS','BOOTSTRAP_VERIFIED','BOOTSTRAP_REFERENCE')) AS healthy
                 FROM production.regional_public_source WHERE active AND root_region_code IN (:root,'*')
                 """).param("root", root).query((rs, n) -> new RegionalAgricultureProfile.RefreshStatus(
-                        "每日", rs.getBoolean("healthy") ? "SUCCESS" : "PARTIAL",
+                        "每日 08:30", rs.getBoolean("healthy") ? "SUCCESS" : "PARTIAL",
                         instant(rs.getTimestamp("last_attempt")), instant(rs.getTimestamp("last_success")),
                         instant(rs.getTimestamp("next_refresh")))).single();
-        return new Context(observations, status, weather, policies, sources);
+        return new Context(observations, status, weather, indicators, policies, sources);
     }
 
     @Override
@@ -137,7 +167,7 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
                 UPDATE production.regional_public_source SET last_attempt_at=:now,last_success_at=:now,
                   next_refresh_at=:next,last_status='SUCCESS',last_error=NULL,
                   last_content_hash=:hash,last_excerpt=:excerpt WHERE source_id=:id
-                """).param("now", Timestamp.from(now)).param("next", Timestamp.from(now.plus(1, ChronoUnit.DAYS)))
+                """).param("now", Timestamp.from(now)).param("next", Timestamp.from(nextDailyRefresh(now)))
                 .param("hash", hash).param("excerpt", excerpt).param("id", id).update();
     }
 
@@ -153,4 +183,12 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
 
     private static String instant(Timestamp value) { return value == null ? null : value.toInstant().toString(); }
     private static String date(java.sql.Date value) { return value == null ? null : value.toLocalDate().toString(); }
+
+    static Instant nextDailyRefresh(Instant now) {
+        var zone = java.time.ZoneId.of("Asia/Shanghai");
+        var local = now.atZone(zone);
+        var next = local.toLocalDate().atTime(8, 30).atZone(zone);
+        if (!next.toInstant().isAfter(now)) next = next.plusDays(1);
+        return next.toInstant();
+    }
 }
