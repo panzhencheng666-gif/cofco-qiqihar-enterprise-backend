@@ -458,7 +458,11 @@ public class MarketMonitoringService {
         if (!repository.supportsSampleLocation(draft.regionCode(), latitude, longitude)) {
             throw new ClientRequestException(
                     "SAMPLE_COORDINATE_REGION_MISMATCH",
-                    "样本点经纬度不在所选地区范围内，请核对后重新填报");
+                    "样本点经纬度不在所选地区范围内，请核对后重新填报",
+                    Map.of("fieldErrors", Map.of(
+                            "MKT_REGION", "所选地区与经纬度不一致，请核对地区和坐标。",
+                            "MKT_SAMPLE_LONGITUDE", "经纬度不在所选地区范围内。",
+                            "MKT_SAMPLE_LATITUDE", "经纬度不在所选地区范围内。")));
         }
         if (stableIdentityCoordinates != null) {
             stableIdentityCoordinates.requireCompatible(
@@ -575,7 +579,7 @@ public class MarketMonitoringService {
             }
             if (value == null || value.isBlank()) {
                 if (SYSTEM_MANAGED_OR_RETIRED_INPUT_CODES.contains(definition.code())) return;
-                if (definition.required()) throw invalid(definition.label() + " is required");
+                if (definition.required()) throw fieldInvalid(definition, "请填写" + definition.label() + "。");
                 return;
             }
             normalized.put(definition.code(), validateCoreValue(definition, value));
@@ -619,11 +623,15 @@ public class MarketMonitoringService {
         }
     }
 
+    private static ClientRequestException fieldInvalid(MarketCoreFieldDefinition definition, String reason) {
+        return ClientRequestException.field("INVALID_MARKET_RECORD", definition.code(), definition.label() + "：" + reason);
+    }
+
     private static String validateCoreValue(MarketCoreFieldDefinition definition, String value) {
         return switch (definition.controlType()) {
             case "SELECT" -> {
                 if (definition.options().stream().noneMatch(option -> option.value().equals(value))) {
-                    throw invalid("Invalid option for market core field: " + definition.code());
+                    throw fieldInvalid(definition, "请选择当前选项中的值。");
                 }
                 yield value;
             }
@@ -632,7 +640,7 @@ public class MarketMonitoringService {
                 try {
                     LocalDate.parse(value);
                 } catch (DateTimeException exception) {
-                    throw invalid("Invalid date for market core field: " + definition.code());
+                    throw fieldInvalid(definition, "请填写有效日期，格式为年-月-日。");
                 }
                 yield value;
             }
@@ -647,29 +655,34 @@ public class MarketMonitoringService {
                             ? definition.scale() : Math.max(definition.scale(), 15);
                     int acceptedIntegerDigits = coordinateLimit == null
                             ? definition.precision() - definition.scale() : 3;
-                    BigDecimal parsed = PlainDecimal.parse(value,
-                            acceptedIntegerDigits, acceptedFractionDigits, "INVALID_MARKET_RECORD");
+                    BigDecimal parsed;
+                    try {
+                        parsed = PlainDecimal.parse(value, acceptedIntegerDigits, acceptedFractionDigits, "INVALID_MARKET_RECORD");
+                    } catch (ClientRequestException exception) {
+                        throw fieldInvalid(definition, "须填写数值，整数最多 " + acceptedIntegerDigits
+                                + " 位，小数最多 " + acceptedFractionDigits + " 位。");
+                    }
                     if ((coordinateLimit == null && parsed.signum() < 0)
                             || (coordinateLimit != null && parsed.abs().compareTo(coordinateLimit) > 0)) {
-                        throw invalid("Decimal is outside range for market core field: " + definition.code());
+                        throw fieldInvalid(definition, "数值超出允许范围，请核对正负号、整数位数和经纬度范围。");
                     }
                     if (coordinateLimit != null && parsed.scale() > definition.scale()) {
                         yield parsed.toPlainString();
                     }
                     BigDecimal normalized = parsed.setScale(definition.scale(), RoundingMode.HALF_UP);
                     if (normalized.precision() > definition.precision()) {
-                        throw invalid("Decimal is outside range for market core field: " + definition.code());
+                        throw fieldInvalid(definition, "数值超出允许范围，请核对正负号、整数位数和经纬度范围。");
                     }
                     yield normalized.toPlainString();
                 } catch (NumberFormatException | ArithmeticException exception) {
-                    throw invalid("Invalid decimal for market core field: " + definition.code());
+                    throw fieldInvalid(definition, "请填写有效数值。");
                 }
             }
             case "TEXT" -> {
                 BoundedInput.requireText("INVALID_MARKET_RECORD", value);
                 if (Set.of("MKT_SURVEYOR_PHONE", "MKT_SAMPLE_CONTACT").contains(definition.code())
                         && !value.matches("^[0-9+()\\- ]{6,32}$")) {
-                    throw invalid("Invalid contact value for market core field: " + definition.code());
+                    throw fieldInvalid(definition, "须为 6 至 32 位电话号码，可含数字、加号、括号、短横线和空格。");
                 }
                 yield value;
             }

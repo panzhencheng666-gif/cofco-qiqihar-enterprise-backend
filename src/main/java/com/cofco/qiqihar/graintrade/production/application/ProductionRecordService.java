@@ -406,7 +406,11 @@ public class ProductionRecordService implements ProductionImportPort {
                 new java.math.BigDecimal(metadata.sampleLongitude()))) {
             throw new ClientRequestException(
                     "SAMPLE_COORDINATE_REGION_MISMATCH",
-                    "样本点经纬度不在所选地区范围内，请核对后重新填报");
+                    "样本点经纬度不在所选地区范围内，请核对后重新填报",
+                    Map.of("fieldErrors", Map.of(
+                            "regionCode", "所选地区与经纬度不一致，请核对地区和坐标。",
+                            "PROD_SAMPLE_LONGITUDE", "经纬度不在所选地区范围内。",
+                            "PROD_SAMPLE_LATITUDE", "经纬度不在所选地区范围内。")));
         }
         if (stableIdentityCoordinates != null) {
             stableIdentityCoordinates.requireCompatible(
@@ -508,7 +512,7 @@ public class ProductionRecordService implements ProductionImportPort {
         return new ClientRequestException("INVALID_PRODUCTION_RECORD_QUERY", "Production record query context is invalid");
     }
     private static ClientRequestException invalidDraft(String message) {
-        return new ClientRequestException("INVALID_PRODUCTION_RECORD", message == null ? "Invalid production record" : message);
+        return ProductionSubmissionErrors.invalid(message);
     }
     private static ConflictException invalidTransition(IllegalStateException exception) {
         return new ConflictException("INVALID_PRODUCTION_TRANSITION", exception.getMessage());

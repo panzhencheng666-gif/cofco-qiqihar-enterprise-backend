@@ -159,6 +159,10 @@ class ProductionRecordServiceTest {
                 .isInstanceOf(ClientRequestException.class)
                 .extracting("code")
                 .isEqualTo("INVALID_PRODUCTION_RECORD");
+        assertThatThrownBy(() -> service.create(draft))
+                .extracting("details")
+                .isEqualTo(Map.of("fieldErrors", Map.of("cultivatedAreaMu", "播种面积不能为负数。")));
+
     }
 
     @Test

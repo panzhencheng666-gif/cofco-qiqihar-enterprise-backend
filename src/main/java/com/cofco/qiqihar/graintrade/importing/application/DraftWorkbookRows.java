@@ -56,6 +56,7 @@ final class DraftWorkbookRows {
                     if (objectType == null) {
                         errorCode = "IMPORT_OBJECT_TYPE_INVALID";
                         errorMessage = "对象类型不在当前产品的填报范围内";
+                        values.put("错误列", "样本点类型");
                     } else {
                         normalizedValues.put(objectTypeField, objectType);
                     }
@@ -69,7 +70,7 @@ final class DraftWorkbookRows {
                     if (template.rules().get(column).required()) {
                         errorCode = "IMPORT_ROW_REQUIRED_VALUE";
                         errorMessage = "“" + template.labels().get(column) + "”为必填项";
-                        if (worksheetName != null) values.put("错误列", template.labels().get(column));
+                        values.put("错误列", template.labels().get(column));
                     }
                     continue;
                 }
@@ -82,7 +83,7 @@ final class DraftWorkbookRows {
                         errorCode = "IMPORT_VALUE_FORMAT_INVALID";
                         errorMessage = "“" + template.labels().get(column) + "”不在受控选项内；可填写："
                                 + String.join("、", translations.keySet());
-                        if (worksheetName != null) values.put("错误列", template.labels().get(column));
+                        values.put("错误列", template.labels().get(column));
                     } else {
                         normalizedValues.put(code, normalized);
                     }
@@ -94,7 +95,7 @@ final class DraftWorkbookRows {
                     errorCode = "IMPORT_VALUE_FORMAT_INVALID";
                     errorMessage = "“" + template.labels().get(column) + "”填写不正确："
                             + BusinessImportWorkbook.validationHint(template.rules().get(column));
-                    if (worksheetName != null) values.put("错误列", template.labels().get(column));
+                    values.put("错误列", template.labels().get(column));
                     continue;
                 }
             }

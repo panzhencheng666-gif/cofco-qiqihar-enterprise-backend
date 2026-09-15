@@ -169,7 +169,7 @@ public class ProductionRecordController {
             validateCoordinates(submissionMetadata);
             SurveyTime time = surveyTime();
             return new ProductionDraft(productCode, objectTypeCode, regionCode, cultivarCode, time.compatibilityDate(),
-                    decimal(cultivatedAreaMu), decimal(yieldPerMuKilograms), values(quality), values(costs),
+                    decimal(cultivatedAreaMu, "cultivatedAreaMu"), decimal(yieldPerMuKilograms, "yieldPerMuKilograms"), values(quality), values(costs),
                     values(insurance), values(subsidies), submissionMetadata, evidencePhotoIds,
                     time.year(), time.month());
         }
@@ -178,12 +178,18 @@ public class ProductionRecordController {
                     "INVALID_PRODUCTION_RECORD", "A non-negative version is required");
             return version;
         }
-        private static BigDecimal decimal(String value) {
-            return value == null ? null : PlainDecimal.parse(value, 14, 4, "INVALID_PRODUCTION_RECORD");
+        private static BigDecimal decimal(String value, String field) {
+            if (value == null || value.isBlank()) return null;
+            try {
+                return PlainDecimal.parse(value, 14, 4, "INVALID_PRODUCTION_RECORD");
+            } catch (ClientRequestException exception) {
+                throw ClientRequestException.field("INVALID_PRODUCTION_RECORD", field,
+                        "须填写数值，整数最多 14 位，小数最多 4 位；不要填写单位或千位逗号。");
+            }
         }
         private static Map<String, BigDecimal> values(Map<String, String> values) {
             Map<String, BigDecimal> parsed = new LinkedHashMap<>();
-            if (values != null) values.forEach((code, value) -> parsed.put(code, decimal(value)));
+            if (values != null) values.forEach((code, value) -> parsed.put(code, decimal(value, code)));
             return parsed;
         }
         private static void validateCoordinates(Map<String, String> metadata) {

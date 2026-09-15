@@ -121,6 +121,20 @@ class ProductionRecordRestIntegrationTest {
         boundarySnapshot.restore(jdbc);
     }
 
+    @Test void blankOptionalNumbersDoNotHideTheContactValidationOnAtomicSubmit() throws Exception {
+        mockMvc.perform(post("/api/v1/production-records/submit")
+                        .principal(() -> "production-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content("""
+                        {"productCode":"CORN","objectTypeCode":"FARMER","regionCode":"230200",
+                         "surveyYear":2026,"cultivatedAreaMu":"","yieldPerMuKilograms":"",
+                         "quality":{},"costs":{},"insurance":{},"subsidies":{},
+                         "submissionMetadata":{"PROD_SAMPLE_CONTACT":"bad-contact",
+                         "PROD_SAMPLE_LATITUDE":"47.5","PROD_SAMPLE_LONGITUDE":"123.8"}}
+                        """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.details.fieldErrors.PROD_SAMPLE_CONTACT").isNotEmpty());
+    }
+
     @Test
     void usesTheSameSurveyDetailFieldsForDefinitionCreateDetailAndLedgerList() throws Exception {
         mockMvc.perform(get("/api/v1/production-record-definitions")

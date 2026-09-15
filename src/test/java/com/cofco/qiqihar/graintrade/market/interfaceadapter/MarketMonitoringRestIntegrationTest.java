@@ -137,6 +137,15 @@ class MarketMonitoringRestIntegrationTest {
         boundarySnapshot.restore(jdbc);
     }
 
+    @Test void locatesAnInvalidContactOnTheSubmittedMarketField() throws Exception {
+        String body = draftBody("CORN", "FEED_MILL", "MOISTURE", null)
+                .replace("13900000000", "bad-contact");
+        mockMvc.perform(post("/api/v1/market-records").principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.details.fieldErrors.MKT_SAMPLE_CONTACT").isNotEmpty());
+    }
+
     @Test void createsAndTransitionsCornFeedMillWithPurchasePriceOnly() throws Exception {
         String body = draftBody("CORN", "FEED_MILL", "MOISTURE", null)
                 .replace("\"MKT_SAMPLE_LATITUDE\":\"47.3543\"", "\"MKT_SAMPLE_LATITUDE\":\"47\"")

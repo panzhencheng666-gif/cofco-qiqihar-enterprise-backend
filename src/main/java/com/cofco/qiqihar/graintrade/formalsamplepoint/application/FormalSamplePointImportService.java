@@ -207,7 +207,7 @@ public class FormalSamplePointImportService {
     private static SamplePointImportResult result(ImportJob job, boolean replayed) {
         return new SamplePointImportResult(
                 job.id(), job.statusCode(), job.importedRows(), job.failedRows(),
-                job.completedAt(), replayed);
+                job.completedAt(), replayed, com.cofco.qiqihar.graintrade.importing.application.ImportJobView.from(job).rowErrors());
     }
 
     private static String digest(byte[] bytes) {

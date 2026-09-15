@@ -9,4 +9,4 @@ public record SamplePointImportResult(
         int importedRows,
         int failedRows,
         Instant completedAt,
-        boolean replayed) {}
+        boolean replayed, java.util.List<ImportJobView.RowError> rowErrors) {}
