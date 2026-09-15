@@ -112,6 +112,12 @@ public class MarketMonitoringService {
         return list(query, true, requestedScope);
     }
 
+    @Transactional(readOnly = true)
+    public PagedResult<MarketListItem> listRecovery(MarketRecordQuery query, String requestedScope, String recovery) {
+        boolean requested = com.cofco.qiqihar.graintrade.shared.application.LegacyRecoveryQuery.requested(recovery, query.filters());
+        return list(query, !requested, requestedScope);
+    }
+
     private PagedResult<MarketListItem> list(
             MarketRecordQuery query, boolean currentFormalOnly, String requestedScope) {
         try {

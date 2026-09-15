@@ -56,6 +56,11 @@ public class LogisticsService {
     }
     @Transactional(readOnly=true)
     public PagedResult<LogisticsRecordView> list(String productCode, int pageNumber, int pageSize, Map<String,String> filters, String requestedScope) {
+        return listRecovery(productCode, pageNumber, pageSize, filters, requestedScope, null);
+    }
+    @Transactional(readOnly=true)
+    public PagedResult<LogisticsRecordView> listRecovery(String productCode, int pageNumber, int pageSize, Map<String,String> filters, String requestedScope, String recovery) {
+        com.cofco.qiqihar.graintrade.shared.application.LegacyRecoveryQuery.requested(recovery, filters);
         if(requestedScope!=null && !"MY_TASKS".equals(requestedScope))throw invalid();
         if (pageNumber < 0 || pageSize < 1 || filters.keySet().stream().anyMatch(k -> !FILTERS.contains(k))
                 || !pages.allowsListQueryValues("LOGISTICS","MONITORING",productCode,pageSize,filters)) throw invalid();

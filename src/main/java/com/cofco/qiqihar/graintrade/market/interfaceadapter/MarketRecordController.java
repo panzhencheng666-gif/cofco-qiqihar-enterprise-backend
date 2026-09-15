@@ -25,7 +25,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class MarketRecordController {
 
     private static final Set<String> CORE_PARAMETERS =
-            Set.of("productCode", "pageKind", "pageNumber", "pageSize", "scope");
+            Set.of("productCode", "pageKind", "pageNumber", "pageSize", "scope", "recovery");
     private static final Pattern FILTER_PARAMETER =
             Pattern.compile("^filter\\.([A-Za-z0-9][A-Za-z0-9_-]*)$");
 
@@ -49,9 +49,9 @@ public class MarketRecordController {
                 parsed.pageSize(),
                 parsed.filters());
         if ("MONITORING".equals(query.pageKind())) {
-            return new ApiResponse<>(MonitoringPageResponse.from(monitoring.list(query, parameters.getFirst("scope"))));
+            return new ApiResponse<>(MonitoringPageResponse.from(monitoring.listRecovery(query, parameters.getFirst("scope"), parameters.getFirst("recovery"))));
         }
-        if (parameters.containsKey("scope")) throw invalidQuery();
+        if (parameters.containsKey("scope") || parameters.containsKey("recovery")) throw invalidQuery();
         return new ApiResponse<>(PageResponse.from(reader.read(query)));
     }
 

@@ -56,6 +56,14 @@ class ProductionRecordRestIntegrationTest {
         String id=jdbc.sql("SELECT record_id FROM production.production_record").query(String.class).single();
         assertThat(jdbc.sql("SELECT count(*) FROM production.production_record WHERE sample_point_id IS NOT NULL")
             .query(Long.class).single()).isEqualTo(1L);
+        jdbc.sql("UPDATE production.production_record SET status_code='PENDING_REVIEW',sample_point_id=NULL WHERE record_id=:id").param("id",id).update();
+        mockMvc.perform(get("/api/v1/production-records").principal(() -> "production-tester")
+                .param("productCode","CORN").param("pageKind","MONITORING").param("pageSize","20")
+                .param("recovery","true").param("filter.status","PENDING_REVIEW").param("scope","MY_TASKS"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].id").value(id));
+        mockMvc.perform(get("/api/v1/production-records").principal(() -> "production-tester")
+                .param("productCode","CORN").param("pageKind","MONITORING").param("pageSize","20"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(0));
         String revised=body.strip().replaceFirst("}$",",\"version\":0}");
         mockMvc.perform(put("/api/v1/production-records/{id}",id).principal(() -> "production-tester")
                 .contentType(MediaType.APPLICATION_JSON).content(revised))

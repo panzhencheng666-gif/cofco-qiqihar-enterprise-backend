@@ -84,6 +84,12 @@ public class ProductionRecordService implements ProductionImportPort {
         return read(query, true, requestedScope);
     }
 
+    @Transactional(readOnly = true)
+    public PagedResult<ProductionListItem> readRecovery(ProductionRecordQuery query, String requestedScope, String recovery) {
+        boolean requested = com.cofco.qiqihar.graintrade.shared.application.LegacyRecoveryQuery.requested(recovery, query.filters());
+        return read(query, !requested, requestedScope);
+    }
+
     private PagedResult<ProductionListItem> read(
             ProductionRecordQuery query, boolean currentFormalOnly, String requestedScope) {
         if (!pageDefinitions.allowsListQueryValues(DOMAIN, query.pageKind(), query.productCode(),

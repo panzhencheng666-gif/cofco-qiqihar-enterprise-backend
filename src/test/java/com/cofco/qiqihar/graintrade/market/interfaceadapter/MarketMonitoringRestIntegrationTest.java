@@ -137,6 +137,47 @@ class MarketMonitoringRestIntegrationTest {
         boundarySnapshot.restore(jdbc);
     }
 
+    @Test void recoversLegacyRecordThroughScopedListPreviewAndSameIdSave() throws Exception {
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        try (var ordinary = OrdinarySecurityFixture.create(jdbc, "ci-recovery", null)) {
+            useReportingRole(jdbc, "ci-recovery");
+            mockMvc.perform(post("/api/v1/market-records/submit").principal(() -> "ci-recovery")
+                    .contentType(MediaType.APPLICATION_JSON).content(sharedSubmissionBody()))
+                .andExpect(status().isCreated());
+            String id = jdbc.sql("SELECT record_id FROM market.market_record").query(String.class).single();
+            // Dedicated test database only: represent a pre-automatic-save historical record.
+            jdbc.sql("UPDATE market.market_record SET status_code='PENDING_REVIEW',sample_point_id=NULL WHERE record_id=:id").param("id",id).update();
+            jdbc.sql("UPDATE market.market_record_core_value SET value='bad-contact' WHERE record_id=:id AND field_code='MKT_SAMPLE_CONTACT'").param("id",id).update();
+            mockMvc.perform(get("/api/v1/market-records").principal(() -> "ci-recovery")
+                    .param("productCode","CORN").param("pageKind","MONITORING").param("pageNumber","0").param("pageSize","20"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(0));
+            mockMvc.perform(get("/api/v1/market-records").principal(() -> "ci-recovery")
+                    .param("productCode","CORN").param("pageKind","MONITORING").param("pageNumber","0").param("pageSize","20")
+                    .param("recovery","true").param("scope","MY_TASKS").param("filter.status","PENDING_REVIEW"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].id").value(id));
+            mockMvc.perform(get("/api/v1/market-records/{id}/validation-preview",id).principal(() -> "ci-recovery"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.fieldValidationPassed").value(false))
+                .andExpect(jsonPath("$.data.details.fieldErrors.MKT_SAMPLE_CONTACT").isNotEmpty());
+            mockMvc.perform(get("/api/v1/market-records").principal(() -> "ci-recovery")
+                    .param("productCode","CORN").param("pageKind","MONITORING").param("pageSize","20")
+                    .param("recovery","true").param("filter.status","APPROVED"))
+                .andExpect(status().isBadRequest());
+            mockMvc.perform(put("/api/v1/market-records/{id}/submit",id).principal(() -> "ci-recovery")
+                    .contentType(MediaType.APPLICATION_JSON).content(versioned(sharedSubmissionBody(),0)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.id").value(id))
+                .andExpect(jsonPath("$.data.status").value("APPROVED")).andExpect(jsonPath("$.data.version").value(1));
+            assertThat(jdbc.sql("SELECT count(*) FROM market.market_record WHERE record_id=:id AND sample_point_id IS NOT NULL").param("id",id).query(Long.class).single()).isEqualTo(1L);
+            mockMvc.perform(get("/api/v1/market-records").principal(() -> "ci-recovery")
+                    .param("productCode","CORN").param("pageKind","MONITORING").param("pageSize","20"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].id").value(id));
+            jdbc.sql("UPDATE platform.security_user SET enabled=false WHERE subject_id='ci-recovery'").update();
+            mockMvc.perform(get("/api/v1/market-records").principal(() -> "ci-recovery")
+                    .param("productCode","CORN").param("pageKind","MONITORING").param("pageSize","20")
+                    .param("recovery","true").param("filter.status","PENDING_REVIEW"))
+                .andExpect(status().isForbidden());
+        }
+    }
+
     @Test void automaticSaveCreatesLinkedFactAndUpdatesSameRecord() throws Exception {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         try (var ordinary = OrdinarySecurityFixture.create(jdbc, "ci-auto-save", null)) {
