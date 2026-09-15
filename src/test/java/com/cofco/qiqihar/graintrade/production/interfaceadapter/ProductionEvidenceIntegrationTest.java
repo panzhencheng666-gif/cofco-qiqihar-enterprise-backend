@@ -40,12 +40,7 @@ class ProductionEvidenceIntegrationTest {
     }
 
     @Test
-    void requiresAtLeastOnePhotoAndAttachesItAtomically() throws Exception {
-        mvc.perform(post("/api/v1/production-records").principal(() -> "production-tester")
-                        .contentType(MediaType.APPLICATION_JSON).content(body()))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("INVALID_EVIDENCE_PHOTO"));
-
+    void attachesOptionalPhotoAtomically() throws Exception {
         String photoId = upload("production-tester");
         String response = mvc.perform(post("/api/v1/production-records").principal(() -> "production-tester")
                         .contentType(MediaType.APPLICATION_JSON).content(body(photoId)))

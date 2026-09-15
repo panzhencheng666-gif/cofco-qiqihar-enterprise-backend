@@ -42,13 +42,22 @@ class MarketEvidenceIntegrationTest {
     }
 
     @Test
-    void requiresAtLeastOnePrivatePhotoAndReturnsOnlyItsMetadata() throws Exception {
-        mvc.perform(post("/api/v1/market-records").principal(() -> "market-tester")
-                        .contentType(MediaType.APPLICATION_JSON).content(body()))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("INVALID_EVIDENCE_PHOTO"));
-        assertThat(recordCount()).isZero();
+    void annualCollectionCanSubmitWithoutOptionalPhotosOrPrices() throws Exception {
+        String request="""
+                {"productCode":"CORN","surveyYear":"2026","coreValues":{
+                 "MKT_OBJECT_TYPE":"TRADER","MKT_REGION":"230200","MKT_TRADE_DATE":"2026-01-01",
+                 "MKT_SAMPLE_NAME":"临时权限验收20260915","MKT_SAMPLE_CONTACT":"00000000000",
+                 "MKT_SAMPLE_LATITUDE":"47.35","MKT_SAMPLE_LONGITUDE":"123.92"},
+                 "facts":{},"evidencePhotoIds":[]}
+                """;
+        mvc.perform(post("/api/v1/market-records/submit").principal(()->"market-tester")
+                .contentType(MediaType.APPLICATION_JSON).content(request))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.data.evidencePhotos").isEmpty());
+        assertThat(recordCount()).isOne();
+    }
 
+    @Test
+    void attachesOptionalPrivatePhotoAndReturnsOnlyItsMetadata() throws Exception {
         String photoId = upload("market-tester");
         String response = mvc.perform(post("/api/v1/market-records").principal(() -> "market-tester")
                         .contentType(MediaType.APPLICATION_JSON).content(body(photoId)))
@@ -110,8 +119,6 @@ class MarketEvidenceIntegrationTest {
                  "MKT_PURCHASE_BASE_PRICE":"2300",
                  "MKT_CARRIAGE_BOARD_AMOUNT":"36","MKT_PACKAGING_AMOUNT":"12",
                  "MKT_FREIGHT_AMOUNT":"72","MKT_PACKAGING_FORM":"BULK",
-                 "MKT_REPORTER_NAME":"测试填报员","MKT_SURVEYOR_NAME":"王雷",
-                 "MKT_SURVEYOR_PHONE":"13800000000",
                  "MKT_SAMPLE_NAME":"齐齐哈尔第一粮店","MKT_SAMPLE_CONTACT":"13900000000",
                  "MKT_SAMPLE_LATITUDE":"47.3543","MKT_SAMPLE_LONGITUDE":"123.9182"},
                  "facts":{"PURCHASE_VOLUME":"12","MOISTURE":"14.6"},"evidencePhotoIds":%s}
