@@ -9,6 +9,11 @@ jdk_home=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
 JAVA_HOME="$jdk_home" \
   "$backend_root/scripts/prepare-runtime-truststore.sh" "$temporary_root/Application Support/runtime-cacerts"
 
+# The launchd plist uses the Homebrew prefix, which must also resolve correctly.
+JAVA_HOME=/opt/homebrew/opt/openjdk@21 \
+  "$backend_root/scripts/prepare-runtime-truststore.sh" "$temporary_root/prefix-cacerts"
+[[ -f "$temporary_root/prefix-cacerts" ]]
+
 runtime_store="$temporary_root/Application Support/runtime-cacerts"
 [[ -f "$runtime_store" ]]
 [[ "$(stat -f '%Lp' "$runtime_store")" == 600 ]]

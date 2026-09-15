@@ -12,7 +12,13 @@ expected_subject="subject=CN=CFCA EV ROOT,O=China Financial Certification Author
   exit 1
 }
 [[ -f "$certificate" ]] || { echo "Pinned CFCA certificate is missing: $certificate" >&2; exit 1; }
-[[ -f "${JAVA_HOME}/lib/security/cacerts" ]] || { echo "JDK default cacerts is missing" >&2; exit 1; }
+# Homebrew's exported JAVA_HOME can be its prefix rather than the JVM home.
+# Ask that selected JVM for its own truststore location instead of guessing.
+truststore_java_home="$("${JAVA_HOME}/bin/java" -XshowSettings:properties -version 2>&1 | sed -n 's/^[[:space:]]*java.home = //p')"
+[[ -n "$truststore_java_home" && -f "${truststore_java_home}/lib/security/cacerts" ]] || {
+  echo "Selected JVM default cacerts is missing" >&2
+  exit 1
+}
 
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/cofco-truststore.XXXXXX")"
 trap 'rm -rf -- "$temporary_directory"' EXIT
@@ -30,7 +36,7 @@ actual_fingerprint="$(openssl x509 -in "$certificate" -noout -fingerprint -sha25
 openssl x509 -in "$certificate" -checkend 0 -noout >/dev/null || { echo "Pinned CFCA certificate is expired" >&2; exit 1; }
 openssl verify -CAfile "$certificate" "$certificate" >/dev/null
 
-cp "${JAVA_HOME}/lib/security/cacerts" "$temporary_store"
+cp "${truststore_java_home}/lib/security/cacerts" "$temporary_store"
 "${JAVA_HOME}/bin/keytool" -importcert -noprompt -trustcacerts \
   -alias cofco-cfca-ev-root -file "$certificate" -keystore "$temporary_store" \
   -storepass changeit >/dev/null 2>&1
