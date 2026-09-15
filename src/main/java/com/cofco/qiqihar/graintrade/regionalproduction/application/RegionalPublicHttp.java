@@ -6,8 +6,14 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.nio.ByteBuffer;
+import java.net.URI;
+import java.net.http.HttpHeaders;
 import java.time.Duration;
 import java.util.List;
+import java.util.LinkedHashSet;
+import java.util.Locale;
+import java.util.Set;
+import java.util.function.Predicate;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Flow;
@@ -34,6 +40,64 @@ final class RegionalPublicHttp {
             if (exception.getCause() instanceof IOException failure) throw failure;
             throw new IOException("来源下载失败", exception.getCause());
         }
+    }
+
+    static HttpResponse<byte[]> sendFollowingPublicHttps(HttpClient client, HttpRequest request,
+            int maximumBytes, Predicate<URI> publicUri) throws IOException, InterruptedException {
+        URI original = request.uri();
+        URI current = original;
+        Set<URI> visited = new LinkedHashSet<>();
+        visited.add(current);
+        for (int redirects = 0; ; redirects++) {
+            var currentRequest = redirectedRequest(request, current);
+            var response = send(client, currentRequest, maximumBytes);
+            if (!isRedirect(response.statusCode())) {
+                requireUsableRedirectResult(original, current, response.body());
+                return response;
+            }
+            if (redirects >= 5) throw new IOException("来源重定向超过5跳");
+            current = redirectTarget(current, response.statusCode(), response.headers(), visited, publicUri);
+            visited.add(current);
+        }
+    }
+
+    static URI redirectTarget(URI current, int status, HttpHeaders headers, Set<URI> visited,
+            Predicate<URI> publicUri) throws IOException {
+        if (!isRedirect(status)) throw new IOException("非重定向响应不能解析Location");
+        String location = headers.firstValue("Location").orElseThrow(() -> new IOException("来源重定向缺少Location"));
+        URI target;
+        try { target = current.resolve(location).normalize(); }
+        catch (IllegalArgumentException exception) { throw new IOException("来源重定向Location无效", exception); }
+        if (!"https".equalsIgnoreCase(target.getScheme())) throw new IOException("来源重定向只允许HTTPS");
+        if (visited.contains(target)) throw new IOException("来源重定向形成循环");
+        if (!publicUri.test(target)) throw new IOException("来源重定向目标不是可访问的HTTPS公网地址");
+        return target;
+    }
+
+    static void requireUsableRedirectResult(URI original, URI target, byte[] body) throws IOException {
+        if (!original.equals(target)) {
+            String path = target.getPath() == null ? "" : target.getPath();
+            String originalPath = original.getPath() == null ? "" : original.getPath();
+            if ((path.isBlank() || "/".equals(path)) && !(originalPath.isBlank() || "/".equals(originalPath)))
+                throw new IOException("来源重定向至站点首页，不能作为原文核验成功");
+            String destination = (path + "?" + target.getQuery()).toLowerCase(Locale.ROOT);
+            String text = new String(body, java.nio.charset.StandardCharsets.UTF_8).toLowerCase(Locale.ROOT);
+            if (destination.matches(".*(?:captcha|challenge|verification|verify|waf).*")
+                    || text.matches("(?s).*(?:人机验证|访问验证|安全验证|完成验证后继续访问|humanmachineverification).*"))
+                throw new IOException("来源重定向进入访问验证页面，不能作为原文核验成功");
+        }
+    }
+
+    private static boolean isRedirect(int status) {
+        return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
+    }
+
+    private static HttpRequest redirectedRequest(HttpRequest original, URI target) {
+        var builder = HttpRequest.newBuilder(target).GET();
+        original.timeout().ifPresent(builder::timeout);
+        for (String name : List.of("Accept", "User-Agent"))
+            original.headers().allValues(name).forEach(value -> builder.header(name, value));
+        return builder.build();
     }
 
     private static final class LimitedBodySubscriber implements HttpResponse.BodySubscriber<byte[]> {
