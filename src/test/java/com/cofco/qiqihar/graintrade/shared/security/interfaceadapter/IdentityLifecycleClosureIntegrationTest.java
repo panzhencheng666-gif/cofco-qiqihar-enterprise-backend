@@ -148,6 +148,33 @@ class IdentityLifecycleClosureIntegrationTest {
     }
 
     @Test
+    void zeroRegionReporterCanBeInvitedAndActivatedWithoutAdministratorPowers() throws Exception {
+        String response=mvc.perform(post("/api/v1/identity/employees")
+                .principal(() -> "production-tester")
+                .header("Idempotency-Key", "unassigned-"+UUID.randomUUID())
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(invitationRequest("reporter@example.test").replace(
+                        "\"regionCodes\":[\""+TOWNSHIP+"\"]", "\"regionCodes\":[]")))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.data.regionCodes").isEmpty())
+                .andReturn().getResponse().getContentAsString();
+        String invitationId=com.jayway.jsonpath.JsonPath.read(response,"$.data.invitationId");
+        String encrypted=jdbc.sql("SELECT encrypted_delivery_payload FROM platform.identity_invitation WHERE invitation_id=CAST(:id AS uuid)")
+                .param("id",invitationId).query(String.class).single();
+        activate(invitationTokens.decryptDeliveryPayload(encrypted).token())
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.accountStatus").value("ACTIVE"))
+                .andExpect(jsonPath("$.data.bindingStatus").value("ACTIVE"));
+        mvc.perform(get("/api/v1/session/me").principal(() -> subject))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.regionCodes").isEmpty())
+                .andExpect(jsonPath("$.data.unassignedReporter").value(true))
+                .andExpect(jsonPath("$.data.rootAdministrator").value(false));
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql("SELECT count(*) FROM platform.identity_provider_binding WHERE security_subject_id=:subject AND state='ACTIVE'")
+                .param("subject",subject).query(Long.class).single()).isOne();
+    }
+
+    @Test
     void deliveredSecretActivatesExactlyOnceAndBindsTheTrustedOidcIdentity() throws Exception {
         String response=invite("activate-once-"+UUID.randomUUID(),"employee@example.test");
         String invitationId=com.jayway.jsonpath.JsonPath.read(response,"$.data.invitationId");
