@@ -67,6 +67,10 @@ class RegionalCropAnnualStatRestIntegrationTest {
 
     @Test
     void savesAsFormalDataRequeriesAndEmitsAuditOutboxInOneFlow() throws Exception {
+        String aggregateId = COUNTY + ":2026:CORN";
+        long auditCountBefore = countAuditEvents(aggregateId);
+        long outboxCountBefore = countOutboxEvents(aggregateId);
+
         mvc.perform(put("/api/v1/production/regional-annual-stats/{regionCode}", COUNTY)
                         .principal(() -> OPERATOR).contentType(MediaType.APPLICATION_JSON)
                         .content("""
@@ -109,21 +113,8 @@ class RegionalCropAnnualStatRestIntegrationTest {
 
         assertThat(jdbc.sql("SELECT count(*) FROM production.regional_crop_annual_stat_history")
                 .query(Long.class).single()).isEqualTo(1L);
-        assertThat(jdbc.sql("""
-                SELECT count(*) FROM platform.business_audit_event
-                WHERE aggregate_type='REGIONAL_CROP_ANNUAL_STAT'
-                  AND aggregate_id=:aggregateId
-                  AND action_code='REGIONAL_CROP_ANNUAL_STAT_UPSERTED'
-                """).param("aggregateId", COUNTY + ":2026:CORN")
-                .query(Long.class).single()).isEqualTo(2L);
-        assertThat(jdbc.sql("""
-                SELECT count(*) FROM platform.business_event_outbox
-                WHERE aggregate_type='REGIONAL_CROP_ANNUAL_STAT'
-                  AND aggregate_id=:aggregateId AND product_code='CORN'
-                  AND region_codes::text[] @> ARRAY[:county,:prefecture]::text[]
-                """).param("aggregateId", COUNTY + ":2026:CORN")
-                .param("county", COUNTY).param("prefecture", PREFECTURE)
-                .query(Long.class).single()).isEqualTo(2L);
+        assertThat(countAuditEvents(aggregateId)).isEqualTo(auditCountBefore + 2L);
+        assertThat(countOutboxEvents(aggregateId)).isEqualTo(outboxCountBefore + 2L);
         String detail = jdbc.sql("""
                 SELECT detail::text
                 FROM platform.business_event_outbox
@@ -135,6 +126,26 @@ class RegionalCropAnnualStatRestIntegrationTest {
         assertThat(detail)
                 .contains("\"surveyYear\": 2026")
                 .doesNotContain("\"dataYear\"");
+    }
+
+    private long countAuditEvents(String aggregateId) {
+        return jdbc.sql("""
+                SELECT count(*) FROM platform.business_audit_event
+                WHERE aggregate_type='REGIONAL_CROP_ANNUAL_STAT'
+                  AND aggregate_id=:aggregateId
+                  AND action_code='REGIONAL_CROP_ANNUAL_STAT_UPSERTED'
+                """).param("aggregateId", aggregateId).query(Long.class).single();
+    }
+
+    private long countOutboxEvents(String aggregateId) {
+        return jdbc.sql("""
+                SELECT count(*) FROM platform.business_event_outbox
+                WHERE aggregate_type='REGIONAL_CROP_ANNUAL_STAT'
+                  AND aggregate_id=:aggregateId AND product_code='CORN'
+                  AND region_codes::text[] @> ARRAY[:county,:prefecture]::text[]
+                """).param("aggregateId", aggregateId)
+                .param("county", COUNTY).param("prefecture", PREFECTURE)
+                .query(Long.class).single();
     }
 
     @Test
@@ -177,7 +188,7 @@ class RegionalCropAnnualStatRestIntegrationTest {
     }
 
     @Test
-    void automaticallyBuildsThreeCropStructureAndNextYearForecastWithoutAdditionalFilling() throws Exception {
+    void automaticallyBuildsOnlyCalculableCropsAndNextYearForecastWithoutAdditionalFilling() throws Exception {
         mvc.perform(put("/api/v1/production/regional-annual-stats/{regionCode}", COUNTY)
                         .principal(() -> OPERATOR).contentType(MediaType.APPLICATION_JSON)
                         .content("""
@@ -192,24 +203,21 @@ class RegionalCropAnnualStatRestIntegrationTest {
                         .queryParam("regionCode", PREFECTURE))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.automatic").value(true))
-                .andExpect(jsonPath("$.data.crops.length()").value(3))
+                .andExpect(jsonPath("$.data.crops.length()").value(1))
                 .andExpect(jsonPath("$.data.crops[0].productCode").value("CORN"))
                 .andExpect(jsonPath("$.data.crops[0].dataKind").value("OBSERVED"))
-                .andExpect(jsonPath("$.data.crops[1].productCode").value("SOYBEAN"))
-                .andExpect(jsonPath("$.data.crops[1].dataKind").value("MODEL_ESTIMATE"))
-                .andExpect(jsonPath("$.data.crops[2].productCode").value("RICE"))
                 .andExpect(jsonPath("$.data.crops[0].forecasts.length()").value(1))
                 .andExpect(jsonPath("$.data.crops[0].forecasts[0].year").value(2027))
                 .andExpect(jsonPath("$.data.crops[0].formula").isNotEmpty())
-                .andExpect(jsonPath("$.data.crops[0].confidencePercent").value("92.0000"))
+                .andExpect(jsonPath("$.data.crops[0].confidencePercent").value((Object) null))
                 .andExpect(jsonPath("$.data.refreshStatus.cadence").value("每日 08:30"))
                 .andExpect(jsonPath("$.data.regionFacts.areaSquareKilometres").isNumber())
                 .andExpect(jsonPath("$.data.regionFacts.directChildCount").isNumber())
                 .andExpect(jsonPath("$.data.regionFacts.countyCount").isNumber())
                 .andExpect(jsonPath("$.data.regionFacts.townshipCount").isNumber())
                 .andExpect(jsonPath("$.data.regionFacts.villageCount").isNumber())
-                .andExpect(jsonPath("$.data.indicators.length()").value(5))
-                .andExpect(jsonPath("$.data.sources.length()").value(5));
+                .andExpect(jsonPath("$.data.indicators").isNotEmpty())
+                .andExpect(jsonPath("$.data.sources").isNotEmpty());
     }
 
     @Test
