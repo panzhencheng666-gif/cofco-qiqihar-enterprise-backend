@@ -27,6 +27,9 @@ public class RegionalAgricultureProfileController {
             @RequestParam int year,
             @RequestParam String regionCode) {
         var profile = service.profile(year, regionCode);
-        return new ApiResponse<>(RegionalAgricultureProfileResponse.from(profile, batches.load(regionCode.substring(0,4) + "00",year),hierarchy.status(regionCode,year)));
+        var batch = "PREFECTURE".equals(profile.administrativeLevel())
+                ? batches.load(profile.regionCode(), year) : null;
+        return new ApiResponse<>(RegionalAgricultureProfileResponse.from(
+                profile, batch, hierarchy.status(profile.regionCode(), year)));
     }
 }

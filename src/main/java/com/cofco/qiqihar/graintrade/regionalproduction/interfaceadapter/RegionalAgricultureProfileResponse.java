@@ -41,7 +41,10 @@ public record RegionalAgricultureProfileResponse(
                 value.regionFacts(),
                 value.sourceSummary(), value.calculationMethod(), value.refreshStatus(),
                 value.weather(), value.indicators(), value.policies(), value.sources(),
-                value.crops().stream().map(CropResponse::from).toList(), batch, status);
+                value.crops().stream().map(CropResponse::from).toList(),
+                batch != null && value.regionCode().equals(batch.rootRegionCode()) && value.year() == batch.year()
+                        ? batch : null,
+                status);
     }
 
     public record CropResponse(
