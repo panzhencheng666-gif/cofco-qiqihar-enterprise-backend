@@ -12,6 +12,34 @@ import org.junit.jupiter.api.Test;
 
 class AccessControlTest {
     @Test
+    void unassignedReporterCanSubmitOnlyWithAnExplicitSubmissionGrant() {
+        var reporter = new SecurityPrincipal("reporter", "TEST", Set.of("BUSINESS_UPDATE", "BUSINESS_SUBMIT"), Set.of());
+        var access = new AccessControl(() -> Optional.of("reporter"), id -> Optional.of(reporter), true);
+        assertThat(access.require("BUSINESS_SUBMIT", "230200")).isEqualTo(reporter);
+        assertThat(access.require("BUSINESS_SUBMIT", "231100")).isEqualTo(reporter);
+        for (String permission : Set.of("BUSINESS_APPROVE", "BUSINESS_RETURN", "MASTER_DATA_APPLY")) {
+            assertThatThrownBy(() -> access.require(permission, "230200"))
+                    .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+        }
+        for (Set<String> grants : java.util.List.of(Set.of("BUSINESS_UPDATE"), Set.of("BUSINESS_SUBMIT"))) {
+            var limited = new SecurityPrincipal("reporter", "TEST", grants, Set.of());
+            var limitedAccess = new AccessControl(() -> Optional.of("reporter"), id -> Optional.of(limited), true);
+            assertThatThrownBy(() -> limitedAccess.require("BUSINESS_SUBMIT", "230200"))
+                    .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+        }
+    }
+
+    @Test
+    void assignedReporterStillSubmitsOnlyInsideTheAssignedRegion() {
+        var reporter = new SecurityPrincipal("reporter", "TEST", Set.of("BUSINESS_UPDATE", "BUSINESS_SUBMIT"), Set.of("230200"));
+        var access = new AccessControl(() -> Optional.of("reporter"), id -> Optional.of(reporter), true);
+        assertThat(access.require("BUSINESS_SUBMIT", "230200")).isEqualTo(reporter);
+        assertThatThrownBy(() -> access.require("BUSINESS_SUBMIT", "231100"))
+                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class)
+                .hasMessage("Data region is outside the assigned scope");
+    }
+
+    @Test
     void unassignedReporterUsesAdministratorTaskCoverageWithoutAdministratorPowers() {
         var reporter = new SecurityPrincipal("reporter", "TEST", Set.of("BUSINESS_UPDATE", "BUSINESS_SUBMIT"), Set.of());
         var access = new AccessControl(() -> Optional.of("reporter"), id -> Optional.of(reporter), true);

@@ -78,6 +78,13 @@ public record SecurityPrincipal(
                 || "BUSINESS_UPDATE".equals(permissionCode);
     }
 
+    /** An existing submission grant follows the unassigned reporter's shared coverage. */
+    public boolean hasSharedReportingScope(String permissionCode) {
+        return isSharedReportingPermission(permissionCode)
+                || ("BUSINESS_SUBMIT".equals(permissionCode) && isUnassignedReporter()
+                    && permissionCodes.contains("BUSINESS_SUBMIT"));
+    }
+
     /** Effective business permissions; stored roles and responsibility assignments stay unchanged. */
     public Set<String> effectivePermissionCodes() {
         var effective = new java.util.HashSet<>(permissionCodes);

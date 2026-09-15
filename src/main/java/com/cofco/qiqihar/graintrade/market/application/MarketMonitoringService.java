@@ -789,7 +789,7 @@ public class MarketMonitoringService {
             default -> null;
         };
         if (permission == null || !principal.permits(permission)) return false;
-        if (!SecurityPrincipal.isSharedReportingPermission(permission)
+        if (!principal.hasSharedReportingScope(permission)
                 && (regionCode == null || !principal.includesRegion(regionCode))) return false;
         if (separationOfDuties == null) return true;
         return switch (action) {

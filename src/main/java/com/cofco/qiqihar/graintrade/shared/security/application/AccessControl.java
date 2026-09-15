@@ -78,7 +78,7 @@ public class AccessControl {
         if (!principal.permits(permissionCode)) {
             throw new AccessDeniedException("ACCESS_PERMISSION_DENIED", "Operation permission is denied");
         }
-        if (!SecurityPrincipal.isSharedReportingPermission(permissionCode)
+        if (!principal.hasSharedReportingScope(permissionCode)
                 && regionCode != null && !regionCode.isBlank() && !principal.includesRegion(regionCode)) {
             throw new AccessDeniedException("ACCESS_REGION_DENIED", "Data region is outside the assigned scope");
         }

@@ -137,6 +137,58 @@ class MarketMonitoringRestIntegrationTest {
         boundarySnapshot.restore(jdbc);
     }
 
+    @Test void unassignedReporterCreatesAndSubmitsOneMarketRecord() throws Exception {
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        try (var ordinary = OrdinarySecurityFixture.create(jdbc, "ci-shared-submitter", null)) {
+            useReportingRole(jdbc, "ci-shared-submitter");
+            mockMvc.perform(post("/api/v1/market-records/submit").principal(() -> "ci-shared-submitter")
+                            .contentType(MediaType.APPLICATION_JSON).content(sharedSubmissionBody()))
+                    .andExpect(status().isCreated())
+                    .andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"));
+            assertThat(jdbc.sql("SELECT count(*) FROM market.market_record").query(Long.class).single()).isEqualTo(1L);
+            assertThat(jdbc.sql("SELECT count(*) FROM platform.business_audit_event WHERE action_code='MARKET_RECORD_SUBMITTED'")
+                    .query(Long.class).single()).isEqualTo(1L);
+        }
+    }
+
+    @Test void deniedCreateAndSubmitRollsBackBeforeOneSuccessfulRetry() throws Exception {
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        try (var ordinary = OrdinarySecurityFixture.create(jdbc, "ci-scoped-submitter", "231100")) {
+            useReportingRole(jdbc, "ci-scoped-submitter");
+            mockMvc.perform(post("/api/v1/market-records/submit").principal(() -> "ci-scoped-submitter")
+                            .contentType(MediaType.APPLICATION_JSON).content(sharedSubmissionBody()))
+                    .andExpect(status().isForbidden())
+                    .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+            assertThat(jdbc.sql("SELECT count(*) FROM market.market_record").query(Long.class).single()).isZero();
+            assertThat(jdbc.sql("SELECT count(*) FROM platform.business_audit_event WHERE actor_subject_id='ci-scoped-submitter'")
+                    .query(Long.class).single()).isZero();
+            jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id='ci-scoped-submitter'").update();
+            mockMvc.perform(post("/api/v1/market-records/submit").principal(() -> "ci-scoped-submitter")
+                            .contentType(MediaType.APPLICATION_JSON).content(sharedSubmissionBody()))
+                    .andExpect(status().isCreated())
+                    .andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"));
+            assertThat(jdbc.sql("SELECT count(*) FROM market.market_record").query(Long.class).single()).isEqualTo(1L);
+            assertThat(jdbc.sql("SELECT count(*) FROM platform.business_audit_event WHERE action_code='MARKET_RECORD_CREATED'")
+                    .query(Long.class).single()).isEqualTo(1L);
+        }
+    }
+
+    private void useReportingRole(JdbcClient jdbc, String subject) {
+        jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:subject").param("subject", subject).update();
+        jdbc.sql("INSERT INTO platform.security_user_role(subject_id,role_code) VALUES(:subject,'BUSINESS_OPERATOR')")
+                .param("subject", subject).update();
+    }
+
+    private String sharedSubmissionBody() {
+        return """
+                {"productCode":"CORN","coreValues":{
+                 "MKT_OBJECT_TYPE":"TRADER","MKT_REGION":"230200","MKT_TRADE_DATE":"2026-08-01",
+                 "MKT_SAMPLE_NAME":"共享提交事务验收","MKT_SAMPLE_CONTACT":"00000000000",
+                 "MKT_SAMPLE_LATITUDE":"47.35","MKT_SAMPLE_LONGITUDE":"123.92",
+                 "MKT_SOURCE_NOTE":"临时验收"},"facts":{},"evidencePhotoIds":[]}
+                """;
+    }
+
     @Test void locatesAnInvalidContactOnTheSubmittedMarketField() throws Exception {
         String body = draftBody("CORN", "FEED_MILL", "MOISTURE", null)
                 .replace("13900000000", "bad-contact");
