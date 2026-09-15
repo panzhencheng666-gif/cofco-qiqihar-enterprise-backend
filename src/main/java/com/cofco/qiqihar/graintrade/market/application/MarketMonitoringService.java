@@ -409,7 +409,9 @@ public class MarketMonitoringService {
             java.util.function.UnaryOperator<MarketMonitoringRecord> command,
             BiConsumer<MarketMonitoringRecord, SecurityPrincipal> afterStateUpdate) {
         MarketMonitoringRecord existing = required(id);
-        SecurityPrincipal principal = authorize(permissionCode, existing.regionCode());
+        SecurityPrincipal principal = accessControl != null && auditAction.equals("MARKET_RECORD_VOIDED")
+                ? accessControl.requireBusinessVoid(existing.regionCode())
+                : authorize(permissionCode, existing.regionCode());
         if (expectedVersion != existing.version()) throw stale();
         try {
             MarketMonitoringRecord transitioned = command.apply(existing);
@@ -763,6 +765,7 @@ public class MarketMonitoringService {
         if (accessControl == null) return true;
         SecurityPrincipal principal = accessControl.authenticated().orElse(null);
         if (principal == null) return true;
+        if ("VOID".equals(action)) return accessControl.canVoidBusinessRecord(principal, regionCode);
         String permission = switch (action) {
             case "VIEW" -> "BUSINESS_READ";
             case "SAVE" -> "BUSINESS_UPDATE";

@@ -348,7 +348,9 @@ public class ProductionRecordService implements ProductionImportPort {
             java.util.function.UnaryOperator<ProductionRecord> command,
             java.util.function.BiConsumer<ProductionRecord, SecurityPrincipal> afterStateUpdate) {
         ProductionRecord existing = requiredRecord(id);
-        SecurityPrincipal principal = authorize(permission, existing.regionCode());
+        SecurityPrincipal principal = accessControl != null && auditAction.equals("PRODUCTION_RECORD_VOIDED")
+                ? accessControl.requireBusinessVoid(existing.regionCode())
+                : authorize(permission, existing.regionCode());
         if (expectedVersion != existing.version()) throw stale();
         try {
             ProductionRecord transitioned = command.apply(existing);
@@ -451,6 +453,7 @@ public class ProductionRecordService implements ProductionImportPort {
         if (accessControl == null) return true;
         SecurityPrincipal principal = accessControl.authenticated().orElse(null);
         if (principal == null) return true; // Explicit unrestricted read identity exists only in test support.
+        if ("VOID".equals(action)) return accessControl.canVoidBusinessRecord(principal, regionCode);
         String permission = switch (action) {
             case "VIEW" -> "BUSINESS_READ";
             case "SAVE" -> "BUSINESS_UPDATE";

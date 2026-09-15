@@ -145,6 +145,22 @@ class LogisticsRestIntegrationTest {
     }
 
     @Test
+    void unassignedSharedReporterCannotVoidAnotherRegionsDraft() throws Exception {
+        String id = create("CORN", "RAIL", "TEST_RAIL", "TEST_ROAD", true);
+        try (var ordinary = OrdinarySecurityFixture.create(jdbc, "ci-shared-void-reader", "230200")) {
+            jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id='ci-shared-void-reader'").update();
+            jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id='ci-shared-void-reader'").update();
+            mvc.perform(post("/api/v1/logistics-records/{id}/void", id)
+                            .principal(() -> "ci-shared-void-reader").contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"version\":0}"))
+                    .andExpect(status().isForbidden());
+            org.assertj.core.api.Assertions.assertThat(jdbc.sql(
+                    "SELECT status_code FROM logistics.route_event WHERE event_id::text=:id")
+                    .param("id", id).query(String.class).single()).isEqualTo("DRAFT");
+        }
+    }
+
+    @Test
     void voidsALogisticsDraftThroughHttpAndPersistsATerminalAuditedState() throws Exception {
         String id=create("CORN","RAIL","TEST_RAIL","TEST_ROAD",true);
 

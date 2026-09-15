@@ -127,7 +127,17 @@ public class LogisticsService {
         return transition(id,version,LogisticsStatus.VOIDED,null,"BUSINESS_UPDATE","LOGISTICS_RECORD_VOIDED");
     }
     private LogisticsRecordView transition(String id,long version,LogisticsStatus target,String reason,String permission,String auditAction) {
-        LogisticsRecordView existing=required(id); SecurityPrincipal principal=authorize(permission,repository.regionsForRecord(id)); requireVersion(existing,version);
+        LogisticsRecordView existing=required(id);
+        Set<String> regions = repository.regionsForRecord(id);
+        SecurityPrincipal principal;
+        if (accessControl != null && target == LogisticsStatus.VOIDED) {
+            if (regions.isEmpty()) throw invalid();
+            principal = accessControl.requireBusinessVoid(regions.iterator().next());
+            regions.forEach(accessControl::requireBusinessVoid);
+        } else {
+            principal = authorize(permission, regions);
+        }
+        requireVersion(existing,version);
         boolean allowed=(target==LogisticsStatus.PENDING_REVIEW
                 && (existing.status()==LogisticsStatus.DRAFT || existing.status()==LogisticsStatus.RETURNED))
                 || ((target==LogisticsStatus.APPROVED || target==LogisticsStatus.RETURNED) && existing.status()==LogisticsStatus.PENDING_REVIEW);
@@ -196,6 +206,9 @@ public class LogisticsService {
         if(principal==null)return record;
         boolean regionAllowed=principal.isRootAdministrator() || repository.regionsForRecord(record.id()).stream().allMatch(principal::includesRegion);
         java.util.List<String> actions=record.allowedActions().stream().filter(action -> {
+            if ("VOID".equals(action)) return !repository.regionsForRecord(record.id()).isEmpty()
+                    && repository.regionsForRecord(record.id()).stream()
+                            .allMatch(region -> accessControl.canVoidBusinessRecord(principal, region));
             String permission=switch(action){
                 case "VIEW" -> "BUSINESS_READ";
                 case "SAVE" -> "BUSINESS_UPDATE";

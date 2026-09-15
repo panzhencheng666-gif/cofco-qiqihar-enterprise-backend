@@ -85,6 +85,24 @@ public class AccessControl {
         return principal;
     }
 
+    /** Voiding keeps the stored update permission and the original responsibility scope. */
+    @Transactional(readOnly = true)
+    public SecurityPrincipal requireBusinessVoid(String regionCode) {
+        SecurityPrincipal principal = requireAuthenticated();
+        if (!canVoidBusinessRecord(principal, regionCode)) {
+            throw new AccessDeniedException("ACCESS_VOID_DENIED", "无权作废该地区记录");
+        }
+        return principal;
+    }
+
+    public boolean canVoidBusinessRecord(SecurityPrincipal principal, String regionCode) {
+        if (principal.isRootAdministrator()) return true;
+        if (!principal.permissionCodes().contains("BUSINESS_UPDATE")
+                || regionCode == null || regionCode.isBlank() || !principal.includesRegion(regionCode)) return false;
+        return principals.responsibleSubject(regionCode, false)
+                .map(principal.subjectId()::equals).orElse(true);
+    }
+
     /** County reporting is available to every enabled authenticated account. */
     public void requireCountyReporter(SecurityPrincipal principal, String regionCode) {
         requireAuthenticated();

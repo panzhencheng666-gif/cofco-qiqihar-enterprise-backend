@@ -34,6 +34,30 @@ class AccessControlTest {
     }
 
     @Test
+    void voidRequiresStoredPermissionRegionAndResponsibility() {
+        var reader = new SecurityPrincipal("reader", "TEST", Set.of(), Set.of("230200"));
+        var writer = new SecurityPrincipal("writer", "TEST", Set.of("BUSINESS_UPDATE"), Set.of("230200"));
+        var current = new java.util.concurrent.atomic.AtomicReference<>(reader);
+        var owner = new java.util.concurrent.atomic.AtomicReference<>("writer");
+        var repository = new SecurityPrincipalRepository() {
+            public Optional<SecurityPrincipal> findEnabled(String id) { return Optional.of(current.get()); }
+            public Optional<String> responsibleSubject(String region, boolean county) { return Optional.ofNullable(owner.get()); }
+        };
+        var access = new AccessControl(() -> Optional.of(current.get().subjectId()), repository, true);
+        assertThatThrownBy(() -> access.requireBusinessVoid("230200"))
+                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+        current.set(writer);
+        assertThat(access.requireBusinessVoid("230200")).isEqualTo(writer);
+        assertThatThrownBy(() -> access.requireBusinessVoid("231100"))
+                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+        owner.set("other");
+        assertThatThrownBy(() -> access.requireBusinessVoid("230200"))
+                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+        owner.set(null);
+        assertThat(access.requireBusinessVoid("230200")).isEqualTo(writer);
+    }
+
+    @Test
     void reportingStillRejectsAnonymousAndDisabledAccounts() {
         var anonymous = new AccessControl(Optional::<String>empty, id -> Optional.empty(), true);
         var disabled = new AccessControl(() -> Optional.of("disabled"), id -> Optional.empty(), true);
