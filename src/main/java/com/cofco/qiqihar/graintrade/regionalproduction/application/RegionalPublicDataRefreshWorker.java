@@ -88,8 +88,10 @@ public class RegionalPublicDataRefreshWorker {
                         .timeout(Duration.ofSeconds(20))
                         .header("User-Agent", "COFCO-Qiqihar-RegionalData/1.0 (+daily-public-data-sync)")
                         .GET().build();
-                var response = RegionalPublicHttp.send(
-                        source.id().startsWith("search-found-") ? discoveredHttp : http, request, 20_000_000);
+                var response = source.id().startsWith("search-found-")
+                        ? RegionalPublicHttp.sendFollowingPublicHttps(discoveredHttp, request, 20_000_000,
+                                uri -> RegionalSourceDiscovery.publicHttps(uri.toString()))
+                        : RegionalPublicHttp.send(http, request, 20_000_000);
                 if (response.statusCode() < 200 || response.statusCode() >= 300) {
                     throw new IllegalStateException("HTTP " + response.statusCode());
                 }
