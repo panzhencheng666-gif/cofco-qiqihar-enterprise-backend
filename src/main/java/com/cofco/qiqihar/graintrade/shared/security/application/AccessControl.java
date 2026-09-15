@@ -35,7 +35,7 @@ public class AccessControl {
     @Transactional(readOnly = true)
     public AuthorizedReadScope requireTaskReadScope() {
         SecurityPrincipal principal = require("BUSINESS_READ", null);
-        return new AuthorizedReadScope(principal.subjectId(), principal.isRootAdministrator()
+        return new AuthorizedReadScope(principal.subjectId(), principal.isRootAdministrator() || principal.isUnassignedReporter()
                 ? java.util.Set.of("*") : principal.regionCodes());
     }
 
@@ -85,7 +85,7 @@ public class AccessControl {
         return principal;
     }
 
-    /** Voiding keeps the stored update permission and the original responsibility scope. */
+    /** Assigned reporters retain their responsibility scope; unassigned reporters share reporting coverage. */
     @Transactional(readOnly = true)
     public SecurityPrincipal requireBusinessVoid(String regionCode) {
         SecurityPrincipal principal = requireAuthenticated();
@@ -96,7 +96,7 @@ public class AccessControl {
     }
 
     public boolean canVoidBusinessRecord(SecurityPrincipal principal, String regionCode) {
-        if (principal.isRootAdministrator()) return true;
+        if (principal.isRootAdministrator() || principal.isUnassignedReporter()) return true;
         if (!principal.permissionCodes().contains("BUSINESS_UPDATE")
                 || regionCode == null || regionCode.isBlank() || !principal.includesRegion(regionCode)) return false;
         return principals.responsibleSubject(regionCode, false)

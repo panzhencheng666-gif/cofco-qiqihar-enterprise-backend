@@ -64,6 +64,11 @@ public record SecurityPrincipal(
         return roles.contains("SYSTEM_ADMIN") || roles.contains("BUSINESS_REVIEWER");
     }
 
+    /** Explicitly granted reporting access without a responsibility assignment. */
+    public boolean isUnassignedReporter() {
+        return regionCodes.isEmpty() && permissionCodes.contains("BUSINESS_UPDATE");
+    }
+
     public boolean permits(String permissionCode) {
         return isRootAdministrator() || isSharedReportingPermission(permissionCode) || permissionCodes.contains(permissionCode);
     }

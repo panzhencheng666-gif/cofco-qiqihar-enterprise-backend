@@ -301,7 +301,9 @@ public class ProductionSecurityConfiguration {
         private final Set<String> acceptedAmr;
         private final Set<String> acceptedAcr;
         private final com.cofco.qiqihar.graintrade.shared.security.application.RegistrationDraftCompletion drafts;
-        private final AuthenticationSuccessHandler delegate=new SavedRequestAwareAuthenticationSuccessHandler();
+        private final SavedRequestAwareAuthenticationSuccessHandler delegate=new SavedRequestAwareAuthenticationSuccessHandler();
+        private final org.springframework.security.web.savedrequest.HttpSessionRequestCache requestCache =
+                new org.springframework.security.web.savedrequest.HttpSessionRequestCache();
 
         private EnterpriseAuthenticationSuccessHandler(SecurityPrincipalRepository principals,
                 SecuritySessionAuditRecorder audit,Set<String> acceptedAmr,Set<String> acceptedAcr,
@@ -311,6 +313,7 @@ public class ProductionSecurityConfiguration {
             this.acceptedAmr=acceptedAmr;
             this.acceptedAcr=acceptedAcr;
             this.drafts=drafts;
+            delegate.setDefaultTargetUrl("/workbench/");
         }
 
         @Override
@@ -372,6 +375,13 @@ public class ProductionSecurityConfiguration {
             audit.record(stableAuthentication.getName(),session.getId(),"LOGIN_SUCCESS","{}");
             if(principal.isRootAdministrator()) {
                 response.sendRedirect(request.getContextPath()+"/");
+                return;
+            }
+            var savedRequest=requestCache.getRequest(request,response);
+            if(savedRequest!=null && java.net.URI.create(savedRequest.getRedirectUrl()).getPath()
+                    .startsWith(request.getContextPath()+"/api/")) {
+                requestCache.removeRequest(request,response);
+                response.sendRedirect(request.getContextPath()+"/workbench/");
                 return;
             }
             delegate.onAuthenticationSuccess(request,response,stableAuthentication);

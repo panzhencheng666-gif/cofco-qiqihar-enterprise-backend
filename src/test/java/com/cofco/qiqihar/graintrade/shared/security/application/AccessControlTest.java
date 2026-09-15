@@ -12,6 +12,20 @@ import org.junit.jupiter.api.Test;
 
 class AccessControlTest {
     @Test
+    void unassignedReporterUsesAdministratorTaskCoverageWithoutAdministratorPowers() {
+        var reporter = new SecurityPrincipal("reporter", "TEST", Set.of("BUSINESS_UPDATE", "BUSINESS_SUBMIT"), Set.of());
+        var access = new AccessControl(() -> Optional.of("reporter"), id -> Optional.of(reporter), true);
+        assertThat(access.requireTaskReadScope().isUnrestricted()).isTrue();
+        for (String region : java.util.Arrays.asList("230200", "231100", null, "")) {
+            assertThat(access.requireBusinessVoid(region)).isEqualTo(reporter);
+        }
+        assertThatThrownBy(access::requireAdministrator)
+                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+        assertThatThrownBy(() -> access.require("BUSINESS_APPROVE", "230200"))
+                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+    }
+
+    @Test
     void unassignedEnabledAccountCanReadCreateAndUpdateAcrossRegionsWithoutTakingResponsibility() {
         var user = new SecurityPrincipal("reader", "TEST", Set.of(), Set.of());
         var repository = new SecurityPrincipalRepository() {

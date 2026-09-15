@@ -16,8 +16,13 @@ public class SessionController {
     }
 
     @GetMapping("/api/v1/session/me")
-    ApiResponse<SessionResponse> currentSession() {
-        return new ApiResponse<>(SessionResponse.from(accessControl.requireAuthenticated()));
+    org.springframework.http.ResponseEntity<?> currentSession(jakarta.servlet.http.HttpServletRequest request) {
+        SecurityPrincipal principal = accessControl.requireAuthenticated();
+        if ("document".equals(request.getHeader("Sec-Fetch-Dest"))) {
+            return org.springframework.http.ResponseEntity.status(302)
+                    .location(java.net.URI.create(request.getContextPath() + "/workbench/")).build();
+        }
+        return org.springframework.http.ResponseEntity.ok(new ApiResponse<>(SessionResponse.from(principal)));
     }
 
     record SessionResponse(
@@ -25,7 +30,7 @@ public class SessionController {
             String accountStatus,String employmentStatus,List<String> roleCodes,
             List<SecurityPrincipal.PositionAssignment> positions,
             List<String> permissions,List<String> regionCodes,
-            List<SecurityPrincipal.RegionScope> regionScopes, boolean rootAdministrator) {
+            List<SecurityPrincipal.RegionScope> regionScopes, boolean rootAdministrator, boolean unassignedReporter) {
         static SessionResponse from(SecurityPrincipal principal) {
             return new SessionResponse(
                     principal.subjectId(),principal.displayName(),principal.workUnitCode(),principal.workUnitName(),
@@ -33,7 +38,7 @@ public class SessionController {
                     principal.roleCodes().isEmpty()?List.of():List.of(principal.permits("BUSINESS_APPROVE")
                             ? "BUSINESS_REVIEWER" : "BUSINESS_OPERATOR"),principal.positions(),
                     principal.effectivePermissionCodes().stream().sorted().toList(),
-                    principal.regionCodes().stream().sorted().toList(),principal.assignedRegionScopes(),principal.isRootAdministrator());
+                    principal.regionCodes().stream().sorted().toList(),principal.assignedRegionScopes(),principal.isRootAdministrator(),principal.isUnassignedReporter());
         }
     }
 }
