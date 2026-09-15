@@ -53,6 +53,8 @@ fi
 
 # Build and runtime must use the same supported Java major version.
 source "${backend_root}/scripts/jdk21-env.sh"
+runtime_truststore="${runtime_root}/security/runtime-cacerts"
+"${backend_root}/scripts/prepare-runtime-truststore.sh" "$runtime_truststore"
 
 log() {
   echo "[$(date '+%F %T')] $*"
@@ -200,6 +202,7 @@ start_backend() {
     "$backend_stdout_log" \
     "$backend_stderr_log" \
     env -u JAVA_TOOL_OPTIONS \
+    "JAVA_TOOL_OPTIONS=-Djavax.net.ssl.trustStore=\"${runtime_truststore}\" -Djavax.net.ssl.trustStorePassword=changeit" \
     "QIQIHAR_SERVER_PORT=$backend_port" \
     "SERVER_ADDRESS=$local_access_host" \
     "QIQIHAR_DB_USERNAME=$runtime_database_user" \
