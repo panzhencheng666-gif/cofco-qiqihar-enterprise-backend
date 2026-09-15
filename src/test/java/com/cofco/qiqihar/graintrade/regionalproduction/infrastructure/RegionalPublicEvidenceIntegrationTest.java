@@ -18,6 +18,25 @@ import org.springframework.transaction.annotation.Transactional;
 @UsesProtectedTestDatabase
 @Transactional
 class RegionalPublicEvidenceIntegrationTest {
+    @Test void calculationHistoryIncludesOnlyCurrentDerivedYieldAlongsideObservedFacts() {
+        jdbc.sql("""
+            INSERT INTO production.regional_public_source(source_id,root_region_code,source_type,source_name,source_url,parser_key,evidence)
+            VALUES('proof-calculation-history','231100','AGRICULTURE','计算输入来源','https://example.org/calculation','ANNUAL_HEIHE','原文')
+            """).update();
+        Instant now=Instant.parse("2026-09-15T00:30:00Z");
+        var observed=new RegionalPublicIndicatorParser.Metric("CROP_GRAIN","稻谷产量",new BigDecimal("10"),"万吨",2025,"OBSERVED","原文依据：稻谷产量10万吨。");
+        var derivedYield=new RegionalPublicIndicatorParser.Metric("CROP_GRAIN","稻谷平均单产",new BigDecimal("500"),"公斤/亩",2025,"ESTIMATED","同一地区同一年度同一作物，总产除以面积得到亩均产出。");
+        var unrelatedEstimate=new RegionalPublicIndicatorParser.Metric("ECONOMY","预测产值",new BigDecimal("20"),"亿元",2025,"ESTIMATED","趋势预测");
+        repository.recordIndicators("proof-calculation-history",List.of(observed,derivedYield,unrelatedEstimate),now);
+
+        assertThat(repository.history("231100",2025)).extracting(i -> i.label()).containsExactly("稻谷产量");
+        assertThat(repository.calculationHistory("231100",2025)).extracting(i -> i.label())
+                .containsExactlyInAnyOrder("稻谷产量","稻谷平均单产");
+
+        repository.recordIndicators("proof-calculation-history",List.of(observed),now.plusSeconds(1));
+        assertThat(repository.calculationHistory("231100",2025)).extracting(i -> i.label())
+                .containsExactly("稻谷产量");
+    }
     @Autowired JdbcClient jdbc;
     @Autowired RegionalPublicDataRepository repository;
     @Test void withdrawsMissingFactsOnlyAfterSuccessfulSamePeriodReplacement() {

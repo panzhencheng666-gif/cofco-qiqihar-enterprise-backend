@@ -126,14 +126,25 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
 
     @Override
     public List<RegionalAgricultureProfile.Indicator> history(String root, int year) {
+        return indicatorHistory(root, year, false);
+    }
+
+    @Override
+    public List<RegionalAgricultureProfile.Indicator> calculationHistory(String root, int year) {
+        return indicatorHistory(root, year, true);
+    }
+
+    private List<RegionalAgricultureProfile.Indicator> indicatorHistory(String root, int year, boolean includeDerivedYield) {
         return jdbc.sql("""
                 SELECT DISTINCT ON (i.label,i.unit,i.data_year) i.*,s.source_name,s.source_url
                 FROM production.regional_public_indicator i
                 JOIN production.regional_public_source s ON s.source_id=i.source_id
                 WHERE s.active AND i.current_evidence AND i.root_region_code=:root AND i.data_year<=:year
-                  AND i.data_kind='OBSERVED' AND i.indicator_id LIKE 'auto-%'
+                  AND (i.data_kind='OBSERVED' OR (:derivedYield AND i.data_kind='ESTIMATED'
+                    AND i.label LIKE '%平均单产' AND i.method LIKE '同一地区同一年度同一作物，总产除以面积得到亩均产出。%'))
+                  AND i.indicator_id LIKE 'auto-%'
                 ORDER BY i.label,i.unit,i.data_year,s.reliability_weight DESC,i.fetched_at DESC
-                """).param("root", root).param("year", year).query((rs,n) -> new RegionalAgricultureProfile.Indicator(
+                """).param("root", root).param("year", year).param("derivedYield", includeDerivedYield).query((rs,n) -> new RegionalAgricultureProfile.Indicator(
                         rs.getString("category"),rs.getString("label"),rs.getBigDecimal("value"),rs.getString("unit"),
                         rs.getInt("data_year"),rs.getString("data_kind"),rs.getString("method"),
                         rs.getString("source_name"),rs.getString("source_url"),instant(rs.getTimestamp("fetched_at")))).list();
