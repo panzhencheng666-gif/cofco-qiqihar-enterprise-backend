@@ -21,8 +21,8 @@ final class RegionalIndicatorAllocation {
             var value = i.value().multiply(share).setScale(4,RoundingMode.HALF_UP);
             String method = "原始依据："+i.dataYear()+"年"+i.sourceName()+"，"+i.label()+"="+i.value()+i.unit()+"（"+i.sourceUrl()+"）。\n"
                     +"选择理由：本级缺少独立资料，采用上级同一指标作为总量约束；不把上级值直接当成本地值。\n"
-                    +"分配权重："+weights+"；逐级权重相乘="+share.stripTrailingZeros().toPlainString()+"。\n"
-                    +"代入计算："+i.value()+"×"+share.stripTrailingZeros().toPlainString()+"="+value+i.unit()+"。\n"
+                    +"分配权重："+weights+"；逐级权重相乘="+share.setScale(8,RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()+"。\n"
+                    +"代入计算："+i.value()+"×"+share.setScale(8,RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()+"="+value+i.unit()+"。\n"
                     +"适用假设：在没有更细耕地或经营分布证据时，按边界密度或同级等份分配；这里是情景估算，并非当地实际统计。\n"
                     +"更新规则：上级数据、地区边界或分配依据变化后重新计算。上级计算过程："+i.method();
             return new RegionalAgricultureProfile.Indicator(i.category(),i.label(),value,i.unit(),i.dataYear(),"ESTIMATED",method,

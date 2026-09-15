@@ -34,6 +34,14 @@ public class RegionalSourceDiscovery {
                 .param("now",java.sql.Timestamp.from(now)).update();
     }
 
+    public boolean dailyRefreshNeeded(Instant now) {
+        var local=now.atZone(java.time.ZoneId.of("Asia/Shanghai"));
+        var cutoff=local.toLocalDate().atTime(8,30).atZone(local.getZone()).toInstant();
+        if (now.isBefore(cutoff)) return false;
+        return jdbc.sql("SELECT EXISTS(SELECT 1 FROM production.regional_public_source WHERE active AND (last_attempt_at IS NULL OR last_attempt_at<:cutoff))")
+                .param("cutoff",java.sql.Timestamp.from(cutoff)).query(Boolean.class).single();
+    }
+
     public void discover(Instant now) {
         ROOTS.forEach((root,name) -> {
             if (Thread.currentThread().isInterrupted()) return;
@@ -66,6 +74,7 @@ public class RegionalSourceDiscovery {
                         String title=item.path("title").asText("");
                         String url=item.path("url").asText("");
                         String description=item.path(searx.isBlank()?"description":"content").asText("");
+                        if (title.matches(".*(?:笔试|模拟试题|题库|招聘|速记|考试答案).*")) continue;
                         if (!(title+description).contains(name) || !(title+description).matches(".*(?:农业|农牧|粮食|种植|蔬菜|畜牧|铁路|物流|统计公报|农作物).*")) continue;
                         if (!publicHttps(url)) continue;
                         String parser=isRootAnnualReport(title,name) ? switch(root) {

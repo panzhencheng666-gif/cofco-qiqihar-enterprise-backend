@@ -153,6 +153,13 @@ public class RegionalAgricultureProfileService {
                     break;
                 }
             }
+            if ("PREFECTURE".equals(region.administrativeLevel()) && (area == null || yield == null)) {
+                var reference = referenceCrop(year,product,scope,observations);
+                if (area == null) area = reference.area();
+                if (yield == null) yield = reference.yield();
+                explanation += "\n" + reference.explanation();
+                modeled = true;
+            }
             if (area != null && yield != null) {
                 if (explanation.isBlank()) explanation = "采用地区年度正式面积与单产";
                 resolved.add(new RegionalAgricultureProfileCalculator.Observation(product, area, yield,
@@ -170,16 +177,16 @@ public class RegionalAgricultureProfileService {
                     String chain = "选择依据：本地区" + year + "年" + name + "资料不完整，优先采用直接上级"
                             + parentProfile.regionName() + "，使农业环境和统计范围尽可能接近。\n";
                     if (area == null) {
-                        area = parentCrop.plantedAreaMu().multiply(allocation.share());
-                        chain += "面积分配：" + allocation.basis() + "=" + allocation.share().stripTrailingZeros().toPlainString()
-                                + "；上级" + parentCrop.plantedAreaMu() + "亩×该权重=" + area + "亩。\n";
+                        area = parentCrop.plantedAreaMu().multiply(allocation.share()).setScale(4,java.math.RoundingMode.HALF_UP);
+                        chain += "面积分配：" + allocation.basis() + "=" + display(allocation.share())
+                                + "；上级" + display(parentCrop.plantedAreaMu()) + "亩×该权重=" + display(area) + "亩。\n";
                     } else chain += "面积保留：本地区已有" + area + "亩面积依据，只补齐缺失的单产。\n";
                     if (yield == null) yield = parentCrop.yieldPerMuKg();
-                    chain += "单产选择：采用最近可用的同作物单产" + yield + "公斤/亩；缺少当地独立测量时，假设当地单产接近上级。\n"
-                            + "产量换算：" + area + "亩×" + yield + "公斤/亩=" + area.multiply(yield) + "公斤。\n"
+                    chain += "单产选择：采用最近可用的同作物单产" + display(yield) + "公斤/亩；缺少当地独立测量时，假设当地单产接近上级。\n"
+                            + "产量换算：" + display(area) + "亩×" + display(yield) + "公斤/亩=" + display(area.multiply(yield)) + "公斤。\n"
                             + "适用限制：这是密度分配估算，未反映各地真实耕地、灌溉及种植偏好差异；上级或当地新资料到达后自动重算。\n"
                             + "上级依据（" + parentProfile.regionName() + "）：\n" + parentCrop.basis();
-                    resolved.add(new RegionalAgricultureProfileCalculator.Observation(product,area,yield,"PUBLIC_MODEL",year,1,explanation+chain));
+                    resolved.add(new RegionalAgricultureProfileCalculator.Observation(product,area,yield,"PUBLIC_MODEL",year,1,explanation+"\n"+chain));
                 }
             }
         }
@@ -199,7 +206,7 @@ public class RegionalAgricultureProfileService {
                 var allocation = boundaries.allocation(cursor,child.parentCode()).orElse(null);
                 if (allocation == null) { share = null; break; }
                 share = share.multiply(allocation.share());
-                weights.add(child.name()+"："+allocation.basis()+"="+allocation.share().stripTrailingZeros().toPlainString());
+                weights.add(child.name()+"："+allocation.basis()+"="+display(allocation.share()));
                 cursor = child.parentCode();
             }
             indicators = new ArrayList<>(RegionalIndicatorAllocation.allocate(indicators,share,String.join("；",weights)));
@@ -219,6 +226,75 @@ public class RegionalAgricultureProfileService {
                 publicContext.policies(), publicContext.sources(), calculated.crops());
         completed.put(regionCode,result);
         return result;
+    }
+
+    private record ReferenceCrop(BigDecimal area,BigDecimal yield,String explanation) {}
+
+    private ReferenceCrop referenceCrop(int year,String product,
+            com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope scope,
+            List<RegionalAgricultureProfileCalculator.Observation> local) {
+        String name=java.util.Map.of("CORN","玉米","SOYBEAN","大豆","RICE","稻谷").get(product);
+        var yields=new ArrayList<BigDecimal>();
+        var ratios=new ArrayList<BigDecimal>();
+        var evidence=new ArrayList<String>();
+        for (String peer:SUPPORTED_ROOTS.stream().sorted().toList()) {
+            String peerName=java.util.Map.of("230200","齐齐哈尔市","231100","黑河市","150700","呼伦贝尔市","232700","大兴安岭地区").get(peer);
+            var peerHistory=publicData.history(peer,year);
+            var publishedYield=peerHistory.stream().filter(i -> i.label().equals(name+"平均单产")
+                    && "公斤/亩".equals(i.unit()) && i.value().signum()>0 && i.dataYear()>=year-3)
+                    .max(java.util.Comparator.comparingInt(RegionalAgricultureProfile.Indicator::dataYear)).orElse(null);
+            if (publishedYield != null) {
+                yields.add(publishedYield.value());
+                evidence.add(peerName+publishedYield.dataYear()+"年单产"+display(publishedYield.value())+"公斤/亩；"+publishedYield.sourceName()+"（"+publishedYield.sourceUrl()+"）");
+            } else {
+                var output=peerHistory.stream().filter(i -> i.label().equals(name+"产量") && "万吨".equals(i.unit())
+                        && i.value().signum()>0 && i.dataYear()>=year-3)
+                        .max(java.util.Comparator.comparingInt(RegionalAgricultureProfile.Indicator::dataYear)).orElse(null);
+                if (output != null) {
+                    var sameYear=summaries.summarize(output.dataYear(),product,peer,scope.regionCodes()).orElse(null);
+                    if (sameYear!=null && sameYear.plantedAreaMu()!=null && sameYear.plantedAreaMu().signum()>0) {
+                        var y=output.value().multiply(new BigDecimal("10000000")).divide(sameYear.plantedAreaMu(),8,java.math.RoundingMode.HALF_UP);
+                        yields.add(y);
+                        evidence.add(peerName+output.dataYear()+"年"+output.sourceName()+"总产"+display(output.value())
+                                +"万吨×10000000÷同年地区年度面积"+display(sameYear.plantedAreaMu())+"亩="+display(y)+"公斤/亩（"+output.sourceUrl()+"）");
+                    }
+                }
+            }
+            var crop=summaries.summarize(year,product,peer,scope.regionCodes()).orElse(null);
+            BigDecimal other=BigDecimal.ZERO;
+            for (String code:PRODUCTS) if (!code.equals(product)) {
+                var row=summaries.summarize(year,code,peer,scope.regionCodes()).orElse(null);
+                if (row!=null && row.plantedAreaMu()!=null) other=other.add(row.plantedAreaMu());
+            }
+            if (crop!=null && crop.plantedAreaMu()!=null && crop.plantedAreaMu().signum()>0 && other.signum()>0) {
+                var ratio=crop.plantedAreaMu().divide(other,12,java.math.RoundingMode.HALF_UP);
+                ratios.add(ratio);
+                evidence.add(peerName+year+"年地区年度面积："+name+display(crop.plantedAreaMu())+"亩÷其余两类作物"+display(other)+"亩="+display(ratio));
+            }
+        }
+        BigDecimal localOther=local.stream().filter(i -> !product.equals(i.productCode()) && i.plantedAreaMu()!=null)
+                .map(RegionalAgricultureProfileCalculator.Observation::plantedAreaMu).reduce(BigDecimal.ZERO,BigDecimal::add);
+        BigDecimal ratio=median(ratios), referenceYield=median(yields);
+        BigDecimal area=ratio==null || localOther.signum()<=0 ? null : localOther.multiply(ratio).setScale(4,java.math.RoundingMode.HALF_UP);
+        String explanation="参考情景：本地区缺少完整依据，以下参照仅补缺，不覆盖已有当地数据。\n"
+                +"参照依据："+String.join("；",evidence)+"。\n"
+                +"选择理由：有多个可用参照时取中位数，降低单个极端值的影响；只有一个参照时沿用该值；参照和中位数随资料变化重算。\n"
+                +(referenceYield==null ? "" : "单产参考："+yields.size()+"个可用值的中位数="+display(referenceYield)+"公斤/亩。\n")
+                +(area==null ? "" : "面积参考：当地其余两类作物"+display(localOther)+"亩×参照面积比中位数"+display(ratio)+"="+display(area)+"亩，仅在本地面积缺失时采用。\n")
+                +"适用假设：当地种植结构和生产条件可参照上述地区；实际气候、灌溉与种植选择可能明显不同。这是参考情景，不证明当地实际种植；取得当地证据后优先替换。\n";
+        return new ReferenceCrop(area,referenceYield,explanation);
+    }
+
+    private static BigDecimal median(List<BigDecimal> values) {
+        if (values.isEmpty()) return null;
+        var sorted=values.stream().sorted().toList();
+        int middle=sorted.size()/2;
+        return sorted.size()%2==1 ? sorted.get(middle)
+                : sorted.get(middle-1).add(sorted.get(middle)).divide(new BigDecimal("2"),8,java.math.RoundingMode.HALF_UP);
+    }
+
+    private static String display(BigDecimal value) {
+        return value.setScale(6,java.math.RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
     }
 
     private static String root(String code) {

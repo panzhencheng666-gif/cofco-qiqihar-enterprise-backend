@@ -18,11 +18,20 @@ import org.springframework.transaction.annotation.Transactional;
 @Transactional
 class RegionalSourceDiscoveryRuntimeTest {
     @Autowired JdbcClient jdbc;
+    @Test void catchesUpAfterMissedEightThirtyWithoutCallingFailuresUnchanged() {
+        var discovery=new RegionalSourceDiscovery(jdbc,"","");
+        jdbc.sql("UPDATE production.regional_public_source SET last_attempt_at='2026-09-15 08:00:00+08' WHERE active").update();
+        assertThat(discovery.dailyRefreshNeeded(Instant.parse("2026-09-15T00:29:59Z"))).isFalse();
+        assertThat(discovery.dailyRefreshNeeded(Instant.parse("2026-09-15T00:30:00Z"))).isTrue();
+        assertThat(discovery.dailyRefreshNeeded(Instant.parse("2026-09-15T00:35:00Z"))).isTrue();
+        jdbc.sql("UPDATE production.regional_public_source SET last_attempt_at='2026-09-15 08:35:00+08' WHERE active").update();
+        assertThat(discovery.dailyRefreshNeeded(Instant.parse("2026-09-15T00:36:00Z"))).isFalse();
+    }
     @Test void runtimeRoleCanRegisterDiscoveredSourcesAndPreservesPartialEngineStatus() throws Exception {
         var server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
         server.createContext("/search", exchange -> {
             byte[] bytes="""
-              {"results":[{"title":"齐齐哈尔农业物流资料","url":"https://1.1.1.1/regional-public-fixture","content":"粮食运输"}],"unresponsive_engines":[["engine","timeout"]]}
+              {"results":[{"title":"齐齐哈尔农业物流资料","url":"https://1.1.1.1/regional-public-fixture","content":"粮食运输"},{"title":"齐齐哈尔粮食政策招聘笔试模拟试题","url":"https://1.1.1.1/exam-fixture","content":"农业粮食试题"}],"unresponsive_engines":[["engine","timeout"]]}
               """.getBytes(StandardCharsets.UTF_8);
             exchange.sendResponseHeaders(200,bytes.length);exchange.getResponseBody().write(bytes);exchange.close();
         });
@@ -34,6 +43,7 @@ class RegionalSourceDiscoveryRuntimeTest {
             new RegionalSourceDiscovery(jdbc,"","http://127.0.0.1:"+server.getAddress().getPort()).discover(Instant.now());
             assertThat(jdbc.sql("SELECT last_status FROM production.regional_public_source WHERE source_id='search-230200'").query(String.class).single()).isEqualTo("SEARCH_PARTIAL");
             assertThat(jdbc.sql("SELECT count(*) FROM production.regional_public_source WHERE source_url='https://1.1.1.1/regional-public-fixture'").query(Integer.class).single()).isEqualTo(1);
+            assertThat(jdbc.sql("SELECT count(*) FROM production.regional_public_source WHERE source_url='https://1.1.1.1/exam-fixture'").query(Integer.class).single()).isZero();
         } finally { server.stop(0); }
     }
 }

@@ -10,6 +10,20 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.scheduling.support.CronExpression;
 
 class RegionalDailyScheduleTest {
+    @Test void catchupRunsAutonomouslyOnlyWhenTheDailyAttemptWasMissed() {
+        var source=mock(RegionalPublicDataRepository.class);
+        var discovery=mock(RegionalSourceDiscovery.class);
+        var batches=mock(RegionalEstimateBatchService.class);
+        var hierarchy=mock(RegionalHierarchyRefresh.class);
+        var worker=new RegionalPublicDataRefreshWorker(source,discovery,batches,hierarchy);
+        when(source.due(any())).thenReturn(List.of());
+        when(discovery.dailyRefreshNeeded(any())).thenReturn(false,true);
+        worker.reconcileDailyRun();
+        verifyNoInteractions(hierarchy);
+        worker.reconcileDailyRun();
+        verify(discovery).markDailyDue(any());
+        verify(hierarchy).refresh(any());
+    }
     @Test void triggersAtShanghaiEightThirtyAndRefreshesBeforeRecalculating() throws Exception {
         var annotation = RegionalPublicDataRefreshWorker.class.getMethod("refreshDueSources").getAnnotation(Scheduled.class);
         assertThat(annotation.zone()).isEqualTo("Asia/Shanghai");

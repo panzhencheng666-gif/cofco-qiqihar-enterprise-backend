@@ -22,6 +22,7 @@ import org.springframework.stereotype.Component;
 @Component
 @ConditionalOnProperty(name = "qiqihar.regional-public-data.enabled", matchIfMissing = true)
 public class RegionalPublicDataRefreshWorker {
+    private static final org.slf4j.Logger LOG=org.slf4j.LoggerFactory.getLogger(RegionalPublicDataRefreshWorker.class);
     private static final Pattern NUMBER = Pattern.compile("\\\"%s\\\"\\s*:\\s*(-?[0-9.]+)");
     private static final Pattern TIME = Pattern.compile("\\\"time\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
     private final RegionalPublicDataRepository repository;
@@ -55,15 +56,24 @@ public class RegionalPublicDataRefreshWorker {
             scheduler = "regionalPublicDataScheduler")
     public synchronized void refreshDueSources() {
         var now = Instant.now();
+        LOG.info("Daily regional refresh started [attemptedAt={}, scheduledTime=08:30 Asia/Shanghai]",now);
         discovery.markDailyDue(now);
         refresh(now);
+        LOG.info("Daily regional refresh finished [completedAt={}]",Instant.now());
+    }
+
+    @Scheduled(initialDelayString = "30s", fixedDelayString = "1m", scheduler = "regionalPublicDataScheduler")
+    public synchronized void reconcileDailyRun() {
+        if (discovery.dailyRefreshNeeded(Instant.now())) refreshDueSources();
     }
 
     @Scheduled(initialDelayString = "${qiqihar.regional-public-data.initial-delay:5s}",
             fixedDelayString = "${qiqihar.regional-public-data.retry-delay:1h}",
             scheduler = "regionalPublicDataScheduler")
     public void retryDueSources() {
-        refresh(Instant.now());
+        var now=Instant.now();
+        if (discovery.dailyRefreshNeeded(now)) refreshDueSources();
+        else refresh(now);
     }
 
     private synchronized void refresh(Instant now) {
