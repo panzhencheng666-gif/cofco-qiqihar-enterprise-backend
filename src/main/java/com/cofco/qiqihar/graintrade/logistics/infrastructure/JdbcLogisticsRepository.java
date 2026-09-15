@@ -290,7 +290,8 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
             String id, long version, LogisticsStatus status, String reason, String actor, Instant now) {
         int count = jdbc.sql("""
                 UPDATE logistics.route_event SET status_code=:status,return_reason=:reason,
-                  last_modified_by=:actor,updated_at=:now,version=version+1
+                  last_modified_by=:actor,updated_at=:now,version=version+1,
+                  submitted_at=CASE WHEN :status='APPROVED' THEN COALESCE(submitted_at,:now) ELSE submitted_at END
                 WHERE event_id::text=:id AND version=:version
                 """).param("status", status.name()).param("reason", reason).param("actor", actor)
                 .param("now", OffsetDateTime.ofInstant(now, ZoneOffset.UTC)).param("id", id)
@@ -571,7 +572,8 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
                     "origin_region_code=:businessRegion", "destination_region_code=:businessRegion",
                     "survey_period_precision=CASE WHEN :compatMonth IS NULL THEN 'YEAR' ELSE 'YEAR_MONTH' END",
                     "survey_period_governance_state='CONFIRMED'",
-                    "reported_at=:now", "status_code=:status", "return_reason=:returnReason", "last_modified_by=:actor",
+                    "reported_at=:now", "status_code=:status",
+                    "submitted_at=CASE WHEN :status='APPROVED' THEN COALESCE(submitted_at,:now) ELSE submitted_at END", "return_reason=:returnReason", "last_modified_by=:actor",
                     "updated_at=:now", "version=version+1"));
             parameters.put("version", expectedVersion);
             int count = jdbc.sql("UPDATE logistics.route_event SET " + String.join(",", assignments)

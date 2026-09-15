@@ -13,7 +13,7 @@ public final class FormalBusinessSaveGuard {
         switch(domain) {
             case "MARKET" -> { table="market.market_record"; idColumn="record_id"; object="object_type_code"; prefix="MKT_"; }
             case "PRODUCTION" -> { table="production.production_record"; idColumn="record_id"; object="object_type_code"; prefix="PROD_"; }
-            case "LOGISTICS" -> { table="logistics.route_event"; idColumn="event_id"; object="'ROUTE_EVENT'"; prefix="LOG_"; }
+            case "LOGISTICS" -> { table="logistics.route_event"; idColumn="event_id"; object="direction_code"; prefix="LOG_"; }
             default -> throw new IllegalArgumentException("Unsupported business domain");
         }
         Fact fact=jdbc.sql("SELECT sample_point_id,product_code,"+object+" object_type,survey_year,survey_month FROM "+table+" WHERE "+idColumn+"::text=:id")
