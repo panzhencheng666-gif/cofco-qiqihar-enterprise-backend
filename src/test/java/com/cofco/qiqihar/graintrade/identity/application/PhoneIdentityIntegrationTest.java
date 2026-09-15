@@ -204,10 +204,10 @@ class PhoneIdentityIntegrationTest {
     }
     @Configuration @EnableTransactionManagement(proxyTargetClass=true)
     static class Config {
-        @Bean DriverManagerDataSource dataSource(){return new DriverManagerDataSource("jdbc:postgresql://127.0.0.1:55435/qiqihar_enterprise_test","postgres","");}
-        @Bean JdbcClient jdbc(DriverManagerDataSource ds){return JdbcClient.create(ds);}
-        @Bean DataSourceTransactionManager transactionManager(DriverManagerDataSource ds){return new DataSourceTransactionManager(ds);}
+        @Bean javax.sql.DataSource dataSource(){return com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabase.shared().dataSource();}
+        @Bean JdbcClient jdbc(javax.sql.DataSource ds){return JdbcClient.create(ds);}
+        @Bean DataSourceTransactionManager transactionManager(javax.sql.DataSource ds){return new DataSourceTransactionManager(ds);}
         @Bean SmsChallengeService sms(JdbcClient jdbc){return new SmsChallengeService(jdbc,new SmsVerificationGateway(){public void send(String p,String u,String i){} public boolean verify(String p,String c,String i){return c.equals("123456");}},true);}
-        @Bean PhoneIdentityService identities(JdbcClient jdbc){return new PhoneIdentityService(jdbc,mock(EmployeeRegistrationService.class),new JdbcIdentitySessionInvalidator(jdbc,Clock.systemUTC()),new JdbcSecurityPrincipalRepository(jdbc));}
+        @Bean PhoneIdentityService identities(JdbcClient jdbc){return new PhoneIdentityService(jdbc,mock(EmployeeRegistrationService.class),new JdbcIdentitySessionInvalidator(jdbc,Clock.systemUTC()),new JdbcSecurityPrincipalRepository(jdbc),mock(com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder.class));}
     }
 }

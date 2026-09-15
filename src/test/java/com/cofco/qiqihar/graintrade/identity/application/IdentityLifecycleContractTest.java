@@ -12,7 +12,7 @@ class IdentityLifecycleContractTest {
         assertThat(IdentityLifecycleContract.INVITATION_STATUSES)
                 .containsExactly("PENDING", "ACTIVATED", "REVOKED", "EXPIRED");
         assertThat(IdentityLifecycleContract.DELIVERY_RESULTS)
-                .containsExactly("QUEUED", "DELIVERED", "FAILED");
+                .containsExactly("QUEUED", "DELIVERED", "FAILED", "AWAITING_VERIFICATION");
         assertThat(IdentityLifecycleContract.ERROR_CODES).containsExactly(
                 "IDENTITY_INVITATION_INVALID",
                 "IDENTITY_INVITATION_NOT_FOUND",

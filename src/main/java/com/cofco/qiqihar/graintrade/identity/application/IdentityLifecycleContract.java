@@ -20,7 +20,7 @@ public final class IdentityLifecycleContract {
     public static final List<String> INVITATION_STATUSES =
             List.of("PENDING", "ACTIVATED", "REVOKED", "EXPIRED");
     public static final List<String> DELIVERY_RESULTS =
-            List.of("QUEUED", "DELIVERED", "FAILED");
+            List.of("QUEUED", "DELIVERED", "FAILED", "AWAITING_VERIFICATION");
     public static final List<String> ERROR_CODES = List.of(
             ERROR_INVITATION_INVALID,
             ERROR_INVITATION_NOT_FOUND,

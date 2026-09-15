@@ -22,7 +22,7 @@ public interface IdentityGovernanceRepository {
     void revokePendingInvitations(String subjectId,Instant revokedAt);
     IdentityInvitation createInvitation(UUID invitationId,String subjectId,String tokenSha256,
             String encryptedDeliveryPayload,String deliveryAddressSha256,Instant expiresAt,
-            String actorSubjectId,String idempotencyKey,String requestSha256);
+            String actorSubjectId,String idempotencyKey,String requestSha256,String activationPhoneSha256);
     Optional<EmployeeProfile> activateInvitation(String tokenSha256,String issuerUri,
             String providerSubject,Instant activatedAt);
 }
