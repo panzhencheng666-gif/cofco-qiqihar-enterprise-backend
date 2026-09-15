@@ -10,9 +10,7 @@ final class RegionalPublicCropPageParser {
     private RegionalPublicCropPageParser() {}
 
     static List<RegionalPublicDataRepository.PublicCropMetric> parse(String parserKey, String html) {
-        String text = html.replaceAll("(?s)<script.*?</script>|<style.*?</style>", " ")
-                .replaceAll("<[^>]+>", " ").replace("&nbsp;", " ")
-                .replaceAll("[\\s　]+", " ").trim();
+        String text = RegionalPublicIndicatorParser.clean(html);
         return switch (parserKey) {
             case "HEIHE_REPORT" -> heihe(text);
             case "DXAL_REPORT" -> dxal(text);
@@ -21,7 +19,7 @@ final class RegionalPublicCropPageParser {
     }
 
     private static List<RegionalPublicDataRepository.PublicCropMetric> heihe(String text) {
-        int year = year(text);
+        int year = RegionalPublicIndicatorParser.reportYear(text, "黑河");
         String outputPart = afterLast(text, "粮食产量");
         return List.of(
                 metric(year, "CORN", named(text, "玉米", "万亩"), named(outputPart, "玉米", "亿斤"), "万亩/亿斤"),
@@ -30,10 +28,10 @@ final class RegionalPublicCropPageParser {
     }
 
     private static List<RegionalPublicDataRepository.PublicCropMetric> dxal(String text) {
-        int year = year(text);
+        int year = RegionalPublicIndicatorParser.reportYear(text, "大兴安岭");
         Matcher output = Pattern.compile("小麦、玉米、大豆分别为([0-9.]+)万吨、([0-9.]+)万吨、([0-9.]+)万吨").matcher(text);
         Matcher area = Pattern.compile("小麦、玉米、大豆分别为([0-9.]+)万公顷、([0-9.]+)万公顷、([0-9.]+)万公顷").matcher(text);
-        if (!output.find() || !area.find()) return List.of();
+        if (!output.find() || !area.find()) throw new IllegalArgumentException("未识别同作物面积及产量，保留最近有效数据");
         return List.of(
                 metricHa(year, "CORN", area.group(2), output.group(2)),
                 metricHa(year, "SOYBEAN", area.group(3), output.group(3)));
@@ -57,21 +55,10 @@ final class RegionalPublicCropPageParser {
                 areaWanHa + "万公顷；" + outputWanTon + "万吨（网页自动识别并换算为亩、公斤）");
     }
 
-    private static int year(String text) {
-        Matcher matcher = Pattern.compile("(20[0-9]{2})年").matcher(text);
-        if (!matcher.find()) throw new IllegalArgumentException("public report year missing");
-        return Integer.parseInt(matcher.group(1));
-    }
-
     private static BigDecimal named(String text, String crop, String unit) {
         Matcher matcher = Pattern.compile(Pattern.quote(crop) + "\\s*([0-9.]+)\\s*" + Pattern.quote(unit)).matcher(text);
         if (!matcher.find()) throw new IllegalArgumentException(crop + unit + " missing");
         return new BigDecimal(matcher.group(1));
-    }
-
-    private static String after(String text, String marker) {
-        int index = text.indexOf(marker);
-        return index < 0 ? text : text.substring(index);
     }
 
     private static String afterLast(String text, String marker) {

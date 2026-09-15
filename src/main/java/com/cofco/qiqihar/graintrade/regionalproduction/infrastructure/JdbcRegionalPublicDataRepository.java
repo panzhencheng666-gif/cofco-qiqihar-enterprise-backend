@@ -93,7 +93,7 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
                   SELECT DISTINCT ON (i.label) i.*
                   FROM production.regional_public_indicator i
                   JOIN production.regional_public_source s ON s.source_id=i.source_id
-                  WHERE s.active AND i.root_region_code=:root AND i.data_year<=:year
+                  WHERE s.active AND i.current_evidence AND i.root_region_code=:root AND i.data_year<=:year
                     AND i.method NOT LIKE '%待核对计划原始来源%'
                   ORDER BY i.label,i.data_year DESC,s.reliability_weight DESC,i.fetched_at DESC
                 ) indicator
@@ -130,7 +130,7 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
                 SELECT DISTINCT ON (i.label,i.unit,i.data_year) i.*,s.source_name,s.source_url
                 FROM production.regional_public_indicator i
                 JOIN production.regional_public_source s ON s.source_id=i.source_id
-                WHERE s.active AND i.root_region_code=:root AND i.data_year<=:year
+                WHERE s.active AND i.current_evidence AND i.root_region_code=:root AND i.data_year<=:year
                   AND i.data_kind='OBSERVED' AND i.indicator_id LIKE 'auto-%'
                 ORDER BY i.label,i.unit,i.data_year,s.reliability_weight DESC,i.fetched_at DESC
                 """).param("root", root).param("year", year).query((rs,n) -> new RegionalAgricultureProfile.Indicator(
@@ -180,17 +180,25 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
     @Override
     @Transactional
     public void recordIndicators(String id, List<RegionalPublicIndicatorParser.Metric> metrics, Instant now) {
+        // A successful replacement withdraws disappeared facts for that source and period.
+        // Keep the rows for audit; failures and empty parses must retain the last valid set.
+        for (int year : metrics.stream().mapToInt(RegionalPublicIndicatorParser.Metric::year).distinct().toArray()) {
+            jdbc.sql("""
+                    UPDATE production.regional_public_indicator SET current_evidence=false
+                    WHERE source_id=:id AND data_year=:year AND indicator_id LIKE 'auto-%'
+                    """).param("id",id).param("year",year).update();
+        }
         for (var metric : metrics) {
             jdbc.sql("""
                     INSERT INTO production.regional_public_indicator(
                       indicator_id,root_region_code,category,label,value,unit,data_year,data_kind,
-                      method,source_id,fetched_at)
+                      method,source_id,fetched_at,current_evidence)
                     SELECT 'auto-' || md5(:id || ':' || :year || ':' || :label),root_region_code,
-                      :category,:label,:value,:unit,:year,:kind,:method,source_id,:now
+                      :category,:label,:value,:unit,:year,:kind,:method,source_id,:now,true
                     FROM production.regional_public_source WHERE source_id=:id
                     ON CONFLICT(indicator_id) DO UPDATE SET
                       value=excluded.value,unit=excluded.unit,data_kind=excluded.data_kind,
-                      method=excluded.method,fetched_at=excluded.fetched_at
+                      method=excluded.method,fetched_at=excluded.fetched_at,current_evidence=true
                     """).param("id", id).param("year", metric.year()).param("category", metric.category())
                     .param("label", metric.label()).param("value", metric.value()).param("unit", metric.unit())
                     .param("kind", metric.kind()).param("method", metric.method()).param("now", Timestamp.from(now)).update();

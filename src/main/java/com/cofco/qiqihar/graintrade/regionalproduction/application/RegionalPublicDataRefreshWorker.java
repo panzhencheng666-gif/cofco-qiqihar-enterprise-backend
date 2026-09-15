@@ -122,8 +122,10 @@ public class RegionalPublicDataRefreshWorker {
                     var indicators = RegionalPublicIndicatorParser.parse(source.parserKey(), body);
                     if (source.parserKey().startsWith("ANNUAL_") && indicators.isEmpty())
                         throw new IllegalStateException("已获取页面，但未识别出匹配年份的农业指标；保留旧值，不标为核验无变化");
+                    if (metrics.isEmpty() && indicators.isEmpty() && excerpt.isBlank())
+                        throw new IllegalStateException("已访问页面，但未取得可核验的农业正文；保留旧值，等待重试");
                     String hash = sha256(!indicators.isEmpty() ? indicators.toString()
-                            : metrics.isEmpty() ? excerpt : metrics.toString());
+                            : metrics.isEmpty() ? RegionalPublicIndicatorParser.clean(body) : metrics.toString());
                     if (!indicators.isEmpty()) repository.recordIndicators(source.id(), indicators, now);
                     if (!metrics.isEmpty()) repository.recordCropMetrics(source.id(), metrics, now);
                     repository.recordPageSuccess(source.id(), now, hash, indicators.isEmpty() ? excerpt
@@ -176,8 +178,7 @@ public class RegionalPublicDataRefreshWorker {
                 .filter(sentence -> sentence.matches(".*(?:农业|粮食|耕地|补贴|补助|农田|种植|畜牧|乡村).*"))
                 .filter(sentence -> sentence.length() < 500).limit(4)
                 .collect(java.util.stream.Collectors.joining("；"));
-        return focused.isBlank() ? "已访问公开网页；正文未提取到适合展示的农业摘要，请查看原文。"
-                : focused.substring(0, Math.min(600, focused.length()));
+        return focused.substring(0, Math.min(600, focused.length()));
     }
 
     private static String sha256(String value) throws Exception {

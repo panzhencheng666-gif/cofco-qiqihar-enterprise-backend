@@ -20,6 +20,26 @@ import org.springframework.transaction.annotation.Transactional;
 class RegionalPublicEvidenceIntegrationTest {
     @Autowired JdbcClient jdbc;
     @Autowired RegionalPublicDataRepository repository;
+    @Test void withdrawsMissingFactsOnlyAfterSuccessfulSamePeriodReplacement() {
+        jdbc.sql("""
+            INSERT INTO production.regional_public_source(source_id,root_region_code,source_type,source_name,source_url,parser_key,evidence)
+            VALUES('proof-replacement','230200','AGRICULTURE','原文重核','https://example.org/replacement','ANNUAL_QQHR','原文')
+            """).update();
+        Instant now=Instant.parse("2026-09-15T00:30:00Z");
+        var area=new RegionalPublicIndicatorParser.Metric("CROP_ECONOMIC","回归测试面积",new BigDecimal("40"),"万亩",2025,"OBSERVED","面积原文");
+        var output=new RegionalPublicIndicatorParser.Metric("CROP_ECONOMIC","回归测试产量",new BigDecimal("0.05"),"万吨",2025,"OBSERVED","旧误识别");
+        var previous=new RegionalPublicIndicatorParser.Metric("CROP_ECONOMIC","回归测试产量",new BigDecimal("2"),"万吨",2024,"OBSERVED","历史原文");
+        repository.recordIndicators("proof-replacement",List.of(area,output,previous),now);
+        repository.recordFailure("proof-replacement",now.plusSeconds(1),"访问失败");
+        assertThat(repository.history("230200",2025)).anyMatch(i -> i.label().equals("回归测试产量") && i.dataYear()==2025);
+        repository.recordIndicators("proof-replacement",List.of(),now.plusSeconds(2));
+        assertThat(repository.history("230200",2025)).anyMatch(i -> i.label().equals("回归测试产量") && i.dataYear()==2025);
+        repository.recordIndicators("proof-replacement",List.of(area),now.plusSeconds(3));
+        assertThat(repository.history("230200",2025)).noneMatch(i -> i.label().equals("回归测试产量") && i.dataYear()==2025);
+        assertThat(repository.load("230200",2025).indicators()).noneMatch(i -> i.label().equals("回归测试产量") && i.dataYear()==2025);
+        assertThat(repository.history("230200",2025)).anyMatch(i -> i.label().equals("回归测试产量") && i.dataYear()==2024);
+        assertThat(jdbc.sql("SELECT count(*) FROM production.regional_public_indicator WHERE source_id='proof-replacement'").query(Integer.class).single()).isEqualTo(3);
+    }
     @Test void separatesRegionsAndRetainsNoChangeEvidenceWithNewVerificationTime() {
         jdbc.sql("DELETE FROM production.regional_public_crop_metric").update();
         jdbc.sql("""

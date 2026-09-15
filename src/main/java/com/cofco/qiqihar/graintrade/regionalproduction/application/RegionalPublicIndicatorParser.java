@@ -43,9 +43,6 @@ public final class RegionalPublicIndicatorParser {
         if (!parserKey.startsWith("ANNUAL_") && !parserKey.equals("QQHR_PROCESSING")) return List.of();
         String text = clean(body);
         if (parserKey.equals("QQHR_PROCESSING")) return processing(text);
-        var yearMatch = Pattern.compile("(20[0-9]{2})年.{0,30}?国民经济和社会发展统计公报").matcher(text);
-        if (!yearMatch.find()) throw new IllegalArgumentException("统计公报年度未识别，保留最近有效数据");
-        int year = Integer.parseInt(yearMatch.group(1));
         String rootName = switch (parserKey) {
             case "ANNUAL_QQHR" -> "齐齐哈尔";
             case "ANNUAL_HEIHE" -> "黑河";
@@ -53,7 +50,7 @@ public final class RegionalPublicIndicatorParser {
             case "ANNUAL_HLBE" -> "呼伦贝尔";
             default -> throw new IllegalArgumentException("未登记统计公报解析规则");
         };
-        if (!text.contains(rootName)) throw new IllegalArgumentException("来源与登记地区不匹配");
+        int year = reportYear(text, rootName);
         List<Metric> result = new ArrayList<>();
         for (String mode : List.of("铁路", "公路", "水路")) {
             extract(result, text, year, "LOGISTICS", mode + "货运量", "(?<![、和])" + mode + "货运量", "OUTPUT");
@@ -90,10 +87,17 @@ public final class RegionalPublicIndicatorParser {
         // In economic-crop clauses the output follows its area without repeating the crop name.
         for (Crop crop : CROPS) {
             if (crop.category.equals("CROP_GRAIN")) continue;
-            var clause = Pattern.compile("(?<![贮胡及])(?:" + crop.aliases + ")(?:播种|种植)?面积[^；。]{0,70}?(?=；|。|$)").matcher(agri);
+            var clause = Pattern.compile("(?<![贮胡及])(?:" + crop.aliases + ")(?:播种|种植)?(?:总)?(?:面积)?"
+                    + NUM + "(?:万公顷|公顷|万亩|亩)([^；。]{0,70})(?=；|。|$)").matcher(agri);
             if (clause.find()) {
-                var output = Pattern.compile("产量" + NUM + "(万吨|吨)").matcher(clause.group());
-                if (output.find()) add(result,crop.category,crop.name + "产量",output.group(1),output.group(2),year,"OBSERVED",clause.group(),"OUTPUT");
+                String tail = clause.group(2);
+                var output = Pattern.compile("产量" + NUM + "(万吨|吨)").matcher(tail);
+                if (output.find()) {
+                    String between = tail.substring(0, output.start());
+                    boolean changedSubject = between.contains("其中") || CROPS.stream()
+                            .anyMatch(other -> Pattern.compile(other.aliases).matcher(between).find());
+                    if (!changedSubject) add(result,crop.category,crop.name + "产量",output.group(1),output.group(2),year,"OBSERVED",clause.group(),"OUTPUT");
+                }
             }
         }
         // Parallel lists in the Daxing'anling report explicitly name their crop order.
@@ -195,6 +199,14 @@ public final class RegionalPublicIndicatorParser {
         }
         if (result.isEmpty()) throw new IllegalArgumentException("加工报道无可提取指标");
         return List.copyOf(result);
+    }
+
+    static int reportYear(String text, String rootName) {
+        String region = Pattern.quote(rootName) + "(?:市|地区)?";
+        var report = Pattern.compile("(?:(20[0-9]{2})年" + region + "|" + region
+                + "(20[0-9]{2})年)国民经济和社会发展统计公报").matcher(text);
+        if (!report.find()) throw new IllegalArgumentException("未识别登记地区及年度的统计公报原文，保留最近有效数据");
+        return Integer.parseInt(report.group(1) == null ? report.group(2) : report.group(1));
     }
 
     static String clean(String body) {
