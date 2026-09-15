@@ -23,7 +23,8 @@ public record RegionalAgricultureProfileResponse(
         List<RegionalAgricultureProfile.Source> sources,
         List<CropResponse> crops,
         com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalEstimateBatch estimateBatch,
-        com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalHierarchyRefresh.CalculationStatus regionalCalculation) {
+        com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalHierarchyRefresh.CalculationStatus regionalCalculation,
+        com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalRailways railway) {
 
     static RegionalAgricultureProfileResponse from(RegionalAgricultureProfile value) {
         return from(value, null);
@@ -35,6 +36,12 @@ public record RegionalAgricultureProfileResponse(
     static RegionalAgricultureProfileResponse from(RegionalAgricultureProfile value,
             com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalEstimateBatch batch,
             com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalHierarchyRefresh.CalculationStatus status) {
+        return from(value,batch,status,null);
+    }
+    static RegionalAgricultureProfileResponse from(RegionalAgricultureProfile value,
+            com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalEstimateBatch batch,
+            com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalHierarchyRefresh.CalculationStatus status,
+            com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalRailways railway) {
         return new RegionalAgricultureProfileResponse(
                 value.regionCode(), value.regionName(), value.administrativeLevel(), value.year(),
                 value.automatic(), value.generatedAt(), value.coverageDescription(),
@@ -44,7 +51,7 @@ public record RegionalAgricultureProfileResponse(
                 value.crops().stream().map(CropResponse::from).toList(),
                 batch != null && value.regionCode().equals(batch.rootRegionCode()) && value.year() == batch.year()
                         ? batch : null,
-                status);
+                status, railway);
     }
 
     public record CropResponse(
