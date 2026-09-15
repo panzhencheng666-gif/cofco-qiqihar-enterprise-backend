@@ -60,6 +60,8 @@ public class RegionalAgricultureProfileService {
             throw invalid("REGIONAL_PROFILE_REGION_UNSUPPORTED", "地区不在齐齐哈尔、黑河、呼伦贝尔或大兴安岭范围内");
         }
         var publicContext = publicData.load(root(region.code()), year);
+        var profileSources = new java.util.LinkedHashMap<String,RegionalAgricultureProfile.Source>();
+        publicContext.sources().forEach(source -> profileSources.put(source.id(),source));
         List<RegionalAgricultureProfileCalculator.Observation> observations = new ArrayList<>();
         if (Set.of("PREFECTURE", "COUNTY").contains(region.administrativeLevel())) {
             for (String product : PRODUCTS) {
@@ -158,6 +160,7 @@ public class RegionalAgricultureProfileService {
                 if (area == null) area = reference.area();
                 if (yield == null) yield = reference.yield();
                 explanation += "\n" + reference.explanation();
+                reference.sources().forEach(source -> profileSources.putIfAbsent(source.id(),source));
                 modeled = true;
             }
             if (area != null && yield != null) {
@@ -170,6 +173,7 @@ public class RegionalAgricultureProfileService {
                 if (!parentLoaded) {
                     parentProfile = profile(year, region.parentCode(), lineage, scope, completed);
                     parentLoaded = true;
+                    parentProfile.sources().forEach(source -> profileSources.putIfAbsent(source.id(),source));
                 }
                 var parentCrop = parentProfile.crops().stream().filter(c -> c.productCode().equals(product)).findFirst().orElse(null);
                 var allocation = boundaries.allocation(region.code(),region.parentCode()).orElse(null);
@@ -223,12 +227,12 @@ public class RegionalAgricultureProfileService {
                         : "公开统计、行政区边界、逐日天气和政策证据自动融合；缺项由模型补齐",
                 calculated.calculationMethod(), publicContext.refreshStatus(), publicContext.weather(),
                 indicators,
-                publicContext.policies(), publicContext.sources(), calculated.crops());
+                publicContext.policies(), List.copyOf(profileSources.values()), calculated.crops());
         completed.put(regionCode,result);
         return result;
     }
 
-    private record ReferenceCrop(BigDecimal area,BigDecimal yield,String explanation) {}
+    private record ReferenceCrop(BigDecimal area,BigDecimal yield,String explanation,List<RegionalAgricultureProfile.Source> sources) {}
 
     private ReferenceCrop referenceCrop(int year,String product,
             com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope scope,
@@ -237,6 +241,7 @@ public class RegionalAgricultureProfileService {
         var yields=new ArrayList<BigDecimal>();
         var ratios=new ArrayList<BigDecimal>();
         var evidence=new ArrayList<String>();
+        var referenceSources=new java.util.LinkedHashMap<String,RegionalAgricultureProfile.Source>();
         for (String peer:SUPPORTED_ROOTS.stream().sorted().toList()) {
             String peerName=java.util.Map.of("230200","齐齐哈尔市","231100","黑河市","150700","呼伦贝尔市","232700","大兴安岭地区").get(peer);
             var peerHistory=publicData.history(peer,year);
@@ -245,6 +250,8 @@ public class RegionalAgricultureProfileService {
                     .max(java.util.Comparator.comparingInt(RegionalAgricultureProfile.Indicator::dataYear)).orElse(null);
             if (publishedYield != null) {
                 yields.add(publishedYield.value());
+                publicData.load(peer,year).sources().stream().filter(source -> source.url().equals(publishedYield.sourceUrl()))
+                        .forEach(source -> referenceSources.put(source.id(),source));
                 evidence.add(peerName+publishedYield.dataYear()+"年单产"+display(publishedYield.value())+"公斤/亩；"+publishedYield.sourceName()+"（"+publishedYield.sourceUrl()+"）");
             } else {
                 var output=peerHistory.stream().filter(i -> i.label().equals(name+"产量") && "万吨".equals(i.unit())
@@ -255,6 +262,8 @@ public class RegionalAgricultureProfileService {
                     if (sameYear!=null && sameYear.plantedAreaMu()!=null && sameYear.plantedAreaMu().signum()>0) {
                         var y=output.value().multiply(new BigDecimal("10000000")).divide(sameYear.plantedAreaMu(),8,java.math.RoundingMode.HALF_UP);
                         yields.add(y);
+                        publicData.load(peer,year).sources().stream().filter(source -> source.url().equals(output.sourceUrl()))
+                                .forEach(source -> referenceSources.put(source.id(),source));
                         evidence.add(peerName+output.dataYear()+"年"+output.sourceName()+"总产"+display(output.value())
                                 +"万吨×10000000÷同年地区年度面积"+display(sameYear.plantedAreaMu())+"亩="+display(y)+"公斤/亩（"+output.sourceUrl()+"）");
                     }
@@ -282,7 +291,7 @@ public class RegionalAgricultureProfileService {
                 +(referenceYield==null ? "" : "单产参考："+yields.size()+"个可用值的中位数="+display(referenceYield)+"公斤/亩。\n")
                 +(area==null ? "" : "面积参考：当地其余两类作物"+display(localOther)+"亩×参照面积比中位数"+display(ratio)+"="+display(area)+"亩，仅在本地面积缺失时采用。\n")
                 +"适用假设：当地种植结构和生产条件可参照上述地区；实际气候、灌溉与种植选择可能明显不同。这是参考情景，不证明当地实际种植；取得当地证据后优先替换。\n";
-        return new ReferenceCrop(area,referenceYield,explanation);
+        return new ReferenceCrop(area,referenceYield,explanation,List.copyOf(referenceSources.values()));
     }
 
     private static BigDecimal median(List<BigDecimal> values) {

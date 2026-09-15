@@ -23,7 +23,10 @@ class RegionalRiceRecoveryTest {
         when(data.history(any(),anyInt())).thenReturn(List.of());
         when(data.history("231100",2026)).thenReturn(List.of(new RegionalAgricultureProfile.Indicator("CROP_GRAIN","稻谷平均单产",new BigDecimal("600"),"公斤/亩",2025,"OBSERVED","公开单产","黑河统计公报","https://example.org/heihe",null)));
         when(data.load(any(),anyInt())).thenReturn(new RegionalPublicDataRepository.Context(List.of(),null,null,List.of(),List.of(),List.of()));
+        when(data.load("231100",2026)).thenReturn(new RegionalPublicDataRepository.Context(List.of(),null,null,List.of(),List.of(),List.of(
+                new RegionalAgricultureProfile.Source("heihe-proof","AGRICULTURE","黑河统计公报","https://example.org/heihe","OFFICIAL",BigDecimal.ONE,null,null,"SUCCESS","公开单产"))));
         var p=new RegionalAgricultureProfileService(annual,summaries,boundaries,new RegionalAgricultureProfileCalculator(),data,access).profile(2026,"150700");
+        assertThat(p.sources()).anyMatch(source -> source.url().equals("https://example.org/heihe"));
         assertThat(p.crops()).singleElement().satisfies(c -> {
             assertThat(c.yieldPerMuKg()).isEqualByComparingTo("600");
             assertThat(c.totalOutputKg()).isEqualByComparingTo("600000");
