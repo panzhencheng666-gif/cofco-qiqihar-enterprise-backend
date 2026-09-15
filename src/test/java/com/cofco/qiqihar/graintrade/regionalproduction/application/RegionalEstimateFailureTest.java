@@ -32,9 +32,11 @@ class RegionalEstimateFailureTest {
     }
     @org.junit.jupiter.api.Test void discoverySeparatesReportPeriodFromCurrentEvents() {
         var queries=RegionalSourceDiscovery.discoveryQueries("大兴安岭",2026);
-        org.assertj.core.api.Assertions.assertThat(queries).hasSize(7)
+        org.assertj.core.api.Assertions.assertThat(queries).hasSize(9)
             .contains("大兴安岭 2025年 国民经济和社会发展统计公报", "大兴安岭 2023年 国民经济和社会发展统计公报")
-            .anyMatch(q -> q.contains("2026 农业 政策"));
+            .anyMatch(q -> q.contains("2026 农业 政策"))
+            .anyMatch(q -> q.contains("行政村"))
+            .anyMatch(q -> q.contains("公众号"));
     }
 
     @org.junit.jupiter.api.Test void discoveryDoesNotPromoteCountyStatisticsToTheirParentCity() {

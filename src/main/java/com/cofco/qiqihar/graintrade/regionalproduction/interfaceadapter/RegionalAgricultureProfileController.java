@@ -12,11 +12,14 @@ import org.springframework.web.bind.annotation.RestController;
 public class RegionalAgricultureProfileController {
     private final RegionalAgricultureProfileService service;
     private final com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalEstimateBatchService batches;
+    private final com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalHierarchyRefresh hierarchy;
 
     public RegionalAgricultureProfileController(RegionalAgricultureProfileService service,
-            com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalEstimateBatchService batches) {
+            com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalEstimateBatchService batches,
+            com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalHierarchyRefresh hierarchy) {
         this.service = service;
         this.batches = batches;
+        this.hierarchy = hierarchy;
     }
 
     @GetMapping
@@ -24,6 +27,6 @@ public class RegionalAgricultureProfileController {
             @RequestParam int year,
             @RequestParam String regionCode) {
         var profile = service.profile(year, regionCode);
-        return new ApiResponse<>(RegionalAgricultureProfileResponse.from(profile, batches.load(regionCode.substring(0,4) + "00",year)));
+        return new ApiResponse<>(RegionalAgricultureProfileResponse.from(profile, batches.load(regionCode.substring(0,4) + "00",year),hierarchy.status(regionCode,year)));
     }
 }

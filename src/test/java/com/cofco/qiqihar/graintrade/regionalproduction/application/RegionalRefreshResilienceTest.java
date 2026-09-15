@@ -91,6 +91,7 @@ class RegionalRefreshResilienceTest {
             context.registerBean(RegionalSourceDiscovery.class, () -> discovery);
             context.registerBean(RegionalPublicDataRepository.class, () -> mock(RegionalPublicDataRepository.class));
             context.registerBean(RegionalEstimateBatchService.class, () -> mock(RegionalEstimateBatchService.class));
+            context.registerBean(RegionalHierarchyRefresh.class, () -> mock(RegionalHierarchyRefresh.class));
             context.registerBean(RegionalPublicDataRefreshWorker.class);
             context.registerBean(BusinessProbe.class, () -> probe);
             context.refresh();

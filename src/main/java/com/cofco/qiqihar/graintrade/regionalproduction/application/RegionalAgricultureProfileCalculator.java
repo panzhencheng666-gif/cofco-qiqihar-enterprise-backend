@@ -80,8 +80,8 @@ public class RegionalAgricultureProfileCalculator {
         return new RegionalAgricultureProfile(
                 regionCode, regionName, administrativeLevel, year, true, Instant.now().toString(),
                 switch (administrativeLevel) {
-                    case "VILLAGE" -> "行政村级自动估算：继承上级公开统计并按本村与上级边界面积比例分摊（均匀密度假设）";
-                    case "TOWNSHIP" -> "乡镇级自动估算：继承上级公开统计并按本乡镇与上级边界面积比例分摊（均匀密度假设）";
+                    case "VILLAGE" -> "行政村级缺项估算：采用最近层级依据，按完整边界权重或同级等份假设分配；具体方法见数值说明";
+                    case "TOWNSHIP" -> "乡镇级缺项估算：采用最近层级依据，按完整边界权重或同级等份假设分配；具体方法见数值说明";
                     default -> "地区公开统计与模型补算覆盖";
                 },
                 null,

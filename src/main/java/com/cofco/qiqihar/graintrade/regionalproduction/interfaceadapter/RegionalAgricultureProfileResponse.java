@@ -22,20 +22,26 @@ public record RegionalAgricultureProfileResponse(
         List<RegionalAgricultureProfile.Policy> policies,
         List<RegionalAgricultureProfile.Source> sources,
         List<CropResponse> crops,
-        com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalEstimateBatch estimateBatch) {
+        com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalEstimateBatch estimateBatch,
+        com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalHierarchyRefresh.CalculationStatus regionalCalculation) {
 
     static RegionalAgricultureProfileResponse from(RegionalAgricultureProfile value) {
         return from(value, null);
     }
     static RegionalAgricultureProfileResponse from(RegionalAgricultureProfile value,
             com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalEstimateBatch batch) {
+        return from(value,batch,null);
+    }
+    static RegionalAgricultureProfileResponse from(RegionalAgricultureProfile value,
+            com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalEstimateBatch batch,
+            com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalHierarchyRefresh.CalculationStatus status) {
         return new RegionalAgricultureProfileResponse(
                 value.regionCode(), value.regionName(), value.administrativeLevel(), value.year(),
                 value.automatic(), value.generatedAt(), value.coverageDescription(),
                 value.regionFacts(),
                 value.sourceSummary(), value.calculationMethod(), value.refreshStatus(),
                 value.weather(), value.indicators(), value.policies(), value.sources(),
-                value.crops().stream().map(CropResponse::from).toList(), batch);
+                value.crops().stream().map(CropResponse::from).toList(), batch, status);
     }
 
     public record CropResponse(

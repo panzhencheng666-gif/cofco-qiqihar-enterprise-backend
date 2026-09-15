@@ -44,6 +44,26 @@ public class JdbcRegionalAgricultureBoundaryRepository implements RegionalAgricu
     }
 
     @Override
+    public Optional<Allocation> allocation(String regionCode, String parentCode) {
+        return jdbc.sql("""
+                WITH weights AS (
+                  SELECT r.code, CASE WHEN b.geometry IS NOT NULL THEN ST_Area(b.geometry::geography) END AS area
+                  FROM platform.region r LEFT JOIN overview.administrative_boundary b ON b.region_code=r.code
+                  WHERE r.parent_code=:parent
+                ), totals AS (
+                  SELECT count(*) AS n, count(area) FILTER(WHERE area>0) AS available, sum(area) AS total FROM weights
+                )
+                SELECT CASE WHEN n=available AND total>0 THEN (w.area/total)::numeric ELSE 1.0/n END AS share,
+                       CASE WHEN n=available AND total>0
+                         THEN '本级边界面积占全部同级地区边界面积合计的比例'
+                         ELSE '同级地区边界尚不齐全，采用最大熵等份假设：1÷'||n||'个同级地区；这是分配权重，不是实测面积'
+                       END AS basis
+                FROM weights w CROSS JOIN totals WHERE w.code=:region AND n>0
+                """).param("region",regionCode).param("parent",parentCode)
+                .query((rs,row) -> new Allocation(rs.getBigDecimal("share"),rs.getString("basis"))).optional();
+    }
+
+    @Override
     public RegionFacts facts(String regionCode) {
         BigDecimal area = areaSquareMetres(regionCode).orElse(BigDecimal.ZERO);
         return jdbc.sql("""

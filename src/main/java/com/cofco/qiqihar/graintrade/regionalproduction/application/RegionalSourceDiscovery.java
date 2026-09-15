@@ -66,7 +66,7 @@ public class RegionalSourceDiscovery {
                         String title=item.path("title").asText("");
                         String url=item.path("url").asText("");
                         String description=item.path(searx.isBlank()?"description":"content").asText("");
-                        if (!title.contains(name) || !(title+description).matches(".*(?:农业|农牧|粮食|种植|蔬菜|畜牧|铁路|物流|统计公报|农作物).*")) continue;
+                        if (!(title+description).contains(name) || !(title+description).matches(".*(?:农业|农牧|粮食|种植|蔬菜|畜牧|铁路|物流|统计公报|农作物).*")) continue;
                         if (!publicHttps(url)) continue;
                         String parser=isRootAnnualReport(title,name) ? switch(root) {
                             case "230200"->"ANNUAL_QQHR";case "231100"->"ANNUAL_HEIHE";
@@ -105,7 +105,7 @@ public class RegionalSourceDiscovery {
         // Reports published this year normally describe the preceding year; older reports train the model.
         for (int period=year-1; period>=year-3; period--)
             queries.add(name+" "+period+"年 国民经济和社会发展统计公报");
-        for (String topic : List.of("种植 蔬菜 畜牧 产量", "农业 政策 气象 灾害", "粮食 调入 调出 铁路 货运 物流园", "农产品 冷链 仓储 加工"))
+        for (String topic : List.of("种植 蔬菜 畜牧 产量", "农业 政策 气象 灾害", "粮食 调入 调出 铁路 货运 物流园", "农产品 冷链 仓储 加工", "乡镇 行政村 种植面积 产量", "农业 粮食 媒体 公众号"))
             queries.add(name+" "+year+" "+topic);
         return List.copyOf(queries);
     }

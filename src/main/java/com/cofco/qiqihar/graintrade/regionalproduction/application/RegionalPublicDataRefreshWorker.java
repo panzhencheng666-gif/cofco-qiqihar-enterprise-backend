@@ -27,6 +27,7 @@ public class RegionalPublicDataRefreshWorker {
     private final RegionalPublicDataRepository repository;
     private final RegionalSourceDiscovery discovery;
     private final RegionalEstimateBatchService estimateBatches;
+    private final RegionalHierarchyRefresh hierarchy;
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(8)).followRedirects(HttpClient.Redirect.NORMAL).build();
 
@@ -36,12 +37,18 @@ public class RegionalPublicDataRefreshWorker {
         this(repository, discovery, null);
     }
 
-    @org.springframework.beans.factory.annotation.Autowired
     public RegionalPublicDataRefreshWorker(RegionalPublicDataRepository repository, RegionalSourceDiscovery discovery,
             RegionalEstimateBatchService estimateBatches) {
+        this(repository,discovery,estimateBatches,null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public RegionalPublicDataRefreshWorker(RegionalPublicDataRepository repository, RegionalSourceDiscovery discovery,
+            RegionalEstimateBatchService estimateBatches, RegionalHierarchyRefresh hierarchy) {
         this.repository = repository;
         this.discovery = discovery;
         this.estimateBatches = estimateBatches;
+        this.hierarchy = hierarchy;
     }
 
     @Scheduled(cron = "${qiqihar.regional-public-data.daily-cron:0 30 8 * * *}", zone = "Asia/Shanghai",
@@ -121,6 +128,7 @@ public class RegionalPublicDataRefreshWorker {
             }
         }
         if (estimateBatches != null && !Thread.currentThread().isInterrupted()) estimateBatches.refresh(Instant.now());
+        if (hierarchy != null && !Thread.currentThread().isInterrupted()) hierarchy.refresh(Instant.now());
     }
 
     static BigDecimal number(String json, String field) {
