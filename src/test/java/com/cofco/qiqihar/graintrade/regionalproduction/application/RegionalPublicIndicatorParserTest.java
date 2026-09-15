@@ -3,6 +3,14 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.*;
 
 class RegionalPublicIndicatorParserTest {
+ @Test void readsHeihePlantingIndustryValueWhenImpactTextSeparatesSubjectFromValue() {
+  var values=RegionalPublicIndicatorParser.parse("ANNUAL_HEIHE", "2025年黑河市国民经济和社会发展统计公报 二、农业 其中，种植业受粮食结构调整影响产值实现308.2亿元，增长3.3%；林业产值14.8亿元。三、工业");
+  assertThat(values).filteredOn(i -> i.label().equals("种植业产值")).singleElement().satisfies(i -> {
+   assertThat(i.value()).isEqualByComparingTo("308.2");
+   assertThat(i.kind()).isEqualTo("OBSERVED");
+   assertThat(i.method()).contains("种植业受粮食结构调整影响产值实现308.2亿元");
+  });
+ }
  @Test void doesNotAssignChildCropOutputToEconomicCropAggregate() {
   var values=RegionalPublicIndicatorParser.parse("ANNUAL_HEIHE", "2025年黑河市国民经济和社会发展统计公报。经济作物播种面积40.0万亩，其中，油料播种面积0.54万亩，产量0.05万吨；糖料0.1万亩，产量0.4万吨；蔬菜及食用菌播种面积6.8万亩，产量14.8万吨。");
   assertThat(values).noneMatch(i -> i.label().equals("经济作物产量") || i.label().equals("经济作物平均单产"));

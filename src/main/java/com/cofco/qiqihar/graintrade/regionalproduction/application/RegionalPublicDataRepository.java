@@ -9,6 +9,8 @@ public interface RegionalPublicDataRepository {
 
     List<RegionalAgricultureProfile.Indicator> history(String rootRegionCode, int requestedYear);
 
+    List<RegionalAgricultureProfile.Indicator> calculationHistory(String rootRegionCode, int requestedYear);
+
     List<DueSource> due(Instant now);
 
     void recordPageSuccess(String sourceId, Instant fetchedAt, String hash, String excerpt);

@@ -71,7 +71,7 @@ public final class RegionalPublicIndicatorParser {
         extract(result, agri, year, "LAND", "粮食播种面积", "粮食(?:作物)?(?:总)?播种(?:总)?面积", "AREA");
         extract(result, agri, year, "PRODUCTION", "粮食总产量", "粮食(?:总)?产量", "OUTPUT");
         extract(result, agri, year, "ECONOMY", "农林牧渔业总产值", "农林牧渔业总产值", "MONEY");
-        for (String[] entry : List.of(new String[]{"种植业产值", "种植业(?:产值)?|农业产值"},
+        for (String[] entry : List.of(new String[]{"种植业产值", "种植业(?:产值|[^；。]{1,30}产值)?|农业产值"},
                 new String[]{"林业产值", "林业产值"}, new String[]{"畜牧业产值", "畜牧业产值"},
                 new String[]{"渔业产值", "渔业产值"}, new String[]{"农林牧渔服务业产值", "农林牧渔(?:服务业|专业及辅助性活动)产值"}))
             extract(result, agri, year, "ECONOMY", entry[0], entry[1], "MONEY");

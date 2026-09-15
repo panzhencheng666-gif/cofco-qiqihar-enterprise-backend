@@ -67,6 +67,30 @@ class RegionalRiceRecoveryTest {
             assertThat(crop.dataKind()).isEqualTo("MODEL_ESTIMATE");
         });
     }
+    @Test void usesTraceableDerivedYieldFromCalculationHistory() {
+        var annual=mock(RegionalCropAnnualStatRepository.class);
+        var summaries=mock(RegionalCropSummaryRepository.class);
+        var boundaries=mock(RegionalAgricultureBoundaryRepository.class);
+        var data=mock(RegionalPublicDataRepository.class);
+        var access=mock(AccessControl.class);
+        when(access.requireBusinessReadScope()).thenReturn(new AuthorizedReadScope("test",Set.of("*")));
+        when(annual.region("231100")).thenReturn(Optional.of(new RegionalCropAnnualStatRepository.RegionDescriptor("231100","黑河市",null,"PREFECTURE")));
+        when(boundaries.areaSquareMetres("231100")).thenReturn(Optional.of(new BigDecimal("1000000")));
+        when(boundaries.facts("231100")).thenReturn(new RegionalAgricultureBoundaryRepository.RegionFacts(new BigDecimal("1000000"),0,0,0,0));
+        when(summaries.summarize(eq(2026),eq("RICE"),eq("231100"),any())).thenReturn(Optional.of(summary(2026,"1000")));
+        var derived=new RegionalAgricultureProfile.Indicator("CROP_GRAIN","稻谷平均单产",new BigDecimal("600"),"公斤/亩",2025,"ESTIMATED","同年真实面积与产量派生","黑河统计公报","https://example.org/heihe",null);
+        when(data.history("231100",2026)).thenReturn(List.of());
+        when(data.calculationHistory("231100",2026)).thenReturn(List.of(derived));
+        when(data.load(any(),anyInt())).thenReturn(new RegionalPublicDataRepository.Context(List.of(),null,null,List.of(),List.of(),List.of()));
+
+        var profile=new RegionalAgricultureProfileService(annual,summaries,boundaries,new RegionalAgricultureProfileCalculator(),data,access).profile(2026,"231100");
+
+        assertThat(profile.crops()).singleElement().satisfies(crop -> {
+            assertThat(crop.yieldPerMuKg()).isEqualByComparingTo("600");
+            assertThat(crop.basis()).contains("同年真实面积与产量派生");
+        });
+        assertThat(profile.indicators()).noneMatch(i -> i.label().equals("稻谷平均单产"));
+    }
     private static RegionalCropSummary summary(int year,String area) {
         return new RegionalCropSummary("230200","齐齐哈尔市","PREFECTURE",year,"RICE",new BigDecimal(area),null,null,null,null,true,false,false,"");
     }

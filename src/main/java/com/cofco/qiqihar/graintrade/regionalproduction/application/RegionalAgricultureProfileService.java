@@ -78,7 +78,8 @@ public class RegionalAgricultureProfileService {
         }
         BigDecimal boundaryArea = boundaries.areaSquareMetres(region.code())
                 .orElseThrow(() -> invalid("REGIONAL_PROFILE_BOUNDARY_MISSING", "所选地区缺少可用于模型推算的公开边界"));
-        var history = publicData.history(root(region.code()), year);
+        var publicHistory = publicData.history(root(region.code()), year);
+        var history = publicData.calculationHistory(root(region.code()), year);
         var trendRates = new java.util.HashMap<String, BigDecimal>();
         var trendEvidence = new java.util.HashMap<String, String>();
         java.util.Map.of("CORN", "玉米", "SOYBEAN", "大豆", "RICE", "稻谷").forEach((code, name) -> {
@@ -199,7 +200,7 @@ public class RegionalAgricultureProfileService {
                         BigDecimal.ONE, !publicContext.policies().isEmpty(), trendRates));
         var facts = boundaries.facts(region.code());
         var indicators = new ArrayList<>(RegionalDerivedIndicatorCalculator.complete(publicContext.indicators()));
-        indicators.addAll(RegionalHistoricalProjection.project(history, year));
+        indicators.addAll(RegionalHistoricalProjection.project(publicHistory, year));
         if (!"PREFECTURE".equals(region.administrativeLevel())) {
             BigDecimal share = BigDecimal.ONE;
             String cursor = region.code();
