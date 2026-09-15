@@ -66,7 +66,7 @@ public class ObservableAnalysisService {
     private AuthorizedReadScope readScope() {
         return accessControl == null
                 ? AuthorizedReadScope.unrestricted()
-                : accessControl.requireReadScope();
+                : accessControl.requireBusinessReadScope();
     }
 
     private static boolean blank(String value) {

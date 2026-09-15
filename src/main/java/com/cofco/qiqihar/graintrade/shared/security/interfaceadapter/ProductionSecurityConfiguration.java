@@ -477,7 +477,7 @@ public class ProductionSecurityConfiguration {
         return String.join("|",principal.subjectId(),principal.workUnitCode(),
                 principal.accountStatus(),principal.employmentStatus(),
                 principal.roleCodes().stream().sorted().collect(Collectors.joining(",")),
-                principal.permissionCodes().stream().sorted().collect(Collectors.joining(",")),
+                principal.effectivePermissionCodes().stream().sorted().collect(Collectors.joining(",")),
                 principal.regionCodes().stream().sorted().collect(Collectors.joining(",")));
     }
 

@@ -37,7 +37,7 @@ public class MarketObjectService {
 
     @Transactional(readOnly = true)
     public List<MarketObjectView> list() {
-        return repository.findAll(access.requireReadScope().regionCodes());
+        return repository.findAll(access.requireBusinessReadScope().regionCodes());
     }
 
     @Transactional
