@@ -38,7 +38,7 @@ public class ProductionObjectService {
 
     @Transactional(readOnly = true)
     public List<ProductionObjectView> list() {
-        return repository.findAll(access.requireReadScope().regionCodes());
+        return repository.findAll(access.requireBusinessReadScope().regionCodes());
     }
 
     @Transactional

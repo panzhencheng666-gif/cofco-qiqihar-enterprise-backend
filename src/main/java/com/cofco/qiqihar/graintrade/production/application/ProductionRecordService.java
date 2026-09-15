@@ -461,7 +461,8 @@ public class ProductionRecordService implements ProductionImportPort {
             default -> null;
         };
         if (permission == null || !principal.permits(permission)) return false;
-        if (!"VIEW".equals(action) && (regionCode == null || !principal.includesRegion(regionCode))) return false;
+        if (!SecurityPrincipal.isSharedReportingPermission(permission)
+                && (regionCode == null || !principal.includesRegion(regionCode))) return false;
         if (separationOfDuties == null) return true;
         return switch (action) {
             case "APPROVE" -> separationOfDuties.canApprove(

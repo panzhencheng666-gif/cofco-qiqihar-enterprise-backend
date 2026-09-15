@@ -32,7 +32,7 @@ public class SessionController {
                     principal.accountStatus(),principal.employmentStatus(),
                     principal.roleCodes().isEmpty()?List.of():List.of(principal.permits("BUSINESS_APPROVE")
                             ? "BUSINESS_REVIEWER" : "BUSINESS_OPERATOR"),principal.positions(),
-                    principal.permissionCodes().stream().sorted().toList(),
+                    principal.effectivePermissionCodes().stream().sorted().toList(),
                     principal.regionCodes().stream().sorted().toList(),principal.assignedRegionScopes(),principal.isRootAdministrator());
         }
     }

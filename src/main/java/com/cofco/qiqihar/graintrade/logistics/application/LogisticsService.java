@@ -206,7 +206,7 @@ public class LogisticsService {
                 default -> null;
             };
             if(permission==null||!principal.permits(permission))return false;
-            if(!"VIEW".equals(action) && !regionAllowed)return false;
+            if(!SecurityPrincipal.isSharedReportingPermission(permission) && !regionAllowed)return false;
             if(separationOfDuties==null)return true;
             return switch(action){
                 case "APPROVE" -> separationOfDuties.canApprove(

@@ -65,7 +65,19 @@ public record SecurityPrincipal(
     }
 
     public boolean permits(String permissionCode) {
-        return isRootAdministrator() || permissionCodes.contains(permissionCode);
+        return isRootAdministrator() || isSharedReportingPermission(permissionCode) || permissionCodes.contains(permissionCode);
+    }
+
+    public static boolean isSharedReportingPermission(String permissionCode) {
+        return "BUSINESS_READ".equals(permissionCode) || "BUSINESS_CREATE".equals(permissionCode)
+                || "BUSINESS_UPDATE".equals(permissionCode);
+    }
+
+    /** Effective business permissions; stored roles and responsibility assignments stay unchanged. */
+    public Set<String> effectivePermissionCodes() {
+        var effective = new java.util.HashSet<>(permissionCodes);
+        effective.addAll(Set.of("BUSINESS_READ", "BUSINESS_CREATE", "BUSINESS_UPDATE"));
+        return Set.copyOf(effective);
     }
 
     public boolean includesRegion(String regionCode) {

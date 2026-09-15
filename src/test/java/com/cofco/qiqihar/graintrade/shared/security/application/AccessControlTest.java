@@ -12,15 +12,49 @@ import org.junit.jupiter.api.Test;
 
 class AccessControlTest {
     @Test
-    void mapReadIsSharedWhileWritesKeepResponsibilityScope() {
+    void unassignedEnabledAccountCanReadCreateAndUpdateAcrossRegionsWithoutTakingResponsibility() {
+        var user = new SecurityPrincipal("reader", "TEST", Set.of(), Set.of());
+        var repository = new SecurityPrincipalRepository() {
+            public Optional<SecurityPrincipal> findEnabled(String id) { return Optional.of(user); }
+            public Optional<String> responsibleSubject(String region, boolean county) {
+                throw new AssertionError("Reporting must not change or check the assigned owner");
+            }
+        };
+        var access = new AccessControl(() -> Optional.of("reader"), repository, true);
+        for (String permission : Set.of("BUSINESS_READ", "BUSINESS_CREATE", "BUSINESS_UPDATE")) {
+            assertThat(access.require(permission, "231100")).isEqualTo(user);
+        }
+        access.requireCountyReporter(user, "231100");
+        assertThat(access.requireBusinessReadScope().isUnrestricted()).isTrue();
+        assertThat(access.requireTaskReadScope().regionCodes()).isEmpty();
+        assertThatThrownBy(access::requireAdministrator)
+                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+        assertThatThrownBy(() -> access.require("BUSINESS_APPROVE", "231100"))
+                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+    }
+
+    @Test
+    void reportingStillRejectsAnonymousAndDisabledAccounts() {
+        var anonymous = new AccessControl(Optional::<String>empty, id -> Optional.empty(), true);
+        var disabled = new AccessControl(() -> Optional.of("disabled"), id -> Optional.empty(), true);
+        for (String permission : Set.of("BUSINESS_READ", "BUSINESS_CREATE", "BUSINESS_UPDATE")) {
+            assertThatThrownBy(() -> anonymous.require(permission, "231100"))
+                    .isInstanceOf(AuthenticationRequiredException.class);
+            assertThatThrownBy(() -> disabled.require(permission, "231100"))
+                    .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+        }
+    }
+
+    @Test
+    void businessWritesAreSharedWhileTaskAssignmentsKeepTheirScope() {
         var user = new SecurityPrincipal("reader", "TEST",
                 Set.of("BUSINESS_READ", "BUSINESS_UPDATE"), Set.of("230200"));
         var access = new AccessControl(() -> Optional.of("reader"), id -> Optional.of(user), true);
         assertThat(access.requireOverviewReadScope().isUnrestricted()).isTrue();
         assertThat(access.requireOverviewReadScope().subjectId()).isEqualTo("reader");
         assertThat(access.requireReadScope().regionCodes()).containsExactly("230200");
-        assertThatThrownBy(() -> access.require("BUSINESS_UPDATE", "231100"))
-                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+        assertThat(access.require("BUSINESS_UPDATE", "231100")).isEqualTo(user);
+        assertThat(access.requireTaskReadScope().regionCodes()).containsExactly("230200");
     }
 
     @Test

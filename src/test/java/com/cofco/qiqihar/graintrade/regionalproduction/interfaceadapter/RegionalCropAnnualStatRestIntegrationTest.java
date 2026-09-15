@@ -66,13 +66,19 @@ class RegionalCropAnnualStatRestIntegrationTest {
     }
 
     @Test
-    void savesAsFormalDataRequeriesAndEmitsAuditOutboxInOneFlow() throws Exception {
+    void unassignedAccountWithoutRolesSavesRequeriesAndEmitsAuditOutbox() throws Exception {
+        jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:reader").param("reader", READER).update();
+        mvc.perform(get("/api/v1/session/me").principal(() -> READER))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.permissions").value(org.hamcrest.Matchers.hasItems("BUSINESS_READ", "BUSINESS_CREATE", "BUSINESS_UPDATE")))
+                .andExpect(jsonPath("$.data.regionCodes").isEmpty())
+                .andExpect(jsonPath("$.data.rootAdministrator").value(false));
         String aggregateId = COUNTY + ":2026:CORN";
         long auditCountBefore = countAuditEvents(aggregateId);
         long outboxCountBefore = countOutboxEvents(aggregateId);
 
         mvc.perform(put("/api/v1/production/regional-annual-stats/{regionCode}", COUNTY)
-                        .principal(() -> OPERATOR).contentType(MediaType.APPLICATION_JSON)
+                        .principal(() -> READER).contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"dataYear":2026,"productCode":"CORN",
                                  "plantedAreaMu":"100.0000","yieldPerMuKg":"500.0000",
@@ -83,7 +89,7 @@ class RegionalCropAnnualStatRestIntegrationTest {
                 .andExpect(jsonPath("$.data.version").value(0));
 
         mvc.perform(put("/api/v1/production/regional-annual-stats/{regionCode}", COUNTY)
-                        .principal(() -> OPERATOR).contentType(MediaType.APPLICATION_JSON)
+                        .principal(() -> READER).contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"dataYear":2026,"productCode":"CORN",
                                  "plantedAreaMu":"120.0000","yieldPerMuKg":"550.0000",
@@ -94,7 +100,7 @@ class RegionalCropAnnualStatRestIntegrationTest {
                 .andExpect(jsonPath("$.data.version").value(1));
 
         mvc.perform(get("/api/v1/production/regional-annual-stats")
-                        .principal(() -> OPERATOR).queryParam("year", "2026")
+                        .principal(() -> READER).queryParam("year", "2026")
                         .queryParam("productCode", "CORN")
                         .queryParam("prefectureCode", PREFECTURE))
                 .andExpect(status().isOk())
@@ -102,7 +108,7 @@ class RegionalCropAnnualStatRestIntegrationTest {
                 .andExpect(jsonPath("$.data[0].plantedAreaMu").value("120.0000"));
 
         mvc.perform(get("/api/v1/overview/regional-crop-summary")
-                        .principal(() -> OPERATOR).queryParam("year", "2026")
+                        .principal(() -> READER).queryParam("year", "2026")
                         .queryParam("productCode", "CORN").queryParam("regionCode", COUNTY))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.plantedAreaMu").value("120.0000"))
@@ -239,8 +245,8 @@ class RegionalCropAnnualStatRestIntegrationTest {
 
         mvc.perform(put("/api/v1/production/regional-annual-stats/{regionCode}", COUNTY)
                         .principal(() -> READER).contentType(MediaType.APPLICATION_JSON).content(valid))
-                .andExpect(status().isForbidden())
-                .andExpect(jsonPath("$.error.code").value("ADMINISTRATOR_REQUIRED"));
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("REGIONAL_ANNUAL_STAT_VERSION_CONFLICT"));
         mvc.perform(put("/api/v1/production/regional-annual-stats/{regionCode}", PREFECTURE)
                         .principal(() -> OPERATOR).contentType(MediaType.APPLICATION_JSON).content(valid))
                 .andExpect(status().isBadRequest())

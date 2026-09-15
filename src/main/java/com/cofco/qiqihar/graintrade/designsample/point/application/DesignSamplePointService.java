@@ -83,7 +83,7 @@ public class DesignSamplePointService {
         String objectType = optionalCode(objectTypeCode, 80);
         String region = optionalText(regionCode, 12);
         String search = optionalText(keyword, 200);
-        AuthorizedReadScope scope = access.requireReadScope();
+        AuthorizedReadScope scope = access.requireBusinessReadScope();
         if (region != null) scope.requireRegion(region);
         return repository.findPage(new DesignSamplePointQuery(
                 domain, product, objectType, region, search,
@@ -92,7 +92,7 @@ public class DesignSamplePointService {
 
     @Transactional(readOnly = true)
     public DesignSamplePointView get(UUID id) {
-        AuthorizedReadScope scope = access.requireReadScope();
+        AuthorizedReadScope scope = access.requireBusinessReadScope();
         DesignSamplePointView point = required(id);
         scope.requireRegion(point.regionCode());
         return point;

@@ -55,7 +55,7 @@ public class RegionalCropAnnualStatService {
     public RegionalCropAnnualStat upsert(
             String regionCode, int year, String productCode,
             BigDecimal plantedAreaMu, BigDecimal yieldPerMuKg, long expectedVersion) {
-        access.requireAdministrator();
+        access.requireAuthenticated();
         validateYear(year);
         String product = validateProduct(productCode);
         RegionalCropAnnualStatRepository.RegionDescriptor region = requireRegion(regionCode);
