@@ -385,8 +385,8 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
             String submittingActorId = jdbc.sql("""
                     SELECT actor_subject_id FROM platform.business_event_outbox
                     WHERE aggregate_type='LOGISTICS_RECORD' AND aggregate_id=:id
-                      AND action_code='LOGISTICS_RECORD_SUBMITTED'
-                    ORDER BY event_sequence DESC LIMIT 1
+                      AND action_code IN ('LOGISTICS_RECORD_CREATED','LOGISTICS_RECORD_IMPORTED','LOGISTICS_RECORD_SUBMITTED')
+                    ORDER BY event_sequence ASC LIMIT 1
                     """).param("id", id).query(String.class).single();
             samplePointId = UUID.randomUUID();
             jdbc.sql("""
@@ -404,7 +404,7 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
         }
         int linked = jdbc.sql("""
                 UPDATE logistics.route_event SET sample_point_id=:samplePointId
-                WHERE event_id::text=:id AND status_code='APPROVED' AND sample_point_id IS NULL
+                WHERE event_id::text=:id AND status_code='APPROVED' AND (sample_point_id IS NULL OR sample_point_id=:samplePointId)
                 """).param("samplePointId", samplePointId).param("id", id).update();
         require(linked);
     }

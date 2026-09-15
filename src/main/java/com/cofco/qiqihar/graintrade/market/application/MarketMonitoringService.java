@@ -244,8 +244,7 @@ public class MarketMonitoringService {
 
     @Transactional
     public MarketRecordView createAndSubmit(MarketMonitoringDraft draft) {
-        MarketRecordView created = create(draft, true);
-        return submit(created.record().id(), created.record().version());
+        return create(draft, true);
     }
 
     private MarketRecordView create(MarketMonitoringDraft draft, boolean requireEvidence) {
@@ -262,13 +261,15 @@ public class MarketMonitoringService {
                     UUID.randomUUID().toString(), parsed.productCode(), parsed.objectTypeCode(),
                     parsed.regionCode(), parsed.tradeDate(), now(), parsed.direction(),
                     parsed.purchaseBasePrice(), parsed.saleBasePrice(), parsed.carriageBoardAmount(),
-                    parsed.packagingAmount(), parsed.freightAmount(), parsed.packagingForm(), parsed.facts());
+                    parsed.packagingAmount(), parsed.freightAmount(), parsed.packagingForm(), parsed.facts()).validatedForSave();
             MarketMonitoringRecord persisted = repository.insert(record, principal.subjectId(), parsed.extensions());
             if (evidencePhotos != null && !securedDraft.evidencePhotoIds().isEmpty()) {
                 evidencePhotos.attachToMarket(
                         securedDraft.evidencePhotoIds(), persisted.id(), persisted.regionCode(), principal.subjectId());
             }
             audit(principal, persisted, "MARKET_RECORD_CREATED");
+            repository.linkApprovedSamplePoint(persisted, parsed.extensions(), principal.subjectId(), clock.instant());
+            audit(principal, persisted, "MARKET_RECORD_SAVED");
             return view(persisted, definitions, repository.findExtensionCoreValues(persisted.id()));
         } catch (MarketValidationException exception) {
             throw invalid(exception.getMessage());
@@ -356,10 +357,11 @@ public class MarketMonitoringService {
             MarketMonitoringRecord revised = existing.revise(
                     parsed.objectTypeCode(), parsed.regionCode(), parsed.tradeDate(), now(), parsed.direction(),
                     parsed.purchaseBasePrice(), parsed.saleBasePrice(), parsed.carriageBoardAmount(),
-                    parsed.packagingAmount(), parsed.freightAmount(), parsed.packagingForm(), parsed.facts());
+                    parsed.packagingAmount(), parsed.freightAmount(), parsed.packagingForm(), parsed.facts()).validatedForSave();
             MarketMonitoringRecord persisted = repository.updateFacts(
                     revised, expectedVersion, principal.subjectId(), parsed.extensions());
-            audit(principal, persisted, "MARKET_RECORD_UPDATED");
+            repository.linkApprovedSamplePoint(persisted, parsed.extensions(), principal.subjectId(), clock.instant());
+            audit(principal, persisted, "MARKET_RECORD_SAVED");
             return view(persisted, definitions, repository.findExtensionCoreValues(persisted.id()));
         } catch (MarketValidationException exception) {
             throw invalid(exception.getMessage());
@@ -371,13 +373,22 @@ public class MarketMonitoringService {
     @Transactional
     public MarketRecordView saveAndSubmit(
             String id, long expectedVersion, MarketMonitoringDraft draft) {
-        MarketRecordView saved = save(id, expectedVersion, draft);
-        return submit(saved.record().id(), saved.record().version());
+        return save(id, expectedVersion, draft);
     }
 
     @Transactional
     public MarketRecordView submit(String id, long expectedVersion) {
-        return transition(id, expectedVersion, "BUSINESS_SUBMIT", "MARKET_RECORD_SUBMITTED", MarketMonitoringRecord::submit);
+        MarketMonitoringRecord existing = required(id);
+        authorize("BUSINESS_SUBMIT", existing.regionCode());
+        if (expectedVersion != existing.version()) throw stale();
+        if (existing.status() == com.cofco.qiqihar.graintrade.market.domain.MarketStatus.APPROVED) return detail(id);
+        List<MarketCoreFieldDefinition> definitions = coreFields(existing.productCode(), existing.objectTypeCode());
+        MarketRecordView current = view(existing, definitions, repository.findExtensionCoreValues(id));
+        Map<String,String> editable = new LinkedHashMap<>();
+        definitions.stream().filter(field -> !isReadOnly(field.controlType()))
+                .filter(field -> current.coreValues().get(field.code()) != null)
+                .forEach(field -> editable.put(field.code(), current.coreValues().get(field.code())));
+        return save(id, expectedVersion, new MarketMonitoringDraft(existing.productCode(), editable, existing.facts()));
     }
 
     @Transactional

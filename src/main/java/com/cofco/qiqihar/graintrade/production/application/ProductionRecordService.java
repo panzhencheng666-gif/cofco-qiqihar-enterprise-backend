@@ -231,8 +231,7 @@ public class ProductionRecordService implements ProductionImportPort {
 
     @Transactional
     public ProductionRecordView createAndSubmit(ProductionDraft draft) {
-        ProductionRecordView created = create(draft, true);
-        return submit(created.record().id(), created.record().version());
+        return create(draft, true);
     }
 
     private ProductionRecordView create(ProductionDraft draft, boolean requireEvidence) {
@@ -247,7 +246,7 @@ public class ProductionRecordService implements ProductionImportPort {
                     draft.objectTypeCode(), draft.regionCode(), draft.cultivarCode(),
                     draft.surveyYear(), draft.surveyMonth(), draft.surveyDate(), now(),
                     draft.cultivatedAreaMu(), draft.yieldPerMuKilograms(), draft.quality(), draft.costs(),
-                    draft.insurance(), draft.subsidies(), submissionMetadata);
+                    draft.insurance(), draft.subsidies(), submissionMetadata).validatedForSave();
         } catch (ProductionValidationException exception) {
             throw invalidDraft(exception.getMessage());
         }
@@ -257,6 +256,8 @@ public class ProductionRecordService implements ProductionImportPort {
                     draft.evidencePhotoIds(), persisted.id(), persisted.regionCode(), principal.subjectId());
         }
         audit(principal, persisted, "PRODUCTION_RECORD_CREATED");
+        repository.linkApprovedSamplePoint(persisted, principal.subjectId(), clock.instant());
+        audit(principal, persisted, "PRODUCTION_RECORD_SAVED");
         return view(persisted);
     }
 
@@ -299,26 +300,33 @@ public class ProductionRecordService implements ProductionImportPort {
                     draft.cultivarCode(), draft.surveyYear(), draft.surveyMonth(), draft.surveyDate(), now(),
                     draft.cultivatedAreaMu(), draft.yieldPerMuKilograms(), draft.quality(), draft.costs(),
                     draft.insurance(), draft.subsidies(),
-                    submissionMetadata);
+                    submissionMetadata).validatedForSave();
         } catch (ProductionValidationException exception) {
             throw invalidDraft(exception.getMessage());
         } catch (IllegalStateException exception) {
             throw invalidTransition(exception);
         }
         ProductionRecord persisted = repository.updateFacts(revised, expectedVersion, principal.subjectId());
-        audit(principal, persisted, "PRODUCTION_RECORD_UPDATED");
+        repository.linkApprovedSamplePoint(persisted, principal.subjectId(), clock.instant());
+        audit(principal, persisted, "PRODUCTION_RECORD_SAVED");
         return view(persisted);
     }
 
     @Transactional
     public ProductionRecordView saveAndSubmit(String id, long expectedVersion, ProductionDraft draft) {
-        ProductionRecordView saved = saveDraft(id, expectedVersion, draft);
-        return submit(saved.record().id(), saved.record().version());
+        return saveDraft(id, expectedVersion, draft);
     }
 
     @Transactional
     public ProductionRecordView submit(String id, long expectedVersion) {
-        return transition(id, expectedVersion, "BUSINESS_SUBMIT", "PRODUCTION_RECORD_SUBMITTED", ProductionRecord::submit);
+        ProductionRecord existing = requiredRecord(id);
+        authorize("BUSINESS_SUBMIT", existing.regionCode());
+        if (expectedVersion != existing.version()) throw stale();
+        if (existing.status() == com.cofco.qiqihar.graintrade.production.domain.ProductionStatus.APPROVED) return view(existing);
+        return saveDraft(id, expectedVersion, new ProductionDraft(existing.productCode(), existing.objectTypeCode(),
+                existing.regionCode(), existing.cultivarCode(), existing.surveyDate(), existing.cultivatedAreaMu(),
+                existing.yieldPerMuKilograms(), existing.quality(), existing.costs(), existing.insurance(),
+                existing.subsidies(), existing.submissionMetadata(), List.of(), existing.surveyYear(), existing.surveyMonth()));
     }
 
     @Transactional

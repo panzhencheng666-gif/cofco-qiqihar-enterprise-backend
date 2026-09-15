@@ -145,8 +145,8 @@ public record ProductionRecord(
             BigDecimal nextArea, BigDecimal nextYield, Map<String, BigDecimal> nextQuality,
             Map<String, BigDecimal> nextCosts, Map<String, BigDecimal> nextInsurance,
             Map<String, BigDecimal> nextSubsidies, Map<String, String> nextSubmissionMetadata) {
-        if (status != ProductionStatus.DRAFT && status != ProductionStatus.RETURNED) {
-            throw new IllegalStateException("Only DRAFT or RETURNED records may be revised");
+        if (status == ProductionStatus.VOIDED) {
+            throw new IllegalStateException("Voided records cannot be revised");
         }
         BigDecimal area = optionalInput(nextArea, "cultivated area");
         BigDecimal yield = optionalInput(nextYield, "yield per mu");
@@ -154,6 +154,12 @@ public record ProductionRecord(
                 nextSurveyDate, nextSurveyYear, nextSurveyMonth, nextReportedAt, area, yield,
                 estimatedOutput(area, yield), status, returnReason,
                 nextQuality, nextCosts, nextInsurance, nextSubsidies, nextSubmissionMetadata, version);
+    }
+
+    /** APPROVED is the persisted compatibility code for an automatically validated fact. */
+    public ProductionRecord validatedForSave() {
+        if (status == ProductionStatus.VOIDED) throw new IllegalStateException("Voided records cannot be saved");
+        return copy(ProductionStatus.APPROVED, null, version);
     }
 
     public ProductionRecord submit() {

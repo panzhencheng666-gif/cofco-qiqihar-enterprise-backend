@@ -77,7 +77,7 @@ public class LogisticsService {
         LogisticsDraft securedDraft=withReporter(draft,principal.displayName());
         validate(securedDraft);
         if(!repository.actionAllowed(securedDraft.productCode(),LogisticsStatus.DRAFT,"NEW"))throw invalid();
-        LogisticsRecordView created=repository.insert(UUID.randomUUID().toString(),securedDraft,principal.subjectId(),clock.instant()); audit(principal,created,"LOGISTICS_RECORD_CREATED"); return authorizedView(created);
+        LogisticsRecordView created=repository.insert(UUID.randomUUID().toString(),securedDraft,principal.subjectId(),clock.instant()); audit(principal,created,"LOGISTICS_RECORD_CREATED"); return persistValidated(created,principal);
     }
     @Transactional public LogisticsRecordView saveOfficialObservation(
             FormalSampleIdentity identity, OffsetDateTime observedAt,
@@ -112,13 +112,30 @@ public class LogisticsService {
     @Transactional public LogisticsRecordView save(String id,long version,LogisticsDraft draft) {
         LogisticsRecordView existing=required(id); SecurityPrincipal principal=authorize("BUSINESS_UPDATE",repository.regionsForRecord(id)); requireVersion(existing,version);
         if (!existing.productCode().equals(draft.productCode())) throw invalid();
-        if (existing.status()!=LogisticsStatus.DRAFT && existing.status()!=LogisticsStatus.RETURNED) throw invalid();
-        if(!repository.actionAllowed(existing.productCode(),existing.status(),"SAVE"))throw invalid();
+        if (existing.status()==LogisticsStatus.VOIDED) throw invalid();
+
         String reporter=existing.values().get("LOG_REPORTER");
         LogisticsDraft securedDraft=withReporter(draft,blank(reporter)?principal.displayName():reporter);
-        validate(securedDraft); authorize("BUSINESS_UPDATE",repository.regionsForDraft(securedDraft)); LogisticsRecordView updated=repository.update(id,version,securedDraft,existing.status(),existing.returnReason(),principal.subjectId(),clock.instant()); audit(principal,updated,"LOGISTICS_RECORD_UPDATED"); return authorizedView(updated);
+        validate(securedDraft); authorize("BUSINESS_UPDATE",repository.regionsForDraft(securedDraft)); LogisticsRecordView updated=repository.update(id,version,securedDraft,LogisticsStatus.APPROVED,null,principal.subjectId(),clock.instant()); repository.linkApprovedSamplePoint(id,principal.subjectId(),clock.instant()); audit(principal,updated,"LOGISTICS_RECORD_SAVED"); return authorizedView(updated);
     }
-    @Transactional public LogisticsRecordView submit(String id,long version) { return transition(id,version,LogisticsStatus.PENDING_REVIEW,null,"BUSINESS_SUBMIT","LOGISTICS_RECORD_SUBMITTED"); }
+    private LogisticsRecordView persistValidated(LogisticsRecordView record, SecurityPrincipal principal) {
+        LogisticsRecordView saved=repository.transition(record.id(),record.version(),LogisticsStatus.APPROVED,null,principal.subjectId(),clock.instant());
+        repository.linkApprovedSamplePoint(saved.id(),principal.subjectId(),clock.instant());
+        saved=required(saved.id());
+        audit(principal,saved,"LOGISTICS_RECORD_SAVED");
+        return authorizedView(saved);
+    }
+    @Transactional public LogisticsRecordView submit(String id,long version) {
+        LogisticsRecordView existing=required(id);
+        authorize("BUSINESS_SUBMIT",repository.regionsForRecord(id)); requireVersion(existing,version);
+        if(existing.status()==LogisticsStatus.APPROVED)return authorizedView(existing);
+        Map<String,String> values=new java.util.LinkedHashMap<>();
+        repository.definition(existing.productCode()).fields().stream()
+            .filter(field -> !field.controlType().startsWith("READONLY"))
+            .filter(field -> existing.values().get(field.code())!=null)
+            .forEach(field -> values.put(field.code(),existing.values().get(field.code())));
+        return save(id,version,new LogisticsDraft(existing.productCode(),values));
+    }
     @Transactional public LogisticsRecordView approve(String id,long version) { return transition(id,version,LogisticsStatus.APPROVED,null,"BUSINESS_APPROVE","LOGISTICS_RECORD_APPROVED"); }
     @Transactional public LogisticsRecordView returned(String id,long version,String reason) {
         if (reason==null || reason.isBlank()) throw invalid(); return transition(id,version,LogisticsStatus.RETURNED,reason.trim(),"BUSINESS_RETURN","LOGISTICS_RECORD_RETURNED");

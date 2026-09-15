@@ -137,6 +137,32 @@ class MarketMonitoringRestIntegrationTest {
         boundarySnapshot.restore(jdbc);
     }
 
+    @Test void automaticSaveCreatesLinkedFactAndUpdatesSameRecord() throws Exception {
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        try (var ordinary = OrdinarySecurityFixture.create(jdbc, "ci-auto-save", null)) {
+            useReportingRole(jdbc, "ci-auto-save");
+            mockMvc.perform(post("/api/v1/market-records/submit").principal(() -> "ci-auto-save")
+                    .contentType(MediaType.APPLICATION_JSON).content(sharedSubmissionBody()))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.data.status").value("APPROVED"));
+            String id = jdbc.sql("SELECT record_id FROM market.market_record").query(String.class).single();
+            assertThat(jdbc.sql("SELECT count(*) FROM market.market_record WHERE sample_point_id IS NOT NULL")
+                .query(Long.class).single()).isEqualTo(1L);
+            mockMvc.perform(put("/api/v1/market-records/{id}", id).principal(() -> "ci-auto-save")
+                    .contentType(MediaType.APPLICATION_JSON).content(versioned(sharedSubmissionBody(), 0)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("APPROVED"))
+                .andExpect(jsonPath("$.data.version").value(1));
+            mockMvc.perform(put("/api/v1/market-records/{id}", id).principal(() -> "ci-auto-save")
+                    .contentType(MediaType.APPLICATION_JSON).content(versioned(sharedSubmissionBody(), 0)))
+                .andExpect(status().isConflict());
+            mockMvc.perform(post("/api/v1/market-records/{id}/submit", id).principal(() -> "ci-auto-save")
+                    .contentType(MediaType.APPLICATION_JSON).content("{\"version\":1}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.version").value(1));
+            assertThat(jdbc.sql("SELECT count(*) FROM market.market_record").query(Long.class).single()).isEqualTo(1L);
+            assertThat(jdbc.sql("SELECT count(*) FROM platform.business_event_outbox WHERE aggregate_id=:id AND action_code='MARKET_RECORD_SAVED'")
+                .param("id",id).query(Long.class).single()).isEqualTo(2L);
+        }
+    }
+
     @Test void unassignedReporterCreatesAndSubmitsOneMarketRecord() throws Exception {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         try (var ordinary = OrdinarySecurityFixture.create(jdbc, "ci-shared-submitter", null)) {

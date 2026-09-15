@@ -184,6 +184,8 @@ class ProductionRecordServiceTest {
         Map<String, String> expected = new java.util.LinkedHashMap<>(submissionMetadata());
         expected.put("PROD_REPORTER_NAME", "tester");
         assertThat(created.record().submissionMetadata()).containsExactlyInAnyOrderEntriesOf(expected);
+        assertThat(created.record().status()).isEqualTo(com.cofco.qiqihar.graintrade.production.domain.ProductionStatus.APPROVED);
+        org.mockito.Mockito.verify(repository).linkApprovedSamplePoint(eq(created.record()), eq("tester"), eq(fixedClock().instant()));
     }
 
     @Test

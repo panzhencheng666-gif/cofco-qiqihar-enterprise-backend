@@ -46,6 +46,26 @@ class ProductionRecordRestIntegrationTest {
     private DataSource dataSource;
     private AdministrativeBoundarySnapshot boundarySnapshot;
 
+    @Test
+    void automaticSaveCreatesLinkedFactAndUpdatesSameRecord() throws Exception {
+        String body=withSampleName(fullDraftBody("CORN","FARMER","MOISTURE",null),"自动入库产情");
+        mockMvc.perform(post("/api/v1/production-records/submit").principal(() -> "production-tester")
+                .contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.data.status").value("APPROVED"));
+        JdbcClient jdbc=JdbcClient.create(dataSource);
+        String id=jdbc.sql("SELECT record_id FROM production.production_record").query(String.class).single();
+        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record WHERE sample_point_id IS NOT NULL")
+            .query(Long.class).single()).isEqualTo(1L);
+        String revised=body.strip().replaceFirst("}$",",\"version\":0}");
+        mockMvc.perform(put("/api/v1/production-records/{id}",id).principal(() -> "production-tester")
+                .contentType(MediaType.APPLICATION_JSON).content(revised))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("APPROVED"))
+            .andExpect(jsonPath("$.data.version").value(1));
+        mockMvc.perform(put("/api/v1/production-records/{id}",id).principal(() -> "production-tester")
+                .contentType(MediaType.APPLICATION_JSON).content(revised))
+            .andExpect(status().isConflict());
+    }
+
     @BeforeEach
     void stageEvidencePhoto() {
         JdbcClient jdbc = JdbcClient.create(dataSource);
