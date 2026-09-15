@@ -208,7 +208,7 @@ public class ProductionRecordService implements ProductionImportPort {
                     secured.surveyYear(), secured.surveyMonth(), secured.surveyDate(),
                     observedAt, secured.cultivatedAreaMu(), secured.yieldPerMuKilograms(), secured.quality(),
                     secured.costs(), secured.insurance(), secured.subsidies(), canonicalMetadata)
-                    .submit().approve();
+                    .validatedForSave();
         } catch (ProductionValidationException exception) {
             throw invalidDraft(exception.getMessage());
         }
@@ -236,6 +236,7 @@ public class ProductionRecordService implements ProductionImportPort {
 
     private ProductionRecordView create(ProductionDraft draft, boolean requireEvidence) {
         SecurityPrincipal principal = authorize("BUSINESS_CREATE", draft.regionCode());
+        authorize("BUSINESS_SUBMIT", draft.regionCode());
         Map<String, String> submissionMetadata = canonicalSubmissionMetadata(
                 draft.submissionMetadata(), principal.displayName());
         validateDraft(draft, submissionMetadata);
@@ -270,7 +271,7 @@ public class ProductionRecordService implements ProductionImportPort {
     @Transactional
     public String importAndSubmit(ProductionDraft draft) {
         ProductionRecordView created = create(draft, false);
-        return submit(created.record().id(), created.record().version()).record().id();
+        return created.record().id();
     }
 
     @Override
@@ -290,10 +291,13 @@ public class ProductionRecordService implements ProductionImportPort {
         SecurityPrincipal principal = authorize("BUSINESS_UPDATE", existing.regionCode());
         if (expectedVersion != existing.version()) throw stale();
         if (!existing.productCode().equals(draft.productCode())) throw invalidDraft("Record product cannot be changed");
+        if (existing.status() == com.cofco.qiqihar.graintrade.production.domain.ProductionStatus.APPROVED) com.cofco.qiqihar.graintrade.shared.application.OfficialSampleIdentityGuard.requireUnchanged(existing.submissionMetadata(),draft.submissionMetadata(),"PROD_");
         Map<String, String> submissionMetadata = canonicalSubmissionMetadata(
                 draft.submissionMetadata(), existing.submissionMetadata().get("PROD_REPORTER_NAME"));
         validateDraft(draft, submissionMetadata);
         authorize("BUSINESS_UPDATE", draft.regionCode());
+        authorize("BUSINESS_SUBMIT", existing.regionCode());
+        authorize("BUSINESS_SUBMIT", draft.regionCode());
         ProductionRecord revised;
         try {
             revised = existing.revise(draft.productCode(), draft.objectTypeCode(), draft.regionCode(),
@@ -323,22 +327,34 @@ public class ProductionRecordService implements ProductionImportPort {
         authorize("BUSINESS_SUBMIT", existing.regionCode());
         if (expectedVersion != existing.version()) throw stale();
         if (existing.status() == com.cofco.qiqihar.graintrade.production.domain.ProductionStatus.APPROVED) return view(existing);
-        return saveDraft(id, expectedVersion, new ProductionDraft(existing.productCode(), existing.objectTypeCode(),
+        return saveDraft(id, expectedVersion, storedDraft(existing));
+    }
+
+    @Transactional(readOnly = true)
+    public com.cofco.qiqihar.graintrade.shared.application.BusinessValidationPreview validationPreview(String id) {
+        ProductionRecord existing=requiredRecord(id);
+        authorize("BUSINESS_UPDATE",existing.regionCode());
+        return com.cofco.qiqihar.graintrade.shared.application.BusinessValidationPreview.check(id,existing.version(),()->{
+            ProductionDraft draft=storedDraft(existing);
+            validateDraft(draft,existing.submissionMetadata());
+        });
+    }
+
+    private ProductionDraft storedDraft(ProductionRecord existing) {
+        return new ProductionDraft(existing.productCode(), existing.objectTypeCode(),
                 existing.regionCode(), existing.cultivarCode(), existing.surveyDate(), existing.cultivatedAreaMu(),
                 existing.yieldPerMuKilograms(), existing.quality(), existing.costs(), existing.insurance(),
-                existing.subsidies(), existing.submissionMetadata(), List.of(), existing.surveyYear(), existing.surveyMonth()));
+                existing.subsidies(), existing.submissionMetadata(), List.of(), existing.surveyYear(), existing.surveyMonth());
     }
 
     @Transactional
     public ProductionRecordView approve(String id, long expectedVersion) {
-        return transition(id, expectedVersion, "BUSINESS_APPROVE", "PRODUCTION_RECORD_APPROVED",
-                ProductionRecord::approve, (record, principal) -> repository.linkApprovedSamplePoint(
-                        record, principal.subjectId(), clock.instant()));
+        throw new ClientRequestException("BUSINESS_REVIEW_REMOVED", "业务人工审核已取消，请校验后保存记录。");
     }
 
     @Transactional
     public ProductionRecordView returnForCorrection(String id, long expectedVersion, String reason) {
-        return transition(id, expectedVersion, "BUSINESS_RETURN", "PRODUCTION_RECORD_RETURNED", record -> record.returnForCorrection(reason));
+        throw new ClientRequestException("BUSINESS_REVIEW_REMOVED", "业务人工审核已取消，请校验后保存记录。");
     }
 
     @Transactional
@@ -382,6 +398,8 @@ public class ProductionRecordService implements ProductionImportPort {
     }
 
     private void validateDraft(ProductionDraft draft, Map<String, String> submissionMetadata) {
+        if (submissionMetadata.get("PROD_SAMPLE_NAME") == null || submissionMetadata.get("PROD_SAMPLE_NAME").isBlank())
+            throw ClientRequestException.field("FORMAL_SAMPLE_IDENTITY_REQUIRED", "PROD_SAMPLE_NAME", "请填写样本名称。");
         if (draft.surveyDate() == null || draft.surveyDate().isAfter(LocalDate.now(clock.withZone(REPORTING_ZONE)))) {
             throw invalidDraft("Survey date cannot be in the future");
         }
@@ -510,7 +528,7 @@ public class ProductionRecordService implements ProductionImportPort {
             audit.record(principal, "PRODUCTION_RECORD", record.id(), actionCode, clock.instant(),
                     "{\"regionCode\":\"" + record.regionCode() + "\",\"productCode\":\""
                             + record.productCode() + "\",\"surveyYear\":"
-                            + record.surveyDate().getYear() + "}");
+                            + record.surveyDate().getYear() + ",\"version\":" + record.version() + "}");
         }
     }
 

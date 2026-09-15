@@ -35,10 +35,7 @@ public class WorkItemController {
         this.batchReview = batchReview;
     }
 
-    @PostMapping("/api/v1/work-items/batch-approve")
-    ApiResponse<BatchReviewResult> batchApprove(@RequestBody BatchReviewRequest request) {
-        return new ApiResponse<>(batchReview.approve(request.toQuery()));
-    }
+
 
     @GetMapping("/api/v1/work-items")
     ApiResponse<PageResponse> workItems(@RequestParam MultiValueMap<String, String> parameters) {

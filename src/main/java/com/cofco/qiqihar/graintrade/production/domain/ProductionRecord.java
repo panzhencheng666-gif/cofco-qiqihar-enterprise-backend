@@ -179,7 +179,7 @@ public record ProductionRecord(
     }
 
     public ProductionRecord voidRecord() {
-        if (status != ProductionStatus.DRAFT && status != ProductionStatus.RETURNED) {
+        if (status == ProductionStatus.VOIDED) {
             throw new IllegalStateException("Cannot void production record from " + status);
         }
         return copy(ProductionStatus.VOIDED, null, version);

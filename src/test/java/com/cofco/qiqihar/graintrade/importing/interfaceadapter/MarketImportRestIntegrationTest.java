@@ -92,6 +92,8 @@ class MarketImportRestIntegrationTest {
                 .andExpect(jsonPath("$.data.importedRows").value(1))
                 .andExpect(jsonPath("$.data.failedRows").value(0));
 
+        assertThat(jdbc.sql("SELECT count(*) FROM market.market_record WHERE status_code='APPROVED' AND sample_point_id IS NOT NULL")
+                .query(Long.class).single()).isEqualTo(1L);
         assertThat(jdbc.sql("""
                         SELECT value FROM market.market_record_core_value
                         WHERE field_code='MKT_REPORTER_NAME'

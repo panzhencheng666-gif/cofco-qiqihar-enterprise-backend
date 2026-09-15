@@ -50,6 +50,11 @@ public class ProductionRecordController {
 
     public ProductionRecordController(ProductionRecordService service) { this.service = service; }
 
+    @GetMapping("/api/v1/production-records/{id}/validation-preview")
+    ApiResponse<com.cofco.qiqihar.graintrade.shared.application.BusinessValidationPreview> validationPreview(@PathVariable String id) {
+        return new ApiResponse<>(service.validationPreview(id));
+    }
+
     @GetMapping("/api/v1/production-records")
     ApiResponse<PageResponse> records(@RequestParam MultiValueMap<String, String> parameters) {
         StrictQueryParameters parsed = StrictQueryParameters.parse(parameters,
@@ -135,16 +140,9 @@ public class ProductionRecordController {
         return new ApiResponse<>(RecordResponse.from(service.submit(id, request.requiredVersion())));
     }
 
-    @PostMapping("/api/v1/production-records/{id}/approve")
-    ApiResponse<RecordResponse> approve(@PathVariable String id, @RequestBody VersionRequest request) {
-        return new ApiResponse<>(RecordResponse.from(service.approve(id, request.requiredVersion())));
-    }
 
-    @PostMapping("/api/v1/production-records/{id}/return")
-    ApiResponse<RecordResponse> returnForCorrection(@PathVariable String id, @RequestBody ReturnRequest request) {
-        return new ApiResponse<>(RecordResponse.from(
-                service.returnForCorrection(id, request.requiredVersion(), request.validatedReason())));
-    }
+
+
 
     @PostMapping("/api/v1/production-records/{id}/void")
     ApiResponse<RecordResponse> voidRecord(@PathVariable String id, @RequestBody VersionRequest request) {

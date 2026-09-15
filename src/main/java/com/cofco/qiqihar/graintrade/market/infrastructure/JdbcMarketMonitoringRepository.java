@@ -435,6 +435,12 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
     @Override
     public void linkApprovedSamplePoint(MarketMonitoringRecord record,
             Map<String, String> extensionCoreValues, String approvingActorId, Instant approvedAt) {
+        linkValidatedSamplePoint(record, extensionCoreValues, approvingActorId, approvedAt);
+        com.cofco.qiqihar.graintrade.shared.infrastructure.FormalBusinessSaveGuard.verify(jdbc,"MARKET",record.id());
+    }
+
+    private void linkValidatedSamplePoint(MarketMonitoringRecord record,
+            Map<String, String> extensionCoreValues, String approvingActorId, Instant approvedAt) {
         ReviewedIdentityDecision reviewedIdentity = reviewedIdentity(record.id()).orElse(null);
         if (reviewedIdentity != null && "SAMPLE_IDENTITY_LINK_EXISTING".equals(reviewedIdentity.actionCode())) {
             linkReviewedSamplePoint(record, extensionCoreValues,

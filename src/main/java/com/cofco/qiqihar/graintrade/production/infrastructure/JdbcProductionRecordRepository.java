@@ -467,6 +467,12 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
     @Override
     public void linkApprovedSamplePoint(
             ProductionRecord record, String approvingActorId, Instant approvedAt) {
+        linkValidatedSamplePoint(record, approvingActorId, approvedAt);
+        com.cofco.qiqihar.graintrade.shared.infrastructure.FormalBusinessSaveGuard.verify(jdbc,"PRODUCTION",record.id());
+    }
+
+    private void linkValidatedSamplePoint(
+            ProductionRecord record, String approvingActorId, Instant approvedAt) {
         String subjectId = record.submissionMetadata().get("PROD_SAMPLE_SUBJECT_CODE");
         String canonicalName = record.submissionMetadata().get("PROD_SAMPLE_NAME");
         String contact = record.submissionMetadata().get("PROD_SAMPLE_CONTACT");

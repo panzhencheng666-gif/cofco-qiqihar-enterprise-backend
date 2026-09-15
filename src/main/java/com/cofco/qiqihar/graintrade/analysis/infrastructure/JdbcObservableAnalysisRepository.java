@@ -531,7 +531,7 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                   FROM platform.business_event_outbox event
                   WHERE event.aggregate_type='PRODUCTION_RECORD'
                     AND event.aggregate_id=record.record_id
-                    AND event.action_code='PRODUCTION_RECORD_APPROVED'
+                    AND event.action_code IN ('PRODUCTION_RECORD_APPROVED','PRODUCTION_RECORD_SAVED')
                 ) approval ON true
                 WHERE record.product_code=:product AND record.status_code='APPROVED'
                   AND resolution.resolution_action IS DISTINCT FROM 'VOID'
@@ -589,7 +589,7 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                   FROM platform.business_event_outbox event
                   WHERE event.aggregate_type='MARKET_RECORD'
                     AND event.aggregate_id=record.record_id
-                    AND event.action_code='MARKET_RECORD_APPROVED'
+                    AND event.action_code IN ('MARKET_RECORD_APPROVED','MARKET_RECORD_SAVED')
                 ) approval ON true
                 WHERE record.product_code=:product AND record.status_code='APPROVED'
                   AND resolution.resolution_action IS DISTINCT FROM 'VOID'
@@ -633,7 +633,7 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                   FROM platform.business_event_outbox outbox
                   WHERE outbox.aggregate_type='LOGISTICS_RECORD'
                     AND outbox.aggregate_id=event.event_id::text
-                    AND outbox.action_code='LOGISTICS_RECORD_APPROVED'
+                    AND outbox.action_code IN ('LOGISTICS_RECORD_APPROVED','LOGISTICS_RECORD_SAVED')
                 ) approval ON true
                 WHERE event.product_code=:product AND event.status_code='APPROVED'
                   AND resolution.resolution_action IS DISTINCT FROM 'VOID'
@@ -894,7 +894,7 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                   FROM platform.business_event_outbox event
                   WHERE event.aggregate_type='PRODUCTION_RECORD'
                     AND event.aggregate_id=record.record_id
-                    AND event.action_code='PRODUCTION_RECORD_APPROVED'
+                    AND event.action_code IN ('PRODUCTION_RECORD_APPROVED','PRODUCTION_RECORD_SAVED')
                 ) approval ON true
                 WHERE record.product_code=:product AND record.status_code='APPROVED'
                   AND resolution.resolution_action IS DISTINCT FROM 'VOID'
@@ -995,7 +995,7 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                   FROM platform.business_event_outbox event
                   WHERE event.aggregate_type='MARKET_RECORD'
                     AND event.aggregate_id=record.record_id
-                    AND event.action_code='MARKET_RECORD_APPROVED'
+                    AND event.action_code IN ('MARKET_RECORD_APPROVED','MARKET_RECORD_SAVED')
                 ) approval ON true
                 WHERE record.product_code=:product AND record.status_code='APPROVED'
                   AND resolution.resolution_action IS DISTINCT FROM 'VOID'
@@ -1064,7 +1064,7 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                   FROM platform.business_event_outbox outbox
                   WHERE outbox.aggregate_type='LOGISTICS_RECORD'
                     AND outbox.aggregate_id=event.event_id::text
-                    AND outbox.action_code='LOGISTICS_RECORD_APPROVED'
+                    AND outbox.action_code IN ('LOGISTICS_RECORD_APPROVED','LOGISTICS_RECORD_SAVED')
                 ) approval ON true
                 WHERE event.product_code=:product AND event.status_code='APPROVED'
                   AND resolution.resolution_action IS DISTINCT FROM 'VOID'

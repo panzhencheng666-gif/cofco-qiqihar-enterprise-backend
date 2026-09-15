@@ -67,11 +67,11 @@ class QueuedBusinessImportIntegrationTest {
     void queuesLargeBatchesThenCompletesThemDurablyWithoutDuplicateWrites() throws Exception {
         String header = "productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,"
                 + "yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_SURVEYOR_NAME,PROD_SURVEYOR_PHONE,PROD_SAMPLE_CONTACT,"
-                + "PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId\n";
+                + "PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,PROD_SAMPLE_NAME,evidencePhotoId\n";
         String rows = "CORN,FARMER,230200,,2026-08-09,10,500,伪造甲,王雷,13800000001,13900000001,"
-                + "47.3543,123.9182," + FIRST_PHOTO + "\n"
+                + "47.3543,123.9182,队列样本甲," + FIRST_PHOTO + "\n"
                 + "CORN,FARMER,230200,,2026-08-09,20,510,伪造乙,王雷,13800000002,13900000002,"
-                + "47.3544,123.9183," + SECOND_PHOTO + "\n";
+                + "47.3544,123.9183,队列样本乙," + SECOND_PHOTO + "\n";
         MockMultipartFile file = new MockMultipartFile(
                 "file", "large-production.csv", "text/csv", (header + rows).getBytes(StandardCharsets.UTF_8));
 
@@ -85,7 +85,7 @@ class QueuedBusinessImportIntegrationTest {
         UUID jobId = UUID.fromString(response.replaceFirst("(?s).*?\"id\":\"([^\"]+)\".*", "$1"));
 
         assertThat(await("production", jobId, "production-tester")).isEqualTo("COMPLETED");
-        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record").query(Long.class).single())
+        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record WHERE status_code='APPROVED' AND sample_point_id IS NOT NULL").query(Long.class).single())
                 .isEqualTo(2L);
         assertThat(jdbc.sql("SELECT count(*) FROM platform.import_row_result WHERE import_job_id=:id")
                         .param("id", jobId).query(Long.class).single()).isEqualTo(2L);
@@ -108,7 +108,7 @@ class QueuedBusinessImportIntegrationTest {
         insertPhoto(third, "market-one.png", "market-tester");
         insertPhoto(fourth, "market-two.png", "market-tester");
         String header = String.join(",", MarketImportTemplate.HEADERS) + "\n";
-        String csv = header + marketRow(third) + marketRow(fourth);
+        String csv = header + marketRow(third) + marketRow(fourth).replace("齐齐哈尔粮店","第二粮店").replace("47.3543","47.3544").replace("123.9182","123.9183");
 
         String body = mvc.perform(multipart("/api/v1/imports/market")
                         .file(new MockMultipartFile("file", "large-market.csv", "text/csv",
@@ -120,7 +120,7 @@ class QueuedBusinessImportIntegrationTest {
         UUID jobId = id(body);
 
         assertThat(await("market", jobId, "market-tester")).isEqualTo("COMPLETED");
-        assertThat(jdbc.sql("SELECT count(*) FROM market.market_record").query(Long.class).single()).isEqualTo(2L);
+        assertThat(jdbc.sql("SELECT count(*) FROM market.market_record WHERE status_code='APPROVED' AND sample_point_id IS NOT NULL").query(Long.class).single()).isEqualTo(2L);
     }
 
     @Test
@@ -187,7 +187,7 @@ class QueuedBusinessImportIntegrationTest {
         LogisticsImportDefinition definition = logistics.definition("CORN");
         var row = LogisticsImportTemplate.codes(definition).stream().map(this::logisticsValue).toList();
         byte[] workbook = BusinessImportWorkbook.create(LogisticsImportTemplate.workbook(definition),
-                java.util.List.of(row, row));
+                java.util.List.of(row, row.stream().map(value -> value.equals("齐齐哈尔物流中心") ? "第二物流中心" : value.equals("47.354300") ? "47.354400" : value.equals("123.918200") ? "123.918300" : value).toList()));
 
         String body = mvc.perform(multipart("/api/v1/imports/logistics")
                         .file(new MockMultipartFile("file", "large-logistics.xlsx",
@@ -199,7 +199,7 @@ class QueuedBusinessImportIntegrationTest {
         UUID jobId = id(body);
 
         assertThat(await("logistics", jobId, "logistics-tester")).isEqualTo("COMPLETED");
-        assertThat(jdbc.sql("SELECT count(*) FROM logistics.route_event").query(Long.class).single()).isEqualTo(2L);
+        assertThat(jdbc.sql("SELECT count(*) FROM logistics.route_event WHERE status_code='APPROVED' AND sample_point_id IS NOT NULL").query(Long.class).single()).isEqualTo(2L);
     }
 
     @Test
@@ -237,9 +237,9 @@ class QueuedBusinessImportIntegrationTest {
     void rejectsBatchesBeyondTheConfiguredMaximumWithoutCreatingAJob() throws Exception {
         String header = "productCode,objectTypeCode,regionCode,cultivarCode,surveyDate,cultivatedAreaMu,"
                 + "yieldPerMuKilograms,PROD_REPORTER_NAME,PROD_SURVEYOR_NAME,PROD_SURVEYOR_PHONE,PROD_SAMPLE_CONTACT,"
-                + "PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,evidencePhotoId\n";
+                + "PROD_SAMPLE_LATITUDE,PROD_SAMPLE_LONGITUDE,PROD_SAMPLE_NAME,evidencePhotoId\n";
         String row = "CORN,FARMER,230200,,2026-08-09,10,500,伪造姓名,王雷,13800000001,13900000001,"
-                + "47.3543,123.9182," + FIRST_PHOTO + "\n";
+                + "47.3543,123.9182,队列样本甲," + FIRST_PHOTO + "\n";
 
         mvc.perform(multipart("/api/v1/imports/production")
                         .file(new MockMultipartFile("file", "too-large.csv", "text/csv",

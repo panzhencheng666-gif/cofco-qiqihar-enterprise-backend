@@ -113,18 +113,13 @@ public class LocalRecordWorkItemProjection implements WorkItemProjection {
                 WITH source AS (%s), prepared AS (
                     SELECT source.*,
                         CASE status_code WHEN 'DRAFT' THEN 'TO_FILL'
-                            WHEN 'PENDING_REVIEW' THEN 'TO_REVIEW'
-                            WHEN 'RETURNED' THEN 'RETURNED' END AS task_status,
+                            WHEN 'PENDING_REVIEW' THEN 'TO_FILL'
+                            WHEN 'RETURNED' THEN 'TO_FILL' END AS task_status,
                         CASE WHEN status_code IN ('APPROVED', 'VOIDED') THEN 'LOCAL_COMPLETE'
-                            WHEN status_code = 'PENDING_REVIEW' THEN 'LOCAL_REVIEW'
                             ELSE 'LOCAL_FILL' END AS node_code,
-                        CASE WHEN status_code = 'PENDING_REVIEW' AND NULLIF(trim(owner_work_unit_code), '') IS NOT NULL
-                            THEN 'WORK_UNIT' ELSE 'USER' END AS party_type,
-                        CASE WHEN status_code = 'PENDING_REVIEW' AND NULLIF(trim(owner_work_unit_code), '') IS NOT NULL
-                            THEN owner_work_unit_code ELSE responsible_subject_id END AS party_code,
-                        CASE WHEN status_code = 'PENDING_REVIEW' AND NULLIF(trim(owner_work_unit_code), '') IS NOT NULL
-                            THEN COALESCE(NULLIF(trim(owner_work_unit_name), ''), owner_work_unit_code)
-                            ELSE owner_display_name END AS party_name,
+                        'USER' AS party_type,
+                        responsible_subject_id AS party_code,
+                        owner_display_name AS party_name,
                         period.code AS period_code, period.ends_on
                     FROM source
                     CROSS JOIN LATERAL (

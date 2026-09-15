@@ -147,6 +147,18 @@ class MarketMonitoringRestIntegrationTest {
             String id = jdbc.sql("SELECT record_id FROM market.market_record").query(String.class).single();
             assertThat(jdbc.sql("SELECT count(*) FROM market.market_record WHERE sample_point_id IS NOT NULL")
                 .query(Long.class).single()).isEqualTo(1L);
+            mockMvc.perform(get("/api/v1/market-records/{id}/validation-preview",id).principal(() -> "ci-auto-save"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.fieldValidationPassed").value(true))
+                .andExpect(jsonPath("$.data.version").value(0));
+            mockMvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
+                    .principal(() -> "ci-auto-save").param("domain","MARKET").param("productCode","CORN")
+                    .param("year","2026").param("observedAt","2026-08-11T12:00:00+08:00"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].sampleName").value("共享提交事务验收"));
+            mockMvc.perform(put("/api/v1/market-records/{id}",id).principal(() -> "ci-auto-save")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(versioned(sharedSubmissionBody().replace("共享提交事务验收","变更样本身份"),0)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.details.fieldErrors.MKT_SAMPLE_NAME").isNotEmpty());
             mockMvc.perform(put("/api/v1/market-records/{id}", id).principal(() -> "ci-auto-save")
                     .contentType(MediaType.APPLICATION_JSON).content(versioned(sharedSubmissionBody(), 0)))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("APPROVED"))
@@ -157,6 +169,10 @@ class MarketMonitoringRestIntegrationTest {
             mockMvc.perform(post("/api/v1/market-records/{id}/submit", id).principal(() -> "ci-auto-save")
                     .contentType(MediaType.APPLICATION_JSON).content("{\"version\":1}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.version").value(1));
+            assertThat(jdbc.sql("SELECT count(*) FROM market.market_record").query(Long.class).single()).isEqualTo(1L);
+            mockMvc.perform(post("/api/v1/market-records/submit").principal(() -> "ci-auto-save")
+                    .contentType(MediaType.APPLICATION_JSON).content(sharedSubmissionBody()))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("SAMPLE_PERIOD_RECORD_CONFLICT"));
             assertThat(jdbc.sql("SELECT count(*) FROM market.market_record").query(Long.class).single()).isEqualTo(1L);
             assertThat(jdbc.sql("SELECT count(*) FROM platform.business_event_outbox WHERE aggregate_id=:id AND action_code='MARKET_RECORD_SAVED'")
                 .param("id",id).query(Long.class).single()).isEqualTo(2L);
@@ -170,9 +186,9 @@ class MarketMonitoringRestIntegrationTest {
             mockMvc.perform(post("/api/v1/market-records/submit").principal(() -> "ci-shared-submitter")
                             .contentType(MediaType.APPLICATION_JSON).content(sharedSubmissionBody()))
                     .andExpect(status().isCreated())
-                    .andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"));
+                    .andExpect(jsonPath("$.data.status").value("APPROVED"));
             assertThat(jdbc.sql("SELECT count(*) FROM market.market_record").query(Long.class).single()).isEqualTo(1L);
-            assertThat(jdbc.sql("SELECT count(*) FROM platform.business_audit_event WHERE action_code='MARKET_RECORD_SUBMITTED'")
+            assertThat(jdbc.sql("SELECT count(*) FROM platform.business_audit_event WHERE action_code='MARKET_RECORD_SAVED'")
                     .query(Long.class).single()).isEqualTo(1L);
         }
     }
@@ -192,7 +208,7 @@ class MarketMonitoringRestIntegrationTest {
             mockMvc.perform(post("/api/v1/market-records/submit").principal(() -> "ci-scoped-submitter")
                             .contentType(MediaType.APPLICATION_JSON).content(sharedSubmissionBody()))
                     .andExpect(status().isCreated())
-                    .andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"));
+                    .andExpect(jsonPath("$.data.status").value("APPROVED"));
             assertThat(jdbc.sql("SELECT count(*) FROM market.market_record").query(Long.class).single()).isEqualTo(1L);
             assertThat(jdbc.sql("SELECT count(*) FROM platform.business_audit_event WHERE action_code='MARKET_RECORD_CREATED'")
                     .query(Long.class).single()).isEqualTo(1L);

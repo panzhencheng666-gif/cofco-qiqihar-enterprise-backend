@@ -39,9 +39,11 @@ class LogisticsRestIntegrationTest {
         String id=jdbc.sql("SELECT event_id::text FROM logistics.route_event").query(String.class).single();
         org.assertj.core.api.Assertions.assertThat(jdbc.sql("SELECT count(*) FROM logistics.route_event WHERE sample_point_id IS NOT NULL")
             .query(Long.class).single()).isEqualTo(1L);
+        String mapRevision=jdbc.sql("SELECT revision::text FROM overview.map_revision").query(String.class).single();
         mvc.perform(put("/api/v1/logistics-records/{id}",id).principal(() -> "logistics-tester")
                 .contentType(MediaType.APPLICATION_JSON).content(publicBody(1)))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("APPROVED"));
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql("SELECT revision::text FROM overview.map_revision").query(String.class).single()).isNotEqualTo(mapRevision);
         mvc.perform(put("/api/v1/logistics-records/{id}",id).principal(() -> "logistics-tester")
                 .contentType(MediaType.APPLICATION_JSON).content(publicBody(1)))
             .andExpect(status().isConflict());
@@ -53,7 +55,8 @@ class LogisticsRestIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("CORN", "RAIL", "TEST_RAIL", "TEST_ROAD", "10", true, null)
                                 .replace("123.918200", "130.000000")))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.details.fieldErrors.LOG_REGION").isNotEmpty());
     }
 
     @Test

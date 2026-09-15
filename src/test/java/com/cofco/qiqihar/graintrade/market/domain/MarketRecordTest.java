@@ -82,10 +82,8 @@ class MarketRecordTest {
         assertThat(draft.voidRecord().status()).isEqualTo(MarketStatus.VOIDED);
         assertThat(draft.submit().returnForCorrection("补充").voidRecord().status())
                 .isEqualTo(MarketStatus.VOIDED);
-        assertThatThrownBy(() -> draft.submit().voidRecord())
-                .isInstanceOf(IllegalStateException.class);
-        assertThatThrownBy(() -> draft.submit().approve().voidRecord())
-                .isInstanceOf(IllegalStateException.class);
+        assertThat(draft.submit().voidRecord().status()).isEqualTo(MarketStatus.VOIDED);
+        assertThat(draft.validatedForSave().voidRecord().status()).isEqualTo(MarketStatus.VOIDED);
         assertThatThrownBy(() -> draft.voidRecord().submit())
                 .isInstanceOf(IllegalStateException.class);
     }

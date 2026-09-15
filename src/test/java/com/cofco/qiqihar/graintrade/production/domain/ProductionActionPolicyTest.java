@@ -17,10 +17,10 @@ class ProductionActionPolicyTest {
 
     private static List<Arguments> statusActions() {
         return List.of(
-                Arguments.of(ProductionStatus.DRAFT, List.of("VIEW", "SAVE", "SUBMIT", "VOID")),
-                Arguments.of(ProductionStatus.RETURNED, List.of("VIEW", "SAVE", "SUBMIT", "VOID")),
-                Arguments.of(ProductionStatus.PENDING_REVIEW, List.of("VIEW", "APPROVE", "RETURN")),
-                Arguments.of(ProductionStatus.APPROVED, List.of("VIEW")),
+                Arguments.of(ProductionStatus.DRAFT, List.of("VIEW", "SAVE", "VOID")),
+                Arguments.of(ProductionStatus.RETURNED, List.of("VIEW", "SAVE", "VOID")),
+                Arguments.of(ProductionStatus.PENDING_REVIEW, List.of("VIEW", "SAVE", "VOID")),
+                Arguments.of(ProductionStatus.APPROVED, List.of("VIEW", "SAVE", "VOID")),
                 Arguments.of(ProductionStatus.VOIDED, List.of("VIEW")));
     }
 }

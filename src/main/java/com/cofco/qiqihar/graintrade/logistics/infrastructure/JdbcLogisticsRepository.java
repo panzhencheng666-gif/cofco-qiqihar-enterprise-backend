@@ -147,13 +147,16 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
         } catch (RuntimeException exception) {
             return false;
         }
-        return Boolean.TRUE.equals(jdbc.sql("""
+        boolean admitted = Boolean.TRUE.equals(jdbc.sql("""
                 SELECT coalesce(overview.sample_coordinate_admission_state(
                   CAST(:region AS varchar),CAST(:longitude AS numeric),CAST(:latitude AS numeric))='INSIDE',false)
                 """).param("region", draft.values().get("LOG_REGION"))
                 .param("longitude", new BigDecimal(draft.values().get("LOG_SAMPLE_LONGITUDE")))
                 .param("latitude", new BigDecimal(draft.values().get("LOG_SAMPLE_LATITUDE")))
                 .query(Boolean.class).single());
+        if (!admitted) throw com.cofco.qiqihar.graintrade.shared.application.ClientRequestException.field(
+                "SAMPLE_COORDINATE_OUTSIDE_REGION", "LOG_REGION", "样点坐标不在所选地区内，请核对地区与经纬度。");
+        return true;
     }
 
     @Override
@@ -298,6 +301,17 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
 
     @Override
     public void linkApprovedSamplePoint(String id, String approvingActorId, Instant approvedAt) {
+        linkValidatedSamplePoint(id, approvingActorId, approvedAt);
+        com.cofco.qiqihar.graintrade.shared.infrastructure.FormalBusinessSaveGuard.verify(jdbc,"LOGISTICS",id);
+        // Existing logistics facts also change the sample content consumed by the map.
+        jdbc.sql("""
+                UPDATE registry.sample_point SET updated_by=:actor,updated_at=:updatedAt
+                WHERE sample_point_id=(SELECT sample_point_id FROM logistics.route_event WHERE event_id::text=:id)
+                """).param("actor",approvingActorId)
+                .param("updatedAt",OffsetDateTime.ofInstant(approvedAt,ZoneOffset.UTC)).param("id",id).update();
+    }
+
+    private void linkValidatedSamplePoint(String id, String approvingActorId, Instant approvedAt) {
         ApprovedLogisticsSample sample = jdbc.sql("""
                 SELECT event.source_organization,event.sample_contact,event.business_region_code,
                        event.sample_longitude,event.sample_latitude,event.collection_date,event.sample_point_id

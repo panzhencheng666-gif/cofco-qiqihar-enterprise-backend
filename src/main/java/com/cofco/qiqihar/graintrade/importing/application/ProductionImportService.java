@@ -343,7 +343,9 @@ public class ProductionImportService implements QueuedImportProcessor {
                 || mediaType.equals("application/csv") || mediaType.equals("application/vnd.ms-excel"))) {
             try {
                 List<List<String>> table = CsvTable.parse(
-                        new String(bytes, StandardCharsets.UTF_8), ProductionImportTemplate.HEADERS.size(),
+                        new String(bytes, StandardCharsets.UTF_8),
+                        new String(bytes, StandardCharsets.UTF_8).startsWith(String.join(",",ProductionImportTemplate.LEGACY_HEADERS))
+                                ? ProductionImportTemplate.LEGACY_HEADERS.size() : ProductionImportTemplate.HEADERS.size(),
                         maxDataRows);
                 requireCsvContext(table, expectedContext);
                 return table;
@@ -422,6 +424,7 @@ public class ProductionImportService implements QueuedImportProcessor {
             throw new ClientRequestException("INVALID_IMPORT_TEMPLATE", "CSV header does not match the current production template");
         }
         boolean legacy = headers.equals(ProductionImportTemplate.HEADERS)
+                || headers.equals(ProductionImportTemplate.LEGACY_HEADERS)
                 || headers.equals(ProductionImportTemplate.XLSX_CANONICAL_HEADERS);
         ProductionImportDefinition definition = null;
         if (!legacy) {

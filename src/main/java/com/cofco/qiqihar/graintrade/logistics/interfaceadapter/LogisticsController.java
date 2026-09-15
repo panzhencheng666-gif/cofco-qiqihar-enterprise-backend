@@ -23,6 +23,11 @@ public class LogisticsController {
  private static final Pattern FILTER=Pattern.compile("^filter\\.([A-Za-z0-9_-]+)$");
  private static final Set<String> CORE=Set.of("productCode","pageNumber","pageSize","scope");
  private final LogisticsService service; public LogisticsController(LogisticsService service){this.service=service;}
+    @GetMapping("/api/v1/logistics-records/{id}/validation-preview")
+    ApiResponse<com.cofco.qiqihar.graintrade.shared.application.BusinessValidationPreview> validationPreview(@PathVariable String id) {
+        return new ApiResponse<>(service.validationPreview(id));
+    }
+
  @GetMapping("/api/v1/logistics-records") ApiResponse<PageResponse> list(@RequestParam MultiValueMap<String,String> parameters){
   StrictQueryParameters p=StrictQueryParameters.parse(parameters,n->CORE.contains(n)||FILTER.matcher(n).matches(),LogisticsController::invalid);
   Map<String,String> filters=new LinkedHashMap<>();p.values().forEach((k,v)->{Matcher m=FILTER.matcher(k);if(m.matches())filters.put(m.group(1),v);});
@@ -33,8 +38,8 @@ public class LogisticsController {
  @PostMapping("/api/v1/logistics-records") @ResponseStatus(HttpStatus.CREATED) ApiResponse<RecordResponse> create(@RequestBody DraftRequest request){return new ApiResponse<>(RecordResponse.from(service.create(request.toDraft())));}
  @PutMapping("/api/v1/logistics-records/{id}") ApiResponse<RecordResponse> save(@PathVariable String id,@RequestBody DraftRequest request){return new ApiResponse<>(RecordResponse.from(service.save(id,request.requiredVersion(),request.toDraft())));}
  @PostMapping("/api/v1/logistics-records/{id}/submit") ApiResponse<RecordResponse> submit(@PathVariable String id,@RequestBody VersionRequest r){return new ApiResponse<>(RecordResponse.from(service.submit(id,r.requiredVersion())));}
- @PostMapping("/api/v1/logistics-records/{id}/approve") ApiResponse<RecordResponse> approve(@PathVariable String id,@RequestBody VersionRequest r){return new ApiResponse<>(RecordResponse.from(service.approve(id,r.requiredVersion())));}
- @PostMapping("/api/v1/logistics-records/{id}/return") ApiResponse<RecordResponse> returned(@PathVariable String id,@RequestBody ReturnRequest r){return new ApiResponse<>(RecordResponse.from(service.returned(id,r.requiredVersion(),r.validatedReason())));}
+
+
  @PostMapping("/api/v1/logistics-records/{id}/void") ApiResponse<RecordResponse> voidRecord(@PathVariable String id,@RequestBody VersionRequest r){return new ApiResponse<>(RecordResponse.from(service.voidRecord(id,r.requiredVersion())));}
  record DraftRequest(String productCode,Map<String,String> values,Long version){
   LogisticsDraft toDraft(){return new LogisticsDraft(productCode,values);}

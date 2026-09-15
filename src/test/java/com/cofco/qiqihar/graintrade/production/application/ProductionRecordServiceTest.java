@@ -106,7 +106,7 @@ class ProductionRecordServiceTest {
 
         PagedResult<ProductionListItem> result = service.read(query);
 
-        assertThat(result.items().get(0).allowedActions()).containsExactly("VIEW", "SUBMIT");
+        assertThat(result.items().get(0).allowedActions()).containsExactly("VIEW");
     }
 
     @Test
@@ -119,7 +119,7 @@ class ProductionRecordServiceTest {
         ProductionRecordView result = service.detail("record-1");
 
         assertThat(result.record()).isSameAs(record);
-        assertThat(result.allowedActions()).containsExactly("VIEW", "SAVE", "SUBMIT", "VOID");
+        assertThat(result.allowedActions()).containsExactly("VIEW", "SAVE", "VOID");
     }
 
     @Test
@@ -234,6 +234,7 @@ class ProductionRecordServiceTest {
     private static Map<String, String> submissionMetadata() {
         return Map.of(
                 "PROD_REPORTER_NAME", "测试填报员",
+                "PROD_SAMPLE_NAME", "测试样本",
                 "PROD_SURVEYOR_PHONE", "13800000000",
                 "PROD_SAMPLE_CONTACT", "13900000000",
                 "PROD_SAMPLE_LATITUDE", "47.3543",

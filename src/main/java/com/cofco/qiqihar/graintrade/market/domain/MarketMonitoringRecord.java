@@ -83,7 +83,7 @@ public record MarketMonitoringRecord(
     public MarketMonitoringRecord approve() { return transition(MarketStatus.PENDING_REVIEW, MarketStatus.APPROVED, null, false); }
     public MarketMonitoringRecord returnForCorrection(String reason) { return transition(MarketStatus.PENDING_REVIEW, MarketStatus.RETURNED, reason, false); }
     public MarketMonitoringRecord voidRecord() {
-        if (status != MarketStatus.DRAFT && status != MarketStatus.RETURNED)
+        if (status == MarketStatus.VOIDED)
             throw new IllegalStateException("Only DRAFT or RETURNED market records may be voided");
         return new MarketMonitoringRecord(id, productCode, objectTypeCode, regionCode, tradeDate, reportedAt,
                 direction, purchaseBasePrice, saleBasePrice, carriageBoardAmount, freightAmount,

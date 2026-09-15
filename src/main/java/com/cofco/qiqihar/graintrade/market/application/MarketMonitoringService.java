@@ -233,7 +233,7 @@ public class MarketMonitoringService {
                     parsed.regionCode(), parsed.tradeDate(), observedAt, parsed.direction(),
                     parsed.purchaseBasePrice(), parsed.saleBasePrice(), parsed.carriageBoardAmount(),
                     parsed.packagingAmount(), parsed.freightAmount(), parsed.packagingForm(), parsed.facts())
-                    .submit().approve();
+                    .validatedForSave();
             MarketMonitoringRecord persisted = repository.insertOfficialObservation(
                     official, parsed.extensions(), identity.samplePointId(), principal.subjectId(), officialSavedAt);
             return persisted.id();
@@ -255,6 +255,7 @@ public class MarketMonitoringService {
         validate(parsed);
         validateEntryCoordinates(parsed);
         principal = authorize("BUSINESS_CREATE", parsed.regionCode());
+        authorize("BUSINESS_SUBMIT", parsed.regionCode());
         if (requireEvidence || !securedDraft.evidencePhotoIds().isEmpty()) validateEvidence(securedDraft, principal);
         try {
             MarketMonitoringRecord record = MarketMonitoringRecord.draft(
@@ -344,6 +345,7 @@ public class MarketMonitoringService {
         // Forward-only compatibility: records created before reporter provenance existed
         // are bound to the first authenticated employee who revises them, never to input.
         if (originalReporter == null || originalReporter.isBlank()) originalReporter = principal.displayName();
+        if (existing.status() == com.cofco.qiqihar.graintrade.market.domain.MarketStatus.APPROVED) com.cofco.qiqihar.graintrade.shared.application.OfficialSampleIdentityGuard.requireUnchanged(originalExtensions,draft.coreValues(),"MKT_");
         MarketMonitoringDraft securedDraft = withReporter(draft, originalReporter);
         List<MarketCoreFieldDefinition> definitions = coreDefinitions(securedDraft);
         ParsedDraft parsed = parseDraft(securedDraft, definitions);
@@ -353,6 +355,8 @@ public class MarketMonitoringService {
         validate(parsed);
         validateEntryCoordinates(parsed);
         authorize("BUSINESS_UPDATE", parsed.regionCode());
+        authorize("BUSINESS_SUBMIT", existing.regionCode());
+        authorize("BUSINESS_SUBMIT", parsed.regionCode());
         try {
             MarketMonitoringRecord revised = existing.revise(
                     parsed.objectTypeCode(), parsed.regionCode(), parsed.tradeDate(), now(), parsed.direction(),
@@ -382,26 +386,38 @@ public class MarketMonitoringService {
         authorize("BUSINESS_SUBMIT", existing.regionCode());
         if (expectedVersion != existing.version()) throw stale();
         if (existing.status() == com.cofco.qiqihar.graintrade.market.domain.MarketStatus.APPROVED) return detail(id);
+        return save(id, expectedVersion, storedDraft(existing));
+    }
+
+    @Transactional(readOnly = true)
+    public com.cofco.qiqihar.graintrade.shared.application.BusinessValidationPreview validationPreview(String id) {
+        MarketMonitoringRecord existing=required(id);
+        authorize("BUSINESS_UPDATE",existing.regionCode());
+        return com.cofco.qiqihar.graintrade.shared.application.BusinessValidationPreview.check(id,existing.version(),()->{
+            MarketMonitoringDraft draft=storedDraft(existing);
+            ParsedDraft parsed=parseDraft(draft,coreDefinitions(draft));
+            validate(parsed); validateEntryCoordinates(parsed);
+        });
+    }
+
+    private MarketMonitoringDraft storedDraft(MarketMonitoringRecord existing) {
         List<MarketCoreFieldDefinition> definitions = coreFields(existing.productCode(), existing.objectTypeCode());
-        MarketRecordView current = view(existing, definitions, repository.findExtensionCoreValues(id));
+        MarketRecordView current = view(existing, definitions, repository.findExtensionCoreValues(existing.id()));
         Map<String,String> editable = new LinkedHashMap<>();
         definitions.stream().filter(field -> !isReadOnly(field.controlType()))
                 .filter(field -> current.coreValues().get(field.code()) != null)
                 .forEach(field -> editable.put(field.code(), current.coreValues().get(field.code())));
-        return save(id, expectedVersion, new MarketMonitoringDraft(existing.productCode(), editable, existing.facts()));
+        return new MarketMonitoringDraft(existing.productCode(), editable, existing.facts());
     }
 
     @Transactional
     public MarketRecordView approve(String id, long expectedVersion) {
-        return transition(id, expectedVersion, "BUSINESS_APPROVE", "MARKET_RECORD_APPROVED",
-                MarketMonitoringRecord::approve, (record, principal) -> repository.linkApprovedSamplePoint(
-                        record, repository.findExtensionCoreValues(record.id()),
-                        principal.subjectId(), clock.instant()));
+        throw new ClientRequestException("BUSINESS_REVIEW_REMOVED", "业务人工审核已取消，请校验后保存记录。");
     }
 
     @Transactional
     public MarketRecordView returnForCorrection(String id, long expectedVersion, String reason) {
-        return transition(id, expectedVersion, "BUSINESS_RETURN", "MARKET_RECORD_RETURNED", record -> record.returnForCorrection(reason));
+        throw new ClientRequestException("BUSINESS_REVIEW_REMOVED", "业务人工审核已取消，请校验后保存记录。");
     }
 
     @Transactional
@@ -448,6 +464,8 @@ public class MarketMonitoringService {
     }
 
     private void validate(ParsedDraft draft) {
+        if (draft.extensions().get("MKT_SAMPLE_NAME") == null || draft.extensions().get("MKT_SAMPLE_NAME").isBlank())
+            throw ClientRequestException.field("FORMAL_SAMPLE_IDENTITY_REQUIRED", "MKT_SAMPLE_NAME", "请填写样本名称。");
         if (draft.tradeDate().isAfter(LocalDate.now(clock.withZone(REPORTING_ZONE)))) {
             throw invalid("Trade date cannot be in the future");
         }
@@ -872,7 +890,7 @@ public class MarketMonitoringService {
             audit.record(principal, "MARKET_RECORD", record.id(), actionCode, clock.instant(),
                     "{\"regionCode\":\"" + record.regionCode() + "\",\"productCode\":\""
                             + record.productCode() + "\",\"surveyYear\":"
-                            + record.tradeDate().getYear() + "}");
+                            + record.tradeDate().getYear() + ",\"version\":" + record.version() + "}");
         }
     }
 
