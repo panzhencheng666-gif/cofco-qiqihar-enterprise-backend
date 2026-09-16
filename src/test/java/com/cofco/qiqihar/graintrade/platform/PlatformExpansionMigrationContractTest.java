@@ -40,6 +40,9 @@ class PlatformExpansionMigrationContractTest {
                 .contains("channel varchar(20) NOT NULL CHECK (channel IN ('STATION','EMAIL'))")
                 .contains("CREATE FUNCTION platform.reject_private_message_delete()")
                 .contains("BEFORE DELETE ON platform.private_message")
+                .contains("owner_had_create boolean := has_schema_privilege(")
+                .contains("GRANT CREATE ON SCHEMA platform TO qiqihar_migration_owner")
+                .contains("REVOKE CREATE ON SCHEMA platform FROM qiqihar_migration_owner")
                 .contains("REVOKE ALL ON TABLE platform.user_map_annotation FROM PUBLIC")
                 .contains("REVOKE ALL ON TABLE platform.private_message FROM PUBLIC");
     }

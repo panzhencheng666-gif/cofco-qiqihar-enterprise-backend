@@ -151,14 +151,33 @@ CREATE TRIGGER message_email_delivery_no_delete
     BEFORE DELETE ON platform.message_email_delivery
     FOR EACH ROW EXECUTE FUNCTION platform.reject_private_message_delete();
 
-ALTER TABLE platform.user_map_annotation OWNER TO qiqihar_migration_owner;
-ALTER TABLE platform.email_identity OWNER TO qiqihar_migration_owner;
-ALTER TABLE platform.email_challenge OWNER TO qiqihar_migration_owner;
-ALTER TABLE platform.private_message OWNER TO qiqihar_migration_owner;
-ALTER TABLE platform.private_message_receipt OWNER TO qiqihar_migration_owner;
-ALTER TABLE platform.message_email_delivery OWNER TO qiqihar_migration_owner;
-ALTER FUNCTION platform.reject_private_message_delete() OWNER TO qiqihar_migration_owner;
-ALTER FUNCTION platform.enforce_one_active_design_sample_per_village() OWNER TO qiqihar_migration_owner;
+DO $$
+DECLARE
+    owner_had_create boolean := has_schema_privilege(
+        'qiqihar_migration_owner','platform','CREATE');
+BEGIN
+    -- PostgreSQL requires the destination owner to have CREATE on the containing
+    -- schema. Production intentionally revokes that privilege from the non-login
+    -- owner role, so grant it only for this transactional ownership handoff.
+    IF NOT owner_had_create THEN
+        GRANT CREATE ON SCHEMA platform TO qiqihar_migration_owner;
+    END IF;
+
+    ALTER TABLE platform.user_map_annotation OWNER TO qiqihar_migration_owner;
+    ALTER TABLE platform.email_identity OWNER TO qiqihar_migration_owner;
+    ALTER TABLE platform.email_challenge OWNER TO qiqihar_migration_owner;
+    ALTER TABLE platform.private_message OWNER TO qiqihar_migration_owner;
+    ALTER TABLE platform.private_message_receipt OWNER TO qiqihar_migration_owner;
+    ALTER TABLE platform.message_email_delivery OWNER TO qiqihar_migration_owner;
+    ALTER FUNCTION platform.reject_private_message_delete() OWNER TO qiqihar_migration_owner;
+    ALTER FUNCTION platform.enforce_one_active_design_sample_per_village()
+        OWNER TO qiqihar_migration_owner;
+
+    IF NOT owner_had_create THEN
+        REVOKE CREATE ON SCHEMA platform FROM qiqihar_migration_owner;
+    END IF;
+END;
+$$;
 
 REVOKE ALL ON TABLE platform.user_map_annotation FROM PUBLIC;
 REVOKE ALL ON TABLE platform.email_identity FROM PUBLIC;
