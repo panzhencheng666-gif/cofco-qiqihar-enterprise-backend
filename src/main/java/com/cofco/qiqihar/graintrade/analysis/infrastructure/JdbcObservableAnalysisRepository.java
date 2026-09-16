@@ -38,6 +38,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
@@ -281,7 +282,7 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
 
         Map<String, AnalysisLineage> adoptedLineage = new LinkedHashMap<>();
         production.forEach(row -> addLineage(adoptedLineage, row.lineage()));
-        market.forEach(row -> addLineage(adoptedLineage, row.lineage()));
+        market.forEach(row -> row.lineage().ifPresent(item -> addLineage(adoptedLineage, item)));
         logistics.forEach(row -> addLineage(adoptedLineage, row.lineage()));
         supply.inventoryLineage().forEach(item -> addLineage(adoptedLineage, item));
         List<AnalysisLineage> lineage = new ArrayList<>(adoptedLineage.values());
@@ -294,7 +295,10 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
         sourceBalances.forEach(balance -> collectedIssues.addAll(balance.issues()));
         List<String> issues = collectedIssues.stream().distinct().sorted().toList();
         List<String> blocking = quality == AnalysisQualityState.BLOCKED ? issues : List.of();
-        List<String> warnings = quality == AnalysisQualityState.BLOCKED ? List.of() : issues;
+        List<String> warnings = new ArrayList<>(quality == AnalysisQualityState.BLOCKED ? List.of() : issues);
+        if (market.stream().anyMatch(row -> row.analysisFactCodes().isEmpty() && !row.has("ENDING_INVENTORY"))) {
+            warnings.add("存在未填报分析指标的已入库市场记录，未计入分析指标与来源覆盖。");
+        }
         OffsetDateTime cutoff = lineage.stream().map(AnalysisLineage::approvedAt)
                 .max(Comparator.naturalOrder())
                 .orElse(null);
@@ -370,7 +374,8 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
 
         Map<String, OffsetDateTime> adopted = new LinkedHashMap<>();
         production.forEach(row -> adopted.put("PRODUCTION|" + row.recordId(), row.approvedAt()));
-        selectedCurrentMarket.forEach(row -> adopted.put("MARKET|" + row.recordId(), row.approvedAt()));
+        selectedCurrentMarket.stream().filter(row -> !row.analysisFactCodes().isEmpty())
+                .forEach(row -> adopted.put("MARKET|" + row.recordId(), row.approvedAt()));
         logistics.forEach(row -> adopted.put("LOGISTICS|" + row.recordId(), row.approvedAt()));
         selectMarketInventory(currentMarket, "ENDING_INVENTORY").rows()
                 .forEach(row -> adopted.put("MARKET|" + row.recordId(), row.approvedAt()));
@@ -1955,7 +1960,13 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
                     recordId, businessIdentity, normalizedName, normalizedContact,
                     regionCode, latitude, longitude, tradeDate, version, approvedAt, value);
         }
-        AnalysisLineage lineage() {
+        Optional<AnalysisLineage> lineage() {
+            List<String> codes = analysisFactCodes();
+            // A valid persisted observation may have no optional analysis values.
+            // Inventory provenance is added separately after inventory selection.
+            return codes.isEmpty() ? Optional.empty() : Optional.of(lineage(codes));
+        }
+        List<String> analysisFactCodes() {
             LinkedHashSet<String> codes = facts.keySet().stream()
                     .filter(code -> !"OPENING_INVENTORY".equals(code))
                     .filter(code -> !"ENDING_INVENTORY".equals(code))
@@ -1967,7 +1978,7 @@ public class JdbcObservableAnalysisRepository implements ObservableAnalysisRepos
             if (packagingAmount != null) codes.add("MKT_PACKAGING_AMOUNT");
             if (freightAmount != null) codes.add("MKT_FREIGHT_AMOUNT");
             if (packagingForm != null) codes.add("MKT_PACKAGING_FORM");
-            return lineage(codes);
+            return List.copyOf(codes);
         }
         AnalysisLineage inventoryLineage(String factCode) {
             return lineage(List.of(factCode));
