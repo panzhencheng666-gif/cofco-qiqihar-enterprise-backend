@@ -19,6 +19,7 @@ class DesignSampleAllocationIntegrationTest {
     private static final String TOWNSHIP = "990209001";
     @Autowired DesignSampleAllocationPlanner planner;
     @Autowired DesignSampleTownshipWriter writer;
+    @Autowired DesignSampleAllocationService allocationService;
     @Autowired JdbcClient jdbc;
 
     @Test
@@ -83,6 +84,56 @@ class DesignSampleAllocationIntegrationTest {
                 """).param("township", TOWNSHIP).query(Long.class).single()).isOne();
     }
 
+    @Test
+    void batchMarksSurplusAndReusesItBeforeCreatingNewRecords() {
+        fixtures();
+        UUID recyclable = UUID.fromString("20900000-0000-0000-0000-000000000020");
+        UUID previouslyExpired = UUID.fromString("20900000-0000-0000-0000-000000000021");
+        insertCountyExisting(recyclable, "ACTIVE", null);
+        insertCountyExisting(previouslyExpired, "EXPIRED", "20900000-0000-0000-0000-000000000099");
+        var plan = planner.planTownship(TOWNSHIP, "设计样本测试乡");
+        var projected = allocationService.preflight().townships().stream()
+                .filter(value -> TOWNSHIP.equals(value.townshipCode())).findFirst().orElseThrow();
+
+        assertThat(projected.projectedMoved()).isOne();
+        assertThat(projected.projectedCreated()).isEqualTo(2);
+
+        var result = writer.apply(plan.townshipCode(), "allocation-test",
+                UUID.fromString("20900000-0000-0000-0000-000000000022"));
+
+        assertThat(result.moved()).isOne();
+        assertThat(result.created()).isEqualTo(2);
+        assertThat(result.newlyExpired()).isOne();
+        assertThat(activeCount()).isEqualTo(3);
+        assertThat(jdbc.sql("SELECT lifecycle_status FROM platform.design_sample_point WHERE design_sample_point_id=:id")
+                .param("id", recyclable).query(String.class).single()).isEqualTo("ACTIVE");
+        assertThat(jdbc.sql("SELECT assignment_run_id FROM platform.design_sample_point WHERE design_sample_point_id=:id")
+                .param("id", recyclable).query(UUID.class).single())
+                .isEqualTo(UUID.fromString("20900000-0000-0000-0000-000000000022"));
+        assertThat(jdbc.sql("SELECT lifecycle_status FROM platform.design_sample_point WHERE design_sample_point_id=:id")
+                .param("id", previouslyExpired).query(String.class).single()).isEqualTo("EXPIRED");
+    }
+
+    @Test
+    void batchLeavesUnusedCurrentBatchSurplusMarkedExpired() {
+        fixtures();
+        UUID runId = UUID.fromString("20900000-0000-0000-0000-000000000030");
+        for (int index = 0; index < 4; index++) {
+            insertCountyExisting(UUID.fromString("20900000-0000-0000-0000-00000000003" + (index + 1)), "ACTIVE", null);
+        }
+
+        var result = writer.apply(TOWNSHIP, "allocation-test", runId);
+
+        assertThat(result.moved()).isEqualTo(3);
+        assertThat(result.created()).isZero();
+        assertThat(result.newlyExpired()).isEqualTo(4);
+        assertThat(activeCount()).isEqualTo(3);
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.design_sample_point
+                WHERE assignment_run_id=:run AND lifecycle_status='EXPIRED'
+                """).param("run", runId).query(Long.class).single()).isOne();
+    }
+
     private long activeCount() {
         return jdbc.sql("""
                 SELECT count(*) FROM platform.design_sample_point point
@@ -134,6 +185,20 @@ class DesignSampleAllocationIntegrationTest {
                 .param("region", village).param("longitude", index % 2 == 1 ? 120.5 : 121.5)
                 .param("latitude", index <= 2 ? 45.5 : 46.5)
                 .param("key", "existing-" + index).update();
+    }
+
+    private void insertCountyExisting(UUID id, String status, String assignmentRun) {
+        jdbc.sql("""
+                INSERT INTO platform.design_sample_point(design_sample_point_id,contract_version,domain_code,
+                  product_code,object_type_code,values_json,sample_name,region_code,governed_point,
+                  idempotency_key,request_digest,created_by,updated_by,lifecycle_status,expired_at,assignment_run_id)
+                VALUES(:id,'design-sample-fields-v3','REFERENCE','GENERAL','REFERENCE_POINT','{}',
+                  :name,'230202',ST_SetSRID(ST_MakePoint(123.9,47.3),4326),:key,repeat('b',64),
+                  'allocation-test','allocation-test',:status,
+                  CASE WHEN :status='EXPIRED' THEN now() ELSE NULL END,CAST(:run AS uuid))
+                """).param("id", id).param("name", "县级待复用样本" + id)
+                .param("key", "county-existing-" + id).param("status", status)
+                .param("run", assignmentRun).update();
     }
 
     private boolean touches(String left,String right) {
