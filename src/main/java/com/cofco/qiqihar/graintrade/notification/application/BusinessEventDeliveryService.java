@@ -84,6 +84,21 @@ public class BusinessEventDeliveryService {
             long afterSequence,
             int limit,
             DeliverySink sink) {
+        return drain(consumerId, instanceId, scope, subjectId, afterSequence, limit, sink, false);
+    }
+
+    public DrainResult drainUnassignedReportingChanges(
+            String consumerId, String instanceId, AuthorizedReadScope scope, String subjectId,
+            long afterSequence, int limit, DeliverySink sink) {
+        if (!scope.regionCodes().isEmpty()) {
+            throw new IllegalArgumentException("Shared refresh delivery requires an unassigned scope");
+        }
+        return drain(consumerId, instanceId, scope, subjectId, afterSequence, limit, sink, true);
+    }
+
+    private DrainResult drain(
+            String consumerId, String instanceId, AuthorizedReadScope scope, String subjectId,
+            long afterSequence, int limit, DeliverySink sink, boolean sharedReportingChanges) {
         if (!subjectId.equals(scope.subjectId())) {
             throw new IllegalArgumentException("Delivery subject must match the authorized read scope");
         }
@@ -97,7 +112,9 @@ public class BusinessEventDeliveryService {
 
         List<BusinessNotification> events;
         try {
-            events = notifications.findVisibleAfter(scope, subjectId, afterSequence, limit);
+            events = sharedReportingChanges
+                    ? notifications.findReportingChangesAfter(subjectId, afterSequence, limit)
+                    : notifications.findVisibleAfter(scope, subjectId, afterSequence, limit);
             deliveries.recordPollSucceeded(consumerId, instanceId, afterSequence, now);
         } catch (RuntimeException queryFailure) {
             Duration retry = deliveries.recordPollFailed(consumerId, instanceId, afterSequence,

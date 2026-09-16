@@ -81,6 +81,27 @@ public class JdbcBusinessNotificationRepository implements BusinessNotificationR
     }
 
     @Override
+    public List<BusinessNotification> findReportingChangesAfter(
+            String subjectId, long afterSequence, int limit) {
+        // Filter before LIMIT so sensitive/unknown events cannot consume or starve a batch.
+        String sql = SELECT + """
+                 WHERE ((event.aggregate_type='MARKET_RECORD'
+                         AND event.action_code IN ('MARKET_RECORD_CREATED','MARKET_RECORD_SAVED','MARKET_RECORD_VOIDED'))
+                     OR (event.aggregate_type='PRODUCTION_RECORD'
+                         AND event.action_code IN ('PRODUCTION_RECORD_CREATED','PRODUCTION_RECORD_SAVED','PRODUCTION_RECORD_VOIDED'))
+                     OR (event.aggregate_type='LOGISTICS_RECORD'
+                         AND event.action_code IN ('LOGISTICS_RECORD_CREATED','LOGISTICS_RECORD_SAVED','LOGISTICS_RECORD_VOIDED'))
+                     OR (event.aggregate_type='FORMAL_SAMPLE_OBSERVATION'
+                         AND event.action_code='FORMAL_SAMPLE_OBSERVATION_SAVED'))
+                   AND event.event_sequence > :afterSequence
+                 ORDER BY event.event_sequence ASC LIMIT :limit
+                """;
+        return jdbc.sql(sql).param("subjectId", subjectId)
+                .param("afterSequence", afterSequence).param("limit", limit)
+                .query(this::notification).list();
+    }
+
+    @Override
     public long countUnread(AuthorizedReadScope scope, String subjectId) {
         if (hasNoAuthorizedRegions(scope)) {
             return 0;
