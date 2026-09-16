@@ -8,6 +8,7 @@
         <nav class="cofco-login-tabs" aria-label="登录方式">
             <button type="button" id="cofco-password-tab" aria-pressed="true">账号密码</button>
             <button type="button" id="cofco-sms-tab" aria-pressed="false">短信验证码</button>
+            <button type="button" id="cofco-email-tab" aria-pressed="false">邮箱验证码</button>
         </nav>
         </#if>
         <div id="kc-form">
@@ -93,6 +94,15 @@
             <div class="cofco-code-row"><input id="cofco-login-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required />
             <button id="cofco-login-send" type="button">获取验证码</button></div>
             <p id="cofco-login-error" role="alert"></p>
+            <button type="submit">登录</button>
+        </form>
+        <form id="cofco-email-login" data-app-base="${client.baseUrl}" hidden>
+            <label for="cofco-login-email">邮箱</label>
+            <input id="cofco-login-email" type="email" autocomplete="email" maxlength="254" required />
+            <label for="cofco-email-code">邮箱验证码</label>
+            <div class="cofco-code-row"><input id="cofco-email-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required />
+            <button id="cofco-email-send" type="button">获取验证码</button></div>
+            <p id="cofco-email-error" role="alert"></p>
             <button type="submit">登录</button>
         </form>
         <script type="module" src="${url.resourcesPath}/js/sms-login.js"></script>

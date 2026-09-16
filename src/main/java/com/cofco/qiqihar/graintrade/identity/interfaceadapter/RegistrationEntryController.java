@@ -5,6 +5,7 @@ import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import jakarta.servlet.http.HttpServletRequest;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.security.web.csrf.CsrfToken;
 import org.springframework.security.core.Authentication;
@@ -18,8 +19,10 @@ public class RegistrationEntryController {
     private final EmployeeRegistrationService employees;
     private final RegistrationDraftService drafts;
     private final SmsChallengeService sms;
-    public RegistrationEntryController(EmployeeRegistrationService employees,RegistrationDraftService drafts,SmsChallengeService sms) {
-        this.employees=employees;this.drafts=drafts;this.sms=sms;
+    private final EmailChallengeService email;
+    public RegistrationEntryController(EmployeeRegistrationService employees,RegistrationDraftService drafts,
+            SmsChallengeService sms,EmailChallengeService email) {
+        this.employees=employees;this.drafts=drafts;this.sms=sms;this.email=email;
     }
     @GetMapping("/bootstrap")
     ApiResponse<Map<String,Object>> bootstrap(HttpServletRequest request, Authentication authentication) {
@@ -37,13 +40,22 @@ public class RegistrationEntryController {
         return new ApiResponse<>(employees.options(workUnitCode));
     }
     @PostMapping("/challenge")
-    ApiResponse<Map<String,Object>> challenge(@RequestBody Phone input,HttpServletRequest request) {
+    ApiResponse<Map<String,Object>> challenge(@RequestBody Verification input,HttpServletRequest request) {
         employees.options("QIQIHAR_BUSINESS");
-        return new ApiResponse<>(Map.of("challengeId",sms.send(input.phone(),"REGISTER",request.getSession().getId(),request.getRemoteAddr()),"retryAfter",60));
+        String method=input.verificationMethod();
+        if (!"PHONE".equals(method) && !"EMAIL".equals(method)) {
+            throw new com.cofco.qiqihar.graintrade.shared.application.ClientRequestException(
+                    "REGISTRATION_VERIFICATION_METHOD_INVALID", "请选择手机验证码或邮箱验证码");
+        }
+        UUID id="EMAIL".equals(method)
+                ? email.send(input.email(),"REGISTER",request.getSession().getId(),request.getRemoteAddr())
+                : sms.send(input.phone(),"REGISTER",request.getSession().getId(),request.getRemoteAddr());
+        return new ApiResponse<>(Map.of("challengeId",id,"expiresIn",300,"retryAfter",60));
     }
     @PostMapping("/draft")
     ApiResponse<Map<String,Boolean>> draft(@RequestBody Draft input,HttpServletRequest request,Authentication authentication) {
-        drafts.prepare(request.getSession(),input.username(),input.displayName(),input.workUnitCode(),input.regionCodes(),input.phone(),input.challengeId(),input.code());
+        drafts.prepare(request.getSession(),input.username(),input.displayName(),input.workUnitCode(),
+                input.regionCodes(),input.phone(),input.email(),input.verificationMethod(),input.challengeId(),input.code());
         OidcUser user=oidc(authentication);
         boolean complete=user!=null && drafts.completeAuthenticated(request.getSession(),user);
         return new ApiResponse<>(Map.of("ready",true,"complete",complete));
@@ -52,6 +64,7 @@ public class RegistrationEntryController {
         return authentication instanceof OAuth2AuthenticationToken token
                 && token.getPrincipal() instanceof OidcUser user ? user : null;
     }
-    record Phone(String phone) {}
-    record Draft(String username,String displayName,String workUnitCode,List<String> regionCodes,String phone,UUID challengeId,String code) {}
+    record Verification(String verificationMethod,String phone,String email) {}
+    record Draft(String username,String displayName,String workUnitCode,List<String> regionCodes,
+            String phone,String email,String verificationMethod,UUID challengeId,String code) {}
 }

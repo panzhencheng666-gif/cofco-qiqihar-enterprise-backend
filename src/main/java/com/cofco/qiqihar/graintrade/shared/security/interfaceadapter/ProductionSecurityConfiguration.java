@@ -129,6 +129,7 @@ public class ProductionSecurityConfiguration {
             org.springframework.beans.factory.ObjectProvider<JdbcClient> jdbcProvider,
             com.cofco.qiqihar.graintrade.shared.security.application.RegistrationDraftCompletion registrationDrafts,
             @Value("${QIQIHAR_SMS_ENABLED:false}") boolean smsEnabled,
+            @Value("${QIQIHAR_EMAIL_ENABLED:false}") boolean emailEnabled,
             SecurityPrincipalRepository principals,
             SecuritySessionAuditRecorder sessionAudit,
             ClientRegistrationRepository clientRegistrations,
@@ -158,6 +159,7 @@ public class ProductionSecurityConfiguration {
         entryCors.setAllowCredentials(true);
         corsSource.registerCorsConfiguration("/api/v1/identity/registration-entry/**",entryCors);
         corsSource.registerCorsConfiguration("/api/v1/identity/phone/**",entryCors);
+        corsSource.registerCorsConfiguration("/api/v1/identity/email/**",entryCors);
         http
                 .cors(cors -> cors.configurationSource(corsSource))
                 .csrf(csrf -> csrf.csrfTokenRepository(csrfTokens)
@@ -174,6 +176,7 @@ public class ProductionSecurityConfiguration {
                                 "/actuator/prometheus").permitAll()
                         .requestMatchers("/api/v1/identity/registration-entry/**").permitAll()
                         .requestMatchers("/api/v1/identity/phone/bootstrap", "/api/v1/identity/phone/challenge", "/api/v1/identity/phone/login").permitAll()
+                        .requestMatchers("/api/v1/identity/email/bootstrap", "/api/v1/identity/email/challenge", "/api/v1/identity/email/login").permitAll()
                         .requestMatchers("/api/v1/session/login", "/oauth2/**", "/login/oauth2/**").permitAll()
                         .requestMatchers("/logout/connect/back-channel/**").permitAll()
                         .requestMatchers("/api/v1/**").authenticated()
@@ -190,7 +193,7 @@ public class ProductionSecurityConfiguration {
                 .addFilterBefore(new OidcBackChannelFailureResponseFilter(), SecurityContextHolderFilter.class)
                 .addFilterBefore(new ExpiredSessionAuditFilter(sessionAudit),AnonymousAuthenticationFilter.class)
                 .addFilterBefore(new EnterpriseOidcAccessFilter(
-                        acceptedAmr,acceptedAcr,principals,sessionAudit,jdbcProvider.getIfAvailable(),smsEnabled),AuthorizationFilter.class)
+                        acceptedAmr,acceptedAcr,principals,sessionAudit,jdbcProvider.getIfAvailable(),smsEnabled,emailEnabled),AuthorizationFilter.class)
                 .addFilterAfter(new CsrfCookieExposureFilter(),AuthorizationFilter.class);
         return http.build();
     }
@@ -209,10 +212,11 @@ public class ProductionSecurityConfiguration {
         private final SecuritySessionAuditRecorder audit;
         private final JdbcClient jdbc;
         private final boolean smsEnabled;
+        private final boolean emailEnabled;
 
         private EnterpriseOidcAccessFilter(Set<String> acceptedAmr,Set<String> acceptedAcr,
-                SecurityPrincipalRepository principals,SecuritySessionAuditRecorder audit,JdbcClient jdbc,boolean smsEnabled) {
-            this.jdbc=jdbc;this.smsEnabled=smsEnabled;
+                SecurityPrincipalRepository principals,SecuritySessionAuditRecorder audit,JdbcClient jdbc,boolean smsEnabled,boolean emailEnabled) {
+            this.jdbc=jdbc;this.smsEnabled=smsEnabled;this.emailEnabled=emailEnabled;
             this.acceptedAmr = Set.copyOf(acceptedAmr);
             this.acceptedAcr = Set.copyOf(acceptedAcr);
             this.principals=principals;
@@ -229,6 +233,12 @@ public class ProductionSecurityConfiguration {
                             .param("subject",phone.getName()).query(Long.class).optional().orElse(-1L);
                     if(!smsEnabled||version!=phone.sessionVersion()) {
                         deny(request,response,authentication,"PHONE_SESSION_REVOKED");return;
+                    }
+                } else if(authentication instanceof EmailAuthenticationToken email) {
+                    long version=jdbc == null ? -1L : jdbc.sql("SELECT session_version FROM platform.security_user WHERE subject_id=:subject")
+                            .param("subject",email.getName()).query(Long.class).optional().orElse(-1L);
+                    if(!emailEnabled||version!=email.sessionVersion()) {
+                        deny(request,response,authentication,"EMAIL_SESSION_REVOKED");return;
                     }
                 } else if (!approvedMfa(authentication)) {
                     deny(request,response,authentication,"MFA_REQUIRED");

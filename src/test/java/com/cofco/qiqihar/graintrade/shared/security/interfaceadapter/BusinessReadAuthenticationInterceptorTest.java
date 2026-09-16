@@ -51,4 +51,21 @@ class BusinessReadAuthenticationInterceptorTest {
                 new MockHttpServletResponse(),new Object());
         verifyNoInteractions(accessControl);
     }
+
+    @Test
+    void authenticatedSelfServiceReadsDoNotRequireBusinessReadPermission() {
+        var accessControl = mock(AccessControl.class);
+        var interceptor = new BusinessReadAuthenticationInterceptor(accessControl, true);
+
+        interceptor.preHandle(
+                new MockHttpServletRequest("GET", "/api/v1/messages/unread-count"),
+                new MockHttpServletResponse(),
+                new Object());
+        interceptor.preHandle(
+                new MockHttpServletRequest("GET", "/api/v1/overview/map-annotation"),
+                new MockHttpServletResponse(),
+                new Object());
+
+        verifyNoInteractions(accessControl);
+    }
 }

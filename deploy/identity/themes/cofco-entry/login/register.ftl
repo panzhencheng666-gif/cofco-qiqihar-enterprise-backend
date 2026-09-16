@@ -74,8 +74,13 @@
             </@userProfileCommons.userProfileFormFields>
 
             <div class="cofco-registration-fields">
-                <label for="cofco-sms-code">短信验证码 *</label>
-                <div class="cofco-code-row"><input id="cofco-sms-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required />
+                <fieldset class="cofco-verification-method">
+                    <legend>验证方式 *</legend>
+                    <label><input type="radio" name="cofco-verification-method" value="PHONE" checked />手机验证码</label>
+                    <label><input type="radio" name="cofco-verification-method" value="EMAIL" />邮箱验证码</label>
+                </fieldset>
+                <label id="cofco-code-label" for="cofco-verification-code">手机验证码 *</label>
+                <div class="cofco-code-row"><input id="cofco-verification-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required />
                 <button id="cofco-send" type="button" disabled>获取验证码</button></div>
                 <label for="cofco-unit">工作单位 *</label>
                 <select id="cofco-unit" required disabled></select>
