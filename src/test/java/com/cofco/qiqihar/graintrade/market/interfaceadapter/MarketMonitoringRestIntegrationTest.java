@@ -137,7 +137,7 @@ class MarketMonitoringRestIntegrationTest {
         boundarySnapshot.restore(jdbc);
     }
 
-    @Test void recoversLegacyRecordThroughScopedListPreviewAndSameIdSave() throws Exception {
+    @Test void removedRecoveryEndpointsDoNotDeleteExistingRecordsOrBreakNormalSave() throws Exception {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         try (var ordinary = OrdinarySecurityFixture.create(jdbc, "ci-recovery", null)) {
             useReportingRole(jdbc, "ci-recovery");
@@ -154,10 +154,9 @@ class MarketMonitoringRestIntegrationTest {
             mockMvc.perform(get("/api/v1/market-records").principal(() -> "ci-recovery")
                     .param("productCode","CORN").param("pageKind","MONITORING").param("pageNumber","0").param("pageSize","20")
                     .param("recovery","true").param("scope","MY_TASKS").param("filter.status","PENDING_REVIEW"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].id").value(id));
+                .andExpect(status().isBadRequest());
             mockMvc.perform(get("/api/v1/market-records/{id}/validation-preview",id).principal(() -> "ci-recovery"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.fieldValidationPassed").value(false))
-                .andExpect(jsonPath("$.data.details.fieldErrors.MKT_SAMPLE_CONTACT").isNotEmpty());
+                .andExpect(status().isNotFound());
             mockMvc.perform(get("/api/v1/market-records").principal(() -> "ci-recovery")
                     .param("productCode","CORN").param("pageKind","MONITORING").param("pageSize","20")
                     .param("recovery","true").param("filter.status","APPROVED"))
@@ -172,8 +171,7 @@ class MarketMonitoringRestIntegrationTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].id").value(id));
             jdbc.sql("UPDATE platform.security_user SET enabled=false WHERE subject_id='ci-recovery'").update();
             mockMvc.perform(get("/api/v1/market-records").principal(() -> "ci-recovery")
-                    .param("productCode","CORN").param("pageKind","MONITORING").param("pageSize","20")
-                    .param("recovery","true").param("filter.status","PENDING_REVIEW"))
+                    .param("productCode","CORN").param("pageKind","MONITORING").param("pageSize","20"))
                 .andExpect(status().isForbidden());
         }
     }
@@ -181,7 +179,7 @@ class MarketMonitoringRestIntegrationTest {
     @Test void automaticSaveCreatesLinkedFactAndUpdatesSameRecord() throws Exception {
         JdbcClient jdbc = JdbcClient.create(dataSource);
         try (var ordinary = OrdinarySecurityFixture.create(jdbc, "ci-auto-save", null)) {
-            useReportingRole(jdbc, "ci-auto-save");
+            jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id='ci-auto-save'").update();
             mockMvc.perform(post("/api/v1/market-records/submit").principal(() -> "ci-auto-save")
                     .contentType(MediaType.APPLICATION_JSON).content(sharedSubmissionBody()))
                 .andExpect(status().isCreated()).andExpect(jsonPath("$.data.status").value("APPROVED"));
@@ -189,8 +187,7 @@ class MarketMonitoringRestIntegrationTest {
             assertThat(jdbc.sql("SELECT count(*) FROM market.market_record WHERE sample_point_id IS NOT NULL")
                 .query(Long.class).single()).isEqualTo(1L);
             mockMvc.perform(get("/api/v1/market-records/{id}/validation-preview",id).principal(() -> "ci-auto-save"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.fieldValidationPassed").value(true))
-                .andExpect(jsonPath("$.data.version").value(0));
+                .andExpect(status().isNotFound());
             mockMvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
                     .principal(() -> "ci-auto-save").param("domain","MARKET").param("productCode","CORN")
                     .param("year","2026").param("observedAt","2026-08-11T12:00:00+08:00"))
@@ -217,6 +214,14 @@ class MarketMonitoringRestIntegrationTest {
             assertThat(jdbc.sql("SELECT count(*) FROM market.market_record").query(Long.class).single()).isEqualTo(1L);
             assertThat(jdbc.sql("SELECT count(*) FROM platform.business_event_outbox WHERE aggregate_id=:id AND action_code='MARKET_RECORD_SAVED'")
                 .param("id",id).query(Long.class).single()).isEqualTo(2L);
+            mockMvc.perform(get("/api/v1/imports/market/template").principal(() -> "ci-auto-save"))
+                .andExpect(status().isOk());
+            mockMvc.perform(get("/api/v1/identity/employees").principal(() -> "ci-auto-save"))
+                .andExpect(status().isForbidden());
+            mockMvc.perform(post("/api/v1/market-records/{id}/void", id).principal(() -> "ci-auto-save")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"version\":1}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("VOIDED"));
+
         }
     }
 

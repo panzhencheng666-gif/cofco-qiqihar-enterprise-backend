@@ -84,11 +84,6 @@ public class ProductionRecordService implements ProductionImportPort {
         return read(query, true, requestedScope);
     }
 
-    @Transactional(readOnly = true)
-    public PagedResult<ProductionListItem> readRecovery(ProductionRecordQuery query, String requestedScope, String recovery) {
-        boolean requested = com.cofco.qiqihar.graintrade.shared.application.LegacyRecoveryQuery.requested(recovery, query.filters());
-        return read(query, !requested, requestedScope);
-    }
 
     private PagedResult<ProductionListItem> read(
             ProductionRecordQuery query, boolean currentFormalOnly, String requestedScope) {
@@ -336,15 +331,7 @@ public class ProductionRecordService implements ProductionImportPort {
         return saveDraft(id, expectedVersion, storedDraft(existing));
     }
 
-    @Transactional(readOnly = true)
-    public com.cofco.qiqihar.graintrade.shared.application.BusinessValidationPreview validationPreview(String id) {
-        ProductionRecord existing=requiredRecord(id);
-        authorize("BUSINESS_UPDATE",existing.regionCode());
-        return com.cofco.qiqihar.graintrade.shared.application.BusinessValidationPreview.check(id,existing.version(),()->{
-            ProductionDraft draft=storedDraft(existing);
-            validateDraft(draft,existing.submissionMetadata());
-        });
-    }
+
 
     private ProductionDraft storedDraft(ProductionRecord existing) {
         return new ProductionDraft(existing.productCode(), existing.objectTypeCode(),

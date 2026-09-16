@@ -42,7 +42,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 public class ProductionRecordController {
-    private static final Set<String> CORE = Set.of("productCode", "pageKind", "pageNumber", "pageSize", "scope", "recovery");
+    private static final Set<String> CORE = Set.of("productCode", "pageKind", "pageNumber", "pageSize", "scope");
     private static final Set<String> PRIVATE_METADATA = Set.of(
             "PROD_SAMPLE_SUBJECT_CODE", "PROD_SURPLUS_SUBJECT_CODE", "PROD_SURPLUS_CUTOFF_DATE");
     private static final Pattern FILTER = Pattern.compile("^filter\\.([A-Za-z0-9][A-Za-z0-9_-]*)$");
@@ -50,10 +50,7 @@ public class ProductionRecordController {
 
     public ProductionRecordController(ProductionRecordService service) { this.service = service; }
 
-    @GetMapping("/api/v1/production-records/{id}/validation-preview")
-    ApiResponse<com.cofco.qiqihar.graintrade.shared.application.BusinessValidationPreview> validationPreview(@PathVariable String id) {
-        return new ApiResponse<>(service.validationPreview(id));
-    }
+
 
     @GetMapping("/api/v1/production-records")
     ApiResponse<PageResponse> records(@RequestParam MultiValueMap<String, String> parameters) {
@@ -72,8 +69,8 @@ public class ProductionRecordController {
         } catch (ArithmeticException exception) {
             throw invalidQuery();
         }
-        return new ApiResponse<>(PageResponse.from(service.readRecovery(new ProductionRecordQuery(
-                parsed.required("productCode"), parsed.required("pageKind"), pageNumber, pageSize, filters), parsed.optional("scope"), parsed.optional("recovery"))));
+        return new ApiResponse<>(PageResponse.from(service.read(new ProductionRecordQuery(
+                parsed.required("productCode"), parsed.required("pageKind"), pageNumber, pageSize, filters), parsed.optional("scope"))));
     }
 
     @GetMapping("/api/v1/production-records/{id}")

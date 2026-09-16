@@ -75,6 +75,8 @@ class SupplyBalanceRestIntegrationTest {
 
     @Test
     void persistsCountyHistoryAndAggregatesCityFromRegionalProductionAndManualRows() throws Exception {
+        jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:actor").param("actor", OPERATOR).update();
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id=:actor").param("actor", OPERATOR).update();
         save(COUNTY_ONE, riceValues("1", "1", "1", "0"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.rows[?(@.code == 'OUTPUT')].value").value("1.500000"));

@@ -79,7 +79,7 @@ public class SamplePointCoordinateCorrectionService {
                 LinkedHashMap::new, Collectors.toList()));
         List<Candidate> authorized = groups.values().stream()
                 .filter(group -> group.stream().allMatch(
-                        candidate -> principal.includesRegion(candidate.regionCode())))
+                        candidate -> principal.hasSharedReportingScope("BUSINESS_IMPORT") || principal.includesRegion(candidate.regionCode())))
                 .flatMap(List::stream).toList();
         if (authorized.isEmpty()) {
             throw new ClientRequestException("SAMPLE_POINT_COORDINATE_DUPLICATES_EMPTY",

@@ -37,7 +37,7 @@ class BusinessEventStreamServiceLifecycleTest {
         when(accessControl.requireAuthenticated()).thenReturn(principal);
         when(accessControl.requireReadScope()).thenReturn(scope);
         when(principals.findEnabled(principal.subjectId())).thenReturn(java.util.Optional.of(principal));
-        when(deliveries.drain(streamConsumer(principal.subjectId()), anyString(), eq(scope),
+        when(deliveries.drainSharedReportingChanges(streamConsumer(principal.subjectId()), anyString(), eq(scope),
                 eq(principal.subjectId()), eq(0L), eq(100), any()))
                 .thenAnswer(ignored -> {
                     queryCount.incrementAndGet();
@@ -80,13 +80,13 @@ class BusinessEventStreamServiceLifecycleTest {
         when(accessControl.requireReadScope()).thenReturn(originalScope);
         when(principals.findEnabled(original.subjectId()))
                 .thenAnswer(ignored -> java.util.Optional.of(current.get()));
-        when(deliveries.drain(streamConsumer(original.subjectId()), anyString(), eq(originalScope),
+        when(deliveries.drainSharedReportingChanges(streamConsumer(original.subjectId()), anyString(), eq(originalScope),
                 eq(original.subjectId()), eq(0L), eq(100), any()))
                 .thenAnswer(ignored -> {
                     originalQuery.countDown();
                     return emptyDrain();
                 });
-        when(deliveries.drain(streamConsumer(original.subjectId()), anyString(), eq(narrowedScope),
+        when(deliveries.drainSharedReportingChanges(streamConsumer(original.subjectId()), anyString(), eq(narrowedScope),
                 eq(original.subjectId()), eq(0L), eq(100), any()))
                 .thenAnswer(ignored -> {
                     narrowedQuery.countDown();
@@ -115,7 +115,7 @@ class BusinessEventStreamServiceLifecycleTest {
         when(accessControl.requireAuthenticated()).thenReturn(principal);
         when(accessControl.requireReadScope()).thenReturn(scope);
         when(principals.findEnabled(principal.subjectId())).thenReturn(java.util.Optional.of(principal));
-        when(deliveries.drain(anyString(), anyString(), eq(scope), eq(principal.subjectId()),
+        when(deliveries.drainSharedReportingChanges(anyString(), anyString(), eq(scope), eq(principal.subjectId()),
                 eq(0L), eq(100), any()))
                 .thenAnswer(invocation -> {
                     consumerIds.add(invocation.getArgument(0, String.class));
@@ -155,10 +155,10 @@ class BusinessEventStreamServiceLifecycleTest {
         when(accessControl.requireReadScope()).thenReturn(emptyScope);
         when(principals.findEnabled("reader")).thenReturn(java.util.Optional.of(unassigned),
                 java.util.Optional.of(assigned), java.util.Optional.empty());
-        when(deliveries.drainUnassignedReportingChanges(anyString(), anyString(), eq(emptyScope),
+        when(deliveries.drainSharedReportingChanges(anyString(), anyString(), eq(emptyScope),
                 eq("reader"), eq(17L), eq(100), any()))
                 .thenReturn(new BusinessEventDeliveryService.DrainResult(18, 1, 0, Duration.ZERO, false));
-        when(deliveries.drain(anyString(), anyString(), eq(assignedScope),
+        when(deliveries.drainSharedReportingChanges(anyString(), anyString(), eq(assignedScope),
                 eq("reader"), eq(18L), eq(100), any()))
                 .thenReturn(new BusinessEventDeliveryService.DrainResult(19, 1, 0, Duration.ZERO, false));
         BusinessEventStreamService service = new BusinessEventStreamService(deliveries, accessControl, principals);
@@ -167,9 +167,9 @@ class BusinessEventStreamServiceLifecycleTest {
             service.stream(17);
             verify(deliveries, timeout(4000)).retireConsumer(streamConsumer("reader"), anyString(),
                     eq(19L), eq(ConsumerRetirementReason.AUTHORIZATION_REVOKED));
-            verify(deliveries).drainUnassignedReportingChanges(anyString(), anyString(), eq(emptyScope),
+            verify(deliveries).drainSharedReportingChanges(anyString(), anyString(), eq(emptyScope),
                     eq("reader"), eq(17L), eq(100), any());
-            verify(deliveries).drain(anyString(), anyString(), eq(assignedScope),
+            verify(deliveries).drainSharedReportingChanges(anyString(), anyString(), eq(assignedScope),
                     eq("reader"), eq(18L), eq(100), any());
         } finally {
             service.stop();

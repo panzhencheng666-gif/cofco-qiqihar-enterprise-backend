@@ -56,11 +56,6 @@ public class LogisticsService {
     }
     @Transactional(readOnly=true)
     public PagedResult<LogisticsRecordView> list(String productCode, int pageNumber, int pageSize, Map<String,String> filters, String requestedScope) {
-        return listRecovery(productCode, pageNumber, pageSize, filters, requestedScope, null);
-    }
-    @Transactional(readOnly=true)
-    public PagedResult<LogisticsRecordView> listRecovery(String productCode, int pageNumber, int pageSize, Map<String,String> filters, String requestedScope, String recovery) {
-        com.cofco.qiqihar.graintrade.shared.application.LegacyRecoveryQuery.requested(recovery, filters);
         if(requestedScope!=null && !"MY_TASKS".equals(requestedScope))throw invalid();
         if (pageNumber < 0 || pageSize < 1 || filters.keySet().stream().anyMatch(k -> !FILTERS.contains(k))
                 || !pages.allowsListQueryValues("LOGISTICS","MONITORING",productCode,pageSize,filters)) throw invalid();
@@ -138,12 +133,7 @@ public class LogisticsService {
         if(existing.status()==LogisticsStatus.APPROVED)return authorizedView(existing);
         return save(id,version,storedDraft(existing));
     }
-    @Transactional(readOnly=true)
-    public com.cofco.qiqihar.graintrade.shared.application.BusinessValidationPreview validationPreview(String id) {
-        LogisticsRecordView existing=required(id);
-        authorize("BUSINESS_UPDATE",repository.regionsForRecord(id));
-        return com.cofco.qiqihar.graintrade.shared.application.BusinessValidationPreview.check(id,existing.version(),()->validate(storedDraft(existing)));
-    }
+
     private LogisticsDraft storedDraft(LogisticsRecordView existing) {
         Map<String,String> values=new java.util.LinkedHashMap<>();
         repository.definition(existing.productCode()).fields().stream()

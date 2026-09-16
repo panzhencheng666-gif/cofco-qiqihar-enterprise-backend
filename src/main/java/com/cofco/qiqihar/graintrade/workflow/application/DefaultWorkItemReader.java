@@ -42,7 +42,7 @@ public class DefaultWorkItemReader implements WorkItemReader {
     @Override
     public PagedResult<WorkItem> read(WorkItemQuery query) {
         AuthorizedReadScope scope = accessControl == null
-                ? AuthorizedReadScope.unrestricted() : accessControl.requireReadScope();
+                ? AuthorizedReadScope.unrestricted() : accessControl.requireTaskReadScope();
         if (query.regionId() != null) scope.requireRegion(query.regionId());
         WorkItemQuery authorizedQuery = query.authorizedFor(scope.regionCodes())
                 .assignedTo(scope.subjectId());

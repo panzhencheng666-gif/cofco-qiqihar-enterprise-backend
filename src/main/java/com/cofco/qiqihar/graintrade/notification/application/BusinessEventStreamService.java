@@ -98,13 +98,9 @@ public class BusinessEventStreamService implements SmartLifecycle {
                 BusinessEventDeliveryService.DeliverySink sink = event -> connection.emitter().send(
                         SseEmitter.event().id(Long.toString(event.sequence()))
                                 .name("business-change").data(event));
-                // Enabled unassigned accounts can read reporting data, but not all notifications.
-                // Re-evaluate on every poll so assigning a region restores regional isolation.
-                var result = scope.regionCodes().isEmpty()
-                        ? deliveries.drainUnassignedReportingChanges(connection.consumerId(), instanceId,
-                                scope, subjectId, connection.cursor().get(), BATCH_SIZE, sink)
-                        : deliveries.drain(connection.consumerId(), instanceId,
-                                scope, subjectId, connection.cursor().get(), BATCH_SIZE, sink);
+                // Business visibility is shared; governance notifications never enter this stream.
+                var result = deliveries.drainSharedReportingChanges(connection.consumerId(), instanceId,
+                        scope, subjectId, connection.cursor().get(), BATCH_SIZE, sink);
                 connection.cursor().set(result.resumeSequence());
                 long now = System.nanoTime();
                 if (result.deliveredCount() == 0 && result.failedCount() == 0

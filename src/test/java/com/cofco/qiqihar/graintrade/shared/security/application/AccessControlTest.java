@@ -12,31 +12,25 @@ import org.junit.jupiter.api.Test;
 
 class AccessControlTest {
     @Test
-    void unassignedReporterCanSubmitOnlyWithAnExplicitSubmissionGrant() {
-        var reporter = new SecurityPrincipal("reporter", "TEST", Set.of("BUSINESS_UPDATE", "BUSINESS_SUBMIT"), Set.of());
-        var access = new AccessControl(() -> Optional.of("reporter"), id -> Optional.of(reporter), true);
-        assertThat(access.require("BUSINESS_SUBMIT", "230200")).isEqualTo(reporter);
-        assertThat(access.require("BUSINESS_SUBMIT", "231100")).isEqualTo(reporter);
-        for (String permission : Set.of("BUSINESS_APPROVE", "BUSINESS_RETURN", "MASTER_DATA_APPLY")) {
-            assertThatThrownBy(() -> access.require(permission, "230200"))
+    void enabledEmployeesHaveAllBusinessOperationsAcrossRegionsWithoutManagementGrants() {
+        for (Set<String> regions : java.util.List.of(Set.<String>of(), Set.of("230200"))) {
+            var user = new SecurityPrincipal("employee", "TEST", Set.of(), regions);
+            var access = new AccessControl(() -> Optional.of("employee"), id -> Optional.of(user), true);
+            for (String permission : Set.of("BUSINESS_READ", "BUSINESS_CREATE", "BUSINESS_UPDATE",
+                    "BUSINESS_IMPORT", "BUSINESS_SUBMIT", "BUSINESS_VOID", "FORMAL_SAMPLE_MANAGE",
+                    "FORMAL_SAMPLE_DELETE", "MARKET_OBJECT_MANAGE", "OBLIGATION_REPORT_READ", "OBLIGATION_REPORT_EXPORT", "REPORT_PREVIEW", "REPORT_EXPORT", "REPORT_PUBLISH")) {
+                assertThat(access.require(permission, "231100")).isEqualTo(user);
+            }
+            assertThat(access.requireBusinessVoid("231100")).isEqualTo(user);
+            assertThat(access.requireTaskReadScope().isUnrestricted()).isTrue();
+            for (String permission : Set.of("IDENTITY_ADMIN", "IDENTITY_READ", "ACCESS_REVIEW",
+                    "BUSINESS_APPROVE", "BUSINESS_RETURN", "MASTER_DATA_APPLY", "AUDIT_READ")) {
+                assertThatThrownBy(() -> access.require(permission, null))
                     .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+            }
+            assertThatThrownBy(access::requireAdministrator)
+                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
         }
-        for (Set<String> grants : java.util.List.of(Set.of("BUSINESS_UPDATE"), Set.of("BUSINESS_SUBMIT"))) {
-            var limited = new SecurityPrincipal("reporter", "TEST", grants, Set.of());
-            var limitedAccess = new AccessControl(() -> Optional.of("reporter"), id -> Optional.of(limited), true);
-            assertThatThrownBy(() -> limitedAccess.require("BUSINESS_SUBMIT", "230200"))
-                    .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
-        }
-    }
-
-    @Test
-    void assignedReporterStillSubmitsOnlyInsideTheAssignedRegion() {
-        var reporter = new SecurityPrincipal("reporter", "TEST", Set.of("BUSINESS_UPDATE", "BUSINESS_SUBMIT"), Set.of("230200"));
-        var access = new AccessControl(() -> Optional.of("reporter"), id -> Optional.of(reporter), true);
-        assertThat(access.require("BUSINESS_SUBMIT", "230200")).isEqualTo(reporter);
-        assertThatThrownBy(() -> access.require("BUSINESS_SUBMIT", "231100"))
-                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class)
-                .hasMessage("Data region is outside the assigned scope");
     }
 
     @Test
@@ -68,35 +62,11 @@ class AccessControlTest {
         }
         access.requireCountyReporter(user, "231100");
         assertThat(access.requireBusinessReadScope().isUnrestricted()).isTrue();
-        assertThat(access.requireTaskReadScope().regionCodes()).isEmpty();
+        assertThat(access.requireTaskReadScope().isUnrestricted()).isTrue();
         assertThatThrownBy(access::requireAdministrator)
                 .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
         assertThatThrownBy(() -> access.require("BUSINESS_APPROVE", "231100"))
                 .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
-    }
-
-    @Test
-    void voidRequiresStoredPermissionRegionAndResponsibility() {
-        var reader = new SecurityPrincipal("reader", "TEST", Set.of(), Set.of("230200"));
-        var writer = new SecurityPrincipal("writer", "TEST", Set.of("BUSINESS_UPDATE"), Set.of("230200"));
-        var current = new java.util.concurrent.atomic.AtomicReference<>(reader);
-        var owner = new java.util.concurrent.atomic.AtomicReference<>("writer");
-        var repository = new SecurityPrincipalRepository() {
-            public Optional<SecurityPrincipal> findEnabled(String id) { return Optional.of(current.get()); }
-            public Optional<String> responsibleSubject(String region, boolean county) { return Optional.ofNullable(owner.get()); }
-        };
-        var access = new AccessControl(() -> Optional.of(current.get().subjectId()), repository, true);
-        assertThatThrownBy(() -> access.requireBusinessVoid("230200"))
-                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
-        current.set(writer);
-        assertThat(access.requireBusinessVoid("230200")).isEqualTo(writer);
-        assertThatThrownBy(() -> access.requireBusinessVoid("231100"))
-                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
-        owner.set("other");
-        assertThatThrownBy(() -> access.requireBusinessVoid("230200"))
-                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
-        owner.set(null);
-        assertThat(access.requireBusinessVoid("230200")).isEqualTo(writer);
     }
 
     @Test
@@ -120,7 +90,7 @@ class AccessControlTest {
         assertThat(access.requireOverviewReadScope().subjectId()).isEqualTo("reader");
         assertThat(access.requireReadScope().regionCodes()).containsExactly("230200");
         assertThat(access.require("BUSINESS_UPDATE", "231100")).isEqualTo(user);
-        assertThat(access.requireTaskReadScope().regionCodes()).containsExactly("230200");
+        assertThat(access.requireTaskReadScope().isUnrestricted()).isTrue();
     }
 
     @Test

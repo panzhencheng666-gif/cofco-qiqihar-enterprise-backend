@@ -48,7 +48,7 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                        design.coordinate_source_name,design.coordinate_source_revision,
                        design.coordinate_match_confidence,design.coordinate_review_status
                 FROM registry.village_design_sample_point design
-                WHERE design.village_region_code IN (:authorizedRegions)
+                WHERE ('*' IN (:authorizedRegions) OR design.village_region_code IN (:authorizedRegions))
                   AND (CAST(:region AS varchar) IS NULL
                        OR design.village_region_code IN (SELECT code FROM selected_region))
                 ORDER BY design.county_name,design.township_name,design.village_name,
@@ -124,7 +124,7 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                 scoped_design(design_village_region_code) AS (
                   SELECT design.village_region_code
                   FROM registry.village_design_sample_point design
-                  WHERE design.village_region_code IN (:authorizedRegions)
+                  WHERE ('*' IN (:authorizedRegions) OR design.village_region_code IN (:authorizedRegions))
                     AND (CAST(:region AS varchar) IS NULL
                          OR design.village_region_code IN (SELECT code FROM selected_region))
                 ),
@@ -208,7 +208,7 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                           resolution.target_sample_point_id,source.sample_point_id) IS NOT NULL
                     AND source.occurrence_date>=make_date(:year,1,1)
                     AND source.occurrence_date<make_date(:year+1,1,1)
-                    AND business_point.region_code IN (:authorizedRegions)
+                    AND ('*' IN (:authorizedRegions) OR business_point.region_code IN (:authorizedRegions))
                     AND (CAST(:region AS varchar) IS NULL
                       OR business_point.region_code IN (SELECT code FROM selected_region)
                       OR business_point.sample_point_id IN (
@@ -345,7 +345,7 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                   AND ST_Covers(boundary.geometry,ST_SetSRID(ST_MakePoint(
                     COALESCE(actual.actual_longitude,ST_X(sample.governed_point)),
                     COALESCE(actual.actual_latitude,ST_Y(sample.governed_point))),4326))
-                  AND sample.region_code IN (:authorizedRegions)
+                  AND ('*' IN (:authorizedRegions) OR sample.region_code IN (:authorizedRegions))
                   AND sample.effective_from<=make_date(:year,12,31)
                   AND (sample.effective_to IS NULL
                        OR sample.effective_to>=make_date(:year,1,1))
@@ -593,6 +593,7 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
 
     @Override
     public boolean canGovernNetwork(int year, Set<String> authorizedRegions) {
+        if (authorizedRegions.contains("*")) return true;
         if (authorizedRegions.isEmpty()) {
             return false;
         }
@@ -837,7 +838,7 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                   ON sample.sample_point_id=membership.sample_point_id
                 JOIN platform.region located ON located.code=sample.region_code
                 WHERE membership.network_year=:year
-                  AND sample.region_code IN (:authorizedRegions)
+                  AND ('*' IN (:authorizedRegions) OR sample.region_code IN (:authorizedRegions))
                 ORDER BY CASE membership.status_code
                            WHEN 'ACTIVE' THEN 1 WHEN 'CANDIDATE' THEN 2
                            WHEN 'PAUSED' THEN 3 ELSE 4 END,
@@ -874,7 +875,7 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                 scoped_design(design_village_region_code) AS (
                   SELECT design.village_region_code
                   FROM registry.village_design_sample_point design
-                  WHERE design.village_region_code IN (:authorizedRegions)
+                  WHERE ('*' IN (:authorizedRegions) OR design.village_region_code IN (:authorizedRegions))
                     AND (CAST(:region AS varchar) IS NULL
                          OR design.village_region_code IN (SELECT code FROM selected_region))
                 ),
@@ -904,7 +905,7 @@ public class JdbcAnnualSampleNetworkRepository implements AnnualSampleNetworkRep
                     ON sample.sample_point_id=membership.sample_point_id
                   JOIN platform.region located ON located.code=sample.region_code
                   WHERE membership.network_year=:year
-                    AND sample.region_code IN (:authorizedRegions)
+                    AND ('*' IN (:authorizedRegions) OR sample.region_code IN (:authorizedRegions))
                     AND (CAST(:region AS varchar) IS NULL
                          OR sample.region_code IN (SELECT code FROM selected_region)
                          OR membership.sample_point_id IN (

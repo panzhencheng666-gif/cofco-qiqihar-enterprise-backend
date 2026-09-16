@@ -38,10 +38,7 @@ public class MarketMonitoringCommandController {
         this.service = service;
     }
 
-    @GetMapping("/api/v1/market-records/{id}/validation-preview")
-    ApiResponse<com.cofco.qiqihar.graintrade.shared.application.BusinessValidationPreview> validationPreview(@PathVariable String id) {
-        return new ApiResponse<>(service.validationPreview(id));
-    }
+
 
     @GetMapping("/api/v1/market-records/{id}")
     ApiResponse<RecordResponse> detail(@PathVariable String id) {

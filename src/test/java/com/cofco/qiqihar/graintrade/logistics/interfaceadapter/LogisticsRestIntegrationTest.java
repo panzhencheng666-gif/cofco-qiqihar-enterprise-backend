@@ -56,7 +56,7 @@ class LogisticsRestIntegrationTest {
         mvc.perform(get("/api/v1/logistics-records").principal(() -> "logistics-tester")
                 .param("productCode","CORN").param("pageSize","20").param("recovery","true")
                 .param("filter.status","DRAFT").param("scope","MY_TASKS"))
-            .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].id").value(id));
+            .andExpect(status().isBadRequest());
         transition(id,"submit",1,null)
                 .andExpect(jsonPath("$.data.status").value("APPROVED"))
                 .andExpect(jsonPath("$.data.version").value(2));

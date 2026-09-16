@@ -60,7 +60,7 @@ class ProductionRecordRestIntegrationTest {
         mockMvc.perform(get("/api/v1/production-records").principal(() -> "production-tester")
                 .param("productCode","CORN").param("pageKind","MONITORING").param("pageSize","20")
                 .param("recovery","true").param("filter.status","PENDING_REVIEW").param("scope","MY_TASKS"))
-            .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].id").value(id));
+            .andExpect(status().isBadRequest());
         mockMvc.perform(get("/api/v1/production-records").principal(() -> "production-tester")
                 .param("productCode","CORN").param("pageKind","MONITORING").param("pageSize","20"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(0));

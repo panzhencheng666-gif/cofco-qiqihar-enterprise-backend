@@ -239,8 +239,8 @@ public class ProductionSecurityConfiguration {
                     filterChain.doFilter(request,response);
                     return;
                 }
-                if(principal==null||principal.roleCodes().isEmpty()) {
-                    deny(request,response,authentication,principal==null?"SUBJECT_DISABLED":"ROLE_REQUIRED");
+                if(principal==null) {
+                    deny(request,response,authentication,"SUBJECT_DISABLED");
                     return;
                 }
                 if(authentication instanceof StableSubjectOAuth2AuthenticationToken
@@ -320,8 +320,7 @@ public class ProductionSecurityConfiguration {
         public void onAuthenticationSuccess(HttpServletRequest request,HttpServletResponse response,
                 Authentication authentication) throws IOException,ServletException {
             SecurityPrincipal principal=findEnabledOidc(principals,authentication).orElse(null);
-            String reason=!approvedMfa(authentication,acceptedAmr,acceptedAcr)?"MFA_REQUIRED"
-                    : principal!=null&&principal.roleCodes().isEmpty()?"ROLE_REQUIRED":null;
+            String reason=!approvedMfa(authentication,acceptedAmr,acceptedAcr)?"MFA_REQUIRED":null;
             if(reason!=null) {
                 var session=request.getSession(false);
                 audit.record(authentication.getName(),session==null?null:session.getId(),

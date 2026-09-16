@@ -127,6 +127,7 @@ class BusinessEventStreamIntegrationTest {
 
     @Test
     void unassignedEnabledReaderReceivesSavedChangesWithoutSensitiveEventsAndResumes() throws Exception {
+        jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:reader").param("reader", READER).update();
         jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id=:reader")
                 .param("reader", READER).update();
         jdbc.sql("""

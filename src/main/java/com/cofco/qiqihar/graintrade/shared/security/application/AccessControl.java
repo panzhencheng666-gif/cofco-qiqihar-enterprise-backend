@@ -35,8 +35,7 @@ public class AccessControl {
     @Transactional(readOnly = true)
     public AuthorizedReadScope requireTaskReadScope() {
         SecurityPrincipal principal = require("BUSINESS_READ", null);
-        return new AuthorizedReadScope(principal.subjectId(), principal.isRootAdministrator() || principal.isUnassignedReporter()
-                ? java.util.Set.of("*") : principal.regionCodes());
+        return new AuthorizedReadScope(principal.subjectId(), java.util.Set.of("*"));
     }
 
     @Transactional(readOnly = true)
@@ -85,22 +84,13 @@ public class AccessControl {
         return principal;
     }
 
-    /** Assigned reporters retain their responsibility scope; unassigned reporters share reporting coverage. */
     @Transactional(readOnly = true)
     public SecurityPrincipal requireBusinessVoid(String regionCode) {
-        SecurityPrincipal principal = requireAuthenticated();
-        if (!canVoidBusinessRecord(principal, regionCode)) {
-            throw new AccessDeniedException("ACCESS_VOID_DENIED", "无权作废该地区记录");
-        }
-        return principal;
+        return require("BUSINESS_VOID", regionCode);
     }
 
     public boolean canVoidBusinessRecord(SecurityPrincipal principal, String regionCode) {
-        if (principal.isRootAdministrator() || principal.isUnassignedReporter()) return true;
-        if (!principal.permissionCodes().contains("BUSINESS_UPDATE")
-                || regionCode == null || regionCode.isBlank() || !principal.includesRegion(regionCode)) return false;
-        return principals.responsibleSubject(regionCode, false)
-                .map(principal.subjectId()::equals).orElse(true);
+        return principal.permits("BUSINESS_VOID");
     }
 
     /** County reporting is available to every enabled authenticated account. */

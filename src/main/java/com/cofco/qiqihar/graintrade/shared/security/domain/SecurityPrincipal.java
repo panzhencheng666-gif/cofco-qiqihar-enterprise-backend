@@ -73,22 +73,23 @@ public record SecurityPrincipal(
         return isRootAdministrator() || isSharedReportingPermission(permissionCode) || permissionCodes.contains(permissionCode);
     }
 
+    private static final Set<String> SHARED_BUSINESS_PERMISSIONS = Set.of(
+            "BUSINESS_READ", "BUSINESS_CREATE", "BUSINESS_UPDATE", "BUSINESS_IMPORT",
+            "BUSINESS_SUBMIT", "BUSINESS_VOID", "FORMAL_SAMPLE_MANAGE", "FORMAL_SAMPLE_DELETE",
+            "MARKET_OBJECT_MANAGE", "OBLIGATION_REPORT_READ", "OBLIGATION_REPORT_EXPORT", "REPORT_PREVIEW", "REPORT_EXPORT", "REPORT_PUBLISH");
+
     public static boolean isSharedReportingPermission(String permissionCode) {
-        return "BUSINESS_READ".equals(permissionCode) || "BUSINESS_CREATE".equals(permissionCode)
-                || "BUSINESS_UPDATE".equals(permissionCode);
+        return SHARED_BUSINESS_PERMISSIONS.contains(permissionCode);
     }
 
-    /** An existing submission grant follows the unassigned reporter's shared coverage. */
     public boolean hasSharedReportingScope(String permissionCode) {
-        return isSharedReportingPermission(permissionCode)
-                || ("BUSINESS_SUBMIT".equals(permissionCode) && isUnassignedReporter()
-                    && permissionCodes.contains("BUSINESS_SUBMIT"));
+        return isSharedReportingPermission(permissionCode);
     }
 
     /** Effective business permissions; stored roles and responsibility assignments stay unchanged. */
     public Set<String> effectivePermissionCodes() {
         var effective = new java.util.HashSet<>(permissionCodes);
-        effective.addAll(Set.of("BUSINESS_READ", "BUSINESS_CREATE", "BUSINESS_UPDATE"));
+        effective.addAll(SHARED_BUSINESS_PERMISSIONS);
         return Set.copyOf(effective);
     }
 

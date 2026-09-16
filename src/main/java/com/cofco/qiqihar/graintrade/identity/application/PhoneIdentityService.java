@@ -193,7 +193,7 @@ public class PhoneIdentityService {
             throw conflict("PHONE_ALREADY_BOUND","原账号已绑定手机号，不能覆盖绑定");
     }
     private void requireActive(String subject) {
-        if(principals.findEnabled(subject).filter(p->!p.roleCodes().isEmpty()).isEmpty())
+        if(principals.findEnabled(subject).isEmpty())
             throw new AccessDeniedException("PHONE_ACCOUNT_UNAVAILABLE","账号不可用，请联系管理员");
     }
     private String phoneSubject(String phone) {

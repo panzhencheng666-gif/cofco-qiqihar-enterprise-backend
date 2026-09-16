@@ -87,12 +87,9 @@ public class BusinessEventDeliveryService {
         return drain(consumerId, instanceId, scope, subjectId, afterSequence, limit, sink, false);
     }
 
-    public DrainResult drainUnassignedReportingChanges(
+    public DrainResult drainSharedReportingChanges(
             String consumerId, String instanceId, AuthorizedReadScope scope, String subjectId,
             long afterSequence, int limit, DeliverySink sink) {
-        if (!scope.regionCodes().isEmpty()) {
-            throw new IllegalArgumentException("Shared refresh delivery requires an unassigned scope");
-        }
         return drain(consumerId, instanceId, scope, subjectId, afterSequence, limit, sink, true);
     }
 

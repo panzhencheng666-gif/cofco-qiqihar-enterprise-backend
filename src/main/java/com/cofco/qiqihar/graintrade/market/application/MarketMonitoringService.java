@@ -112,11 +112,6 @@ public class MarketMonitoringService {
         return list(query, true, requestedScope);
     }
 
-    @Transactional(readOnly = true)
-    public PagedResult<MarketListItem> listRecovery(MarketRecordQuery query, String requestedScope, String recovery) {
-        boolean requested = com.cofco.qiqihar.graintrade.shared.application.LegacyRecoveryQuery.requested(recovery, query.filters());
-        return list(query, !requested, requestedScope);
-    }
 
     private PagedResult<MarketListItem> list(
             MarketRecordQuery query, boolean currentFormalOnly, String requestedScope) {
@@ -395,16 +390,7 @@ public class MarketMonitoringService {
         return save(id, expectedVersion, storedDraft(existing));
     }
 
-    @Transactional(readOnly = true)
-    public com.cofco.qiqihar.graintrade.shared.application.BusinessValidationPreview validationPreview(String id) {
-        MarketMonitoringRecord existing=required(id);
-        authorize("BUSINESS_UPDATE",existing.regionCode());
-        return com.cofco.qiqihar.graintrade.shared.application.BusinessValidationPreview.check(id,existing.version(),()->{
-            MarketMonitoringDraft draft=storedDraft(existing);
-            ParsedDraft parsed=parseDraft(draft,coreDefinitions(draft));
-            validate(parsed); validateEntryCoordinates(parsed);
-        });
-    }
+
 
     private MarketMonitoringDraft storedDraft(MarketMonitoringRecord existing) {
         List<MarketCoreFieldDefinition> definitions = coreFields(existing.productCode(), existing.objectTypeCode());
