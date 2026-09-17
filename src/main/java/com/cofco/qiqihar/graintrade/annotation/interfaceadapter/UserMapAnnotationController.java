@@ -13,9 +13,12 @@ public class UserMapAnnotationController {
     public UserMapAnnotationController(UserMapAnnotationService service) { this.service=service; }
 
     @GetMapping
-    ApiResponse<UserMapAnnotationView> current(Authentication authentication) {
-        return new ApiResponse<>(service.current(authentication.getName()).orElse(null));
+    CurrentAnnotationResponse current(Authentication authentication) {
+        return new CurrentAnnotationResponse(service.current(authentication.getName()).orElse(null));
     }
+    // An account without a saved annotation is a successful empty result.
+    record CurrentAnnotationResponse(UserMapAnnotationView data) {}
+
     @PutMapping
     ApiResponse<UserMapAnnotationView> save(Authentication authentication,
             @RequestBody UserMapAnnotationCommand command) {

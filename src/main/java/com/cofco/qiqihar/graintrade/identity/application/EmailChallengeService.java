@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.identity.application;
 
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
+import com.cofco.qiqihar.graintrade.shared.application.ServiceUnavailableException;
 import java.nio.charset.StandardCharsets;
 import java.security.*;
 import java.util.*;
@@ -28,9 +29,9 @@ public class EmailChallengeService {
         this.digestSecret=Objects.requireNonNullElse(digestSecret,"").getBytes(StandardCharsets.UTF_8);
     }
 
-    @Transactional(propagation=Propagation.REQUIRES_NEW,noRollbackFor=ClientRequestException.class)
+    @Transactional(propagation=Propagation.REQUIRES_NEW,noRollbackFor={ClientRequestException.class,ServiceUnavailableException.class})
     public UUID send(String address,String purpose,String session,String client) {
-        if(!enabled)throw invalid("EMAIL_DISABLED","邮箱认证未启用");
+        if(!enabled)throw new ServiceUnavailableException("EMAIL_DISABLED","邮箱发送服务尚未配置完成，请使用手机验证码登录或注册");
         String email=normalize(address);
         if(!"LOGIN".equals(purpose)&&!"REGISTER".equals(purpose)&&!"BIND".equals(purpose))
             throw invalid("EMAIL_PURPOSE","验证码用途无效");
@@ -66,12 +67,12 @@ public class EmailChallengeService {
         } catch(RuntimeException failure) {
             jdbc.sql("UPDATE platform.email_challenge SET consumed_at=now() WHERE challenge_id=:id")
                     .param("id",id).update();
-            throw invalid("EMAIL_SEND_FAILED","邮件发送失败，请稍后重试");
+            throw new ServiceUnavailableException("EMAIL_SEND_FAILED","邮件发送失败，请稍后重试",failure);
         }
         return id;
     }
 
-    @Transactional(propagation=Propagation.REQUIRES_NEW,noRollbackFor=ClientRequestException.class)
+    @Transactional(propagation=Propagation.REQUIRES_NEW,noRollbackFor={ClientRequestException.class,ServiceUnavailableException.class})
     public String verify(UUID id,String code,String purpose,String session) {
         if(!enabled||id==null||code==null||!code.matches("[0-9]{6}"))throw rejected();
         var row=jdbc.sql("""

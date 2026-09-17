@@ -1,8 +1,6 @@
 const form = document.querySelector('#kc-register-form');
 const base = new URL(form.dataset.appBase).origin;
 const unit = document.querySelector('#cofco-unit');
-const regions = document.querySelector('#cofco-regions');
-const search = document.querySelector('#cofco-region-search');
 const send = document.querySelector('#cofco-send');
 const retry = document.querySelector('#cofco-retry');
 const error = document.querySelector('#cofco-entry-error');
@@ -14,7 +12,7 @@ const codeLabel = document.querySelector('#cofco-code-label');
 const username = form.querySelector('[name="username"]');
 const submit = form.querySelector('[type="submit"]');
 let csrf = '', challengeId = null, submitting = false, nativeReady = false, generation = 0, ready = false;
-let allRegions = [], selected = '', cooldownUntil = 0, credentialsComplete = false;
+let cooldownUntil = 0, credentialsComplete = false;
 submit.disabled = true;
 
 function verificationMethod() {
@@ -47,38 +45,21 @@ async function api(path, body) {
   return result.data;
 }
 
-function renderRegions() {
-  const term = search.value.trim();
-  regions.replaceChildren(new Option('请选择一个乡镇',''), ...allRegions
-    .filter(region => !term || region.name.includes(term) || selected === region.code)
-    .map(region => {
-      const option = new Option(region.name, region.code);
-      option.selected = selected === region.code;
-      return option;
-    }));
-  regions.value = selected;
-}
-
 async function loadOptions(codeValue = 'QIQIHAR_BUSINESS') {
   const current = ++generation;
   ready = false;
   send.disabled = true;
   submit.disabled = true;
-  regions.disabled = true;
-  error.textContent = '正在加载单位和地区…';
+  error.textContent = '正在加载工作单位…';
   retry.hidden = true;
   try {
     const data = await api('registration-entry/options?workUnitCode=' + encodeURIComponent(codeValue));
     if (current !== generation) return;
-    if (!data.workUnits?.length || !data.regions?.length) throw new Error('单位或地区暂无可用选项，请重试或联系管理员');
+    if (!data.workUnits?.length) throw new Error('工作单位暂无可用选项，请重试或联系管理员');
     unit.replaceChildren(...data.workUnits.map(item => new Option(item.name,item.code)));
     unit.value = codeValue;
     if (!unit.value) throw new Error('所选单位不可用');
-    allRegions = data.regions.filter(region => region.administrativeLevel === 'TOWNSHIP');
-    if (!allRegions.some(region => region.code === selected)) selected = '';
-    renderRegions();
     unit.disabled = false;
-    regions.disabled = false;
     ready = true;
     send.disabled = Date.now() < cooldownUntil;
     submit.disabled = false;
@@ -91,9 +72,7 @@ async function loadOptions(codeValue = 'QIQIHAR_BUSINESS') {
   }
 }
 
-regions.addEventListener('change', () => { selected = regions.value; });
-search.addEventListener('input', renderRegions);
-unit.addEventListener('change', () => { selected = ''; search.value = ''; void loadOptions(unit.value); });
+unit.addEventListener('change', () => void loadOptions(unit.value));
 retry.addEventListener('click', () => void loadOptions(unit.value || 'QIQIHAR_BUSINESS'));
 phone?.addEventListener('input', refreshVerificationFields);
 email?.addEventListener('input', refreshVerificationFields);
@@ -134,8 +113,8 @@ form.addEventListener('submit', async event => {
   if (nativeReady) return;
   event.preventDefault();
   if (submitting || !ready) return;
-  if (!form.reportValidity() || !selected) {
-    error.textContent = '请完整填写注册信息并选择地区';
+  if (!form.reportValidity()) {
+    error.textContent = '请完整填写注册信息';
     return;
   }
   if (!challengeId) {
@@ -155,7 +134,7 @@ form.addEventListener('submit', async event => {
       email: email.value,
       verificationMethod: verificationMethod(),
       workUnitCode: unit.value,
-      regionCodes: [selected],
+      regionCodes: [],
       challengeId,
       code: code.value,
     });
@@ -205,7 +184,6 @@ try {
         code.required = false;
         code.placeholder = '联系方式已验证';
       }
-      selected = draft.regionCodes?.length === 1 ? draft.regionCodes[0] : '';
     }
     refreshVerificationFields();
     if (draft?.username) {
