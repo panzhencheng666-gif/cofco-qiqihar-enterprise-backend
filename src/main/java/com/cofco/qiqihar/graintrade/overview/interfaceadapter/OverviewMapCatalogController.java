@@ -151,7 +151,8 @@ public class OverviewMapCatalogController {
           FROM platform.design_sample_point p
           JOIN platform.design_sample_contract c ON c.contract_version=p.contract_version
           JOIN region_path r ON r.code=p.region_code
-          WHERE p.product_code=:product AND p.region_code IN (SELECT code FROM scope)
+          WHERE p.lifecycle_status='ACTIVE' AND p.product_code IN (:product,'GENERAL')
+            AND p.region_code IN (SELECT code FROM scope)
             AND (:all OR p.region_code=ANY(string_to_array(:allowed,',')))
           ORDER BY p.sample_name,p.design_sample_point_id
           """).param("region",regionCode).param("product",productCode)
