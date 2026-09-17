@@ -28,7 +28,7 @@ class OverviewDesignMapCatalogIntegrationTest {
     @Autowired JdbcClient jdbc;
 
     @Test
-    void showsActiveGeneralAndSelectedProductDesignsWithoutExpandingRegionAccess() {
+    void showsActiveAndExpiredGeneralAndSelectedProductDesignsWithoutExpandingRegionAccess() {
         jdbc.sql("INSERT INTO platform.work_unit(code,name,sort_order) VALUES('DESIGN_MAP_TEST','地图测试单位',99317) ON CONFLICT DO NOTHING").update();
         jdbc.sql("INSERT INTO platform.security_user(subject_id,display_name,work_unit_code) VALUES('design-map-test','地图测试员','DESIGN_MAP_TEST') ON CONFLICT DO NOTHING").update();
         GovernedMasterDataFixtures.insertRegion(jdbc,REGION,"设计地图测试乡","230202","TOWNSHIP",99317);
@@ -50,9 +50,16 @@ class OverviewDesignMapCatalogIntegrationTest {
         var controller=new OverviewMapCatalogController(dataSource,access,mock(OverviewSamplePointService.class));
         when(access.requireOverviewReadScope()).thenReturn(AuthorizedReadScope.unrestricted());
         assertThat(controller.design("CORN",REGION).data()).extracting(row->row.get("name"))
-                .containsExactlyInAnyOrder("通用有效","玉米有效");
+                .containsExactlyInAnyOrder("通用有效","通用过期","玉米有效","玉米过期");
+        assertThat(controller.design("CORN",REGION).data())
+                .filteredOn(row -> row.get("name").equals("通用过期"))
+                .singleElement()
+                .satisfies(row -> {
+                    assertThat(row.get("lifecycleStatus")).isEqualTo("EXPIRED");
+                    assertThat(row.get("expiredAt")).isNotNull();
+                });
         assertThat(controller.design("SOYBEAN",REGION).data()).extracting(row->row.get("name"))
-                .containsExactlyInAnyOrder("通用有效","大豆有效");
+                .containsExactlyInAnyOrder("通用有效","通用过期","大豆有效");
         when(access.requireOverviewReadScope()).thenReturn(new AuthorizedReadScope("design-map-test",Set.of("230203")));
         assertThat(controller.design("CORN",REGION).data()).isEmpty();
     }
