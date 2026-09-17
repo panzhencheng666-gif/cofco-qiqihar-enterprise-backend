@@ -15,7 +15,7 @@ public class DesignSampleAllocationService {
             JdbcClient jdbc,DataSource dataSource){this.planner=planner;this.writer=writer;this.jdbc=jdbc;this.dataSource=dataSource;}
 
     public DesignSampleAllocationPreflight preflight(){
-        var townships=projectBatch(planner.planAll(),Instant.now());
+        var townships=projectBatch(planner.planAll(),Instant.now(),null);
         long villages=townships.stream().mapToLong(DesignSampleTownshipPlan::villageCount).sum();
         long active=jdbc.sql("SELECT count(*) FROM platform.design_sample_point WHERE lifecycle_status='ACTIVE'")
                 .query(Long.class).single();
@@ -23,11 +23,19 @@ public class DesignSampleAllocationService {
     }
 
     public ApplyBatch apply(String actor){
+        return apply(actor,UUID.randomUUID(),false);
+    }
+
+    public ApplyBatch resume(String actor,UUID run){
+        return apply(actor,Objects.requireNonNull(run,"run"),true);
+    }
+
+    private ApplyBatch apply(String actor,UUID run,boolean requireExistingRun){
         try(Connection connection=dataSource.getConnection()) {
             boolean locked=false;
             try(PreparedStatement lock=connection.prepareStatement("SELECT pg_advisory_lock(209,1)")) {
                 lock.execute();locked=true;
-                return applyLocked(actor);
+                return applyLocked(actor,run,requireExistingRun);
             } finally {
                 if(locked)try(PreparedStatement unlock=connection.prepareStatement("SELECT pg_advisory_unlock(209,1)")) {
                     try(ResultSet result=unlock.executeQuery()) {
@@ -40,10 +48,37 @@ public class DesignSampleAllocationService {
         }
     }
 
-    private ApplyBatch applyLocked(String actor){
-        UUID run=UUID.randomUUID();Instant candidateCutoff=Instant.now();
-        var plans=projectBatch(planner.planAll(),candidateCutoff);
+    private ApplyBatch applyLocked(String actor,UUID run,boolean requireExistingRun){
+        if(requireExistingRun&&jdbc.sql("SELECT count(*) FROM platform.design_sample_point WHERE assignment_run_id=:run")
+                .param("run",run).query(Long.class).single()==0)throw new IllegalArgumentException("待恢复的设计样本批次不存在");
+        Instant candidateCutoff=Instant.now();
+        var plans=projectBatch(planner.planAll(),candidateCutoff,requireExistingRun?run:null);
         List<DesignSampleTownshipWriter.ApplyResult> results=new ArrayList<>();
+        Map<String,List<String>> stageBlockers=new HashMap<>();Set<String> stagedTownships=new HashSet<>();
+        for(var plan:plans){
+            if(!plan.ready())continue;
+            try {
+                var staged=writer.stageSurplus(plan.townshipCode(),actor,run,candidateCutoff);
+                if(staged.blockers().isEmpty())stagedTownships.add(plan.townshipCode());
+                else stageBlockers.put(plan.townshipCode(),staged.blockers());
+            } catch(RuntimeException failure) {
+                stageBlockers.put(plan.townshipCode(),
+                        List.of("回收准备失败，已回滚该乡镇："+failure.getClass().getSimpleName()));
+            }
+        }
+        if(!stageBlockers.isEmpty()){
+            for(var plan:plans){
+                List<String> blockers=!plan.ready()?plan.blockers():stageBlockers.getOrDefault(plan.townshipCode(),
+                        List.of("全局回收池准备未完成，本次未开始分配"));
+                results.add(new DesignSampleTownshipWriter.ApplyResult(plan.townshipCode(),0,0,0,blockers));
+            }
+            Map<String,Integer> expiredByTownship=expiredByTownship(run,plans,stagedTownships);
+            List<DesignSampleTownshipWriter.ApplyResult> completed=results.stream().map(result->
+                    new DesignSampleTownshipWriter.ApplyResult(result.townshipCode(),0,0,
+                            expiredByTownship.getOrDefault(result.townshipCode(),0),result.blockers())).toList();
+            return new ApplyBatch(run,0,0,expiredByTownship.values().stream().mapToInt(Integer::intValue).sum(),
+                    completed);
+        }
         Set<String> successfulTownships=new HashSet<>();int reused=0,created=0;
         for(var plan:plans){
             if(!plan.ready()){
@@ -69,41 +104,47 @@ public class DesignSampleAllocationService {
         return new ApplyBatch(run,reused,created,expired,completed);
     }
 
-    private List<DesignSampleTownshipPlan> projectBatch(List<DesignSampleTownshipPlan> plans,Instant candidateCutoff){
-        List<ActiveRow> rows=jdbc.sql("""
-                SELECT point.design_sample_point_id,point.region_code,region.administrative_level,
-                       region.parent_code,point.created_at
-                FROM platform.design_sample_point point JOIN platform.region region ON region.code=point.region_code
-                WHERE point.lifecycle_status='ACTIVE' AND point.created_at<=:cutoff
-                ORDER BY point.created_at,point.design_sample_point_id
-                """).param("cutoff",Timestamp.from(candidateCutoff))
-                .query((r,n)->new ActiveRow(r.getObject(1,UUID.class),r.getString(2),r.getString(3),
-                        r.getString(4),r.getTimestamp(5).toInstant())).list();
+    private List<DesignSampleTownshipPlan> projectBatch(List<DesignSampleTownshipPlan> plans,Instant candidateCutoff,
+            UUID resumedRun){
+        List<CandidateRow> rows=candidateRows(candidateCutoff,resumedRun);
         Map<String,String> parents=regionParents();Set<UUID> claimed=new HashSet<>();
-        List<PoolEntry> pool=new ArrayList<>();Map<String,Projection> projections=new HashMap<>();
+        Map<String,Integer> keptByTownship=new HashMap<>();
         for(var plan:plans){
             if(!plan.ready())continue;
             Set<String> keptVillages=new HashSet<>();Set<UUID> keptIds=new HashSet<>();
-            for(ActiveRow row:rows)if(!claimed.contains(row.id())&&plan.selectedVillageCodes().contains(row.region())
-                    &&keptVillages.add(row.region()))keptIds.add(row.id());
-            claimed.addAll(keptIds);
+            for(CandidateRow row:rows)if("ACTIVE".equals(row.status())&&!createdByRun(row,resumedRun)
+                    &&!claimed.contains(row.id())
+                    &&plan.selectedVillageCodes().contains(row.region())&&keptVillages.add(row.region()))
+                keptIds.add(row.id());
+            claimed.addAll(keptIds);keptByTownship.put(plan.townshipCode(),keptIds.size());
+        }
+        List<PoolEntry> pool=new ArrayList<>();
+        for(CandidateRow row:rows)if("EXPIRED".equals(row.status())&&claimed.add(row.id()))
+            pool.add(new PoolEntry(row,ownerTownship(row,plans,parents)));
+        for(var plan:plans){
+            if(!plan.ready())continue;
             Set<String> ancestorCodes=ancestors(plan.townshipCode(),parents);
-            List<PoolEntry> added=new ArrayList<>();
-            for(ActiveRow row:rows)if(!claimed.contains(row.id())
+            for(CandidateRow row:rows)if("ACTIVE".equals(row.status())&&!claimed.contains(row.id())
                     &&(plan.townshipCode().equals(row.region())
                       || ("VILLAGE".equals(row.level())&&plan.townshipCode().equals(row.parent()))
                       || ancestorCodes.contains(row.region()))){
-                claimed.add(row.id());added.add(new PoolEntry(row,plan.townshipCode()));
+                claimed.add(row.id());pool.add(new PoolEntry(row,plan.townshipCode()));
             }
-            pool.sort(Comparator.comparing((PoolEntry entry)->entry.row().createdAt())
-                    .thenComparing(entry->entry.row().id()));
-            pool.addAll(added);
-            int missing=plan.selectedVillageCodes().size()-keptIds.size();int moved=Math.min(pool.size(),missing);
-            if(moved>0)pool=new ArrayList<>(pool.subList(moved,pool.size()));
+        }
+        pool.sort(Comparator.comparing((PoolEntry entry)->entry.row().createdAt())
+                .thenComparing(entry->entry.row().id()));
+        Map<String,Projection> projections=new HashMap<>();int offset=0;
+        for(var plan:plans){
+            if(!plan.ready())continue;
+            int missing=plan.selectedVillageCodes().size()-keptByTownship.getOrDefault(plan.townshipCode(),0);
+            int moved=Math.min(pool.size()-offset,missing);offset+=moved;
             projections.put(plan.townshipCode(),new Projection(moved,missing-moved));
         }
         Map<String,Integer> expired=new HashMap<>();
-        pool.forEach(entry->expired.merge(entry.originTownship(),1,Integer::sum));
+        for(int index=offset;index<pool.size();index++){
+            String owner=pool.get(index).originTownship();
+            if(owner!=null)expired.merge(owner,1,Integer::sum);
+        }
         List<DesignSampleTownshipPlan> projected=new ArrayList<>();
         for(var plan:plans){
             Projection value=projections.get(plan.townshipCode());
@@ -113,6 +154,44 @@ public class DesignSampleAllocationService {
                     plan.coverageProof(),plan.blockers()));
         }
         return List.copyOf(projected);
+    }
+
+    private List<CandidateRow> candidateRows(Instant candidateCutoff,UUID resumedRun){
+        if(resumedRun==null)return jdbc.sql("""
+                SELECT point.design_sample_point_id,point.region_code,region.administrative_level,
+                       region.parent_code,point.created_at,point.lifecycle_status,point.idempotency_key
+                FROM platform.design_sample_point point JOIN platform.region region ON region.code=point.region_code
+                WHERE point.lifecycle_status='ACTIVE' AND point.created_at<=:cutoff
+                ORDER BY point.created_at,point.design_sample_point_id
+                """).param("cutoff",Timestamp.from(candidateCutoff))
+                .query((r,n)->candidateRow(r)).list();
+        return jdbc.sql("""
+                SELECT point.design_sample_point_id,point.region_code,region.administrative_level,
+                       region.parent_code,point.created_at,point.lifecycle_status,point.idempotency_key
+                FROM platform.design_sample_point point JOIN platform.region region ON region.code=point.region_code
+                WHERE (point.lifecycle_status='ACTIVE' AND point.created_at<=:cutoff)
+                   OR (point.lifecycle_status='EXPIRED' AND point.assignment_run_id=:run)
+                ORDER BY point.created_at,point.design_sample_point_id
+                """).param("cutoff",Timestamp.from(candidateCutoff)).param("run",resumedRun)
+                .query((r,n)->candidateRow(r)).list();
+    }
+
+    private static CandidateRow candidateRow(ResultSet row) throws SQLException {
+        return new CandidateRow(row.getObject(1,UUID.class),row.getString(2),row.getString(3),row.getString(4),
+                row.getTimestamp(5).toInstant(),row.getString(6),row.getString(7));
+    }
+
+    private static boolean createdByRun(CandidateRow row,UUID run){
+        return run!=null&&row.idempotencyKey()!=null&&row.idempotencyKey().startsWith("allocation:"+run+":");
+    }
+
+    private static String ownerTownship(CandidateRow row,List<DesignSampleTownshipPlan> plans,
+            Map<String,String> parents){
+        if("TOWNSHIP".equals(row.level()))return row.region();
+        if("VILLAGE".equals(row.level()))return row.parent();
+        return plans.stream().filter(DesignSampleTownshipPlan::ready)
+                .map(DesignSampleTownshipPlan::townshipCode)
+                .filter(township->ancestors(township,parents).contains(row.region())).findFirst().orElse(null);
     }
 
     private Map<String,Integer> expiredByTownship(UUID run,List<DesignSampleTownshipPlan> plans,
@@ -147,9 +226,10 @@ public class DesignSampleAllocationService {
         return result;
     }
 
-    private record ActiveRow(UUID id,String region,String level,String parent,Instant createdAt) {}
+    private record CandidateRow(UUID id,String region,String level,String parent,Instant createdAt,String status,
+            String idempotencyKey) {}
     private record RegionRow(String region,String level,String parent) {}
-    private record PoolEntry(ActiveRow row,String originTownship) {}
+    private record PoolEntry(CandidateRow row,String originTownship) {}
     private record Projection(int moved,int created) {}
     public record ApplyBatch(UUID runId,int reused,int created,int expired,
             List<DesignSampleTownshipWriter.ApplyResult> townships) {}

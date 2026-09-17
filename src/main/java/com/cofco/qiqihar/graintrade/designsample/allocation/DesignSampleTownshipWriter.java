@@ -20,6 +20,42 @@ public class DesignSampleTownshipWriter {
     }
 
     @Transactional
+    public StageResult stageSurplus(String townshipCode,String actor,UUID runId,Instant candidateCutoff) {
+        jdbc.sql("SELECT pg_advisory_xact_lock(209,0)").query(Object.class).single();
+        jdbc.sql("LOCK TABLE platform.design_sample_point IN SHARE ROW EXCLUSIVE MODE").update();
+        String name=jdbc.sql("SELECT name FROM platform.region WHERE code=:code AND administrative_level='TOWNSHIP'")
+                .param("code",townshipCode).query(String.class).optional().orElseThrow();
+        var plan=planner.planTownship(townshipCode,name);
+        if(!plan.ready())return new StageResult(townshipCode,0,plan.blockers());
+        List<BatchRow> active=jdbc.sql("""
+                WITH RECURSIVE ancestors(code,parent_code) AS (
+                  SELECT code,parent_code FROM platform.region WHERE code=:township
+                  UNION ALL SELECT parent.code,parent.parent_code
+                  FROM platform.region parent JOIN ancestors child ON child.parent_code=parent.code)
+                SELECT point.design_sample_point_id,point.region_code,point.lifecycle_status,
+                       region.administrative_level,region.parent_code,point.idempotency_key
+                FROM platform.design_sample_point point JOIN platform.region region ON region.code=point.region_code
+                WHERE point.lifecycle_status='ACTIVE' AND point.created_at<=:cutoff AND (
+                     point.region_code=:township
+                  OR (region.parent_code=:township AND region.administrative_level='VILLAGE')
+                  OR point.region_code IN (SELECT code FROM ancestors WHERE code<>:township))
+                ORDER BY point.created_at,point.design_sample_point_id
+                FOR UPDATE OF point
+                """).param("township",townshipCode).param("cutoff",Timestamp.from(candidateCutoff))
+                .query((r,n)->new BatchRow(r.getObject(1,UUID.class),r.getString(2),r.getString(3),
+                        r.getString(4),r.getString(5),r.getString(6))).list();
+        Set<String> keptVillages=new HashSet<>();int expired=0;
+        for(BatchRow row:active){
+            boolean createdByRun=row.idempotencyKey()!=null
+                    &&row.idempotencyKey().startsWith("allocation:"+runId+":");
+            if(!createdByRun&&plan.selectedVillageCodes().contains(row.region())
+                    &&keptVillages.add(row.region()))continue;
+            expire(row.id(),actor,runId);expired++;
+        }
+        return new StageResult(townshipCode,expired,List.of());
+    }
+
+    @Transactional
     public TownshipWriteResult apply(String townshipCode,String actor,UUID runId,Instant candidateCutoff) {
         jdbc.sql("SELECT pg_advisory_xact_lock(209,0)").query(Object.class).single();
         jdbc.sql("LOCK TABLE platform.design_sample_point IN SHARE ROW EXCLUSIVE MODE").update();
@@ -33,7 +69,7 @@ public class DesignSampleTownshipWriter {
                   UNION ALL SELECT parent.code,parent.parent_code
                   FROM platform.region parent JOIN ancestors child ON child.parent_code=parent.code)
                 SELECT point.design_sample_point_id,point.region_code,point.lifecycle_status,
-                       region.administrative_level,region.parent_code
+                       region.administrative_level,region.parent_code,point.idempotency_key
                 FROM platform.design_sample_point point JOIN platform.region region ON region.code=point.region_code
                 WHERE (point.lifecycle_status='ACTIVE' AND point.created_at<=:cutoff AND (
                          point.region_code=:township
@@ -46,7 +82,7 @@ public class DesignSampleTownshipWriter {
                 """).param("township",townshipCode).param("run",runId)
                 .param("cutoff",Timestamp.from(candidateCutoff))
                 .query((r,n)->new BatchRow(r.getObject(1,UUID.class),r.getString(2),r.getString(3),
-                        r.getString(4),r.getString(5))).list();
+                        r.getString(4),r.getString(5),r.getString(6))).list();
         Map<String,BatchRow> keep=new HashMap<>();List<BatchRow> reusable=new ArrayList<>();
         for(BatchRow row:rows){
             if("ACTIVE".equals(row.status())&&plan.selectedVillageCodes().contains(row.region())
@@ -127,8 +163,9 @@ public class DesignSampleTownshipWriter {
                 .query((r,n)->new BigDecimal[]{r.getBigDecimal(1),r.getBigDecimal(2)}).single();
         return new Location(metadata[0]+"设计样本点",metadata[1]+" / 村内设计样本点",point[0],point[1],seedText);
     }
-    private record BatchRow(UUID id,String region,String status,String level,String parent) {}
+    private record BatchRow(UUID id,String region,String status,String level,String parent,String idempotencyKey) {}
     private record Location(String name,String address,BigDecimal longitude,BigDecimal latitude,String seed) {}
+    public record StageResult(String townshipCode,int expired,List<String> blockers) {}
     public record TownshipWriteResult(String townshipCode,int created,int moved,int expired,int newlyExpired,List<String> blockers) {}
     public record ApplyResult(String townshipCode,int created,int moved,int expired,List<String> blockers) {}
 }
