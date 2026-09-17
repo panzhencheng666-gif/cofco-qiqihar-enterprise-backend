@@ -22,6 +22,46 @@ class DesignSampleAllocationIntegrationTest {
     @Autowired DesignSampleAllocationService allocationService;
     @Autowired JdbcClient jdbc;
 
+    @Test void relocationPreservesEditsAfterGenerationAndAfterAnEarlierRelocation() {
+        fixtures();
+        UUID run=UUID.fromString("20900000-0000-0000-0000-000000000077");
+        writer.apply(TOWNSHIP,"allocation-test",run);
+        UUID id=jdbc.sql("SELECT design_sample_point_id FROM platform.design_sample_point WHERE region_code=:region")
+                .param("region",village(1)).query(UUID.class).single();
+        for(int step=1;step<=2;step++) {
+            String town="99020900"+(step+1),target=town+"001";
+            GovernedMasterDataFixtures.insertRegion(jdbc,town,"迁移测试乡"+step,"230202","TOWNSHIP",99300+step);
+            GovernedMasterDataFixtures.insertRegion(jdbc,target,"迁移测试村"+step,town,"VILLAGE",1);
+            jdbc.sql("""
+                    INSERT INTO overview.administrative_boundary(region_code,geometry,source_name,source_url,
+                      source_revision,source_license,source_feature_id,source_effective_on,geometry_sha256)
+                    SELECT :target,geometry,source_name,source_url,source_revision,source_license,
+                      :target,source_effective_on,geometry_sha256 FROM overview.administrative_boundary WHERE region_code=:source
+                    """).param("target",target).param("source",village(1)).update();
+            GovernedMasterDataFixtures.publishBoundary(jdbc,target);
+            jdbc.sql("""
+                    UPDATE platform.design_sample_point SET values_json=values_json||jsonb_build_object('editedLocalFact',:fact),
+                      lifecycle_status='EXPIRED',expired_at=clock_timestamp() WHERE design_sample_point_id=:id
+                    """).param("fact","edit-"+step).param("id",id).update();
+            assertThat(writer.apply(town,"allocation-test",run).moved()).isOne();
+            assertThat(jdbc.sql("SELECT values_json->'DSP_ALLOCATION_PROVENANCE'->'relocationHistory'->:index->'values'->>'editedLocalFact' FROM platform.design_sample_point WHERE design_sample_point_id=:id")
+                    .param("index",step-1).param("id",id).query(String.class).single()).isEqualTo("edit-"+step);
+            assertThat(jdbc.sql("SELECT jsonb_exists(values_json,'editedLocalFact') FROM platform.design_sample_point WHERE design_sample_point_id=:id")
+                    .param("id",id).query(Boolean.class).single()).isFalse();
+        }
+        assertThat(jdbc.sql("SELECT values_json->'DSP_ALLOCATION_PROVENANCE'->'relocationHistory'->0->'values'->>'editedLocalFact' FROM platform.design_sample_point WHERE design_sample_point_id=:id")
+                .param("id",id).query(String.class).single()).isEqualTo("edit-1");
+        assertThat(jdbc.sql("SELECT values_json->'DSP_ALLOCATION_PROVENANCE'->>'businessValuesStatus' FROM platform.design_sample_point WHERE design_sample_point_id=:id")
+                .param("id",id).query(String.class).single()).isEqualTo("ORIGIN_ONLY_NOT_VERIFIED_AT_TARGET");
+        assertThat(jdbc.sql("SELECT values_json->'DSP_ALLOCATION_PROVENANCE'->'originalValues'->>'editedLocalFact' FROM platform.design_sample_point WHERE design_sample_point_id=:id")
+                .param("id",id).query(String.class).single()).isEqualTo("edit-1");
+        assertThat(jdbc.sql("SELECT values_json->'DSP_ALLOCATION_PROVENANCE'->'relocationHistory'->1->>'regionCode' FROM platform.design_sample_point WHERE design_sample_point_id=:id")
+                .param("id",id).query(String.class).single()).isEqualTo("990209002001");
+        writer.apply("990209003","allocation-test",run);
+        assertThat(jdbc.sql("SELECT jsonb_array_length(values_json->'DSP_ALLOCATION_PROVENANCE'->'relocationHistory') FROM platform.design_sample_point WHERE design_sample_point_id=:id")
+                .param("id",id).query(Integer.class).single()).isEqualTo(2);
+    }
+
     @Test void smallTownshipCoverageNeverUsesTouchingVillagesAcrossTownshipBoundary() {
         fixtures();
         GovernedMasterDataFixtures.insertRegion(jdbc,"990209002","邻乡","230202","TOWNSHIP",99210);

@@ -108,13 +108,24 @@ public class DesignSampleTownshipWriter {
                   values_json=(CASE WHEN region_code<>:region THEN jsonb_strip_nulls(jsonb_build_object(
                     'DSP_MAINTAINER_NAME',values_json->'DSP_MAINTAINER_NAME',
                     'DSP_MAINTAINER_UNIT',values_json->'DSP_MAINTAINER_UNIT')) ELSE values_json END) || jsonb_build_object(
-                    'DSP_ALLOCATION_PROVENANCE',coalesce(values_json->'DSP_ALLOCATION_PROVENANCE',
-                      jsonb_build_object('originalRegionCode',region_code,'originalValues',values_json,
+                    'DSP_ALLOCATION_PROVENANCE',
+                      jsonb_build_object('originalRegionCode',region_code,
+                        'originalValues',values_json-'DSP_ALLOCATION_PROVENANCE',
                         'originalName',sample_name,'originalAddress',detailed_address,
                         'originalPoint',ST_AsGeoJSON(governed_point)::jsonb,
                         'originalContext',jsonb_build_object('domainCode',domain_code,
                           'productCode',product_code,'objectTypeCode',object_type_code),
-                        'coordinateSource','GENERATED_DESIGN','businessValuesStatus','ORIGIN_ONLY_NOT_VERIFIED_AT_TARGET')),
+                        'coordinateSource','GENERATED_DESIGN','businessValuesStatus','ORIGIN_ONLY_NOT_VERIFIED_AT_TARGET')
+                      || coalesce(values_json->'DSP_ALLOCATION_PROVENANCE','{}'::jsonb)
+                      || CASE WHEN region_code<>:region THEN jsonb_build_object(
+                        'businessValuesStatus','ORIGIN_ONLY_NOT_VERIFIED_AT_TARGET',
+                        'relocationHistory',coalesce(values_json->'DSP_ALLOCATION_PROVENANCE'->'relocationHistory','[]'::jsonb)
+                          || jsonb_build_array(jsonb_build_object('regionCode',region_code,'name',sample_name,
+                            'address',detailed_address,'point',ST_AsGeoJSON(governed_point)::jsonb,
+                            'context',jsonb_build_object('domainCode',domain_code,'productCode',product_code,
+                              'objectTypeCode',object_type_code),
+                            'values',values_json-'DSP_ALLOCATION_PROVENANCE','runId',CAST(:run AS text),
+                            'relocatedAt',clock_timestamp()))) ELSE '{}'::jsonb END,
                     'DSP_NAME',:name,'DSP_REGION_CODE',:region,
                     'DSP_ADDRESS',:address,'DSP_LONGITUDE',:lon,'DSP_LATITUDE',:lat),
                   detailed_address=:address,assignment_run_id=:run,coordinate_seed=:seed,
