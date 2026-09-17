@@ -93,7 +93,9 @@ public class DesignSamplePointService {
     @Transactional(readOnly = true)
     public DesignSamplePointView get(UUID id) {
         AuthorizedReadScope scope = access.requireBusinessReadScope();
-        DesignSamplePointView point = required(id);
+        DesignSamplePointView point = repository.findIncludingExpired(id)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "DESIGN_SAMPLE_POINT_NOT_FOUND", "设计样本点不存在"));
         scope.requireRegion(point.regionCode());
         return point;
     }

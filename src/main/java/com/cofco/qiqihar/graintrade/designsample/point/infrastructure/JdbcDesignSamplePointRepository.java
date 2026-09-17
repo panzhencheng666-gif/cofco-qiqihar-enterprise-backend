@@ -110,6 +110,14 @@ public class JdbcDesignSamplePointRepository implements DesignSamplePointReposit
     }
 
     @Override
+    public Optional<DesignSamplePointView> findIncludingExpired(UUID id) {
+        return jdbc.sql(REGION_PATH + SELECT
+                        + " WHERE point.design_sample_point_id=:id"
+                        + " AND point.lifecycle_status IN ('ACTIVE','EXPIRED')")
+                .param("id", id).query(this::map).optional();
+    }
+
+    @Override
     public Optional<CreateResult> insert(
             UUID id,
             DesignSamplePointDraft draft,
