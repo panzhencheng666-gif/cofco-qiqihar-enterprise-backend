@@ -8,7 +8,7 @@
         <nav class="cofco-login-tabs" aria-label="登录方式">
             <button type="button" id="cofco-password-tab" aria-pressed="true">账号密码</button>
             <button type="button" id="cofco-sms-tab" aria-pressed="false">短信验证码</button>
-            <button type="button" id="cofco-email-tab" aria-pressed="false">邮箱验证码</button>
+            <button type="button" id="cofco-email-tab" aria-pressed="false" hidden disabled>邮箱验证码</button>
         </nav>
         </#if>
         <div id="kc-form">
@@ -96,7 +96,7 @@
             <p id="cofco-login-error" role="alert"></p>
             <button type="submit">登录</button>
         </form>
-        <form id="cofco-email-login" data-app-base="${client.baseUrl}" hidden>
+        <form id="cofco-email-login" data-app-base="${client.baseUrl}" hidden inert>
             <label for="cofco-login-email">邮箱</label>
             <input id="cofco-login-email" type="email" autocomplete="email" maxlength="254" required />
             <label for="cofco-email-code">邮箱验证码</label>

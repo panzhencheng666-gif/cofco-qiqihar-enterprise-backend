@@ -77,7 +77,7 @@
                 <fieldset class="cofco-verification-method">
                     <legend>验证方式 *</legend>
                     <label><input type="radio" name="cofco-verification-method" value="PHONE" checked />手机验证码</label>
-                    <label><input type="radio" name="cofco-verification-method" value="EMAIL" />邮箱验证码</label>
+                    <label hidden><input type="radio" name="cofco-verification-method" value="EMAIL" hidden disabled />邮箱验证码</label>
                 </fieldset>
                 <label id="cofco-code-label" for="cofco-verification-code">手机验证码 *</label>
                 <div class="cofco-code-row"><input id="cofco-verification-code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required />

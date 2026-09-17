@@ -16,7 +16,7 @@ let cooldownUntil = 0, credentialsComplete = false;
 submit.disabled = true;
 
 function verificationMethod() {
-  return methods.find(method => method.checked)?.value || 'PHONE';
+  return methods.find(method => method.checked && !method.hidden && !method.disabled)?.value || 'PHONE';
 }
 
 function verificationTarget() {
@@ -178,7 +178,7 @@ try {
     if (draft?.username && draft.username === username.value) {
       email.value = draft.email || email.value;
       phone.value = draft.phone || phone.value;
-      const savedMethod = methods.find(method => method.value === draft.verificationMethod);
+      const savedMethod = methods.find(method => method.value === draft.verificationMethod && !method.hidden && !method.disabled);
       if (savedMethod) savedMethod.checked = true;
       if (draft.email === email.value && (!draft.phone || draft.phone === phone.value)) {
         code.required = false;
