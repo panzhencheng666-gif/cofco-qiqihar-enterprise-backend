@@ -46,9 +46,7 @@ public class DesignSampleTownshipWriter {
                         r.getString(4),r.getString(5),r.getString(6))).list();
         Set<String> keptVillages=new HashSet<>();int expired=0;
         for(BatchRow row:active){
-            boolean createdByRun=row.idempotencyKey()!=null
-                    &&row.idempotencyKey().startsWith("allocation:"+runId+":");
-            if(!createdByRun&&plan.selectedVillageCodes().contains(row.region())
+            if(plan.selectedVillageCodes().contains(row.region())
                     &&keptVillages.add(row.region()))continue;
             expire(row.id(),actor,runId);expired++;
         }
@@ -75,8 +73,9 @@ public class DesignSampleTownshipWriter {
                          point.region_code=:township
                       OR (region.parent_code=:township AND region.administrative_level='VILLAGE')
                       OR point.region_code IN (SELECT code FROM ancestors WHERE code<>:township)))
-                   OR (point.lifecycle_status='EXPIRED' AND point.assignment_run_id=:run)
-                ORDER BY CASE point.lifecycle_status WHEN 'EXPIRED' THEN 0 ELSE 1 END,
+                   OR (point.lifecycle_status='EXPIRED' AND point.created_at<=:cutoff)
+                ORDER BY CASE WHEN point.lifecycle_status='ACTIVE'
+                    OR (point.assignment_run_id=:run AND point.expired_at>=:cutoff) THEN 0 ELSE 1 END,
                          point.created_at,point.design_sample_point_id
                 FOR UPDATE OF point
                 """).param("township",townshipCode).param("run",runId)
@@ -106,11 +105,23 @@ public class DesignSampleTownshipWriter {
                 UPDATE platform.design_sample_point SET contract_version='design-sample-fields-v3',
                   domain_code='REFERENCE',product_code='GENERAL',object_type_code='REFERENCE_POINT',
                   sample_name=:name,region_code=:region,governed_point=ST_SetSRID(ST_MakePoint(:lon,:lat),4326),
-                  values_json=values_json || jsonb_build_object('DSP_NAME',:name,'DSP_REGION_CODE',:region,
+                  values_json=(CASE WHEN region_code<>:region THEN jsonb_strip_nulls(jsonb_build_object(
+                    'DSP_MAINTAINER_NAME',values_json->'DSP_MAINTAINER_NAME',
+                    'DSP_MAINTAINER_UNIT',values_json->'DSP_MAINTAINER_UNIT')) ELSE values_json END) || jsonb_build_object(
+                    'DSP_ALLOCATION_PROVENANCE',coalesce(values_json->'DSP_ALLOCATION_PROVENANCE',
+                      jsonb_build_object('originalRegionCode',region_code,'originalValues',values_json,
+                        'originalName',sample_name,'originalAddress',detailed_address,
+                        'originalPoint',ST_AsGeoJSON(governed_point)::jsonb,
+                        'originalContext',jsonb_build_object('domainCode',domain_code,
+                          'productCode',product_code,'objectTypeCode',object_type_code),
+                        'coordinateSource','GENERATED_DESIGN','businessValuesStatus','ORIGIN_ONLY_NOT_VERIFIED_AT_TARGET')),
+                    'DSP_NAME',:name,'DSP_REGION_CODE',:region,
                     'DSP_ADDRESS',:address,'DSP_LONGITUDE',:lon,'DSP_LATITUDE',:lat),
                   detailed_address=:address,assignment_run_id=:run,coordinate_seed=:seed,
                   lifecycle_status='ACTIVE',expired_at=NULL,version=version+1,updated_by=:actor,updated_at=now()
-                WHERE design_sample_point_id=:id
+                WHERE design_sample_point_id=:id AND (
+                  lifecycle_status='ACTIVE' AND region_code=:region AND coordinate_seed=:seed
+                  AND assignment_run_id=:run AND values_json->'DSP_ALLOCATION_PROVENANCE' IS NOT NULL) IS NOT TRUE
                 """).param("name",location.name()).param("region",village).param("lon",location.longitude())
                 .param("lat",location.latitude()).param("address",location.address()).param("run",run)
                 .param("seed",location.seed()).param("actor",actor).param("id",id).update();
@@ -123,7 +134,9 @@ public class DesignSampleTownshipWriter {
                   idempotency_key,request_digest,created_by,updated_by,detailed_address,assignment_run_id,coordinate_seed)
                 VALUES(:id,'design-sample-fields-v3','REFERENCE','GENERAL','REFERENCE_POINT',
                   jsonb_build_object('DSP_NAME',:name,'DSP_REGION_CODE',:region,'DSP_ADDRESS',:address,
-                    'DSP_LONGITUDE',:lon,'DSP_LATITUDE',:lat),:name,:region,
+                    'DSP_LONGITUDE',:lon,'DSP_LATITUDE',:lat,
+                    'DSP_ALLOCATION_PROVENANCE',jsonb_build_object('coordinateSource','GENERATED_DESIGN',
+                      'businessValuesStatus','NO_OBSERVED_BUSINESS_FACTS')),:name,:region,
                   ST_SetSRID(ST_MakePoint(:lon,:lat),4326),:key,:digest,:actor,:actor,:address,:run,:seed)
                 """).param("id",id).param("name",location.name()).param("region",village)
                 .param("address",location.address()).param("lon",location.longitude()).param("lat",location.latitude())
@@ -132,7 +145,7 @@ public class DesignSampleTownshipWriter {
     }
     private void expire(UUID id,String actor,UUID run) {
         jdbc.sql("""
-                UPDATE platform.design_sample_point SET lifecycle_status='EXPIRED',expired_at=now(),
+                UPDATE platform.design_sample_point SET lifecycle_status='EXPIRED',expired_at=clock_timestamp(),
                   assignment_run_id=:run,version=version+1,updated_by=:actor,updated_at=now()
                 WHERE design_sample_point_id=:id
                 """).param("run",run).param("actor",actor).param("id",id).update();

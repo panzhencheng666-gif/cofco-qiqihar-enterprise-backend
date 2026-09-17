@@ -112,7 +112,7 @@ public class DesignSampleAllocationService {
         for(var plan:plans){
             if(!plan.ready())continue;
             Set<String> keptVillages=new HashSet<>();Set<UUID> keptIds=new HashSet<>();
-            for(CandidateRow row:rows)if("ACTIVE".equals(row.status())&&!createdByRun(row,resumedRun)
+            for(CandidateRow row:rows)if("ACTIVE".equals(row.status())
                     &&!claimed.contains(row.id())
                     &&plan.selectedVillageCodes().contains(row.region())&&keptVillages.add(row.region()))
                 keptIds.add(row.id());
@@ -131,7 +131,8 @@ public class DesignSampleAllocationService {
                 claimed.add(row.id());pool.add(new PoolEntry(row,plan.townshipCode()));
             }
         }
-        pool.sort(Comparator.comparing((PoolEntry entry)->entry.row().createdAt())
+        pool.sort(Comparator.comparingInt((PoolEntry entry)->"ACTIVE".equals(entry.row().status())?0:1)
+                .thenComparing(entry->entry.row().createdAt())
                 .thenComparing(entry->entry.row().id()));
         Map<String,Projection> projections=new HashMap<>();int offset=0;
         for(var plan:plans){
@@ -142,6 +143,8 @@ public class DesignSampleAllocationService {
         }
         Map<String,Integer> expired=new HashMap<>();
         for(int index=offset;index<pool.size();index++){
+            // Preflight reports newly expired surplus, not untouched historical expired rows.
+            if(!"ACTIVE".equals(pool.get(index).row().status()))continue;
             String owner=pool.get(index).originTownship();
             if(owner!=null)expired.merge(owner,1,Integer::sum);
         }
@@ -161,7 +164,7 @@ public class DesignSampleAllocationService {
                 SELECT point.design_sample_point_id,point.region_code,region.administrative_level,
                        region.parent_code,point.created_at,point.lifecycle_status,point.idempotency_key
                 FROM platform.design_sample_point point JOIN platform.region region ON region.code=point.region_code
-                WHERE point.lifecycle_status='ACTIVE' AND point.created_at<=:cutoff
+                WHERE point.lifecycle_status IN ('ACTIVE','EXPIRED') AND point.created_at<=:cutoff
                 ORDER BY point.created_at,point.design_sample_point_id
                 """).param("cutoff",Timestamp.from(candidateCutoff))
                 .query((r,n)->candidateRow(r)).list();
@@ -170,7 +173,7 @@ public class DesignSampleAllocationService {
                        region.parent_code,point.created_at,point.lifecycle_status,point.idempotency_key
                 FROM platform.design_sample_point point JOIN platform.region region ON region.code=point.region_code
                 WHERE (point.lifecycle_status='ACTIVE' AND point.created_at<=:cutoff)
-                   OR (point.lifecycle_status='EXPIRED' AND point.assignment_run_id=:run)
+                   OR (point.lifecycle_status='EXPIRED' AND point.created_at<=:cutoff)
                 ORDER BY point.created_at,point.design_sample_point_id
                 """).param("cutoff",Timestamp.from(candidateCutoff)).param("run",resumedRun)
                 .query((r,n)->candidateRow(r)).list();
@@ -179,10 +182,6 @@ public class DesignSampleAllocationService {
     private static CandidateRow candidateRow(ResultSet row) throws SQLException {
         return new CandidateRow(row.getObject(1,UUID.class),row.getString(2),row.getString(3),row.getString(4),
                 row.getTimestamp(5).toInstant(),row.getString(6),row.getString(7));
-    }
-
-    private static boolean createdByRun(CandidateRow row,UUID run){
-        return run!=null&&row.idempotencyKey()!=null&&row.idempotencyKey().startsWith("allocation:"+run+":");
     }
 
     private static String ownerTownship(CandidateRow row,List<DesignSampleTownshipPlan> plans,

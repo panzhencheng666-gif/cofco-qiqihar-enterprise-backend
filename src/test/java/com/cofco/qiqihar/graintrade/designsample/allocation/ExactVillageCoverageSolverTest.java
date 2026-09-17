@@ -9,12 +9,34 @@ import org.junit.jupiter.api.Test;
 class ExactVillageCoverageSolverTest {
     private final ExactVillageCoverageSolver solver=new ExactVillageCoverageSolver();
 
+    @Test void smallTownshipsUseOnlyThePointsNeededForLocalCoverage() {
+        var single=graph();single.put("001",new TreeSet<>());
+        assertThat(solver.solve(single,Set.of()).selected()).containsExactly("001");
+        assertThat(solver.solve(graph("001-002"),Set.of()).selected()).containsExactly("001");
+        var disconnected=graph();disconnected.put("001",new TreeSet<>());disconnected.put("002",new TreeSet<>());
+        assertThat(solver.solve(disconnected,Set.of()).selected()).containsExactly("001","002");
+        assertThat(solver.solve(graph("001-002","002-003"),Set.of()).selected()).containsExactly("002");
+        disconnected.put("003",new TreeSet<>());
+        assertThat(solver.solve(disconnected,Set.of()).selected()).containsExactly("001","002","003");
+        assertThatThrownBy(()->solver.solve(graph(),Set.of())).isInstanceOf(IllegalArgumentException.class);
+    }
+
     @Test void coversEveryVillageAndAlwaysSelectsAtLeastThree() {
         var adjacency=graph("001-002","002-003","003-004","004-005");
         var result=solver.solve(adjacency,Set.of());
         assertThat(result.selected()).hasSize(3);
         assertThat(adjacency.keySet()).allMatch(village -> result.selected().contains(village)
                 || adjacency.get(village).stream().anyMatch(result.selected()::contains));
+    }
+
+    @Test void validatesAndClampsConfiguredMinimumWithoutAcceptingForeignNeighbors() {
+        assertThat(solver.solve(graph("001-002"),Set.of(),1000,3,3).selected()).hasSize(2);
+        assertThat(solver.solve(graph("001-002","002-003"),Set.of(),1000,2,3).selected()).hasSize(2);
+        assertThat(solver.solve(graph("001-002","002-003","003-004"),Set.of(),1000,1,9).selected()).hasSize(4);
+        assertThatThrownBy(()->solver.solve(graph("001-002"),Set.of(),1000,0,3)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(()->solver.solve(graph("001-002"),Set.of(),1000,1,2)).isInstanceOf(IllegalArgumentException.class);
+        var foreign=graph("001-002");foreign.get("001").add("OTHER_TOWN");
+        assertThatThrownBy(()->solver.solve(foreign,Set.of())).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test void minimizesCountThenMaximizesExistingPreservationThenUsesCodeOrder() {

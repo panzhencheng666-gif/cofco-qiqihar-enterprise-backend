@@ -89,7 +89,7 @@ class DesignSampleAllocationBatchIntegrationTest {
     }
 
     @Test
-    void resumesTheSameRunAndExpiresSurplusNewRecordsWithoutDeletingThem() {
+    void resumesTheSameRunAndPreservesSelectedActiveIdentitiesWithoutDeletingSurplus() {
         fixtures();
         UUID run=UUID.fromString("20910000-0000-0000-0000-000000000099");
         UUID original=UUID.fromString("20910000-0000-0000-0000-000000000001");
@@ -136,11 +136,17 @@ class DesignSampleAllocationBatchIntegrationTest {
             assertThat(jdbc.sql("""
                     SELECT lifecycle_status FROM platform.design_sample_point
                     WHERE design_sample_point_id=:id
-                    """).param("id",surplusNew).query(String.class).single()).isEqualTo("EXPIRED");
+                    """).param("id",surplusNew).query(String.class).single()).isEqualTo("ACTIVE");
             assertThat(jdbc.sql("""
                     SELECT count(*) FROM platform.design_sample_point
                     WHERE design_sample_point_id=:id
                     """).param("id",surplusNew).query(Long.class).single()).isOne();
+            var identities=jdbc.sql("SELECT design_sample_point_id::text || ':' || region_code || ':' || version::text FROM platform.design_sample_point WHERE created_by=:actor ORDER BY design_sample_point_id")
+                    .param("actor",ACTOR).query(String.class).list();
+            var repeated=service.resume(ACTOR,run);
+            assertThat(repeated.created()).isZero();assertThat(repeated.reused()).isZero();
+            assertThat(jdbc.sql("SELECT design_sample_point_id::text || ':' || region_code || ':' || version::text FROM platform.design_sample_point WHERE created_by=:actor ORDER BY design_sample_point_id")
+                    .param("actor",ACTOR).query(String.class).list()).isEqualTo(identities);
         } finally {
             cleanup();
         }

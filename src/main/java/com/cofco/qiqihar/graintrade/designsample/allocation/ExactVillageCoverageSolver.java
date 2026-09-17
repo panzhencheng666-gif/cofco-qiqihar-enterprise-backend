@@ -11,9 +11,16 @@ public final class ExactVillageCoverageSolver {
     }
 
     public Result solve(SortedMap<String,? extends Set<String>> adjacency,Set<String> existing,long maxSearchNodes) {
+        return solve(adjacency,existing,maxSearchNodes,1,3);
+    }
+
+    public Result solve(SortedMap<String,? extends Set<String>> adjacency,Set<String> existing,long maxSearchNodes,
+            int smallTownMinimum,int normalMinimum) {
         Objects.requireNonNull(adjacency);Objects.requireNonNull(existing);
         if(maxSearchNodes<1)throw new IllegalArgumentException("Search node limit must be positive");
-        if(adjacency.size()<3)throw new IllegalArgumentException("A township must contain at least three villages");
+        if(smallTownMinimum<1||smallTownMinimum>3||normalMinimum<3)
+            throw new IllegalArgumentException("Small-town minimum must be 1..3 and normal minimum at least 3");
+        if(adjacency.isEmpty())throw new IllegalArgumentException("A township must contain at least one village");
         var codes=new ArrayList<>(adjacency.keySet());
         for(var entry:adjacency.entrySet())for(String neighbor:entry.getValue())
             if(!adjacency.containsKey(neighbor))throw new IllegalArgumentException("Unknown adjacent village "+neighbor);
@@ -24,7 +31,8 @@ public final class ExactVillageCoverageSolver {
             covers[i]=new BitSet(n);covers[i].set(i);
             for(String neighbor:adjacency.get(codes.get(i)))covers[i].set(index.get(neighbor));
         }
-        Search search=new Search(codes,covers,existing,maxSearchNodes);
+        int minimum=Math.min(n,n<=3?smallTownMinimum:normalMinimum);
+        Search search=new Search(codes,covers,existing,maxSearchNodes,minimum);
         search.seedGreedy();search.visit(new BitSet(n),new BitSet(n));
         BitSet best=search.best;
         SortedSet<String> selected=new TreeSet<>();
@@ -34,9 +42,9 @@ public final class ExactVillageCoverageSolver {
 
     private static final class Search {
         final List<String> codes;final BitSet[] covers;final Set<String> existing;final int n;final long maxSearchNodes;
-        long visitedNodes;
+        long visitedNodes;final int minimum;
         final Set<BitSet> visited=new HashSet<>();BitSet best;
-        Search(List<String> codes,BitSet[] covers,Set<String> existing,long maxSearchNodes){this.codes=codes;this.covers=covers;this.existing=existing;this.n=codes.size();this.maxSearchNodes=maxSearchNodes;}
+        Search(List<String> codes,BitSet[] covers,Set<String> existing,long maxSearchNodes,int minimum){this.codes=codes;this.covers=covers;this.existing=existing;this.n=codes.size();this.maxSearchNodes=maxSearchNodes;this.minimum=minimum;}
         void seedGreedy(){
             BitSet chosen=new BitSet(n),covered=new BitSet(n);
             while(covered.cardinality()<n){int next=-1,gain=-1;for(int i=0;i<n;i++)if(!chosen.get(i)){
@@ -73,10 +81,10 @@ public final class ExactVillageCoverageSolver {
         }
         int gain(int candidate,BitSet covered){BitSet delta=(BitSet)covers[candidate].clone();delta.andNot(covered);return delta.cardinality();}
         void fillToThree(BitSet chosen){
-            if(chosen.cardinality()>=3)return;
+            if(chosen.cardinality()>=minimum)return;
             List<Integer> remaining=new ArrayList<>();for(int i=0;i<n;i++)if(!chosen.get(i))remaining.add(i);
             remaining.sort(Comparator.<Integer>comparingInt(i->existing.contains(codes.get(i))?0:1).thenComparing(codes::get));
-            for(int i:remaining){chosen.set(i);if(chosen.cardinality()==3)return;}
+            for(int i:remaining){chosen.set(i);if(chosen.cardinality()==minimum)return;}
         }
         void consider(BitSet candidate){
             if(candidate.cardinality()<best.cardinality()

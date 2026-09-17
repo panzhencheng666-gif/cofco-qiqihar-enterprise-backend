@@ -22,6 +22,37 @@ class DesignSampleAllocationIntegrationTest {
     @Autowired DesignSampleAllocationService allocationService;
     @Autowired JdbcClient jdbc;
 
+    @Test void smallTownshipCoverageNeverUsesTouchingVillagesAcrossTownshipBoundary() {
+        fixtures();
+        GovernedMasterDataFixtures.insertRegion(jdbc,"990209002","邻乡","230202","TOWNSHIP",99210);
+        for(int index=2;index<=4;index++)jdbc.sql("""
+                SELECT platform.govern_master_data_change('REGION',region.code,'UPDATE',
+                  to_jsonb(region)||jsonb_build_object('parent_code','990209002'),
+                  CURRENT_TIMESTAMP-interval '1 second','production-tester','market-tester','测试乡镇边界')
+                FROM platform.region region WHERE code=:code
+                """).param("code",village(index)).query(Long.class).single();
+        var one=planner.planTownship(TOWNSHIP,"单村乡");
+        assertThat(one.ready()).isTrue();
+        assertThat(one.selectedVillageCodes()).containsExactly(village(1));
+        assertThat(one.adjacencyEdgeCount()).isZero();
+        assertThat(one.coverageProof()).containsOnlyKeys(village(1));
+        var three=planner.planTownship("990209002","邻乡");
+        assertThat(three.selectedVillageCodes()).hasSize(1);
+        assertThat(three.coverageProof()).doesNotContainKey(village(1));
+        UUID run=UUID.fromString("20900000-0000-0000-0000-000000000066");
+        var oldWriter=new DesignSampleTownshipWriter(jdbc,new DesignSampleAllocationPlanner(jdbc,5000000,3,3));
+        assertThat(oldWriter.apply("990209002","allocation-test",run).created()).isEqualTo(3);
+        writer.stageSurplus("990209002","allocation-test",run,java.time.Instant.now());
+        assertThat(writer.apply("990209002","allocation-test",run).created()).isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.design_sample_point WHERE assignment_run_id=:run AND lifecycle_status='ACTIVE'")
+                .param("run",run).query(Long.class).single()).isOne();
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.design_sample_point WHERE assignment_run_id=:run")
+                .param("run",run).query(Long.class).single()).isEqualTo(3);
+        var zero=planner.planTownship("990209003","无村乡");
+        assertThat(zero.ready()).isFalse();
+        assertThat(zero.blockers()).containsExactly("乡镇没有行政村，无法生成村级覆盖方案");
+    }
+
     @Test
     void plansPointTouchingVillagesAndCreatesStablePointsInsideRealBoundaries() {
         fixtures();
@@ -91,18 +122,20 @@ class DesignSampleAllocationIntegrationTest {
         UUID previouslyExpired = UUID.fromString("20900000-0000-0000-0000-000000000021");
         insertCountyExisting(recyclable, "ACTIVE", null);
         insertCountyExisting(previouslyExpired, "EXPIRED", "20900000-0000-0000-0000-000000000099");
+        jdbc.sql("UPDATE platform.design_sample_point SET values_json=CAST(:values AS jsonb) WHERE design_sample_point_id=:id")
+                .param("id",recyclable).param("values","{\"oldLocalYield\":123,\"DSP_MAINTAINER_NAME\":\"已有维护人\"}").update();
         var plan = planner.planTownship(TOWNSHIP, "设计样本测试乡");
         var projected = allocationService.preflight().townships().stream()
                 .filter(value -> TOWNSHIP.equals(value.townshipCode())).findFirst().orElseThrow();
 
-        assertThat(projected.projectedMoved()).isOne();
-        assertThat(projected.projectedCreated()).isEqualTo(2);
+        assertThat(projected.projectedMoved()).isEqualTo(2);
+        assertThat(projected.projectedCreated()).isOne();
 
         var result = writer.apply(plan.townshipCode(), "allocation-test",
                 UUID.fromString("20900000-0000-0000-0000-000000000022"));
 
-        assertThat(result.moved()).isOne();
-        assertThat(result.created()).isEqualTo(2);
+        assertThat(result.moved()).isEqualTo(2);
+        assertThat(result.created()).isOne();
         assertThat(result.newlyExpired()).isOne();
         assertThat(activeCount()).isEqualTo(3);
         assertThat(jdbc.sql("SELECT lifecycle_status FROM platform.design_sample_point WHERE design_sample_point_id=:id")
@@ -111,7 +144,20 @@ class DesignSampleAllocationIntegrationTest {
                 .param("id", recyclable).query(UUID.class).single())
                 .isEqualTo(UUID.fromString("20900000-0000-0000-0000-000000000022"));
         assertThat(jdbc.sql("SELECT lifecycle_status FROM platform.design_sample_point WHERE design_sample_point_id=:id")
-                .param("id", previouslyExpired).query(String.class).single()).isEqualTo("EXPIRED");
+                .param("id", previouslyExpired).query(String.class).single()).isEqualTo("ACTIVE");
+        var before=jdbc.sql("SELECT values_json::text || version::text FROM platform.design_sample_point WHERE design_sample_point_id=:id")
+                .param("id",recyclable).query(String.class).single();
+        writer.apply(TOWNSHIP,"allocation-test",UUID.fromString("20900000-0000-0000-0000-000000000022"));
+        assertThat(jdbc.sql("SELECT values_json::text || version::text FROM platform.design_sample_point WHERE design_sample_point_id=:id")
+                .param("id",recyclable).query(String.class).single()).isEqualTo(before);
+        assertThat(jdbc.sql("SELECT values_json->'DSP_ALLOCATION_PROVENANCE'->>'coordinateSource' FROM platform.design_sample_point WHERE design_sample_point_id=:id")
+                .param("id",recyclable).query(String.class).single()).isEqualTo("GENERATED_DESIGN");
+        assertThat(jdbc.sql("SELECT jsonb_exists(values_json,'oldLocalYield') FROM platform.design_sample_point WHERE design_sample_point_id=:id")
+                .param("id",recyclable).query(Boolean.class).single()).isFalse();
+        assertThat(jdbc.sql("SELECT values_json->'DSP_ALLOCATION_PROVENANCE'->'originalValues'->>'oldLocalYield' FROM platform.design_sample_point WHERE design_sample_point_id=:id")
+                .param("id",recyclable).query(String.class).single()).isEqualTo("123");
+        assertThat(jdbc.sql("SELECT values_json->>'DSP_MAINTAINER_NAME' FROM platform.design_sample_point WHERE design_sample_point_id=:id")
+                .param("id",recyclable).query(String.class).single()).isEqualTo("已有维护人");
     }
 
     @Test

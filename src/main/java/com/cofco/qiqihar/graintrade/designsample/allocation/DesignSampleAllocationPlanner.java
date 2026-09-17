@@ -9,10 +9,17 @@ import org.springframework.beans.factory.annotation.Value;
 @Service
 public class DesignSampleAllocationPlanner {
     private final JdbcClient jdbc;private final ExactVillageCoverageSolver solver=new ExactVillageCoverageSolver();
-    private final long maxSearchNodes;
+    private final long maxSearchNodes;private final int smallTownMinimum,normalMinimum;
+    public DesignSampleAllocationPlanner(JdbcClient jdbc,long maxSearchNodes){this(jdbc,maxSearchNodes,1,3);}
+    @org.springframework.beans.factory.annotation.Autowired
     public DesignSampleAllocationPlanner(JdbcClient jdbc,
-            @Value("${QIQIHAR_DESIGN_ALLOCATION_MAX_SEARCH_NODES:5000000}") long maxSearchNodes){
+            @Value("${QIQIHAR_DESIGN_ALLOCATION_MAX_SEARCH_NODES:5000000}") long maxSearchNodes,
+            @Value("${QIQIHAR_DESIGN_ALLOCATION_SMALL_TOWN_MINIMUM:1}") int smallTownMinimum,
+            @Value("${QIQIHAR_DESIGN_ALLOCATION_NORMAL_MINIMUM:3}") int normalMinimum){
+        if(maxSearchNodes<1||smallTownMinimum<1||smallTownMinimum>3||normalMinimum<3)
+            throw new IllegalArgumentException("Invalid design allocation minimum or search limit");
         this.jdbc=jdbc;this.maxSearchNodes=maxSearchNodes;
+        this.smallTownMinimum=smallTownMinimum;this.normalMinimum=normalMinimum;
     }
 
     @Transactional(readOnly=true)
@@ -20,8 +27,6 @@ public class DesignSampleAllocationPlanner {
         return jdbc.sql("""
                 SELECT town.code,town.name FROM platform.region town
                 WHERE town.administrative_level='TOWNSHIP'
-                  AND EXISTS(SELECT 1 FROM platform.region village
-                             WHERE village.parent_code=town.code AND village.administrative_level='VILLAGE')
                 ORDER BY town.code
                 """).query((r,n)->Map.entry(r.getString(1),r.getString(2))).list().stream()
                 .map(entry->planTownship(entry.getKey(),entry.getValue())).toList();
@@ -35,7 +40,7 @@ public class DesignSampleAllocationPlanner {
                 ORDER BY village.code
                 """).param("township",townshipCode).query(String.class).list();
         List<String> blockers=new ArrayList<>();
-        if(villages.size()<3)blockers.add("乡镇行政村少于3个，无法满足每村最多一个且乡镇至少3个样本点");
+        if(villages.isEmpty())blockers.add("乡镇没有行政村，无法生成村级覆盖方案");
         var invalid=jdbc.sql("""
                 SELECT village.code FROM platform.region village
                 LEFT JOIN overview.administrative_boundary boundary ON boundary.region_code=village.code
@@ -70,7 +75,7 @@ public class DesignSampleAllocationPlanner {
                 """).param("township",townshipCode).query(String.class).list();
         Set<String> existing=new HashSet<>(activeRegions);
         ExactVillageCoverageSolver.Result result;
-        try {result=solver.solve(graph,existing,maxSearchNodes);}
+        try {result=solver.solve(graph,existing,maxSearchNodes,smallTownMinimum,normalMinimum);}
         catch(ExactVillageCoverageSolver.SearchLimitExceededException timeout) {
             return blocked(townshipCode,townshipName,villages.size(),List.of("精确覆盖求解超过资源上限，未生成写入方案"));
         }
