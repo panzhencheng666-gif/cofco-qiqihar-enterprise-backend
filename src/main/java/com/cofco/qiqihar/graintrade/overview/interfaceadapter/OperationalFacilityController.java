@@ -29,7 +29,7 @@ public class OperationalFacilityController {
         try {
             String productCode = query.optional("productCode");
             LocalDate asOf = query.optional("asOf") == null ? null : LocalDate.parse(query.optional("asOf"));
-            return new ApiResponse<>(service.find(query.required("regionCode"), productCode, asOf));
+            return new ApiResponse<>(service.find(query.optional("regionCode"), productCode, asOf));
         } catch (ClientRequestException exception) {
             throw exception;
         } catch (RuntimeException exception) {

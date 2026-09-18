@@ -6,4 +6,5 @@ import java.util.List;
 public interface OperationalStorageFacilityRepository {
     List<OperationalFacilityCatalogue.StorageFacility> find(String regionCode, String productCode, LocalDate asOf);
     String latestSourceAsOf(String regionCode);
+    List<String> railwayRegionCodes(String regionCode);
 }

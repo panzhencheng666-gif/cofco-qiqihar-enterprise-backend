@@ -22,7 +22,8 @@ public class JdbcOperationalStorageFacilityRepository implements OperationalStor
             String regionCode, String productCode, LocalDate asOf) {
         return jdbc.sql("""
                 WITH RECURSIVE selected_regions(code) AS (
-                  SELECT code FROM platform.region WHERE code=:region
+                  SELECT code FROM platform.region
+                  WHERE code=:region OR (:region IS NULL AND administrative_level='PREFECTURE')
                   UNION ALL
                   SELECT child.code FROM platform.region child JOIN selected_regions parent ON child.parent_code=parent.code
                 )
@@ -36,7 +37,7 @@ public class JdbcOperationalStorageFacilityRepository implements OperationalStor
                   AND (facility.valid_to IS NULL OR facility.valid_to>=:as_of)
                 ORDER BY CASE facility.relation_type WHEN 'OWNED' THEN 1 WHEN 'LEASED' THEN 2 ELSE 3 END,
                   facility.facility_name,facility.facility_code
-                """).param("region", regionCode).param("as_of", asOf)
+                """).param("region", regionCode, java.sql.Types.VARCHAR).param("as_of", asOf)
                 .query((rs, row) -> {
                     String code = rs.getString("facility_code");
                     return new OperationalFacilityCatalogue.StorageFacility(
@@ -54,7 +55,8 @@ public class JdbcOperationalStorageFacilityRepository implements OperationalStor
     public String latestSourceAsOf(String regionCode) {
         return jdbc.sql("""
                 WITH RECURSIVE selected_regions(code) AS (
-                  SELECT code FROM platform.region WHERE code=:region
+                  SELECT code FROM platform.region
+                  WHERE code=:region OR (:region IS NULL AND administrative_level='PREFECTURE')
                   UNION ALL
                   SELECT child.code FROM platform.region child JOIN selected_regions parent ON child.parent_code=parent.code
                 )
@@ -62,9 +64,18 @@ public class JdbcOperationalStorageFacilityRepository implements OperationalStor
                 FROM overview.storage_facility_evidence evidence
                 JOIN overview.storage_facility facility USING(facility_code)
                 JOIN selected_regions selected ON selected.code=facility.region_code
-                """).param("region", regionCode)
+                """).param("region", regionCode, java.sql.Types.VARCHAR)
                 .query((rs, row) -> localDate(rs.getDate("latest")))
                 .optional().map(LocalDate::toString).orElse(null);
+    }
+
+    @Override
+    public List<String> railwayRegionCodes(String regionCode) {
+        return jdbc.sql("""
+                SELECT code FROM platform.region
+                WHERE code=:region OR (:region IS NULL AND administrative_level='PREFECTURE')
+                ORDER BY sort_order,code
+                """).param("region", regionCode, java.sql.Types.VARCHAR).query(String.class).list();
     }
 
     private List<OperationalFacilityCatalogue.Price> prices(String facilityCode, String productCode, LocalDate asOf) {

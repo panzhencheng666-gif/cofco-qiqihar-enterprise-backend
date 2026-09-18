@@ -6,6 +6,8 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,20 +27,32 @@ public class OperationalFacilityService {
     public OperationalFacilityCatalogue find(String regionCode, String productCode, LocalDate asOf) {
         LocalDate effectiveAsOf = asOf == null ? LocalDate.now() : asOf;
         var storageFacilities = storage.find(regionCode, productCode, effectiveAsOf);
-        var railway = railways.find(regionCode);
+        var railwayResults = storage.railwayRegionCodes(regionCode).stream()
+                .map(railways::find).filter(value -> value.boundaryAvailable()).toList();
         var categories = List.of(
                 category("OWNED", "自有库点", storageFacilities),
                 category("LEASED", "租赁库点", storageFacilities),
                 category("HISTORICAL_LEASED", "历史租赁库点", storageFacilities));
-        var facilities = railway.facilities().stream().map(value ->
-                new OperationalFacilityCatalogue.RailwayFacility(
+        var facilityById = new LinkedHashMap<String, OperationalFacilityCatalogue.RailwayFacility>();
+        railwayResults.forEach(railway -> railway.facilities().forEach(value -> facilityById.putIfAbsent(
+                value.sourceId(), new OperationalFacilityCatalogue.RailwayFacility(
                         value.sourceId(), value.name(), value.kind(), value.longitude(), value.latitude(),
                         value.operator(), value.reference(), value.status(), value.service(), value.locationRelation(),
-                        value.distanceKm(), value.nearbyLines(), value.sourceUrl())).toList();
-        var lines = railway.lines().stream().map(value ->
-                new OperationalFacilityCatalogue.RailwayLine(
+                        value.distanceKm(), value.nearbyLines(), value.sourceUrl()))));
+        var facilities = facilityById.values().stream()
+                .sorted(Comparator.comparing(OperationalFacilityCatalogue.RailwayFacility::locationRelation)
+                        .reversed().thenComparing(OperationalFacilityCatalogue.RailwayFacility::name)
+                        .thenComparing(OperationalFacilityCatalogue.RailwayFacility::sourceId))
+                .toList();
+        var lineByName = new LinkedHashMap<String, OperationalFacilityCatalogue.RailwayLine>();
+        railwayResults.forEach(railway -> railway.lines().forEach(value -> lineByName.putIfAbsent(
+                value.name(), new OperationalFacilityCatalogue.RailwayLine(
                         value.name(), value.mappedTrackKm(), value.usage(), value.electrification(),
-                        value.gauge(), value.operator(), value.sourceUrl())).toList();
+                        value.gauge(), value.operator(), value.sourceUrl()))));
+        var lines = lineByName.values().stream()
+                .sorted(Comparator.comparing(OperationalFacilityCatalogue.RailwayLine::name)).toList();
+        String railwaySourceAsOf = railwayResults.stream().map(value -> value.sourceAsOf())
+                .filter(value -> value != null && !value.isBlank()).max(String::compareTo).orElse(null);
         String storageAsOf = storage.latestSourceAsOf(regionCode);
         return new OperationalFacilityCatalogue(
                 regionCode, productCode, effectiveAsOf, categories, storageFacilities, facilities, lines,
@@ -47,7 +61,7 @@ public class OperationalFacilityService {
                                 "STORAGE", "关联库点", sourceStatus(storageAsOf, 90), storageAsOf, null,
                                 "关系、仓容和价格仅采用保留证据的内部核定或公开记录；空值表示尚未核定。"),
                         new OperationalFacilityCatalogue.SourceStatus(
-                                "RAILWAY", "铁路站点", sourceStatus(railway.sourceAsOf(), 30), railway.sourceAsOf(),
+                                "RAILWAY", "铁路站点", sourceStatus(railwaySourceAsOf, 30), railwaySourceAsOf,
                                 "https://www.openstreetmap.org/copyright",
                                 "OpenStreetMap 地理参考不等于铁路货运营业资质，业务能力需另行核验。")));
     }
