@@ -23,6 +23,7 @@
         <spring-modulith.version>2.1.0</spring-modulith.version>
         <postgresql.version>42.7.12</postgresql.version>
         <bouncycastle.version>1.80.2</bouncycastle.version>
+        <poi.version>5.5.1</poi.version>
     </properties>
 
     <dependencyManagement>
@@ -43,6 +44,11 @@
     </dependencyManagement>
 
     <dependencies>
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>${poi.version}</version>
+        </dependency>
         <dependency>
             <groupId>org.apache.pdfbox</groupId>
             <artifactId>pdfbox</artifactId>
