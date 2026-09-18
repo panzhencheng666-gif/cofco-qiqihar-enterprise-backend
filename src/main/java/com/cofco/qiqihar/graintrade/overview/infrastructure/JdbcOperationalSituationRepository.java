@@ -54,7 +54,19 @@ public class JdbcOperationalSituationRepository implements OperationalSituationR
                     row.getString("source_code"), row.getString("source_name"), row.getString("source_url"),
                     instant(row.getTimestamp("last_attempt_at")), instant(row.getTimestamp("last_success_at")),
                     row.getString("last_error"), row.getInt("record_count"))).list();
-        return new Snapshot(weather, events, refresh);
+        var policies = jdbc.sql("""
+                SELECT source_id,root_region_code,source_name,evidence,published_on,
+                       source_url,last_success_at
+                FROM production.regional_public_source
+                WHERE active AND source_type='POLICY'
+                ORDER BY published_on DESC NULLS LAST,source_id
+                """).query((row, index) -> new OperationalSituationCatalogue.PolicyEvent(
+                    row.getString("source_id"), row.getString("root_region_code"),
+                    row.getString("source_name"), row.getString("evidence"),
+                    row.getDate("published_on") == null ? null : row.getDate("published_on").toLocalDate(),
+                    row.getString("source_name"), row.getString("source_url"),
+                    instant(row.getTimestamp("last_success_at")))).list();
+        return new Snapshot(weather, events, policies, refresh);
     }
 
     @Override

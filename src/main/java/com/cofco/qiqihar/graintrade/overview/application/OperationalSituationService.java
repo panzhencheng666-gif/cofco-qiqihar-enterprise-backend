@@ -43,7 +43,7 @@ public class OperationalSituationService {
                 latestWeather, latestWeather, "https://open-meteo.com/",
                 "后端每15分钟限频同步区域代表坐标，页面读取本地快照；失败时保留最近一次成功观测。"));
         return new OperationalSituationCatalogue(
-                now, snapshot.weather(), snapshot.events(), List.copyOf(sources));
+                now, snapshot.weather(), snapshot.events(), snapshot.policies(), List.copyOf(sources));
     }
 
     private static String status(Instant lastSuccess, Instant now, Duration readyFor) {

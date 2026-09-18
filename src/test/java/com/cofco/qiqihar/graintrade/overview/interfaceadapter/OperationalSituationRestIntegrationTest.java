@@ -53,6 +53,7 @@ class OperationalSituationRestIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.publicEvents[0].eventId").value("EONET_TEST"))
                 .andExpect(jsonPath("$.data.publicEvents[0].eventUrl").isNotEmpty())
+                .andExpect(jsonPath("$.data.policyEvents").isArray())
                 .andExpect(jsonPath("$.data.sources[?(@.code == 'NASA_EONET')].status")
                         .value("READY"))
                 .andExpect(jsonPath("$.data.sources[?(@.code == 'OPEN_METEO')].notice")

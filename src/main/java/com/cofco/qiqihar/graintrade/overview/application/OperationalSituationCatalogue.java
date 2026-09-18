@@ -2,12 +2,14 @@ package com.cofco.qiqihar.graintrade.overview.application;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 
 public record OperationalSituationCatalogue(
         Instant generatedAt,
         List<WeatherObservation> weather,
         List<PublicEvent> publicEvents,
+        List<PolicyEvent> policyEvents,
         List<SourceStatus> sources) {
 
     public record WeatherObservation(
@@ -39,6 +41,16 @@ public record OperationalSituationCatalogue(
             String eventUrl,
             String evidenceUrl,
             Instant fetchedAt) {}
+
+    public record PolicyEvent(
+            String sourceId,
+            String rootRegionCode,
+            String title,
+            String summary,
+            LocalDate publishedOn,
+            String sourceName,
+            String sourceUrl,
+            Instant verifiedAt) {}
 
     public record SourceStatus(
             String code,

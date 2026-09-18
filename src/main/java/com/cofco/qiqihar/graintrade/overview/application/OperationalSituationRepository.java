@@ -37,5 +37,6 @@ public interface OperationalSituationRepository {
     record Snapshot(
             List<OperationalSituationCatalogue.WeatherObservation> weather,
             List<OperationalSituationCatalogue.PublicEvent> events,
+            List<OperationalSituationCatalogue.PolicyEvent> policies,
             List<RefreshState> refreshStates) {}
 }
