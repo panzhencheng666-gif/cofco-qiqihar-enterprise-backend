@@ -15,6 +15,16 @@ public class JdbcRegionalRailwayRepository implements RegionalRailwayRepository 
     @Override
     @Transactional(readOnly = true)
     public RegionalRailways find(String regionCode) {
+        return find(regionCode, true);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public RegionalRailways findFacilities(String regionCode) {
+        return find(regionCode, false);
+    }
+
+    private RegionalRailways find(String regionCode, boolean includeLines) {
         boolean boundaryAvailable = jdbc.sql("SELECT EXISTS(SELECT 1 FROM overview.administrative_boundary WHERE region_code=:region)")
                 .param("region", regionCode).query(Boolean.class).single();
         if (!boundaryAvailable) return new RegionalRailways(regionCode, false, null, List.of(), List.of());
@@ -49,7 +59,7 @@ public class JdbcRegionalRailwayRepository implements RegionalRailwayRepository 
                             rs.getBoolean("within_region") ? "WITHIN" : "NEARBY",rs.getBigDecimal("distance_km"),
                             rs.getString("nearby_lines"),"https://www.openstreetmap.org/"+rs.getString("source_id"));
                 }).list();
-        var lines = jdbc.sql("""
+        var lines = includeLines ? jdbc.sql("""
                 WITH clipped AS (
                   SELECT f.name,f.tags,f.source_id,ST_CollectionExtract(ST_Intersection(f.geometry,b.geometry),2) AS geometry
                   FROM overview.regional_railway_feature f
@@ -64,7 +74,8 @@ public class JdbcRegionalRailwayRepository implements RegionalRailwayRepository 
                 FROM clipped WHERE NOT ST_IsEmpty(geometry) GROUP BY name ORDER BY name
                 """).param("region",regionCode).query((rs,n) -> new RegionalRailways.Line(
                     rs.getString("name"),rs.getBigDecimal("track_km"),rs.getString("usage"),rs.getString("electrification"),
-                    rs.getString("gauge"),rs.getString("operator"),"https://www.openstreetmap.org/"+rs.getString("source_id"))).list();
+                    rs.getString("gauge"),rs.getString("operator"),"https://www.openstreetmap.org/"+rs.getString("source_id"))).list()
+                : List.<RegionalRailways.Line>of();
         return new RegionalRailways(regionCode,true,sourceAsOf,facilities,lines);
     }
 }

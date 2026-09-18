@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.regionalproduction.api;
 
 import com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalRailwayRepository;
+import com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalRailways;
 import java.math.BigDecimal;
 import java.util.List;
 import org.springframework.stereotype.Service;
@@ -15,6 +16,14 @@ public class RegionalRailwayCatalogue {
 
     public Result find(String regionCode) {
         var result = repository.find(regionCode);
+        return map(result);
+    }
+
+    public Result findFacilities(String regionCode) {
+        return map(repository.findFacilities(regionCode));
+    }
+
+    private Result map(RegionalRailways result) {
         return new Result(
                 result.regionCode(), result.boundaryAvailable(), result.sourceAsOf(),
                 result.facilities().stream().map(value -> new Facility(

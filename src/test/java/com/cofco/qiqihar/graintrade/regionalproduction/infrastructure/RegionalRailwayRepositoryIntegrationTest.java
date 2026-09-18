@@ -48,4 +48,19 @@ class RegionalRailwayRepositoryIntegrationTest {
         assertThat(railways.find("000000000001").facilities()).isEmpty();
         assertThat(railways.find("000000000001").lines()).isEmpty();
     }
+
+    @Test void facilityOnlyReadDoesNotBuildLineSummaries() {
+        jdbc.sql("DELETE FROM overview.regional_railway_feature").update();
+        jdbc.sql("UPDATE overview.administrative_boundary SET geometry=ST_Multi(ST_MakeEnvelope(122,46,122.1,46.1,4326)) WHERE region_code='230202'").update();
+        jdbc.sql("""
+          INSERT INTO overview.regional_railway_feature(source_id,name,kind,tags,geometry,source_as_of) VALUES
+          ('node/1','本地站','station','{}',ST_SetSRID(ST_Point(122.04,46.05),4326),'2026-09-15Z'),
+          ('way/4','跨界铁路','rail','{"usage":"main"}',ST_GeomFromText('LINESTRING(122 46.05,122.2 46.05)',4326),'2026-09-15Z')
+          """).update();
+
+        var result = railways.findFacilities("230202");
+
+        assertThat(result.facilities()).extracting(f -> f.name()).containsExactly("本地站");
+        assertThat(result.lines()).isEmpty();
+    }
 }

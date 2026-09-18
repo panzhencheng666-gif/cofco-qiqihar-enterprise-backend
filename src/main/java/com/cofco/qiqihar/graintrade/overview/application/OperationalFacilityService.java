@@ -28,7 +28,7 @@ public class OperationalFacilityService {
         LocalDate effectiveAsOf = asOf == null ? LocalDate.now() : asOf;
         var storageFacilities = storage.find(regionCode, productCode, effectiveAsOf);
         var railwayResults = storage.railwayRegionCodes(regionCode).stream()
-                .map(railways::find).filter(value -> value.boundaryAvailable()).toList();
+                .map(railways::findFacilities).filter(value -> value.boundaryAvailable()).toList();
         var categories = List.of(
                 category("OWNED", "自有库点", storageFacilities),
                 category("LEASED", "租赁库点", storageFacilities),
