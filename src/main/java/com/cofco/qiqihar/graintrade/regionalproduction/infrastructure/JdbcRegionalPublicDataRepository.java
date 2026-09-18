@@ -171,7 +171,12 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
                   SELECT source_id
                   FROM production.regional_public_source
                   WHERE active AND parser_key='OPEN_METEO'
-                    AND (next_refresh_at IS NULL OR next_refresh_at<=:now)
+                    AND (
+                      next_refresh_at IS NULL OR next_refresh_at<=:now
+                      OR (last_status IN ('SUCCESS_CHANGED','SUCCESS_UNCHANGED')
+                          AND last_success_at<=:stale
+                          AND next_refresh_at>:legacyCutoff)
+                    )
                   ORDER BY source_id
                   FOR UPDATE SKIP LOCKED
                   LIMIT :limit
@@ -182,7 +187,10 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
                 WHERE source.source_id=claimed.source_id
                 RETURNING source.source_id,source.root_region_code,source.source_type,
                           source.source_name,source.source_url,source.parser_key
-                """).param("now", Timestamp.from(now)).param("lease", Timestamp.from(leaseUntil))
+                """).param("now", Timestamp.from(now))
+                .param("stale", Timestamp.from(now.minus(15, ChronoUnit.MINUTES)))
+                .param("legacyCutoff", Timestamp.from(now.plus(30, ChronoUnit.MINUTES)))
+                .param("lease", Timestamp.from(leaseUntil))
                 .param("limit", Math.max(1, Math.min(limit, 8)))
                 .query((rs, n) -> new DueSource(
                         rs.getString("source_id"), rs.getString("root_region_code"), rs.getString("source_type"),
