@@ -15,4 +15,11 @@ class JdbcRegionalPublicDataRepositoryTest {
                 Instant.parse("2026-09-14T00:31:00Z")))
                 .isEqualTo(Instant.parse("2026-09-15T00:30:00Z"));
     }
+
+    @Test
+    void weatherRefreshHasAFifteenMinuteFloor() {
+        assertThat(JdbcRegionalPublicDataRepository.nextWeatherRefresh(
+                Instant.parse("2026-09-18T06:00:00Z")))
+                .isEqualTo(Instant.parse("2026-09-18T06:15:00Z"));
+    }
 }

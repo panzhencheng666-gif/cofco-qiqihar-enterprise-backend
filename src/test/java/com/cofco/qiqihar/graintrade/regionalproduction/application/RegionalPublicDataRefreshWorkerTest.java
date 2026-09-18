@@ -14,6 +14,15 @@ import static org.mockito.ArgumentMatchers.*;
 import org.mockito.ArgumentCaptor;
 
 class RegionalPublicDataRefreshWorkerTest {
+    @Test void weatherRefreshClaimsOnlyAControlledBatch() {
+        var repository=mock(RegionalPublicDataRepository.class);
+        when(repository.claimDueWeather(any(),any(),eq(4))).thenReturn(List.of());
+
+        new RegionalPublicDataRefreshWorker(repository,mock(RegionalSourceDiscovery.class)).refreshDueWeather();
+
+        verify(repository).claimDueWeather(any(),any(),eq(4));
+        verify(repository,never()).due(any());
+    }
     @Test void detectsChangesBeyondTheShortDisplayExcerpt() throws Exception {
         var body = new AtomicReference<>("农业概况。粮食情况。农田情况。乡村情况。补贴金额10万元。");
         withSource("GENERIC_PAGE", body, (worker, repository) -> {

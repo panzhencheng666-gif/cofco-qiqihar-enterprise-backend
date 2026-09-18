@@ -39,9 +39,9 @@ public class OperationalSituationService {
                 .map(OperationalSituationCatalogue.WeatherObservation::fetchedAt)
                 .max(Instant::compareTo).orElse(null);
         sources.add(new OperationalSituationCatalogue.SourceStatus(
-                "OPEN_METEO", "Open-Meteo 区域天气", status(latestWeather, now, Duration.ofHours(36)),
+                "OPEN_METEO", "Open-Meteo 区域天气", status(latestWeather, now, Duration.ofMinutes(45)),
                 latestWeather, latestWeather, "https://open-meteo.com/",
-                "天气点位是公开接口使用的区域代表坐标；不等同于业务站点实测值。"));
+                "后端每15分钟限频同步区域代表坐标，页面读取本地快照；失败时保留最近一次成功观测。"));
         return new OperationalSituationCatalogue(
                 now, snapshot.weather(), snapshot.events(), List.copyOf(sources));
     }

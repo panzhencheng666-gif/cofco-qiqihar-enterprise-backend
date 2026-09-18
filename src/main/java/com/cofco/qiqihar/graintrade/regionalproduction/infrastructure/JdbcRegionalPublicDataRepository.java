@@ -155,9 +155,36 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
         return jdbc.sql("""
                 SELECT source_id,root_region_code,source_type,source_name,source_url,parser_key
                 FROM production.regional_public_source
-                WHERE active AND (next_refresh_at IS NULL OR next_refresh_at<=:now)
+                WHERE active AND parser_key<>'OPEN_METEO'
+                  AND (next_refresh_at IS NULL OR next_refresh_at<=:now)
                 ORDER BY source_type,source_id
                 """).param("now", Timestamp.from(now)).query((rs, n) -> new DueSource(
+                        rs.getString("source_id"), rs.getString("root_region_code"), rs.getString("source_type"),
+                rs.getString("source_name"), rs.getString("source_url"), rs.getString("parser_key"))).list();
+    }
+
+    @Override
+    @Transactional
+    public List<DueSource> claimDueWeather(Instant now, Instant leaseUntil, int limit) {
+        return jdbc.sql("""
+                WITH claimed AS (
+                  SELECT source_id
+                  FROM production.regional_public_source
+                  WHERE active AND parser_key='OPEN_METEO'
+                    AND (next_refresh_at IS NULL OR next_refresh_at<=:now)
+                  ORDER BY source_id
+                  FOR UPDATE SKIP LOCKED
+                  LIMIT :limit
+                )
+                UPDATE production.regional_public_source source
+                SET last_attempt_at=:now,next_refresh_at=:lease
+                FROM claimed
+                WHERE source.source_id=claimed.source_id
+                RETURNING source.source_id,source.root_region_code,source.source_type,
+                          source.source_name,source.source_url,source.parser_key
+                """).param("now", Timestamp.from(now)).param("lease", Timestamp.from(leaseUntil))
+                .param("limit", Math.max(1, Math.min(limit, 8)))
+                .query((rs, n) -> new DueSource(
                         rs.getString("source_id"), rs.getString("root_region_code"), rs.getString("source_type"),
                         rs.getString("source_name"), rs.getString("source_url"), rs.getString("parser_key"))).list();
     }
@@ -234,10 +261,14 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
                 .param("temperature", temperature).param("precipitation", precipitation)
                 .param("soil", soilMoisture).param("risk", risk).param("assessment", assessment)
                 .param("id", id).param("now", Timestamp.from(now)).update();
-        updateSuccess(id, now, hash, excerpt);
+        updateSuccess(id, now, hash, excerpt, nextWeatherRefresh(now));
     }
 
     private void updateSuccess(String id, Instant now, String hash, String excerpt) {
+        updateSuccess(id, now, hash, excerpt, nextDailyRefresh(now));
+    }
+
+    private void updateSuccess(String id, Instant now, String hash, String excerpt, Instant next) {
         jdbc.sql("""
                 UPDATE production.regional_public_source SET last_attempt_at=:now,last_success_at=:now,
                   next_refresh_at=:next,
@@ -247,7 +278,7 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
                   END,
                   last_error=NULL,
                   last_content_hash=:hash,last_excerpt=:excerpt WHERE source_id=:id
-                """).param("now", Timestamp.from(now)).param("next", Timestamp.from(nextDailyRefresh(now)))
+                """).param("now", Timestamp.from(now)).param("next", Timestamp.from(next))
                 .param("hash", hash).param("excerpt", excerpt).param("id", id).update();
     }
 
@@ -271,5 +302,9 @@ public class JdbcRegionalPublicDataRepository implements RegionalPublicDataRepos
         var next = local.toLocalDate().atTime(8, 30).atZone(zone);
         if (!next.toInstant().isAfter(now)) next = next.plusDays(1);
         return next.toInstant();
+    }
+
+    static Instant nextWeatherRefresh(Instant now) {
+        return now.plus(15, ChronoUnit.MINUTES);
     }
 }

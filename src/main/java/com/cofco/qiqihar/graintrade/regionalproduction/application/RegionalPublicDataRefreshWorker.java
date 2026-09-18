@@ -76,12 +76,34 @@ public class RegionalPublicDataRefreshWorker {
         else refresh(now);
     }
 
+    @Scheduled(initialDelayString = "${qiqihar.regional-public-data.weather-initial-delay:10s}",
+            fixedDelayString = "${qiqihar.regional-public-data.weather-check-delay:1m}",
+            scheduler = "regionalPublicDataScheduler")
+    public synchronized void refreshDueWeather() {
+        var now = Instant.now();
+        // next_refresh_at acts as a short database lease. FOR UPDATE SKIP LOCKED in the
+        // repository prevents several application instances from calling the provider
+        // for the same region at the same time.
+        var sources = repository.claimDueWeather(now, now.plus(Duration.ofMinutes(2)), 4);
+        for (var source : sources) {
+            if (Thread.currentThread().isInterrupted()) return;
+            refreshSource(source, now);
+        }
+    }
+
     private synchronized void refresh(Instant now) {
         discovery.discover(now);
         for (var source : repository.due(now)) {
             if (Thread.currentThread().isInterrupted()) return;
             if (source.parserKey().equals("WEB_DISCOVERY")) continue;
-            try {
+            refreshSource(source, now);
+        }
+        if (estimateBatches != null && !Thread.currentThread().isInterrupted()) estimateBatches.refresh(Instant.now());
+        if (hierarchy != null && !Thread.currentThread().isInterrupted()) hierarchy.refresh(Instant.now());
+    }
+
+    private void refreshSource(RegionalPublicDataRepository.DueSource source, Instant now) {
+        try {
                 if (source.id().startsWith("search-found-") && !RegionalSourceDiscovery.publicHttps(source.url()))
                     throw new IllegalArgumentException("联网来源地址不符合公开网页访问条件");
                 var request = HttpRequest.newBuilder(URI.create(source.url()))
@@ -134,15 +156,11 @@ public class RegionalPublicDataRefreshWorker {
                             : indicators.stream().limit(6).map(i -> i.year()+"年"+i.label()+i.value()+i.unit())
                                 .collect(java.util.stream.Collectors.joining("；")));
                 }
-            } catch (InterruptedException exception) {
-                Thread.currentThread().interrupt();
-                return;
-            } catch (Exception exception) {
-                repository.recordFailure(source.id(), now, exception.getMessage());
-            }
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+        } catch (Exception exception) {
+            repository.recordFailure(source.id(), now, exception.getMessage());
         }
-        if (estimateBatches != null && !Thread.currentThread().isInterrupted()) estimateBatches.refresh(Instant.now());
-        if (hierarchy != null && !Thread.currentThread().isInterrupted()) hierarchy.refresh(Instant.now());
     }
 
     static BigDecimal number(String json, String field) {

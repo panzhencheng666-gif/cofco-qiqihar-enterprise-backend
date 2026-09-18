@@ -13,6 +13,8 @@ public interface RegionalPublicDataRepository {
 
     List<DueSource> due(Instant now);
 
+    List<DueSource> claimDueWeather(Instant now, Instant leaseUntil, int limit);
+
     void recordPageSuccess(String sourceId, Instant fetchedAt, String hash, String excerpt);
 
     void recordCropMetrics(String sourceId, List<PublicCropMetric> metrics, Instant fetchedAt);
