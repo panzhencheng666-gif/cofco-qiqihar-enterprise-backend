@@ -66,4 +66,24 @@ class OperationalFacilityRestIntegrationTest {
                 .andExpect(jsonPath("$.data.storageFacilities[?(@.code == 'KESHAN_DEPOT')]").isNotEmpty())
                 .andExpect(jsonPath("$.data.railwayFacilities[?(@.name == '泰来')]").isNotEmpty());
     }
+
+    @Test
+    void supportsAnUnfilteredProductCatalogue() throws Exception {
+        mvc.perform(get("/api/v1/overview/operational-facilities")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", "230200")
+                        .queryParam("asOf", "2026-09-18"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.productCode").value(org.hamcrest.Matchers.nullValue()))
+                .andExpect(jsonPath("$.data.storageFacilities[?(@.code == 'KESHAN_DEPOT')].prices").isNotEmpty());
+    }
+
+    @Test
+    void rejectsAnInvalidAsOfDate() throws Exception {
+        mvc.perform(get("/api/v1/overview/operational-facilities")
+                        .principal(() -> "production-tester")
+                        .queryParam("asOf", "not-a-date"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_OPERATIONAL_FACILITY_QUERY"));
+    }
 }

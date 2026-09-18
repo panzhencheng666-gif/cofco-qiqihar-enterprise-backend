@@ -87,7 +87,9 @@ public class JdbcOperationalStorageFacilityRepository implements OperationalStor
                   AND (:product IS NULL OR price.product_code=:product)
                   AND price.effective_on<=:as_of
                 ORDER BY price.effective_on DESC,price.product_code,price.quality_requirement
-                """).param("facility", facilityCode).param("product", productCode).param("as_of", asOf)
+                """).param("facility", facilityCode)
+                .param("product", productCode, java.sql.Types.VARCHAR)
+                .param("as_of", asOf)
                 .query((rs, row) -> {
                     LocalDate effectiveOn = rs.getDate("effective_on").toLocalDate();
                     LocalDate expiresOn = localDate(rs.getDate("expires_on"));

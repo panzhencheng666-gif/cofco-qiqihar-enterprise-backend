@@ -6,6 +6,7 @@ import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.StrictQueryParameters;
 import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.Set;
 import org.springframework.util.MultiValueMap;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -26,15 +27,15 @@ public class OperationalFacilityController {
             @RequestParam MultiValueMap<String, String> parameters) {
         StrictQueryParameters query = StrictQueryParameters.parse(
                 parameters, PARAMETERS::contains, OperationalFacilityController::invalid);
+        String rawAsOf = query.optional("asOf");
+        LocalDate asOf;
         try {
-            String productCode = query.optional("productCode");
-            LocalDate asOf = query.optional("asOf") == null ? null : LocalDate.parse(query.optional("asOf"));
-            return new ApiResponse<>(service.find(query.optional("regionCode"), productCode, asOf));
-        } catch (ClientRequestException exception) {
-            throw exception;
-        } catch (RuntimeException exception) {
+            asOf = rawAsOf == null ? null : LocalDate.parse(rawAsOf);
+        } catch (DateTimeParseException exception) {
             throw invalid();
         }
+        return new ApiResponse<>(service.find(
+                query.optional("regionCode"), query.optional("productCode"), asOf));
     }
 
     private static ClientRequestException invalid() {
