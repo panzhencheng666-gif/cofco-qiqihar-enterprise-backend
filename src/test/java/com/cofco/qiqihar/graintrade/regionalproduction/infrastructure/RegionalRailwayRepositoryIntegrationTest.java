@@ -63,4 +63,22 @@ class RegionalRailwayRepositoryIntegrationTest {
         assertThat(result.facilities()).extracting(f -> f.name()).containsExactly("本地站");
         assertThat(result.lines()).isEmpty();
     }
+
+    @Test void operationalRoutesReturnSourceBackedGeometryWithoutLengthAggregation() {
+        jdbc.sql("DELETE FROM overview.regional_railway_feature").update();
+        jdbc.sql("UPDATE overview.administrative_boundary SET geometry=ST_Multi(ST_MakeEnvelope(122,46,122.1,46.1,4326)) WHERE region_code='230202'").update();
+        jdbc.sql("""
+          INSERT INTO overview.regional_railway_feature(source_id,name,kind,tags,geometry,source_as_of) VALUES
+          ('way/4','跨界铁路','rail','{"usage":"main","operator":"测试铁路局"}',ST_GeomFromText('LINESTRING(121.99 46.05,122.2 46.05)',4326),'2026-09-15Z')
+          """).update();
+
+        var routes = railways.findRoutes("230202");
+
+        assertThat(routes).singleElement().satisfies(route -> {
+            assertThat(route.name()).isEqualTo("跨界铁路");
+            assertThat(route.geometryGeoJson()).contains("LineString").contains("122.2");
+            assertThat(route.operator()).isEqualTo("测试铁路局");
+            assertThat(route.sourceUrl()).startsWith("https://www.openstreetmap.org/");
+        });
+    }
 }

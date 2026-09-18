@@ -23,6 +23,12 @@ public class RegionalRailwayCatalogue {
         return map(repository.findFacilities(regionCode));
     }
 
+    public List<Route> findRoutes(String regionCode) {
+        return repository.findRoutes(regionCode).stream().map(value -> new Route(
+                value.id(), value.name(), value.geometryGeoJson(), value.usage(), value.operator(),
+                value.sourceUrl())).toList();
+    }
+
     private Result map(RegionalRailways result) {
         return new Result(
                 result.regionCode(), result.boundaryAvailable(), result.sourceAsOf(),
@@ -47,4 +53,8 @@ public class RegionalRailwayCatalogue {
     public record Line(
             String name, BigDecimal mappedTrackKm, String usage, String electrification,
             String gauge, String operator, String sourceUrl) {}
+
+    public record Route(
+            String id, String name, String geometryGeoJson, String usage, String operator,
+            String sourceUrl) {}
 }

@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.regionalproduction.infrastructure;
 
 import com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalRailwayRepository;
+import com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalRailwayRoute;
 import com.cofco.qiqihar.graintrade.regionalproduction.application.RegionalRailways;
 import java.util.List;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -22,6 +23,40 @@ public class JdbcRegionalRailwayRepository implements RegionalRailwayRepository 
     @Transactional(readOnly = true)
     public RegionalRailways findFacilities(String regionCode) {
         return find(regionCode, false);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<RegionalRailwayRoute> findRoutes(String regionCode) {
+        return jdbc.sql("""
+                WITH boundary AS (
+                  SELECT geometry FROM overview.administrative_boundary WHERE region_code=:region
+                ), segments AS (
+                  SELECT DISTINCT ON (f.source_id)
+                    f.source_id,
+                    coalesce(nullif(f.name,''),nullif(f.tags->>'ref',''),'未命名铁路') AS route_name,
+                    f.tags,
+                    f.geometry
+                  FROM overview.regional_railway_feature f CROSS JOIN boundary b
+                  WHERE f.kind='rail' AND f.geometry && b.geometry AND ST_Intersects(f.geometry,b.geometry)
+                  ORDER BY f.source_id
+                ), grouped AS (
+                  SELECT route_name,min(source_id) AS source_id,
+                    coalesce(string_agg(DISTINCT tags->>'usage','、'),'') AS usage,
+                    coalesce(string_agg(DISTINCT tags->>'operator','、'),'') AS operator,
+                    ST_LineMerge(ST_Collect(geometry)) AS geometry
+                  FROM segments GROUP BY route_name
+                )
+                SELECT route_name,source_id,usage,operator,
+                  ST_AsGeoJSON(ST_SimplifyPreserveTopology(geometry,0.0005),6) AS geometry_geo_json
+                FROM grouped
+                WHERE NOT ST_IsEmpty(geometry)
+                ORDER BY route_name
+                """).param("region", regionCode).query((rs, n) -> new RegionalRailwayRoute(
+                    regionCode + ":" + rs.getString("route_name"),
+                    rs.getString("route_name"), rs.getString("geometry_geo_json"),
+                    rs.getString("usage"), rs.getString("operator"),
+                    "https://www.openstreetmap.org/" + rs.getString("source_id"))).list();
     }
 
     private RegionalRailways find(String regionCode, boolean includeLines) {

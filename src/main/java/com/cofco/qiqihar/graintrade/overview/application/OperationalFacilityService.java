@@ -27,7 +27,8 @@ public class OperationalFacilityService {
     public OperationalFacilityCatalogue find(String regionCode, String productCode, LocalDate asOf) {
         LocalDate effectiveAsOf = asOf == null ? LocalDate.now() : asOf;
         var storageFacilities = storage.find(regionCode, productCode, effectiveAsOf);
-        var railwayResults = storage.railwayRegionCodes(regionCode).stream()
+        var railwayRegionCodes = storage.railwayRegionCodes(regionCode);
+        var railwayResults = railwayRegionCodes.stream()
                 .map(railways::findFacilities).filter(value -> value.boundaryAvailable()).toList();
         var categories = List.of(
                 category("OWNED", "自有库点", storageFacilities),
@@ -51,11 +52,18 @@ public class OperationalFacilityService {
                         value.gauge(), value.operator(), value.sourceUrl()))));
         var lines = lineByName.values().stream()
                 .sorted(Comparator.comparing(OperationalFacilityCatalogue.RailwayLine::name)).toList();
+        var routes = railwayRegionCodes.stream().flatMap(code -> railways.findRoutes(code).stream())
+                .map(value -> new OperationalFacilityCatalogue.RailwayRoute(
+                        value.id(), value.name(), value.geometryGeoJson(), value.usage(), value.operator(),
+                        value.sourceUrl()))
+                .sorted(Comparator.comparing(OperationalFacilityCatalogue.RailwayRoute::name)
+                        .thenComparing(OperationalFacilityCatalogue.RailwayRoute::id))
+                .toList();
         String railwaySourceAsOf = railwayResults.stream().map(value -> value.sourceAsOf())
                 .filter(value -> value != null && !value.isBlank()).max(String::compareTo).orElse(null);
         String storageAsOf = storage.latestSourceAsOf(regionCode);
         return new OperationalFacilityCatalogue(
-                regionCode, productCode, effectiveAsOf, categories, storageFacilities, facilities, lines,
+                regionCode, productCode, effectiveAsOf, categories, storageFacilities, facilities, lines, routes,
                 List.of(
                         new OperationalFacilityCatalogue.SourceStatus(
                                 "STORAGE", "关联库点", sourceStatus(storageAsOf, 90), storageAsOf, null,

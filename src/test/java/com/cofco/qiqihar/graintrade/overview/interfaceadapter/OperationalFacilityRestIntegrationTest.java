@@ -36,7 +36,8 @@ class OperationalFacilityRestIntegrationTest {
                 .andExpect(jsonPath("$.data.storageFacilities[?(@.code == 'KESHAN_DEPOT')].prices[0].current")
                         .value(false))
                 .andExpect(jsonPath("$.data.sources[?(@.code == 'STORAGE')].notice").isNotEmpty())
-                .andExpect(jsonPath("$.data.sources[?(@.code == 'RAILWAY')].sourceUrl").isNotEmpty());
+                .andExpect(jsonPath("$.data.sources[?(@.code == 'RAILWAY')].sourceUrl").isNotEmpty())
+                .andExpect(jsonPath("$.data.railwayRoutes[0].geometryGeoJson").isNotEmpty());
     }
 
     @Test

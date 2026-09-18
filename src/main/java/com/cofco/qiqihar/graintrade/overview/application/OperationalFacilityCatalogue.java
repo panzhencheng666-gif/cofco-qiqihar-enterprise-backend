@@ -12,6 +12,7 @@ public record OperationalFacilityCatalogue(
         List<StorageFacility> storageFacilities,
         List<RailwayFacility> railwayFacilities,
         List<RailwayLine> railwayLines,
+        List<RailwayRoute> railwayRoutes,
         List<SourceStatus> sources) {
 
     public record Category(String code, String label, long count) {}
@@ -39,6 +40,10 @@ public record OperationalFacilityCatalogue(
     public record RailwayLine(
             String name, BigDecimal mappedTrackKm, String usage, String electrification,
             String gauge, String operator, String sourceUrl) {}
+
+    public record RailwayRoute(
+            String id, String name, String geometryGeoJson, String usage, String operator,
+            String sourceUrl) {}
 
     public record SourceStatus(
             String code, String label, String status, String sourceAsOf, String sourceUrl, String notice) {}
