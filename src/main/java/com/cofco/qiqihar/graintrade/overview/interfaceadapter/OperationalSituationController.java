@@ -22,9 +22,11 @@ public class OperationalSituationController {
     @GetMapping("/api/v1/overview/operational-situation")
     ApiResponse<OperationalSituationCatalogue> current(
             @RequestParam MultiValueMap<String, String> parameters) {
-        StrictQueryParameters.parse(parameters, Set.<String>of()::contains,
+        var parsed = StrictQueryParameters.parse(parameters, Set.of("regionCode")::contains,
                 OperationalSituationController::invalid);
-        return new ApiResponse<>(service.current());
+        var regionCode = parsed.optional("regionCode");
+        if (regionCode != null && !regionCode.matches("[0-9]{6,12}")) throw invalid();
+        return new ApiResponse<>(service.current(regionCode));
     }
 
     private static ClientRequestException invalid() {

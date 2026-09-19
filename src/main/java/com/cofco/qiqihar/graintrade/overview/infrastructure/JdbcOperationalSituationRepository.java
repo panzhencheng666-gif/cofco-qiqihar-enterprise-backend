@@ -32,10 +32,12 @@ public class JdbcOperationalSituationRepository implements OperationalSituationR
                 JOIN overview.administrative_boundary boundary ON boundary.region_code=weather.root_region_code
                 ORDER BY region.sort_order,region.name
                 """).query((row, index) -> new OperationalSituationCatalogue.WeatherObservation(
-                    row.getString("root_region_code"), row.getString("region_name"),
+                    row.getString("root_region_code"), row.getString("root_region_code"),
+                    row.getString("region_name"),
                     row.getBigDecimal("longitude"), row.getBigDecimal("latitude"),
                     instant(row.getTimestamp("observed_at")), row.getBigDecimal("mean_temperature_c"),
                     row.getBigDecimal("precipitation_mm"), row.getBigDecimal("soil_moisture_percent"),
+                    null, null, null, null, "PREFECTURE",
                     row.getString("risk"), row.getString("assessment"), row.getString("source_name"),
                     row.getString("source_url"), instant(row.getTimestamp("fetched_at")))).list();
         var events = jdbc.sql("""

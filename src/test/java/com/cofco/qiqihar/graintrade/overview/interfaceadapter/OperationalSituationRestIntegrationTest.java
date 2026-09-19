@@ -68,4 +68,13 @@ class OperationalSituationRestIntegrationTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("INVALID_OPERATIONAL_SITUATION_QUERY"));
     }
+
+    @Test
+    void rejectsMalformedRegionCodesBeforeWeatherLookup() throws Exception {
+        mvc.perform(get("/api/v1/overview/operational-situation")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", "not-a-region"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("INVALID_OPERATIONAL_SITUATION_QUERY"));
+    }
 }

@@ -14,6 +14,7 @@ public record OperationalSituationCatalogue(
 
     public record WeatherObservation(
             String rootRegionCode,
+            String regionCode,
             String regionName,
             BigDecimal longitude,
             BigDecimal latitude,
@@ -21,6 +22,11 @@ public record OperationalSituationCatalogue(
             BigDecimal meanTemperatureC,
             BigDecimal precipitationMm,
             BigDecimal soilMoisturePercent,
+            Integer weatherCode,
+            BigDecimal windSpeedKph,
+            BigDecimal windDirectionDegrees,
+            BigDecimal cloudCoverPercent,
+            String observationPrecision,
             String risk,
             String assessment,
             String sourceName,
