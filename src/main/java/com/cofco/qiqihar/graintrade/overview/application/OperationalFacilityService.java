@@ -107,6 +107,41 @@ public class OperationalFacilityService {
         return saved;
     }
 
+    OperationalStorageFacilityDraft validateForImport(OperationalStorageFacilityDraft requested) {
+        return validate(requested, false);
+    }
+
+    @Transactional
+    public List<OperationalFacilityCatalogue.StorageFacility> importValidated(
+            List<OperationalStorageFacilityDraft> requested) {
+        if (requested == null || requested.isEmpty()) throw invalid("导入内容不能为空");
+        List<OperationalStorageFacilityDraft> drafts = requested.stream()
+                .map(value -> validate(value, false)).toList();
+        List<SecurityPrincipal> actors = drafts.stream()
+                .map(value -> access.require("BUSINESS_CREATE", value.regionCode())).toList();
+        List<OperationalFacilityCatalogue.StorageFacility> saved = new java.util.ArrayList<>();
+        Instant now = clock.instant();
+        for (int index = 0; index < drafts.size(); index++) {
+            OperationalStorageFacilityDraft draft = drafts.get(index);
+            SecurityPrincipal actor = actors.get(index);
+            var facility = storage.create("FAC-" + UUID.randomUUID(), draft,
+                            actor.workUnitCode(), actor.subjectId(), now)
+                    .orElseThrow(() -> new IllegalStateException("Imported facility cannot be read"));
+            audit(actor, facility, "OPERATIONAL_FACILITY_IMPORTED");
+            saved.add(facility);
+        }
+        SecurityPrincipal actor = actors.getFirst();
+        try {
+            audit.record(actor, "OPERATIONAL_FACILITY_IMPORT", UUID.randomUUID().toString(),
+                    "OPERATIONAL_FACILITY_IMPORT_COMPLETED", now,
+                    json.writeValueAsString(new ImportEvent(saved.size(), saved.stream()
+                            .map(OperationalFacilityCatalogue.StorageFacility::regionCode).distinct().sorted().toList())));
+        } catch (Exception exception) {
+            throw new IllegalStateException("Facility import event cannot be serialized", exception);
+        }
+        return List.copyOf(saved);
+    }
+
     @Transactional
     public OperationalFacilityCatalogue.StorageFacility update(
             String facilityCode, OperationalStorageFacilityDraft requested) {
@@ -192,6 +227,8 @@ public class OperationalFacilityService {
     }
 
     private record FacilityEvent(String regionCode, List<String> regionCodes, String relationType) {}
+
+    private record ImportEvent(int importedRows, List<String> regionCodes) {}
 
     private static OperationalFacilityCatalogue.Category category(
             String code, String label, List<OperationalFacilityCatalogue.StorageFacility> facilities) {
