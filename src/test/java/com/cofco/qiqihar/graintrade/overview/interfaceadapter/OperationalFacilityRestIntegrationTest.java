@@ -1,25 +1,40 @@
 package com.cofco.qiqihar.graintrade.overview.interfaceadapter;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
+import com.jayway.jsonpath.JsonPath;
+import javax.sql.DataSource;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.simple.JdbcClient;
 
 @SpringBootTest(classes = GrainTradeApplication.class, properties = "qiqihar.regional-public-data.enabled=false")
 @AutoConfigureMockMvc
 @UsesProtectedTestDatabase
 class OperationalFacilityRestIntegrationTest {
     @Autowired MockMvc mvc;
+    @Autowired DataSource dataSource;
+
+    @BeforeEach
+    void removeUserSubmittedFacilities() {
+        JdbcClient.create(dataSource).sql(
+                "DELETE FROM overview.storage_facility WHERE source_origin='USER_SUBMITTED'").update();
+    }
 
     @Test
-    void returnsGovernedStorageAndIndependentRailwayDetails() throws Exception {
+    void returnsOnlyUserSubmittedStorageAndIndependentRailwayDetails() throws Exception {
         mvc.perform(get("/api/v1/overview/operational-facilities")
                         .principal(() -> "production-tester")
                         .queryParam("regionCode", "230200")
@@ -29,12 +44,7 @@ class OperationalFacilityRestIntegrationTest {
                 .andExpect(jsonPath("$.data.storageCategories[?(@.code == 'OWNED')].label").value("自有库点"))
                 .andExpect(jsonPath("$.data.storageCategories[?(@.code == 'LEASED')].label").value("租赁库点"))
                 .andExpect(jsonPath("$.data.storageCategories[?(@.code == 'HISTORICAL_LEASED')].label").value("历史租赁库点"))
-                .andExpect(jsonPath("$.data.storageFacilities[?(@.code == 'KESHAN_DEPOT')].coordinatePrecision")
-                        .value("STREET"))
-                .andExpect(jsonPath("$.data.storageFacilities[?(@.code == 'KESHAN_DEPOT')].capacityTonnes")
-                        .value(org.hamcrest.Matchers.contains(org.hamcrest.Matchers.nullValue())))
-                .andExpect(jsonPath("$.data.storageFacilities[?(@.code == 'KESHAN_DEPOT')].prices[0].current")
-                        .value(false))
+                .andExpect(jsonPath("$.data.storageFacilities").isEmpty())
                 .andExpect(jsonPath("$.data.sources[?(@.code == 'STORAGE')].notice").isNotEmpty())
                 .andExpect(jsonPath("$.data.sources[?(@.code == 'RAILWAY')].sourceUrl").isNotEmpty())
                 .andExpect(jsonPath("$.data.railwayRoutes[0].geometryGeoJson").isNotEmpty());
@@ -64,7 +74,7 @@ class OperationalFacilityRestIntegrationTest {
                         .queryParam("asOf", "2026-09-18"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.regionCode").value(org.hamcrest.Matchers.nullValue()))
-                .andExpect(jsonPath("$.data.storageFacilities[?(@.code == 'KESHAN_DEPOT')]").isNotEmpty())
+                .andExpect(jsonPath("$.data.storageFacilities").isEmpty())
                 .andExpect(jsonPath("$.data.railwayFacilities[?(@.name == '泰来')]").isNotEmpty());
     }
 
@@ -76,7 +86,57 @@ class OperationalFacilityRestIntegrationTest {
                         .queryParam("asOf", "2026-09-18"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.productCode").value(org.hamcrest.Matchers.nullValue()))
-                .andExpect(jsonPath("$.data.storageFacilities[?(@.code == 'KESHAN_DEPOT')].prices").isNotEmpty());
+                .andExpect(jsonPath("$.data.storageFacilities").isEmpty());
+    }
+
+    @Test
+    void userCreatesUpdatesRequeriesAndArchivesOwnedFacility() throws Exception {
+        String created = mvc.perform(post("/api/v1/overview/operational-facilities")
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"克山一号库","relationType":"OWNED","regionCode":"230229",
+                                 "address":"克山县测试街道1号","longitude":125.86,"latitude":48.03,
+                                 "operationalStatus":"ACTIVE","capacityTonnes":12000.500,
+                                 "capacityAsOf":"2026-09-19","validFrom":"2026-01-01",
+                                 "validTo":null,"expectedVersion":0}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.name").value("克山一号库"))
+                .andExpect(jsonPath("$.data.workUnitCode").isNotEmpty())
+                .andExpect(jsonPath("$.data.coordinatePrecision").value("EXACT"))
+                .andExpect(jsonPath("$.data.version").value(0))
+                .andReturn().getResponse().getContentAsString();
+        String code = JsonPath.read(created, "$.data.code");
+
+        mvc.perform(get("/api/v1/overview/operational-facilities")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", "230200").queryParam("asOf", "2026-09-19"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.storageFacilities[0].code").value(code));
+
+        mvc.perform(put("/api/v1/overview/operational-facilities/{code}", code)
+                        .principal(() -> "production-tester").contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name":"克山一号租赁库","relationType":"LEASED","regionCode":"230229",
+                                 "address":"克山县测试街道1号","longitude":125.86,"latitude":48.03,
+                                 "operationalStatus":"ACTIVE","capacityTonnes":13000.000,
+                                 "capacityAsOf":"2026-09-19","validFrom":"2026-01-01",
+                                 "validTo":null,"expectedVersion":0}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.relationType").value("LEASED"))
+                .andExpect(jsonPath("$.data.version").value(1));
+
+        mvc.perform(delete("/api/v1/overview/operational-facilities/{code}", code)
+                        .principal(() -> "production-tester").queryParam("expectedVersion", "1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data").value(true));
+
+        mvc.perform(get("/api/v1/overview/operational-facilities")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", "230200").queryParam("asOf", "2026-09-19"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.storageFacilities").isEmpty());
     }
 
     @Test

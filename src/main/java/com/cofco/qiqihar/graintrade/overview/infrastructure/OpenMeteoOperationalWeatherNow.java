@@ -76,10 +76,10 @@ public class OpenMeteoOperationalWeatherNow implements OperationalWeatherNow {
     private Optional<RegionCoordinate> coordinate(String requestedRegionCode) {
         return jdbc.sql("""
                 WITH RECURSIVE lineage AS (
-                  SELECT code,parent_code,name,level,0 AS depth
+                  SELECT code,parent_code,name,administrative_level AS level,0 AS depth
                   FROM platform.region WHERE code=:code
                   UNION ALL
-                  SELECT parent.code,parent.parent_code,parent.name,parent.level,lineage.depth+1
+                  SELECT parent.code,parent.parent_code,parent.name,parent.administrative_level,lineage.depth+1
                   FROM lineage JOIN platform.region parent ON parent.code=lineage.parent_code
                 ), selected AS (
                   SELECT level FROM lineage WHERE depth=0

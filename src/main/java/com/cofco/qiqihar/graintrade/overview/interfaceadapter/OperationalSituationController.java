@@ -22,11 +22,25 @@ public class OperationalSituationController {
     @GetMapping("/api/v1/overview/operational-situation")
     ApiResponse<OperationalSituationCatalogue> current(
             @RequestParam MultiValueMap<String, String> parameters) {
-        var parsed = StrictQueryParameters.parse(parameters, Set.of("regionCode")::contains,
+        var parsed = StrictQueryParameters.parse(parameters,
+                Set.of("regionCode", "productCode", "surveyYear")::contains,
                 OperationalSituationController::invalid);
         var regionCode = parsed.optional("regionCode");
+        var productCode = parsed.optional("productCode");
+        var rawYear = parsed.optional("surveyYear");
         if (regionCode != null && !regionCode.matches("[0-9]{6,12}")) throw invalid();
-        return new ApiResponse<>(service.current(regionCode));
+        if (productCode != null && !Set.of("CORN", "SOYBEAN", "RICE").contains(productCode))
+            throw invalid();
+        Integer surveyYear = null;
+        if (rawYear != null) {
+            try {
+                surveyYear = Integer.valueOf(rawYear);
+            } catch (NumberFormatException exception) {
+                throw invalid();
+            }
+            if (surveyYear < 2000 || surveyYear > 2100) throw invalid();
+        }
+        return new ApiResponse<>(service.current(regionCode, productCode, surveyYear));
     }
 
     private static ClientRequestException invalid() {

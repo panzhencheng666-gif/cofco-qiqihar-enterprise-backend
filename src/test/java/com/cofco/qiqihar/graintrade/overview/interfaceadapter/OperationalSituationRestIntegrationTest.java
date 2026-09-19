@@ -54,6 +54,8 @@ class OperationalSituationRestIntegrationTest {
                 .andExpect(jsonPath("$.data.publicEvents[0].eventId").value("EONET_TEST"))
                 .andExpect(jsonPath("$.data.publicEvents[0].eventUrl").isNotEmpty())
                 .andExpect(jsonPath("$.data.policyEvents").isArray())
+                .andExpect(jsonPath("$.data.logisticsFlows").isArray())
+                .andExpect(jsonPath("$.data.inventories").isArray())
                 .andExpect(jsonPath("$.data.sources[?(@.code == 'NASA_EONET')].status")
                         .value("READY"))
                 .andExpect(jsonPath("$.data.sources[?(@.code == 'OPEN_METEO')].notice")
@@ -76,5 +78,17 @@ class OperationalSituationRestIntegrationTest {
                         .queryParam("regionCode", "not-a-region"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("INVALID_OPERATIONAL_SITUATION_QUERY"));
+    }
+
+    @Test
+    void acceptsBusinessScopeFiltersForLiveOperations() throws Exception {
+        mvc.perform(get("/api/v1/overview/operational-situation")
+                        .principal(() -> "production-tester")
+                        .queryParam("regionCode", "230200")
+                        .queryParam("productCode", "CORN")
+                        .queryParam("surveyYear", "2026"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.logisticsFlows").isArray())
+                .andExpect(jsonPath("$.data.inventories").isArray());
     }
 }

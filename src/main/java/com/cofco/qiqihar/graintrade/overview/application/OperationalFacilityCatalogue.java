@@ -21,7 +21,8 @@ public record OperationalFacilityCatalogue(
             String code, String name, String workUnitCode, String relationType, String relationLabel,
             String regionCode, String regionName, String address, BigDecimal longitude, BigDecimal latitude,
             String coordinatePrecision, String coordinatePrecisionLabel, String operationalStatus,
-            BigDecimal capacityTonnes, LocalDate capacityAsOf, List<Price> prices, List<Evidence> evidence) {}
+            BigDecimal capacityTonnes, LocalDate capacityAsOf, long version,
+            List<Price> prices, List<Evidence> evidence) {}
 
     public record Price(
             String productCode, String productName, String qualityRequirement, BigDecimal value, String unit,

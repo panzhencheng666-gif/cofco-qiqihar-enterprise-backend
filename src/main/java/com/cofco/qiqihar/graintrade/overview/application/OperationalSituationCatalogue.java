@@ -10,6 +10,8 @@ public record OperationalSituationCatalogue(
         List<WeatherObservation> weather,
         List<PublicEvent> publicEvents,
         List<PolicyEvent> policyEvents,
+        List<LogisticsFlow> logisticsFlows,
+        List<InventorySnapshot> inventories,
         List<SourceStatus> sources) {
 
     public record WeatherObservation(
@@ -57,6 +59,32 @@ public record OperationalSituationCatalogue(
             String sourceName,
             String sourceUrl,
             Instant verifiedAt) {}
+
+    public record LogisticsFlow(
+            String eventId,
+            String productCode,
+            String direction,
+            String originRegionCode,
+            String originRegionName,
+            BigDecimal originLongitude,
+            BigDecimal originLatitude,
+            String destinationRegionCode,
+            String destinationRegionName,
+            BigDecimal destinationLongitude,
+            BigDecimal destinationLatitude,
+            BigDecimal volumeTonnes,
+            Instant occurredAt,
+            String transportMode) {}
+
+    public record InventorySnapshot(
+            String regionCode,
+            String regionName,
+            String productCode,
+            BigDecimal longitude,
+            BigDecimal latitude,
+            BigDecimal inventoryTonnes,
+            int sourceCount,
+            Instant observedAt) {}
 
     public record SourceStatus(
             String code,

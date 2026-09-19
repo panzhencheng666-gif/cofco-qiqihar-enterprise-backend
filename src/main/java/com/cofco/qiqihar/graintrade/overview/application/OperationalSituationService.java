@@ -36,13 +36,20 @@ public class OperationalSituationService {
 
     @Transactional(readOnly = true)
     public OperationalSituationCatalogue current() {
-        return current(null);
+        return current(null, null, null);
     }
 
     @Transactional(readOnly = true)
     public OperationalSituationCatalogue current(String regionCode) {
+        return current(regionCode, null, null);
+    }
+
+    @Transactional(readOnly = true)
+    public OperationalSituationCatalogue current(
+            String regionCode, String productCode, Integer surveyYear) {
         Instant now = clock.instant();
         var snapshot = repository.snapshot();
+        var operations = repository.operations(regionCode, productCode, surveyYear);
         var sources = new ArrayList<OperationalSituationCatalogue.SourceStatus>();
         snapshot.refreshStates().forEach(state -> sources.add(
                 new OperationalSituationCatalogue.SourceStatus(
@@ -64,7 +71,8 @@ public class OperationalSituationService {
             weather.add(selected);
         });
         return new OperationalSituationCatalogue(
-                now, List.copyOf(weather), snapshot.events(), snapshot.policies(), List.copyOf(sources));
+                now, List.copyOf(weather), snapshot.events(), snapshot.policies(),
+                operations.logisticsFlows(), operations.inventories(), List.copyOf(sources));
     }
 
     private static String status(Instant lastSuccess, Instant now, Duration readyFor) {

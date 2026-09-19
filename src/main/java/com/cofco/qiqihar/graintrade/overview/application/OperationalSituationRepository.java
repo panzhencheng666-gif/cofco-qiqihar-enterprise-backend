@@ -7,6 +7,10 @@ import java.util.List;
 public interface OperationalSituationRepository {
     Snapshot snapshot();
 
+    default Operations operations(String regionCode, String productCode, Integer surveyYear) {
+        return new Operations(List.of(), List.of());
+    }
+
     void replaceEvents(String sourceCode, List<FeedEvent> events, Instant attemptedAt);
 
     void recordFailure(String sourceCode, Instant attemptedAt, String message);
@@ -39,4 +43,8 @@ public interface OperationalSituationRepository {
             List<OperationalSituationCatalogue.PublicEvent> events,
             List<OperationalSituationCatalogue.PolicyEvent> policies,
             List<RefreshState> refreshStates) {}
+
+    record Operations(
+            List<OperationalSituationCatalogue.LogisticsFlow> logisticsFlows,
+            List<OperationalSituationCatalogue.InventorySnapshot> inventories) {}
 }

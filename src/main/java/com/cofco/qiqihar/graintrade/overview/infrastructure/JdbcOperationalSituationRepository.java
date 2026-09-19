@@ -72,6 +72,91 @@ public class JdbcOperationalSituationRepository implements OperationalSituationR
     }
 
     @Override
+    public Operations operations(String regionCode, String productCode, Integer surveyYear) {
+        var flows = jdbc.sql("""
+                WITH RECURSIVE scope(code) AS (
+                  SELECT code FROM platform.region
+                  WHERE (:region IS NOT NULL AND code=:region)
+                     OR (:region IS NULL AND code IN ('230200','231100','150700','232700'))
+                  UNION ALL
+                  SELECT child.code FROM platform.region child JOIN scope parent ON child.parent_code=parent.code
+                )
+                SELECT event.event_id::text,event.product_code,event.direction_code,
+                       origin.code origin_code,origin.name origin_name,
+                       ST_X(ST_PointOnSurface(origin_boundary.geometry)) origin_longitude,
+                       ST_Y(ST_PointOnSurface(origin_boundary.geometry)) origin_latitude,
+                       destination.code destination_code,destination.name destination_name,
+                       ST_X(ST_PointOnSurface(destination_boundary.geometry)) destination_longitude,
+                       ST_Y(ST_PointOnSurface(destination_boundary.geometry)) destination_latitude,
+                       volume.value volume_tonnes,
+                       COALESCE(event.submitted_at,event.reported_at,event.updated_at) occurred_at,
+                       mode.name transport_mode
+                FROM logistics.route_event event
+                JOIN scope selected ON selected.code=COALESCE(event.business_region_code,event.origin_region_code)
+                JOIN platform.region origin ON origin.code=event.origin_region_code
+                JOIN platform.region destination ON destination.code=event.destination_region_code
+                JOIN overview.administrative_boundary origin_boundary ON origin_boundary.region_code=origin.code
+                JOIN overview.administrative_boundary destination_boundary ON destination_boundary.region_code=destination.code
+                JOIN platform.transport_mode mode ON mode.code=event.transport_mode_code
+                LEFT JOIN logistics.route_fact volume
+                  ON volume.event_id=event.event_id AND volume.fact_code='ROUTE_VOLUME'
+                WHERE event.status_code='APPROVED'
+                  AND event.survey_period_governance_state='CONFIRMED'
+                  AND event.origin_region_code IS NOT NULL AND event.destination_region_code IS NOT NULL
+                  AND event.origin_region_code<>event.destination_region_code
+                  AND (:product IS NULL OR event.product_code=:product)
+                  AND (:year IS NULL OR event.survey_year=:year)
+                ORDER BY occurred_at DESC,event.event_id
+                LIMIT 100
+                """).param("region", regionCode, java.sql.Types.VARCHAR)
+                .param("product", productCode, java.sql.Types.VARCHAR)
+                .param("year", surveyYear, java.sql.Types.INTEGER)
+                .query((row, index) -> new OperationalSituationCatalogue.LogisticsFlow(
+                        row.getString("event_id"), row.getString("product_code"), row.getString("direction_code"),
+                        row.getString("origin_code"), row.getString("origin_name"),
+                        row.getBigDecimal("origin_longitude"), row.getBigDecimal("origin_latitude"),
+                        row.getString("destination_code"), row.getString("destination_name"),
+                        row.getBigDecimal("destination_longitude"), row.getBigDecimal("destination_latitude"),
+                        row.getBigDecimal("volume_tonnes"), instant(row.getTimestamp("occurred_at")),
+                        row.getString("transport_mode"))).list();
+        var inventories = jdbc.sql("""
+                WITH RECURSIVE scope(code) AS (
+                  SELECT code FROM platform.region
+                  WHERE (:region IS NOT NULL AND code=:region)
+                     OR (:region IS NULL AND code IN ('230200','231100','150700','232700'))
+                  UNION ALL
+                  SELECT child.code FROM platform.region child JOIN scope parent ON child.parent_code=parent.code
+                )
+                SELECT record.region_code,region.name region_name,record.product_code,
+                       ST_X(ST_PointOnSurface(boundary.geometry)) longitude,
+                       ST_Y(ST_PointOnSurface(boundary.geometry)) latitude,
+                       sum(fact.value) inventory_tonnes,count(fact.value) source_count,
+                       max(COALESCE(record.submitted_at,record.reported_at,record.updated_at)) observed_at
+                FROM market.market_record record
+                JOIN market.effective_approved_market_record effective ON effective.record_id=record.record_id
+                JOIN scope selected ON selected.code=record.region_code
+                JOIN platform.region region ON region.code=record.region_code
+                JOIN overview.administrative_boundary boundary ON boundary.region_code=record.region_code
+                JOIN market.market_record_fact fact
+                  ON fact.record_id=record.record_id AND fact.fact_code='ENDING_INVENTORY'
+                WHERE record.status_code='APPROVED'
+                  AND record.survey_period_governance_state='CONFIRMED'
+                  AND (:product IS NULL OR record.product_code=:product)
+                  AND (:year IS NULL OR record.survey_year=:year)
+                GROUP BY record.region_code,region.name,record.product_code,boundary.geometry
+                ORDER BY observed_at DESC,record.region_code
+                """).param("region", regionCode, java.sql.Types.VARCHAR)
+                .param("product", productCode, java.sql.Types.VARCHAR)
+                .param("year", surveyYear, java.sql.Types.INTEGER)
+                .query((row, index) -> new OperationalSituationCatalogue.InventorySnapshot(
+                        row.getString("region_code"), row.getString("region_name"),
+                        row.getString("product_code"), row.getBigDecimal("longitude"),
+                        row.getBigDecimal("latitude"), row.getBigDecimal("inventory_tonnes"),
+                        row.getInt("source_count"), instant(row.getTimestamp("observed_at")))).list();
+        return new Operations(flows, inventories);
+    }
+
+    @Override
     @Transactional
     public void replaceEvents(String sourceCode, List<FeedEvent> events, Instant attemptedAt) {
         jdbc.sql("DELETE FROM overview.public_event_snapshot WHERE source_code=:source")
