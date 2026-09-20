@@ -17,6 +17,41 @@ class RegionalRailwayRepositoryIntegrationTest {
     @Autowired JdbcClient jdbc;
     @Autowired RegionalRailwayRepository railways;
 
+    @Test void repairedSimplificationKeepsRegionalLineSummaryAvailable() {
+        jdbc.sql("DELETE FROM overview.regional_railway_feature").update();
+        jdbc.sql("""
+          WITH source AS (
+            SELECT ST_Collect(
+              ST_GeomFromText('POLYGON((0 0,10 0,10 4,5 4,5 6,10 6,10 10,0 10,0 0))'),
+              ST_GeomFromText('POLYGON((7 4.5,8 4.5,8 5.5,7 5.5,7 4.5))')
+            )::geometry(MultiPolygon) AS geometry
+          )
+          UPDATE overview.administrative_boundary
+          SET geometry=ST_SetSRID(
+            ST_Translate(ST_Scale(source.geometry,0.00005,0.00005),127.9794,49.5439),4326)
+          FROM source WHERE region_code='230202'
+          """).update();
+        assertThat(jdbc.sql("""
+                SELECT ST_IsValid(geometry) AND NOT ST_IsValid(ST_Simplify(geometry,0.0001,true))
+                FROM overview.administrative_boundary WHERE region_code='230202'
+                """).query(Boolean.class).single()).isTrue();
+        assertThat(jdbc.sql("""
+                SELECT ST_IsValid(ST_CollectionExtract(
+                  ST_MakeValid(ST_Simplify(geometry,0.0001,true)),3))
+                FROM overview.administrative_boundary WHERE region_code='230202'
+                """).query(Boolean.class).single()).isTrue();
+        jdbc.sql("""
+          INSERT INTO overview.regional_railway_feature(source_id,name,kind,tags,geometry,source_as_of)
+          VALUES('way/920001','拓扑回归线','rail','{}'::jsonb,
+            ST_GeomFromText('LINESTRING(127.97935 49.54415,127.98005 49.54415)',4326),now())
+          """).update();
+
+        assertThat(railways.find("230202").lines()).singleElement().satisfies(line -> {
+            assertThat(line.name()).isEqualTo("拓扑回归线");
+            assertThat(line.mappedTrackKm().signum()).isPositive();
+        });
+    }
+
     @Test void denseBoundaryLineSummaryAvoidsRepeatedWholeBoundaryClipping() {
         jdbc.sql("DELETE FROM overview.regional_railway_feature").update();
         jdbc.sql("UPDATE overview.administrative_boundary SET geometry=ST_Multi(ST_Buffer(ST_SetSRID(ST_Point(123,48),4326),2,'quad_segs=25000')) WHERE region_code='230202'").update();

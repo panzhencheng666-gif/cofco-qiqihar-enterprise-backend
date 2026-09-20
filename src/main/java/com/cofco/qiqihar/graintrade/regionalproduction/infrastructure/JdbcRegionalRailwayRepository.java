@@ -136,7 +136,9 @@ public class JdbcRegionalRailwayRepository implements RegionalRailwayRepository 
                 }).list();
         var lines = includeLines ? jdbc.sql("""
                 WITH pieces AS MATERIALIZED (
-                  SELECT ST_Subdivide(ST_Simplify(geometry,0.0001,true),256) AS geometry
+                  SELECT ST_Subdivide(
+                    ST_CollectionExtract(ST_MakeValid(ST_Simplify(geometry,0.0001,true)),3),256
+                  ) AS geometry
                   FROM overview.administrative_boundary WHERE region_code=:region
                 ), fragments AS (
                   SELECT f.name,f.tags,f.source_id,ST_CollectionExtract(ST_Intersection(f.geometry,p.geometry),2) AS geometry
