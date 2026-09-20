@@ -67,15 +67,23 @@ public class JdbcRegionalRailwayRepository implements RegionalRailwayRepository 
                 .query((rs,n) -> rs.getTimestamp("source_as_of") == null ? null : rs.getTimestamp("source_as_of").toInstant().toString())
                 .optional().orElse(null);
         var facilities = jdbc.sql("""
-                WITH boundary AS (SELECT geometry FROM overview.administrative_boundary WHERE region_code=:region),
-                candidates AS (
-                  SELECT f.*,ST_Covers(b.geometry,f.geometry) AS within_region,
-                    ST_Distance(f.geometry::geography,b.geometry::geography)/1000 AS distance_km
+                WITH boundary AS MATERIALIZED (SELECT geometry FROM overview.administrative_boundary WHERE region_code=:region),
+                pieces AS MATERIALIZED (
+                  SELECT ST_Subdivide(geometry,256) AS geometry FROM boundary
+                ),
+                located AS MATERIALIZED (
+                  SELECT f.*,EXISTS(SELECT 1 FROM pieces p
+                    WHERE p.geometry && f.geometry AND ST_Covers(p.geometry,f.geometry)) AS within_region
                   FROM overview.regional_railway_feature f CROSS JOIN boundary b
-                  WHERE f.kind<>'rail' AND ST_DWithin(f.geometry::geography,b.geometry::geography,25000)
+                  WHERE f.kind<>'rail' AND f.geometry && ST_Expand(b.geometry,1)
+                ), candidates AS MATERIALIZED (
+                  SELECT f.*,CASE WHEN within_region THEN 0::double precision
+                    ELSE (SELECT min(ST_Distance(f.geometry::geography,p.geometry::geography))/1000
+                      FROM pieces p WHERE p.geometry && ST_Expand(f.geometry,1)) END AS distance_km
+                  FROM located f
                 ), ranked AS (
                   SELECT *,row_number() OVER (PARTITION BY within_region ORDER BY distance_km,name,source_id) AS proximity_rank
-                  FROM candidates
+                  FROM candidates WHERE within_region OR distance_km<=25
                 )
                 SELECT f.*,ST_X(f.geometry) AS longitude,ST_Y(f.geometry) AS latitude,
                   coalesce((SELECT string_agg(DISTINCT line.name,'、' ORDER BY line.name)
