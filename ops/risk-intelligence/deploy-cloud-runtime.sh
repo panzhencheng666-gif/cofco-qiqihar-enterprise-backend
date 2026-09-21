@@ -6,9 +6,11 @@ runtime_root=/var/lib/cofco/risk-intelligence
 releases_root="${runtime_root}/releases"
 secrets_root="${runtime_root}/secrets"
 artifact_root="${runtime_root}/model-artifacts"
+tls_root="${runtime_root}/rds-tls"
 runtime_env="${secrets_root}/runtime.env"
 migration_env=/var/lib/cofco/checkpoints/regional-controlled-20260915-1419/migration.env
 unit_target=/etc/systemd/system/cofco-risk-intelligence.service
+unit_source="${RISK_UNIT_SOURCE:-${bundle_root}/cofco-risk-intelligence.service}"
 release_id="${RISK_RELEASE_ID:-$(date -u '+%Y%m%dT%H%M%SZ')}"
 release_dir="${releases_root}/${release_id}"
 image="${RISK_CONTAINER_IMAGE:-localhost/cofco-local/backend:stage9-20260814-amd64}"
@@ -75,6 +77,47 @@ write_runtime_env() {
     printf 'JAVA_TOOL_OPTIONS=-Xms64m -Xmx192m -XX:MaxMetaspaceSize=128m -XX:+ExitOnOutOfMemoryError\n'
   } > "$temporary"
   chmod 600 "$temporary"
+  mv "$temporary" "$runtime_env"
+}
+
+configure_runtime_tls() {
+  local migration_url query parameter parameter_key encoded_path decoded_path runtime_url separator
+  migration_url="$(read_named_env "$migration_env" MIGRATION_URL)"
+  runtime_url=${migration_url%%\?*}
+  mkdir -p "$tls_root"
+  chown 10001:10001 "$tls_root"
+  chmod 700 "$tls_root"
+  find "$tls_root" -mindepth 1 -maxdepth 1 -type f -delete
+  if [[ "$migration_url" == *\?* ]]; then
+    query=${migration_url#*\?}
+    separator='?'
+    IFS='&' read -r -a parameters <<< "$query"
+    for parameter in "${parameters[@]}"; do
+      parameter_key=${parameter%%=*}
+      case "$parameter_key" in
+        sslrootcert|sslcert|sslkey)
+          encoded_path=${parameter#*=}
+          decoded_path=${encoded_path//+/ }
+          printf -v decoded_path '%b' "${decoded_path//%/\\x}"
+          [[ "$decoded_path" == /* ]] || fail "$parameter_key must use an absolute path"
+          [[ -f "$decoded_path" ]] || fail "$parameter_key file is missing on the host: $decoded_path"
+          install -o 10001 -g 10001 -m 400 "$decoded_path" "${tls_root}/${parameter_key}"
+          parameter="${parameter_key}=/run/risk-rds/${parameter_key}"
+          ;;
+      esac
+      runtime_url+="${separator}${parameter}"
+      separator='&'
+    done
+  fi
+  local temporary
+  temporary="$(mktemp "${secrets_root}/.runtime.env.XXXXXX")"
+  chmod 600 "$temporary"
+  awk -v runtime_url="$runtime_url" '
+    BEGIN { replaced=0 }
+    /^RISK_DB_URL=/ { print "RISK_DB_URL=" runtime_url; replaced=1; next }
+    { print }
+    END { if (!replaced) print "RISK_DB_URL=" runtime_url }
+  ' "$runtime_env" > "$temporary"
   mv "$temporary" "$runtime_env"
 }
 
@@ -191,7 +234,7 @@ activate_service() {
   }
   ln -sfn "$release_dir" "${runtime_root}/current.new"
   mv -Tf "${runtime_root}/current.new" "${runtime_root}/current"
-  install -m 644 "${bundle_root}/cofco-risk-intelligence.service" "$unit_target"
+  install -m 644 "$unit_source" "$unit_target"
   systemctl daemon-reload
   if ! systemctl enable cofco-risk-intelligence.service || ! systemctl restart cofco-risk-intelligence.service; then
     rollback_service || fail "systemd activation failed and old service recovery failed"
@@ -220,9 +263,10 @@ main() {
   require_root
   for tool in openssl podman psql systemctl curl sha256sum ss; do command -v "$tool" >/dev/null || fail "$tool is required"; done
   for file in risk-intelligence-service.jar verify-risk-database-boundary.sh run-risk-migration.sh \
-    create-risk-runtime-roles.sql cofco-risk-intelligence.service SHA256SUMS LOCAL_ACCEPTANCE; do
+    create-risk-runtime-roles.sql SHA256SUMS LOCAL_ACCEPTANCE; do
     require_file "${bundle_root}/${file}"
   done
+  require_file "$unit_source"
   require_file "$migration_env"
   podman image exists "$image" || fail "required local Java image is unavailable: $image"
   (cd "$bundle_root" && sha256sum -c SHA256SUMS)
@@ -238,6 +282,7 @@ main() {
   chown -R 10001:10001 "$artifact_root"
   chmod 700 "$artifact_root" "${artifact_root}/models" "${artifact_root}/remote"
   write_runtime_env
+  configure_runtime_tls
   install_release
   migrate_database
   activate_service
