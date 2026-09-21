@@ -95,6 +95,13 @@ qiqihar:
     queue-stale-after: ${QIQIHAR_IMPORT_QUEUE_STALE_AFTER:15m}
   request-limits:
     json-body-bytes: ${QIQIHAR_JSON_BODY_MAX_BYTES:1048576}
+  map-imagery:
+    tile-url-template: ${QIQIHAR_MAP_IMAGERY_TILE_URL_TEMPLATE:}
+    api-key: ${QIQIHAR_MAP_IMAGERY_API_KEY:}
+    provider: ${QIQIHAR_MAP_IMAGERY_PROVIDER:Esri World Imagery fallback}
+    attribution: ${QIQIHAR_MAP_IMAGERY_ATTRIBUTION:Esri World Imagery}
+    period-lag-months: ${QIQIHAR_MAP_IMAGERY_PERIOD_LAG_MONTHS:1}
+    maximum-cache-bytes: ${QIQIHAR_MAP_IMAGERY_MAXIMUM_CACHE_BYTES:67108864}
 
 management:
   endpoints:
