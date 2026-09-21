@@ -1,9 +1,11 @@
 package com.cofco.qiqihar.graintrade.risk.application;
 
 import java.util.List;
+import org.springframework.context.annotation.Primary;
 import org.springframework.stereotype.Component;
 
 @Component
+@Primary
 public class CompositeRiskLiveScorer implements RiskLiveScorer {
     private final List<RiskLiveScorerBackend> backends;
 
