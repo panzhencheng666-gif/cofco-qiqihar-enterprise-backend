@@ -9,6 +9,14 @@ import org.springframework.stereotype.Repository;
 @Repository
 public class JdbcRegionalAgricultureBoundaryRepository implements RegionalAgricultureBoundaryRepository {
     private final JdbcClient jdbc;
+    private record AreaRevision(String value, boolean cacheable) {}
+    private record CachedArea(String revision, BigDecimal value) {}
+    private final java.util.Map<String,CachedArea> areas = java.util.Collections.synchronizedMap(
+            new java.util.LinkedHashMap<>(256,0.75f,true) {
+                @Override protected boolean removeEldestEntry(java.util.Map.Entry<String,CachedArea> eldest) {
+                    return size()>256;
+                }
+            });
 
     public JdbcRegionalAgricultureBoundaryRepository(JdbcClient jdbc) {
         this.jdbc = jdbc;
@@ -16,7 +24,28 @@ public class JdbcRegionalAgricultureBoundaryRepository implements RegionalAgricu
 
     @Override
     public Optional<BigDecimal> areaSquareMetres(String regionCode) {
-        return jdbc.sql("""
+        var revision=jdbc.sql(AREA_SCOPE + """
+                SELECT anchor.code||':'||anchor.version||':'||requested.administrative_level||':'||
+                       (SELECT count(*) FROM descendants WHERE administrative_level=requested.administrative_level) AS revision,
+                       pg_current_xact_id_if_assigned() IS NULL AS cacheable
+                FROM anchor CROSS JOIN requested
+                """).param("regionCode",regionCode)
+                .query((rs,row) -> new AreaRevision(rs.getString("revision"),rs.getBoolean("cacheable"))).optional();
+        if (revision.isEmpty()) return Optional.empty();
+        var current=revision.get();
+        var cached=areas.get(regionCode);
+        if(current.cacheable() && cached!=null && cached.revision().equals(current.value())) return Optional.of(cached.value());
+        var area=jdbc.sql(AREA_SCOPE + """
+                SELECT (ST_Area(anchor.geometry::geography)
+                        / GREATEST(1,(SELECT count(*) FROM descendants
+                                     WHERE administrative_level=(SELECT administrative_level FROM requested))))::numeric
+                FROM anchor
+                """).param("regionCode", regionCode).query(BigDecimal.class).optional();
+        if(current.cacheable()) area.ifPresent(value -> areas.put(regionCode,new CachedArea(current.value(),value)));
+        return area;
+    }
+
+    private static final String AREA_SCOPE = """
                 WITH RECURSIVE lineage AS (
                   SELECT code,parent_code,administrative_level,0 AS depth
                   FROM platform.region WHERE code=:regionCode
@@ -24,7 +53,7 @@ public class JdbcRegionalAgricultureBoundaryRepository implements RegionalAgricu
                   SELECT parent.code,parent.parent_code,parent.administrative_level,lineage.depth+1
                   FROM platform.region parent JOIN lineage ON parent.code=lineage.parent_code
                 ), anchor AS MATERIALIZED (
-                  SELECT lineage.code,lineage.depth,boundary.geometry
+                  SELECT lineage.code,lineage.depth,boundary.geometry,boundary.xmin::text AS version
                   FROM lineage JOIN overview.administrative_boundary boundary ON boundary.region_code=lineage.code
                   ORDER BY lineage.depth LIMIT 1
                 ), descendants(code,administrative_level) AS (
@@ -36,12 +65,7 @@ public class JdbcRegionalAgricultureBoundaryRepository implements RegionalAgricu
                 ), requested AS (
                   SELECT administrative_level FROM platform.region WHERE code=:regionCode
                 )
-                SELECT (ST_Area(anchor.geometry::geography)
-                        / GREATEST(1,(SELECT count(*) FROM descendants
-                                     WHERE administrative_level=(SELECT administrative_level FROM requested))))::numeric
-                FROM anchor
-                """).param("regionCode", regionCode).query(BigDecimal.class).optional();
-    }
+                """;
 
     @Override
     public Optional<Allocation> allocation(String regionCode, String parentCode) {
