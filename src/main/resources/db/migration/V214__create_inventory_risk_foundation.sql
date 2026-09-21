@@ -124,7 +124,8 @@ CREATE TABLE risk.inventory_movement (
         OR movement_type IN ('TRANSFER','COUNT_ADJUSTMENT','REVERSAL')),
     CHECK ((movement_type='REVERSAL') = (reversal_of_movement_id IS NOT NULL)),
     CHECK ((movement_type IN ('STOCK_IN','STOCK_OUT','COUNT_ADJUSTMENT') AND movement_leg='SINGLE')
-        OR movement_type IN ('TRANSFER','REVERSAL'))
+        OR movement_type IN ('TRANSFER','REVERSAL')),
+    CHECK (posted_at >= occurred_at)
 );
 
 CREATE INDEX inventory_movement_balance_rebuild_idx ON risk.inventory_movement(
@@ -248,6 +249,7 @@ CREATE TABLE risk.ai_model (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_by_subject varchar(160) NOT NULL,
     updated_at timestamptz NOT NULL DEFAULT now(),
+    UNIQUE (model_id,domain_code),
     CHECK (jsonb_typeof(purpose_definition)='object')
 );
 
@@ -292,7 +294,7 @@ CREATE TABLE risk.knowledge_snapshot (
 CREATE TABLE risk.training_snapshot (
     training_snapshot_id uuid PRIMARY KEY,
     domain_code varchar(30) NOT NULL
-        CHECK (domain_code IN ('INVENTORY','MARKET','SUPPLY','LOGISTICS','QUALITY','OPERATIONS','DATA_PIPELINE')),
+        CHECK (domain_code IN ('CROSS_DOMAIN','INVENTORY','MARKET','SUPPLY','LOGISTICS','QUALITY','OPERATIONS','DATA_PIPELINE')),
     snapshot_date date NOT NULL,
     cutoff_at timestamptz NOT NULL,
     knowledge_snapshot_id uuid REFERENCES risk.knowledge_snapshot(knowledge_snapshot_id),
@@ -318,7 +320,7 @@ CREATE TABLE risk.training_run (
     model_id uuid NOT NULL REFERENCES risk.ai_model(model_id),
     training_snapshot_id uuid NOT NULL,
     domain_code varchar(30) NOT NULL
-        CHECK (domain_code IN ('INVENTORY','MARKET','SUPPLY','LOGISTICS','QUALITY','OPERATIONS','DATA_PIPELINE')),
+        CHECK (domain_code IN ('CROSS_DOMAIN','INVENTORY','MARKET','SUPPLY','LOGISTICS','QUALITY','OPERATIONS','DATA_PIPELINE')),
     training_kind varchar(30) NOT NULL
         CHECK (training_kind IN ('RETRAIN','INCREMENTAL','LORA_ADAPTER','CALIBRATION','KNOWLEDGE_ONLY')),
     algorithm_code varchar(100) NOT NULL,
@@ -334,6 +336,7 @@ CREATE TABLE risk.training_run (
     failure_message text,
     created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (training_run_id,model_id,domain_code),
+    FOREIGN KEY (model_id,domain_code) REFERENCES risk.ai_model(model_id,domain_code),
     FOREIGN KEY (training_snapshot_id,domain_code)
         REFERENCES risk.training_snapshot(training_snapshot_id,domain_code),
     CHECK (code_sha256 ~ '^[0-9a-f]{64}$'),
@@ -351,7 +354,7 @@ CREATE TABLE risk.model_version (
     model_id uuid NOT NULL,
     version integer NOT NULL CHECK (version > 0),
     domain_code varchar(30) NOT NULL
-        CHECK (domain_code IN ('INVENTORY','MARKET','SUPPLY','LOGISTICS','QUALITY','OPERATIONS','DATA_PIPELINE')),
+        CHECK (domain_code IN ('CROSS_DOMAIN','INVENTORY','MARKET','SUPPLY','LOGISTICS','QUALITY','OPERATIONS','DATA_PIPELINE')),
     training_run_id uuid NOT NULL,
     status_code varchar(20) NOT NULL DEFAULT 'CANDIDATE'
         CHECK (status_code IN ('CANDIDATE','SHADOW','APPROVED','ACTIVE','REJECTED','RETIRED')),
@@ -368,7 +371,7 @@ CREATE TABLE risk.model_version (
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (model_id,version),
     UNIQUE (model_id,version,domain_code),
-    FOREIGN KEY (model_id) REFERENCES risk.ai_model(model_id),
+    FOREIGN KEY (model_id,domain_code) REFERENCES risk.ai_model(model_id,domain_code),
     FOREIGN KEY (training_run_id,model_id,domain_code)
         REFERENCES risk.training_run(training_run_id,model_id,domain_code),
     CHECK (artifact_sha256 ~ '^[0-9a-f]{64}$'),
@@ -376,9 +379,10 @@ CREATE TABLE risk.model_version (
     CHECK (jsonb_typeof(threshold_definition)='object'),
     CHECK (shadow_completed_at IS NULL OR shadow_started_at IS NOT NULL),
     CHECK (shadow_completed_at IS NULL OR shadow_completed_at >= shadow_started_at),
-    CHECK ((status_code IN ('APPROVED','ACTIVE','RETIRED'))
-        = (approved_by_subject IS NOT NULL AND approved_at IS NOT NULL)),
-    CHECK ((status_code='ACTIVE') = (activated_at IS NOT NULL)),
+    CHECK ((approved_by_subject IS NULL) = (approved_at IS NULL)),
+    CHECK (status_code NOT IN ('APPROVED','ACTIVE','RETIRED') OR approved_at IS NOT NULL),
+    CHECK (status_code NOT IN ('CANDIDATE','SHADOW') OR approved_at IS NULL),
+    CHECK ((status_code IN ('ACTIVE','RETIRED')) = (activated_at IS NOT NULL)),
     CHECK ((status_code='RETIRED') = (retired_at IS NOT NULL))
 );
 
@@ -397,14 +401,15 @@ CREATE TABLE risk.model_evaluation (
     PRIMARY KEY (model_id,model_version,evaluation_window_start,evaluation_window_end),
     FOREIGN KEY (model_id,model_version) REFERENCES risk.model_version(model_id,version),
     CHECK (evaluation_window_end > evaluation_window_start),
+    CHECK (evaluated_at >= evaluation_window_end),
     CHECK (jsonb_typeof(cohort_definition)='object'),
     CHECK (jsonb_typeof(metric_definition)='object')
 );
 
 ALTER TABLE risk.risk_assessment
     ADD CONSTRAINT risk_assessment_model_version_fk
-    FOREIGN KEY (model_id,model_version,domain_code)
-    REFERENCES risk.model_version(model_id,version,domain_code);
+    FOREIGN KEY (model_id,model_version)
+    REFERENCES risk.model_version(model_id,version);
 
 CREATE TABLE risk.ai_judgement (
     judgement_id uuid PRIMARY KEY,
@@ -475,6 +480,10 @@ BEGIN
         WHERE movement_id=NEW.reversal_of_movement_id;
         IF original_movement.movement_type='REVERSAL' THEN
             RAISE EXCEPTION 'A reversal cannot reverse another reversal';
+        END IF;
+        IF NEW.occurred_at<=original_movement.occurred_at
+           OR NEW.posted_at<=original_movement.posted_at THEN
+            RAISE EXCEPTION 'REVERSAL must occur and post after the referenced movement';
         END IF;
         IF NEW.movement_leg<>original_movement.movement_leg
            OR NEW.quantity_delta_tonnes<>-original_movement.quantity_delta_tonnes
@@ -601,6 +610,29 @@ CREATE TRIGGER inventory_source_event_evidence_immutable
 BEFORE UPDATE ON risk.inventory_source_event
 FOR EACH ROW EXECUTE FUNCTION risk.protect_inventory_source_event_evidence();
 
+CREATE FUNCTION risk.validate_model_evaluation()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    version_status varchar(20);
+    shadow_started timestamptz;
+BEGIN
+    SELECT status_code,shadow_started_at INTO STRICT version_status,shadow_started
+    FROM risk.model_version
+    WHERE model_id=NEW.model_id AND version=NEW.model_version;
+    IF version_status<>'SHADOW' OR shadow_started IS NULL THEN
+        RAISE EXCEPTION 'Model evaluations can only be recorded during SHADOW';
+    END IF;
+    IF NEW.evaluation_window_start<shadow_started THEN
+        RAISE EXCEPTION 'Model evaluation window must start within the shadow period';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER model_evaluation_shadow_only
+BEFORE INSERT ON risk.model_evaluation
+FOR EACH ROW EXECUTE FUNCTION risk.validate_model_evaluation();
+
 CREATE FUNCTION risk.enforce_rule_set_version_transition()
 RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -648,10 +680,28 @@ FOR EACH ROW EXECUTE FUNCTION risk.enforce_rule_set_version_transition();
 
 CREATE FUNCTION risk.enforce_training_run_transition()
 RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    snapshot_status varchar(20);
+    knowledge_status varchar(20);
+    model_status varchar(20);
 BEGIN
     IF TG_OP='INSERT' THEN
         IF NEW.status_code<>'QUEUED' THEN
             RAISE EXCEPTION 'Training runs must be created as QUEUED';
+        END IF;
+        SELECT snapshot.status_code,knowledge.status_code,model.status_code
+        INTO STRICT snapshot_status,knowledge_status,model_status
+        FROM risk.training_snapshot snapshot
+        JOIN risk.ai_model model
+          ON model.model_id=NEW.model_id AND model.domain_code=NEW.domain_code
+        LEFT JOIN risk.knowledge_snapshot knowledge
+          ON knowledge.knowledge_snapshot_id=snapshot.knowledge_snapshot_id
+        WHERE snapshot.training_snapshot_id=NEW.training_snapshot_id
+          AND snapshot.domain_code=NEW.domain_code;
+        IF snapshot_status='REJECTED'
+           OR knowledge_status IN ('REJECTED','RETIRED')
+           OR model_status<>'ACTIVE' THEN
+            RAISE EXCEPTION 'Training requires an active model and accepted frozen snapshots';
         END IF;
         RETURN NEW;
     END IF;
@@ -704,6 +754,11 @@ BEGIN
         IF NEW.status_code<>'CANDIDATE' THEN
             RAISE EXCEPTION 'Model versions must be created as CANDIDATE';
         END IF;
+        IF NEW.shadow_started_at IS NOT NULL OR NEW.shadow_completed_at IS NOT NULL
+           OR NEW.approved_at IS NOT NULL OR NEW.activated_at IS NOT NULL
+           OR NEW.retired_at IS NOT NULL THEN
+            RAISE EXCEPTION 'Model candidates cannot prefill lifecycle evidence';
+        END IF;
         SELECT status_code INTO STRICT training_status
         FROM risk.training_run
         WHERE training_run_id=NEW.training_run_id
@@ -724,6 +779,17 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'Model identity, lineage and artifacts are immutable';
     END IF;
+    IF (OLD.shadow_started_at IS NOT NULL
+            AND OLD.shadow_started_at IS DISTINCT FROM NEW.shadow_started_at)
+       OR (OLD.shadow_completed_at IS NOT NULL
+            AND OLD.shadow_completed_at IS DISTINCT FROM NEW.shadow_completed_at)
+       OR (OLD.approved_by_subject IS NOT NULL
+            AND OLD.approved_by_subject IS DISTINCT FROM NEW.approved_by_subject)
+       OR (OLD.approved_at IS NOT NULL AND OLD.approved_at IS DISTINCT FROM NEW.approved_at)
+       OR (OLD.activated_at IS NOT NULL AND OLD.activated_at IS DISTINCT FROM NEW.activated_at)
+       OR (OLD.retired_at IS NOT NULL AND OLD.retired_at IS DISTINCT FROM NEW.retired_at) THEN
+        RAISE EXCEPTION 'Recorded model lifecycle evidence is immutable';
+    END IF;
     IF OLD.status_code = NEW.status_code THEN
         IF ROW(
             OLD.shadow_started_at,OLD.shadow_completed_at,OLD.approved_by_subject,
@@ -739,6 +805,9 @@ BEGIN
     IF OLD.status_code='CANDIDATE' AND NEW.status_code NOT IN ('SHADOW','REJECTED') THEN
         RAISE EXCEPTION 'CANDIDATE models must enter SHADOW before approval';
     END IF;
+    IF NEW.status_code='SHADOW' AND NEW.shadow_started_at IS NULL THEN
+        RAISE EXCEPTION 'SHADOW models require shadow_started_at';
+    END IF;
     IF OLD.status_code='SHADOW' AND NEW.status_code NOT IN ('APPROVED','REJECTED') THEN
         RAISE EXCEPTION 'SHADOW models must be approved or rejected';
     END IF;
@@ -751,17 +820,25 @@ BEGIN
         WHERE evaluation.model_id=NEW.model_id
           AND evaluation.model_version=NEW.version
           AND evaluation.passed
+          AND evaluation.evaluation_window_start>=NEW.shadow_started_at
+          AND evaluation.evaluation_window_end<=NEW.shadow_completed_at
     ) THEN
         RAISE EXCEPTION 'Model approval requires a passed recorded evaluation';
     END IF;
     IF NEW.status_code='ACTIVE' AND OLD.status_code<>'APPROVED' THEN
         RAISE EXCEPTION 'Only APPROVED models can become ACTIVE';
     END IF;
+    IF NEW.status_code='ACTIVE' AND NEW.activated_at IS NULL THEN
+        RAISE EXCEPTION 'ACTIVE models require activated_at';
+    END IF;
     IF OLD.status_code='APPROVED' AND NEW.status_code NOT IN ('ACTIVE','REJECTED') THEN
         RAISE EXCEPTION 'APPROVED models must be activated or rejected';
     END IF;
     IF OLD.status_code='ACTIVE' AND NEW.status_code<>'RETIRED' THEN
         RAISE EXCEPTION 'ACTIVE models can only be retired';
+    END IF;
+    IF NEW.status_code='RETIRED' AND NEW.retired_at IS NULL THEN
+        RAISE EXCEPTION 'RETIRED models require retired_at';
     END IF;
     IF OLD.status_code IN ('REJECTED','RETIRED') THEN
         RAISE EXCEPTION 'Terminal model versions cannot transition';

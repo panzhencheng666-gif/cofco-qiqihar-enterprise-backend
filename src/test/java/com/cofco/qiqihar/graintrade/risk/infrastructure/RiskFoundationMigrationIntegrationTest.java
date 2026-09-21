@@ -101,10 +101,10 @@ class RiskFoundationMigrationIntegrationTest {
         execute("""
                 INSERT INTO risk.ai_model(
                   model_id,model_code,model_name,model_kind,domain_code,base_model_reference,
-                  purpose_definition,created_by_subject,updated_by_subject)
+                  purpose_definition,status_code,created_by_subject,updated_by_subject)
                 VALUES('21400000-0000-0000-0000-000000000010','RISK_AI_CORE',
                   '粮食风险独立研判模型','DOMAIN_LLM','CROSS_DOMAIN','Qwen-compatible-base',
-                  '{"purpose":"evidence-bound risk judgement"}'::jsonb,'risk-test','risk-test')
+                  '{"purpose":"evidence-bound risk judgement"}'::jsonb,'ACTIVE','risk-test','risk-test')
                 """);
         assertThatThrownBy(() -> execute("""
                 INSERT INTO risk.ai_training_policy(
@@ -153,13 +153,16 @@ class RiskFoundationMigrationIntegrationTest {
                 .hasMessageContaining("CANDIDATE models must enter SHADOW before approval");
 
         execute("""
-                UPDATE risk.model_version SET status_code='SHADOW',shadow_started_at=now()
+                UPDATE risk.model_version SET status_code='SHADOW',
+                  shadow_started_at=TIMESTAMPTZ '2026-09-21 02:00:00+00'
                 WHERE model_id='21400000-0000-0000-0000-000000000010' AND version=1
                 """);
         assertThatThrownBy(() -> execute("""
                 UPDATE risk.model_version
-                SET status_code='APPROVED',shadow_completed_at=now(),
-                    approved_by_subject='risk-approver',approved_at=now()
+                SET status_code='APPROVED',
+                    shadow_completed_at=TIMESTAMPTZ '2026-09-21 03:00:00+00',
+                    approved_by_subject='risk-approver',
+                    approved_at=TIMESTAMPTZ '2026-09-21 03:05:00+00'
                 WHERE model_id='21400000-0000-0000-0000-000000000010' AND version=1
                 """))
                 .isInstanceOf(SQLException.class)
@@ -169,24 +172,33 @@ class RiskFoundationMigrationIntegrationTest {
                   model_id,model_version,evaluation_window_start,evaluation_window_end,
                   cohort_definition,metric_definition,passed,evaluated_at)
                 VALUES('21400000-0000-0000-0000-000000000010',1,
-                  TIMESTAMPTZ '2026-09-20 00:00:00+00',TIMESTAMPTZ '2026-09-21 00:00:00+00',
-                  '{"mode":"shadow"}'::jsonb,'{"false_positive_rate":0.02}'::jsonb,true,now())
+                  TIMESTAMPTZ '2026-09-21 02:00:00+00',TIMESTAMPTZ '2026-09-21 03:00:00+00',
+                  '{"mode":"shadow"}'::jsonb,'{"false_positive_rate":0.02}'::jsonb,true,
+                  TIMESTAMPTZ '2026-09-21 03:01:00+00')
                 """);
         execute("""
                 UPDATE risk.model_version
-                SET status_code='APPROVED',shadow_completed_at=now(),
-                    approved_by_subject='risk-approver',approved_at=now()
+                SET status_code='APPROVED',
+                    shadow_completed_at=TIMESTAMPTZ '2026-09-21 03:00:00+00',
+                    approved_by_subject='risk-approver',
+                    approved_at=TIMESTAMPTZ '2026-09-21 03:05:00+00'
                 WHERE model_id='21400000-0000-0000-0000-000000000010' AND version=1
                 """);
         execute("""
-                UPDATE risk.model_version SET status_code='ACTIVE',activated_at=now()
+                UPDATE risk.model_version SET status_code='ACTIVE',
+                  activated_at=TIMESTAMPTZ '2026-09-21 03:10:00+00'
+                WHERE model_id='21400000-0000-0000-0000-000000000010' AND version=1
+                """);
+        execute("""
+                UPDATE risk.model_version SET status_code='RETIRED',
+                  retired_at=TIMESTAMPTZ '2026-09-21 04:00:00+00'
                 WHERE model_id='21400000-0000-0000-0000-000000000010' AND version=1
                 """);
 
         assertThat(queryString("""
-                SELECT status_code FROM risk.model_version
+                SELECT status_code || ':' || (activated_at IS NOT NULL) FROM risk.model_version
                 WHERE model_id='21400000-0000-0000-0000-000000000010' AND version=1
-                """)).isEqualTo("ACTIVE");
+                """)).isEqualTo("RETIRED:true");
 
         execute("""
                 INSERT INTO risk.risk_rule_set_version(
@@ -241,9 +253,9 @@ class RiskFoundationMigrationIntegrationTest {
                 VALUES('%s','RISK_TEST_WMS','%s',%d,
                   'REVERSAL','RISK_TEST_DEPOT','WH-1','COFCO','BATCH-1','CORN','GRADE-2',2026,
                   %s,'KILOGRAM',%s,'KG_TO_TON_V1',
-                  TIMESTAMPTZ '2026-09-21 01:00:00+00',TIMESTAMPTZ '2026-09-21 01:05:00+00',
+                  TIMESTAMPTZ '2026-09-21 01:10:00+00',TIMESTAMPTZ '2026-09-21 01:11:00+00',
                   'Asia/Shanghai',repeat('b',64),'VERIFIED','POSTED',
-                  TIMESTAMPTZ '2026-09-21 01:05:00+00')
+                  TIMESTAMPTZ '2026-09-21 01:11:00+00')
                 """.formatted(
                 sourceEventId, externalEventId, sourceSequence, originalKilograms, standardTonnes);
     }
@@ -257,7 +269,7 @@ class RiskFoundationMigrationIntegrationTest {
                   quantity_delta_tonnes,reversal_of_movement_id,occurred_at,posted_at,posted_by_subject)
                 VALUES('%s','%s','SINGLE','REVERSAL','RISK_TEST_DEPOT','WH-1','COFCO','BATCH-1',
                   'CORN','GRADE-2',2026,%s,'21400000-0000-0000-0000-000000000002',
-                  TIMESTAMPTZ '2026-09-21 01:00:00+00',TIMESTAMPTZ '2026-09-21 01:05:00+00','risk-test')
+                  TIMESTAMPTZ '2026-09-21 01:10:00+00',TIMESTAMPTZ '2026-09-21 01:11:00+00','risk-test')
                 """.formatted(movementId, sourceEventId, quantityDeltaTonnes);
     }
 
@@ -275,7 +287,7 @@ class RiskFoundationMigrationIntegrationTest {
                   training_snapshot_id,domain_code,snapshot_date,cutoff_at,knowledge_snapshot_id,
                   data_sha256,feature_schema_version,row_count,positive_label_count,
                   negative_label_count,source_watermarks,status_code)
-                VALUES('21400000-0000-0000-0000-000000000013','INVENTORY',DATE '2026-09-21',
+                VALUES('21400000-0000-0000-0000-000000000013','CROSS_DOMAIN',DATE '2026-09-21',
                   TIMESTAMPTZ '2026-09-21 00:00:00+00',
                   '21400000-0000-0000-0000-000000000012',repeat('c',64),'inventory-v1',100,10,90,
                   '{"RISK_TEST_WMS":1}'::jsonb,'FROZEN')
@@ -287,7 +299,7 @@ class RiskFoundationMigrationIntegrationTest {
                   started_at,completed_at)
                 VALUES('21400000-0000-0000-0000-000000000014',
                   '21400000-0000-0000-0000-000000000010',
-                  '21400000-0000-0000-0000-000000000013','INVENTORY','LORA_ADAPTER',
+                  '21400000-0000-0000-0000-000000000013','CROSS_DOMAIN','LORA_ADAPTER',
                   'RISK_AI_TRAINER','1',repeat('d',64),'{}'::jsonb,214,'QUEUED',NULL,NULL)
                 """);
         execute("""
@@ -302,7 +314,7 @@ class RiskFoundationMigrationIntegrationTest {
                 INSERT INTO risk.model_version(
                   model_id,version,domain_code,training_run_id,artifact_reference,artifact_sha256,
                   metric_definition,threshold_definition)
-                VALUES('21400000-0000-0000-0000-000000000010',1,'INVENTORY',
+                VALUES('21400000-0000-0000-0000-000000000010',1,'CROSS_DOMAIN',
                   '21400000-0000-0000-0000-000000000014','mlflow://risk-ai/1',repeat('e',64),
                   '{"false_positive_rate":0.02}'::jsonb,'{"minimum_confidence":0.8}'::jsonb)
                 """);
