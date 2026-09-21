@@ -439,6 +439,7 @@ RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
     version_domain varchar(30);
     version_status varchar(20);
+    model_status varchar(20);
     rule_status varchar(20);
 BEGIN
     IF NEW.model_id IS NULL THEN
@@ -460,9 +461,11 @@ BEGIN
     IF NEW.evaluation_mode='RULE' THEN
         RAISE EXCEPTION 'RULE assessments cannot claim a model version';
     END IF;
-    SELECT domain_code,status_code INTO STRICT version_domain,version_status
-    FROM risk.model_version
-    WHERE model_id=NEW.model_id AND version=NEW.model_version;
+    SELECT version.domain_code,version.status_code,model.status_code
+    INTO STRICT version_domain,version_status,model_status
+    FROM risk.model_version version
+    JOIN risk.ai_model model ON model.model_id=version.model_id
+    WHERE version.model_id=NEW.model_id AND version.version=NEW.model_version;
     IF version_domain<>NEW.domain_code AND version_domain<>'CROSS_DOMAIN' THEN
         RAISE EXCEPTION 'Assessment domain must match the model domain or use CROSS_DOMAIN';
     END IF;
@@ -472,6 +475,9 @@ BEGIN
     IF NEW.evaluation_mode IN ('MODEL_GOVERNED','AI_ASSISTED')
        AND version_status<>'ACTIVE' THEN
         RAISE EXCEPTION 'Governed model assessments require an ACTIVE model version';
+    END IF;
+    IF model_status<>'ACTIVE' THEN
+        RAISE EXCEPTION 'Model-backed assessments require an ACTIVE AI model identity';
     END IF;
     RETURN NEW;
 END
@@ -697,11 +703,17 @@ CREATE FUNCTION risk.validate_model_evaluation()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
     version_status varchar(20);
+    model_status varchar(20);
     shadow_started timestamptz;
 BEGIN
-    SELECT status_code,shadow_started_at INTO STRICT version_status,shadow_started
-    FROM risk.model_version
-    WHERE model_id=NEW.model_id AND version=NEW.model_version;
+    SELECT version.status_code,version.shadow_started_at,model.status_code
+    INTO STRICT version_status,shadow_started,model_status
+    FROM risk.model_version version
+    JOIN risk.ai_model model ON model.model_id=version.model_id
+    WHERE version.model_id=NEW.model_id AND version.version=NEW.model_version;
+    IF model_status<>'ACTIVE' THEN
+        RAISE EXCEPTION 'Model evaluations require an ACTIVE AI model identity';
+    END IF;
     IF version_status<>'SHADOW' OR shadow_started IS NULL THEN
         RAISE EXCEPTION 'Model evaluations can only be recorded during SHADOW';
     END IF;
@@ -847,7 +859,15 @@ CREATE FUNCTION risk.enforce_model_version_transition()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
     training_status varchar(30);
+    model_status varchar(20);
 BEGIN
+    SELECT status_code INTO STRICT model_status
+    FROM risk.ai_model WHERE model_id=NEW.model_id;
+    IF model_status<>'ACTIVE' AND (
+        TG_OP='INSERT' OR NEW.status_code IN ('SHADOW','APPROVED','ACTIVE')
+    ) THEN
+        RAISE EXCEPTION 'Model version creation and promotion require an ACTIVE AI model identity';
+    END IF;
     IF TG_OP='INSERT' THEN
         IF NEW.status_code<>'CANDIDATE' THEN
             RAISE EXCEPTION 'Model versions must be created as CANDIDATE';

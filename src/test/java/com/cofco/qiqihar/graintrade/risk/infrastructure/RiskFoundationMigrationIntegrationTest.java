@@ -216,6 +216,21 @@ class RiskFoundationMigrationIntegrationTest {
                   TIMESTAMPTZ '2026-09-21 03:20:00+00',25)
                 """);
         execute("""
+                UPDATE risk.ai_model SET status_code='SUSPENDED',updated_at=now()
+                WHERE model_id='21400000-0000-0000-0000-000000000010'
+                """);
+        assertThatThrownBy(() -> execute("""
+                INSERT INTO risk.risk_assessment(
+                  assessment_id,domain_code,subject_type,subject_id,model_id,model_version,
+                  evaluation_mode,risk_level,reason_codes,evidence_snapshot,
+                  evaluated_at,evaluation_duration_ms)
+                VALUES('21400000-0000-0000-0000-000000000023','INVENTORY','WAREHOUSE','WH-1',
+                  '21400000-0000-0000-0000-000000000010',1,'AI_ASSISTED','LOW',
+                  ARRAY['SUSPENDED_MODEL_TEST'],'{}'::jsonb,now(),1)
+                """))
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("Model-backed assessments require an ACTIVE AI model identity");
+        execute("""
                 UPDATE risk.model_version SET status_code='RETIRED',
                   retired_at=TIMESTAMPTZ '2026-09-21 04:00:00+00'
                 WHERE model_id='21400000-0000-0000-0000-000000000010' AND version=1

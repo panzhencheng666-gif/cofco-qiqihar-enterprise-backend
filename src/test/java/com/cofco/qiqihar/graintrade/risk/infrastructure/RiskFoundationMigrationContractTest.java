@@ -108,6 +108,8 @@ class RiskFoundationMigrationContractTest {
                 .contains("CHECK (advisory_only)")
                 .contains("CREATE FUNCTION risk.enforce_ai_model_transition()")
                 .contains("Active AI model identity and purpose are immutable")
+                .contains("Model version creation and promotion require an ACTIVE AI model identity")
+                .contains("Model-backed assessments require an ACTIVE AI model identity")
                 .contains("CREATE FUNCTION risk.validate_risk_assessment_model_scope()")
                 .contains("RULE assessments require a rule set version")
                 .contains("Assessment domain must match the model domain or use CROSS_DOMAIN")
