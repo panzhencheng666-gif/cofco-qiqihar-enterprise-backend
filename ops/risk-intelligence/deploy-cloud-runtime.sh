@@ -6,7 +6,7 @@ runtime_root=/var/lib/cofco/risk-intelligence
 releases_root="${runtime_root}/releases"
 secrets_root="${runtime_root}/secrets"
 artifact_root="${runtime_root}/model-artifacts"
-tls_root="${runtime_root}/rds-tls"
+runtime_run_root="${runtime_root}/runtime-run"
 runtime_env="${secrets_root}/runtime.env"
 migration_env=/var/lib/cofco/checkpoints/regional-controlled-20260915-1419/migration.env
 unit_target=/etc/systemd/system/cofco-risk-intelligence.service
@@ -94,13 +94,14 @@ write_runtime_env() {
 }
 
 configure_runtime_tls() {
-  local migration_url query parameter parameter_key encoded_path decoded_path host_path runtime_url separator
+  local migration_url query parameter parameter_key encoded_path decoded_path host_path staged_path
+  local runtime_url separator
   migration_url="$(read_named_env "$migration_env" MIGRATION_URL)"
   runtime_url=${migration_url%%\?*}
-  mkdir -p "$tls_root"
-  chown 10001:10001 "$tls_root"
-  chmod 700 "$tls_root"
-  find "$tls_root" -mindepth 1 -maxdepth 1 -type f -delete
+  mkdir -p "$runtime_run_root"
+  chown 10001:10001 "$runtime_run_root"
+  chmod 700 "$runtime_run_root"
+  find "$runtime_run_root" -type f -delete
   if [[ "$migration_url" == *\?* ]]; then
     query=${migration_url#*\?}
     separator='?'
@@ -113,9 +114,13 @@ configure_runtime_tls() {
           decoded_path=${encoded_path//+/ }
           printf -v decoded_path '%b' "${decoded_path//%/\\x}"
           [[ "$decoded_path" == /* ]] || fail "$parameter_key must use an absolute path"
+          [[ "$decoded_path" == /run/* ]] || fail "$parameter_key must resolve beneath /run"
           host_path="$(resolve_tls_host_path "$decoded_path")"
-          install -o 10001 -g 10001 -m 400 "$host_path" "${tls_root}/${parameter_key}"
-          parameter="${parameter_key}=/run/risk-rds/${parameter_key}"
+          staged_path="${runtime_run_root}/${decoded_path#/run/}"
+          mkdir -p "$(dirname "$staged_path")"
+          chown -R 10001:10001 "$runtime_run_root"
+          chmod 700 "$(dirname "$staged_path")"
+          install -o 10001 -g 10001 -m 400 "$host_path" "$staged_path"
           ;;
       esac
       runtime_url+="${separator}${parameter}"
@@ -149,7 +154,7 @@ install_release() {
 
 migrate_database() {
   local migration_url migration_user migration_password expected_database runtime_password migration_secret
-  local query parameter parameter_key encoded_path decoded_path host_path
+  local query parameter parameter_key encoded_path decoded_path staged_path has_tls=false
   local -a migration_tls_mount_args=()
   migration_url="$(read_named_env "$migration_env" MIGRATION_URL)"
   migration_user="$(read_named_env "$migration_env" MIGRATION_USER)"
@@ -167,11 +172,16 @@ migrate_database() {
           decoded_path=${encoded_path//+/ }
           printf -v decoded_path '%b' "${decoded_path//%/\\x}"
           [[ "$decoded_path" == /* ]] || fail "$parameter_key must use an absolute path"
-          host_path="$(resolve_tls_host_path "$decoded_path")"
-          migration_tls_mount_args+=(--volume "${host_path}:${decoded_path}:ro")
+          [[ "$decoded_path" == /run/* ]] || fail "$parameter_key must resolve beneath /run"
+          staged_path="${runtime_run_root}/${decoded_path#/run/}"
+          [[ -f "$staged_path" ]] || fail "$parameter_key staged file is missing: $staged_path"
+          has_tls=true
           ;;
       esac
     done
+  fi
+  if [[ "$has_tls" == true ]]; then
+    migration_tls_mount_args+=(--volume "${runtime_run_root}:/run:ro")
   fi
   migration_secret="$(mktemp /run/risk-migration.XXXXXX)"
   chmod 600 "$migration_secret"
@@ -190,8 +200,7 @@ migrate_database() {
     --command="SELECT current_setting('max_connections')::int-count(*) FROM pg_stat_activity")"
   [[ "$connection_headroom" -ge 10 ]] || { rm -f "$migration_secret"; fail "RDS has fewer than 10 free connections"; }
   if ! podman run --rm --network host --memory=384m --cpus=0.75 --pids-limit=256 \
-      --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
-      --tmpfs /run:rw,noexec,nosuid,size=4m --env-file "$migration_secret" \
+      --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m --env-file "$migration_secret" \
       "${migration_tls_mount_args[@]}" \
       -v "${release_dir}:/release:ro" --entrypoint java "$image" \
       -Dloader.main=com.cofco.qiqihar.riskintelligence.operations.RiskMigrationRunner \
