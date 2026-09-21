@@ -40,6 +40,16 @@ server:
         same-site: strict
 
 qiqihar:
+  risk:
+    training:
+      enabled: ${QIQIHAR_RISK_TRAINING_ENABLED:true}
+      artifact-root: ${QIQIHAR_RISK_MODEL_ARTIFACT_ROOT:}
+      poll-delay: ${QIQIHAR_RISK_TRAINING_POLL_DELAY:10s}
+      schedule-reconcile-delay: ${QIQIHAR_RISK_TRAINING_SCHEDULE_RECONCILE_DELAY:1m}
+      llm:
+        endpoint: ${QIQIHAR_RISK_LLM_TRAINER_URL:}
+        bearer-token: ${QIQIHAR_RISK_LLM_TRAINER_TOKEN:}
+        base-model-reference: ${QIQIHAR_RISK_LLM_BASE_MODEL:}
   identity:
     invitation-encryption-key: ${QIQIHAR_IDENTITY_INVITATION_ENCRYPTION_KEY:}
     public-self-registration-enabled: ${QIQIHAR_IDENTITY_PUBLIC_SELF_REGISTRATION_ENABLED:false}

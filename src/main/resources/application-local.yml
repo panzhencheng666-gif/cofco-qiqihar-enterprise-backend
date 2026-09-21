@@ -9,6 +9,9 @@ server:
 # The local browser demo has no SSO adapter. Keep production's authenticated
 # read default intact and opt out only when the explicit local profile is used.
 qiqihar:
+  risk:
+    training:
+      artifact-root: ${QIQIHAR_RISK_MODEL_ARTIFACT_ROOT:./var/risk-models}
   security:
     require-read-authentication: false
     trusted-subject-header: X-Actor

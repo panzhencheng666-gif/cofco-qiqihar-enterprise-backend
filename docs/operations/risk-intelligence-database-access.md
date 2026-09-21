@@ -1,0 +1,83 @@
+# 风险研判数据库访问边界
+
+风险研判服务与现有系统共用 PostgreSQL 实例和数据库，但只允许写入 `risk` schema。现有 Flyway 历史仍是共享数据库的唯一迁移权威；独立风险服务关闭 Flyway，不能自行执行全库迁移。
+
+## 角色
+
+- `qiqihar_risk_runtime`：无登录能力的权限组，只持有 `risk` schema 的运行权限。
+- `qiqihar_risk_runtime_login`：风险服务的独立登录账号，继承运行权限，连接数上限为 6。
+- 迁移账号：继续使用现有受控迁移账号。V217 之后的风险迁移必须通过契约测试证明不改变现有业务 schema。
+
+风险账号没有现有业务表的写权限。后续确需读取业务事实时，只对明确的只读投影视图授予 `SELECT`，不授予业务 schema 的通用 `USAGE` 或表级写权限。
+
+## 本地配置
+
+密码只能通过环境变量提供，不得提交到 Git：
+
+```bash
+export RISK_DB_ADMIN_URL='jdbc:postgresql://127.0.0.1:65432/qiqihar_enterprise_test'
+export RISK_DB_ADMIN_USERNAME='qiqihar_test'
+export RISK_DB_ADMIN_PASSWORD='<isolated-test-admin-password>'
+export RISK_DB_RUNTIME_PASSWORD='<generated-risk-runtime-password>'
+export RISK_EXPECTED_DATABASE='qiqihar_enterprise_test'
+./scripts/configure-risk-database-access.sh
+```
+
+配置完成后以风险账号执行权限核验：
+
+```bash
+export RISK_DB_URL="$RISK_DB_ADMIN_URL"
+export RISK_DB_USERNAME='qiqihar_risk_runtime_login'
+export RISK_DB_PASSWORD="$RISK_DB_RUNTIME_PASSWORD"
+./scripts/verify-risk-database-boundary.sh
+```
+
+成功输出必须为 `RISK_DATABASE_BOUNDARY_OK`。脚本一旦发现风险账号能写入非 `risk` 表、能在非 `risk` schema 创建对象，或连接了错误数据库，就会非零退出并打印实际对象。
+
+## 本地常驻服务
+
+先完成角色配置与边界核验，再以风险运行账号安装独立 LaunchAgent。安装口令和本地接入口令只写入权限为 `600` 的
+`~/.config/cofco-qiqihar-risk-intelligence/local-runtime.env`，不会复制进 Git 工作树或 JAR：
+
+```bash
+export RISK_DB_URL='jdbc:postgresql://127.0.0.1:65432/qiqihar_enterprise_test'
+export RISK_DB_USERNAME='qiqihar_risk_runtime_login'
+export RISK_DB_PASSWORD='<generated-risk-runtime-password>'
+export RISK_EXPECTED_DATABASE='qiqihar_enterprise_test'
+export RISK_INGESTION_KEY='<generated-local-ingestion-key>'
+export RISK_LLM_BEARER_TOKEN='<generated-local-trainer-token>'
+export RISK_LLM_BASE_MODEL='mlx-community/Qwen3-0.6B-4bit'
+./scripts/risk-intelligence-local.sh install
+./scripts/risk-intelligence-local.sh status
+./scripts/healthcheck-risk-intelligence-local.sh
+```
+
+Java 服务仅监听 `127.0.0.1:63184`，受监管的 MLX LoRA 训练/评分服务仅监听
+`127.0.0.1:63201`。两者由同一 LaunchAgent 管理，任一退出都会重启完整服务对；模型工件写入
+`~/Library/Application Support/COFCO Qiqihar Risk Intelligence/model-artifacts`，不进入数据库。
+`POST /api/v1/risk-intelligence/source-facts` 还要求请求头
+`X-Risk-Ingestion-Key`；缺失或错误时不会写入。升级会创建新的只读发布快照并原子切换 `current`
+软链接，未知的运行目录或未归属的端口监听会被拒绝接管。
+
+完成独立服务切换后，必须关闭旧企业后端中的风险训练 worker，避免两个进程同时调度：
+
+```bash
+./scripts/disable-legacy-risk-training-worker.sh
+```
+
+该操作只写入本地运行配置 `QIQIHAR_RISK_TRAINING_ENABLED=false`；不会关闭旧后端的任何非风险功能。
+
+常用生命周期命令：
+
+```bash
+./scripts/risk-intelligence-local.sh restart
+./scripts/risk-intelligence-local.sh stop
+./scripts/risk-intelligence-local.sh start
+./scripts/risk-intelligence-local.sh uninstall
+```
+
+卸载只移除 LaunchAgent，数据库、运行快照和密钥配置会保留，避免误删数据。
+
+## 云端约束
+
+云端执行相同 SQL 和核验脚本，但管理员连接只在配置时短暂提供。风险运行密码进入服务器密钥存储，不写入部署包。RDS 连接池上限、语句超时、锁等待超时和空闲事务超时不得放宽，除非重新完成现有业务负载门禁。

@@ -21,7 +21,7 @@ class LegacyVillageDesignCoordinateCleanupMigrationIntegrationTest {
     private static final String OPERATION = "legacy-village-coordinate-cleanup-test";
     private static final String[] BUSINESS_SCHEMAS = {
         "platform", "production", "market", "logistics", "supply", "reporting",
-        "workflow", "overview", "evidence", "registry"
+        "workflow", "overview", "evidence", "registry", "risk"
     };
 
     @BeforeEach

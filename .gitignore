@@ -1,4 +1,5 @@
 target/
+var/
 .local-runtime/
 .idea/
 .vscode/
@@ -8,3 +9,6 @@ target/
 !.env.example
 .superpowers/
 *.log
+.venv/
+__pycache__/
+*.pyc
