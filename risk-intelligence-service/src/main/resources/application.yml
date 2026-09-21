@@ -21,6 +21,7 @@ server:
 qiqihar:
   risk:
     expected-database: ${RISK_EXPECTED_DATABASE:qiqihar_enterprise}
+    ingestion-key: ${RISK_INGESTION_KEY:}
 
 management:
   endpoints:
