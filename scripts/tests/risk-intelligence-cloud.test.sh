@@ -36,6 +36,8 @@ assert_contains "$deploy_script" 'container_path="${container_tls_root}/$(basena
 assert_contains "$deploy_script" 'runtime_parameter="${parameter_key}=${container_path}"'
 assert_contains "$deploy_script" 'runtime_url+="${separator}${runtime_parameter}"'
 assert_contains "$deploy_script" 'migration_tls_mount_args+=(--volume "${runtime_tls_root}:${container_tls_root}:ro")'
+assert_contains "$deploy_script" 'install -m 444 "${bundle_root}"/migrations/V*.sql "$release_dir/migrations/"'
+assert_not_contains "$deploy_script" 'cp -a "${bundle_root}/migrations"'
 assert_contains "$deploy_script" 'configure_runtime_tls'
 assert_contains "$deploy_script" 'unit_source="${RISK_UNIT_SOURCE:-${bundle_root}/cofco-risk-intelligence.service}"'
 assert_contains "$deploy_script" 'install -m 644 "$unit_source" "$unit_target"'

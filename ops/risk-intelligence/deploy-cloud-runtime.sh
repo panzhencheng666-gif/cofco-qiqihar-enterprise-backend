@@ -147,9 +147,8 @@ install_release() {
   install -m 500 "${bundle_root}/verify-risk-database-boundary.sh" "$release_dir/"
   install -m 500 "${bundle_root}/run-risk-migration.sh" "$release_dir/"
   install -m 400 "${bundle_root}/create-risk-runtime-roles.sql" "$release_dir/"
-  cp -a "${bundle_root}/migrations" "$release_dir/migrations"
-  find "$release_dir/migrations" -type f -exec chmod 444 {} +
-  chmod 755 "$release_dir/migrations"
+  mkdir -m 755 "$release_dir/migrations"
+  install -m 444 "${bundle_root}"/migrations/V*.sql "$release_dir/migrations/"
 }
 
 migrate_database() {
