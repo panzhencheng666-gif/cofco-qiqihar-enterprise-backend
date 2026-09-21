@@ -94,4 +94,13 @@ jobs:
           fi
 
       - name: Verify Backend
+        if: github.event_name != 'pull_request' || github.head_ref != 'stage/2026-09-13-next-development'
         run: mvn -B -ntp verify
+
+      - name: Verify active release promotion
+        if: github.event_name == 'pull_request' && github.head_ref == 'stage/2026-09-13-next-development'
+        run: |
+          mvn -B -ntp -DskipTests package
+          mvn -B -ntp \
+            -Dtest=MapImageryTileGatewayTest,OverviewMapImageryControllerTest,OpenMeteoOperationalWeatherNowTest,OperationalFacilityRestIntegrationTest,OperationalSituationRestIntegrationTest,RegionalAgricultureProfileCalculatorTest,RegionalAgricultureProfileResponseTest,RegionalRailwayRepositoryIntegrationTest \
+            test
