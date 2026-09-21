@@ -58,8 +58,8 @@ class TrainingNodeControllerTest {
         UUID modelId=UUID.randomUUID();
         UUID snapshotId=UUID.randomUUID();
         when(coordinator.claimNext(NODE)).thenReturn(Optional.of(new RemoteTrainingJob(
-                executionId,runId,modelId,"risk-reasoning-llm-v1","DOMAIN_LLM",
-                "CROSS_DOMAIN","mlx-community/Qwen3-0.6B-4bit",3,snapshotId,
+                executionId,runId,modelId,"qiliang-risk-llm-v1","DOMAIN_LLM",
+                "CROSS_DOMAIN","mlx-community/Qwen3.8-27B-4bit",3,snapshotId,
                 "a".repeat(64),7L,Instant.parse("2026-09-21T18:00:00Z"),
                 List.of(new RemoteTrainingExample(
                         Instant.parse("2026-09-21T01:00:00Z"),"真实证据",true)))));

@@ -15,6 +15,7 @@ unit_source="${RISK_UNIT_SOURCE:-${bundle_root}/cofco-risk-intelligence.service}
 release_id="${RISK_RELEASE_ID:-$(date -u '+%Y%m%dT%H%M%SZ')}"
 release_dir="${releases_root}/${release_id}"
 image="${RISK_CONTAINER_IMAGE:-localhost/cofco-local/backend:stage9-20260814-amd64}"
+risk_llm_base_model="${RISK_LLM_BASE_MODEL_OVERRIDE:-mlx-community/Qwen3.8-27B-4bit}"
 
 fail() { echo "RISK_CLOUD_DEPLOY_FAILED: $*" >&2; exit 1; }
 require_root() { [[ "$(id -u)" == 0 ]] || fail "root is required"; }
@@ -62,14 +63,29 @@ assert_existing_service_healthy() {
 write_runtime_env() {
   if [[ -f "$runtime_env" ]]; then
     [[ "$(stat -c '%a' "$runtime_env")" == 600 ]] || fail "unsafe runtime secret mode"
-    if ! grep -q '^RISK_BUSINESS_SESSION_URL=' "$runtime_env"; then
-      local existing_temporary
-      existing_temporary="$(mktemp "${secrets_root}/.runtime.env.XXXXXX")"
-      chmod 600 "$existing_temporary"
-      awk '{ print } END { print "RISK_BUSINESS_SESSION_URL=http://127.0.0.1:19090/api/v1/session/me" }' \
-        "$runtime_env" > "$existing_temporary"
-      mv "$existing_temporary" "$runtime_env"
-    fi
+    local existing_temporary
+    existing_temporary="$(mktemp "${secrets_root}/.runtime.env.XXXXXX")"
+    chmod 600 "$existing_temporary"
+    awk -v base="$risk_llm_base_model" '
+      BEGIN { session=0; model=0; remote=0 }
+      /^RISK_BUSINESS_SESSION_URL=/ {
+        print "RISK_BUSINESS_SESSION_URL=http://127.0.0.1:19090/api/v1/session/me";
+        session=1; next
+      }
+      /^RISK_LLM_BASE_MODEL=/ { print "RISK_LLM_BASE_MODEL=" base; model=1; next }
+      /^RISK_TRAINING_REMOTE_NODE_ENABLED=/ {
+        print "RISK_TRAINING_REMOTE_NODE_ENABLED=true"; remote=1; next
+      }
+      { print }
+      END {
+        if (!session) print "RISK_BUSINESS_SESSION_URL=http://127.0.0.1:19090/api/v1/session/me";
+        if (!model) print "RISK_LLM_BASE_MODEL=" base;
+        if (!remote) print "RISK_TRAINING_REMOTE_NODE_ENABLED=true"
+      }
+    ' "$runtime_env" > "$existing_temporary"
+    mv "$existing_temporary" "$runtime_env"
+    grep -Eq '^RISK_TRAINING_NODE_TOKEN=.{32,}$' "$runtime_env" \
+      || fail "remote training node token is missing or too short"
     return
   fi
   local password ingestion_key training_token database_name migration_url temporary
@@ -96,11 +112,60 @@ write_runtime_env() {
     printf 'RISK_TRAINING_NODE_LEASE_DURATION=35m\n'
     printf 'RISK_TRAINING_NODE_MAXIMUM_ARTIFACT_BYTES=67108864\n'
     printf 'RISK_TRAINING_NODE_MAXIMUM_TOTAL_ARTIFACT_BYTES=1073741824\n'
-    printf 'RISK_LLM_BASE_MODEL=mlx-community/Qwen3-0.6B-4bit\n'
+    printf 'RISK_LLM_BASE_MODEL=%s\n' "$risk_llm_base_model"
     printf 'JAVA_TOOL_OPTIONS=-Xms64m -Xmx192m -XX:MaxMetaspaceSize=128m -XX:+ExitOnOutOfMemoryError\n'
   } > "$temporary"
   chmod 600 "$temporary"
   mv "$temporary" "$runtime_env"
+  grep -Eq '^RISK_TRAINING_NODE_TOKEN=.{32,}$' "$runtime_env" \
+    || fail "remote training node token is missing or too short"
+}
+
+runtime_value() {
+  local key="$1"
+  awk -F= -v wanted="$key" '$1==wanted { sub(/^[^=]*=/, ""); print; exit }' "$runtime_env"
+}
+
+restore_forward_model_runtime_state_using() {
+  local database_url="$1" database_user="$2" database_password="$3" psql_url
+  [[ -n "$database_url" && -n "$database_user" && -n "$database_password" ]] \
+    || { echo "RISK_FORWARD_MODEL_STATE_RESTORE_FAILED runtime database credentials unavailable" >&2; return 1; }
+  psql_url=${database_url#jdbc:}
+  psql_url=${psql_url%%\?*}
+  PGPASSWORD="$database_password" psql --no-psqlrc --set=ON_ERROR_STOP=1 \
+    --username="$database_user" "$psql_url" --command="
+      UPDATE risk.ai_model
+      SET status_code='ACTIVE',updated_by_subject='system:deployment-rollback',updated_at=now()
+      WHERE model_code='qiliang-risk-llm-v1' AND status_code='DRAFT';
+      UPDATE risk.ai_training_policy
+      SET enabled=true,updated_at=now()
+      WHERE model_id=(SELECT model_id FROM risk.ai_model
+        WHERE model_code='qiliang-risk-llm-v1' AND status_code='ACTIVE');
+    " >/dev/null
+  echo "RISK_FORWARD_MODEL_STATE_RESTORED model=qiliang-risk-llm-v1" >&2
+}
+
+restore_forward_model_runtime_state() {
+  restore_forward_model_runtime_state_using \
+    "$(runtime_value RISK_DB_URL)" \
+    "$(runtime_value RISK_DB_USERNAME)" \
+    "$(runtime_value RISK_DB_PASSWORD)"
+}
+
+risk_identity_migration_applied() {
+  local database_url="$1" database_user="$2" database_password="$3" psql_url history_exists applied
+  psql_url=${database_url#jdbc:}
+  psql_url=${psql_url%%\?*}
+  history_exists="$(PGPASSWORD="$database_password" psql --no-psqlrc --tuples-only --no-align \
+    --set=ON_ERROR_STOP=1 --username="$database_user" "$psql_url" \
+    --command="SELECT to_regclass('public.risk_flyway_schema_history') IS NOT NULL")" || return 1
+  [[ "$history_exists" == t ]] || return 1
+  applied="$(PGPASSWORD="$database_password" psql --no-psqlrc --tuples-only --no-align \
+    --set=ON_ERROR_STOP=1 --username="$database_user" "$psql_url" --command="
+      SELECT count(*) FROM public.risk_flyway_schema_history
+      WHERE version='218' AND success
+    ")" || return 1
+  [[ "$applied" -ge 1 ]]
 }
 
 configure_runtime_tls() {
@@ -160,7 +225,9 @@ install_release() {
   for migration in V214__create_inventory_risk_foundation.sql \
       V215__operate_daily_risk_ai_training.sql \
       V216__automate_risk_model_promotion.sql \
-      V217__isolate_risk_schema_runtime.sql; do
+      V217__isolate_risk_schema_runtime.sql \
+      V218__establish_qiliang_risk_model_identity.sql \
+      V219__harden_qiliang_model_lineage.sql; do
     install -m 444 "${bundle_root}/migrations/${migration}" "$release_dir/migrations/"
   done
 }
@@ -221,18 +288,33 @@ migrate_database() {
       -cp /release/risk-intelligence-service.jar \
       org.springframework.boot.loader.launch.PropertiesLauncher; then
     rm -f "$migration_secret"
+    if risk_identity_migration_applied "$migration_url" "$migration_user" "$migration_password"; then
+      restore_forward_model_runtime_state_using \
+        "$migration_url" "$migration_user" "$migration_password" \
+        || fail "risk migration failed and forward model state recovery failed"
+    fi
     fail "controlled risk migrations failed"
   fi
   rm -f "$migration_secret"
 
-  PGPASSWORD="$migration_password" psql --no-psqlrc --set=ON_ERROR_STOP=1 \
+  if ! PGPASSWORD="$migration_password" psql --no-psqlrc --set=ON_ERROR_STOP=1 \
     --username="$migration_user" --set=database_name="$expected_database" \
     --set=migration_owner="$migration_user" --set=risk_runtime_password="$runtime_password" \
-    --file="${release_dir}/create-risk-runtime-roles.sql" "$psql_url"
+    --file="${release_dir}/create-risk-runtime-roles.sql" "$psql_url"; then
+    restore_forward_model_runtime_state_using \
+      "$migration_url" "$migration_user" "$migration_password" \
+      || fail "runtime role configuration and forward model state recovery failed"
+    fail "risk runtime role configuration failed after forward migration"
+  fi
 
-  RISK_DB_URL="$migration_url" RISK_DB_USERNAME=qiqihar_risk_runtime_login \
+  if ! RISK_DB_URL="$migration_url" RISK_DB_USERNAME=qiqihar_risk_runtime_login \
     RISK_DB_PASSWORD="$runtime_password" RISK_EXPECTED_DATABASE="$expected_database" \
-    "${release_dir}/verify-risk-database-boundary.sh"
+    "${release_dir}/verify-risk-database-boundary.sh"; then
+    restore_forward_model_runtime_state_using \
+      "$migration_url" "$migration_user" "$migration_password" \
+      || fail "database boundary verification and forward model state recovery failed"
+    fail "risk database boundary verification failed after forward migration"
+  fi
 }
 
 activate_service() {
@@ -258,6 +340,7 @@ activate_service() {
         echo "RISK_SERVICE_ROLLBACK_FAILED old service could not start" >&2
         return 1
       fi
+      restore_forward_model_runtime_state || return 1
       for _ in $(seq 1 30); do
         curl -fsS --max-time 2 http://127.0.0.1:19384/actuator/health >/dev/null 2>&1 \
           && { rm -f "$unit_backup"; echo "RISK_SERVICE_ROLLBACK_OK databaseMigrationsRemainForwardOnly=true" >&2; return 0; }

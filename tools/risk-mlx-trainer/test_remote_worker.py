@@ -12,8 +12,8 @@ class RemoteWorkerContractTest(unittest.TestCase):
     def test_maps_cloud_job_to_local_trainer_contract(self):
         job = {
             "modelId": "11111111-1111-1111-1111-111111111111",
-            "modelCode": "risk-reasoning-llm-v1",
-            "baseModelReference": "mlx-community/Qwen3-0.6B-4bit",
+            "modelCode": "qiliang-risk-llm-v1",
+            "baseModelReference": "mlx-community/Qwen3.8-27B-4bit",
             "domainCode": "CROSS_DOMAIN",
             "modelVersion": 3,
             "trainingSnapshotId": "22222222-2222-2222-2222-222222222222",
@@ -86,8 +86,8 @@ class RemoteWorkerContractTest(unittest.TestCase):
                 "executionId": "11111111-1111-1111-1111-111111111111",
                 "trainingRunId": "22222222-2222-2222-2222-222222222222",
                 "modelId": "33333333-3333-3333-3333-333333333333",
-                "modelCode": "risk-reasoning-llm-v1",
-                "baseModelReference": "mlx-community/Qwen3-0.6B-4bit",
+                "modelCode": "qiliang-risk-llm-v1",
+                "baseModelReference": "mlx-community/Qwen3.8-27B-4bit",
                 "domainCode": "CROSS_DOMAIN",
                 "modelVersion": 3,
                 "trainingSnapshotId": "44444444-4444-4444-4444-444444444444",

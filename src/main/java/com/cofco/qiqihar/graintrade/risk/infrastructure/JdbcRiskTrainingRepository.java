@@ -127,12 +127,12 @@ public class JdbcRiskTrainingRepository implements RiskTrainingRepository {
                 UPDATE risk.ai_model
                 SET base_model_reference=:base,status_code='ACTIVE',
                     updated_by_subject='system:risk-llm-provisioner',updated_at=:now
-                WHERE model_code='risk-reasoning-llm-v1' AND status_code='DRAFT'
+                WHERE model_code='qiliang-risk-llm-v1' AND status_code='DRAFT'
                 """).param("base",baseModelReference).param("now",dbTime(configuredAt)).update();
         int enabled=jdbc.sql("""
                 UPDATE risk.ai_training_policy SET enabled=true,updated_at=:now
                 WHERE model_id=(SELECT model_id FROM risk.ai_model
-                  WHERE model_code='risk-reasoning-llm-v1' AND status_code='ACTIVE')
+                  WHERE model_code='qiliang-risk-llm-v1' AND status_code='ACTIVE')
                 """).param("now",dbTime(configuredAt)).update();
         return updated>0 || enabled>0;
     }

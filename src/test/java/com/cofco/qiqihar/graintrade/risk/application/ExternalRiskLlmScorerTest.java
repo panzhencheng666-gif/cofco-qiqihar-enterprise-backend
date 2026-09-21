@@ -29,7 +29,7 @@ class ExternalRiskLlmScorerTest {
 
     private static RiskScoringTask task() {
         return new RiskScoringTask(UUID.randomUUID(),1,"DOMAIN_LLM",
-                "mlx-community/Qwen3-0.6B-4bit","/tmp/adapter.tar.gz","a".repeat(64),
+                "mlx-community/Qwen3.8-27B-4bit","/tmp/adapter.tar.gz","a".repeat(64),
                 UUID.randomUUID(),"{\"riskLevel\":\"HIGH\"}","SHADOW");
     }
 }

@@ -34,21 +34,64 @@ class TrainerContractTest(unittest.TestCase):
                 ])
 
     def test_existing_verified_adapter_is_a_safe_retry_result(self):
+        payload = {
+            "modelId": "model", "modelCode": "qiliang-risk-llm-v1",
+            "candidateVersion": 3,
+            "baseModelReference": "mlx-community/Qwen3.8-27B-4bit",
+            "trainingSnapshotId": "snapshot", "randomSeed": 7,
+            "examples": [
+                {"input": "a", "positive": True},
+                {"input": "b", "positive": False},
+                {"input": "c", "positive": True},
+                {"input": "d", "positive": False},
+            ],
+        }
+        manifest = server.request_manifest(payload)
         with tempfile.TemporaryDirectory() as temporary:
             target = Path(temporary) / "model" / "v3-snapshot"
             target.mkdir(parents=True)
             (target / "adapters.safetensors").write_bytes(b"real-weights")
             (target / "adapter_config.json").write_text("{}", encoding="utf-8")
+            (target / "model_manifest.json").write_text(
+                json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
             (target / "training_metrics.json").write_text(
                 '{"splitStrategy":"chronological_train_validation_test","test":{"f1":0.5}}\n',
                 encoding="utf-8")
 
-            result = server.completed_artifact(target, 4)
+            result = server.completed_artifact(target, 4, manifest)
 
             self.assertEqual(result["artifactReference"], str(target))
             self.assertEqual(result["artifactSha256"], server.canonical_hash(target))
             self.assertEqual(result["metrics"]["trainingExamples"], 4)
+            self.assertEqual(result["metrics"]["modelIdentity"],
+                             "齐粮智研模型 QL-Risk-27B")
             self.assertEqual(result["metrics"]["offlineEvaluation"]["test"]["f1"], 0.5)
+
+    def test_existing_adapter_with_different_foundation_is_rejected(self):
+        payload = {
+            "modelId": "model", "modelCode": "qiliang-risk-llm-v1",
+            "candidateVersion": 3, "baseModelReference": "wrong-foundation",
+            "trainingSnapshotId": "snapshot", "randomSeed": 7,
+            "examples": [
+                {"input": "a", "positive": True},
+                {"input": "b", "positive": False},
+                {"input": "c", "positive": True},
+                {"input": "d", "positive": False},
+            ],
+        }
+        expected = server.request_manifest(payload)
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary)
+            (target / "adapters.safetensors").write_bytes(b"real-weights")
+            (target / "adapter_config.json").write_text("{}", encoding="utf-8")
+            stale = dict(expected)
+            stale["foundationModel"] = "old-foundation"
+            (target / "model_manifest.json").write_text(
+                json.dumps(stale, ensure_ascii=False), encoding="utf-8")
+            (target / "training_metrics.json").write_text("{}", encoding="utf-8")
+
+            with self.assertRaisesRegex(RuntimeError, "foundationModel"):
+                server.completed_artifact(target, 4, expected)
 
 
 if __name__ == "__main__":

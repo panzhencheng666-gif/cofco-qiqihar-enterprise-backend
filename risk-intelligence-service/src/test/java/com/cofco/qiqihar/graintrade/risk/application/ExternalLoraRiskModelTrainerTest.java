@@ -46,7 +46,7 @@ class ExternalLoraRiskModelTrainerTest {
     }
 
     private static RiskTrainingJob job() {
-        return new RiskTrainingJob(UUID.randomUUID(),"risk-reasoning-llm-v1","DOMAIN_LLM",
+        return new RiskTrainingJob(UUID.randomUUID(),"qiliang-risk-llm-v1","DOMAIN_LLM",
                 "CROSS_DOMAIN","model-registry://risk-base",1,UUID.randomUUID(),17L,
                 List.of(new RiskTrainingExample(UUID.randomUUID(),Instant.parse("2026-09-21T00:00:00Z"),
                         "{\"riskLevel\":\"HIGH\"}",true)));

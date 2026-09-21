@@ -24,7 +24,9 @@ def main() -> None:
     endpoint = os.environ["RISK_LLM_TRAINER_URL"].removesuffix("/v1/train")
     token = os.environ["RISK_LLM_BEARER_TOKEN"]
     base = os.environ["RISK_LLM_BASE_MODEL"]
-    code_hash = hashlib.sha256(Path(__file__).with_name("server.py").read_bytes()).hexdigest()[:12]
+    identity_hash = hashlib.sha256(
+        Path(__file__).with_name("server.py").read_bytes() + b"\0" + base.encode()
+    ).hexdigest()[:12]
     examples = []
     for index in range(10):
         positive = index % 2 == 0
@@ -37,17 +39,21 @@ def main() -> None:
             "domainCode": "INVENTORY" if index < 5 else "MARKET",
         })
     trained = call(endpoint + "/v1/train", token, {
-        "modelId": "acceptance-" + code_hash,
-        "modelCode": "risk-real-training-acceptance",
+        "modelId": "acceptance-" + identity_hash,
+        "modelCode": "qiliang-risk-llm-v1",
         "baseModelReference": base,
         "domainCode": "CROSS_DOMAIN",
         "candidateVersion": 1,
-        "trainingSnapshotId": "snapshot-" + code_hash,
+        "trainingSnapshotId": "snapshot-" + identity_hash,
         "randomSeed": 20260921,
         "trainingKind": "LORA_ADAPTER",
         "examples": examples,
     })
     evaluation = trained.get("metrics", {}).get("offlineEvaluation", {})
+    metrics = trained.get("metrics", {})
+    if (metrics.get("modelIdentity") != "齐粮智研模型 QL-Risk-27B"
+            or metrics.get("foundationModel") != base):
+        raise RuntimeError("真实训练返回的模型身份或 27B 底座不匹配")
     if (evaluation.get("validation", {}).get("count", 0) < 1
             or evaluation.get("test", {}).get("count", 0) < 1
             or not evaluation.get("testByDomain")):
@@ -56,7 +62,7 @@ def main() -> None:
     if not artifact.is_dir() or not (artifact / "adapters.safetensors").is_file():
         raise RuntimeError("真实训练没有生成可持久化 LoRA 权重")
     score = call(endpoint + "/v1/score", token, {
-        "modelId": "acceptance-" + code_hash,
+        "modelId": "acceptance-" + identity_hash,
         "modelVersion": 1,
         "baseModelReference": base,
         "artifactReference": str(artifact),

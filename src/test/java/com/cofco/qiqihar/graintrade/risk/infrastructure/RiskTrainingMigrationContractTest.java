@@ -34,4 +34,37 @@ class RiskTrainingMigrationContractTest {
                 .contains("auto_activation_enabled=true")
                 .contains("'STANDBY'");
     }
+
+    @Test
+    void dedicatedQiliangModelHasNewIdentityAndPreservesBootstrapLineage() throws Exception {
+        String sql=Files.readString(Path.of(
+                "src/main/resources/db/migration/V218__establish_qiliang_risk_model_identity.sql"));
+
+        assertThat(sql)
+                .contains("qiliang-risk-llm-v1")
+                .contains("齐粮智研模型 QL-Risk-27B")
+                .contains("mlx-community/Qwen3.8-27B-4bit")
+                .contains("foundationRole")
+                .contains("SET enabled=false")
+                .contains("model_code='risk-reasoning-llm-v1'")
+                .contains("NOT EXISTS (\n      SELECT 1 FROM risk.model_version")
+                .doesNotContain("DELETE FROM risk.ai_model")
+                .doesNotContain("DELETE FROM risk.model_version");
+    }
+
+    @Test
+    void hardeningMigrationSeparatesPreexistingBootstrapLineageAndResolvesPolicyByCode()
+            throws Exception {
+        String sql=Files.readString(Path.of(
+                "src/main/resources/db/migration/V219__harden_qiliang_model_lineage.sql"));
+
+        assertThat(sql)
+                .contains("created_at<v218_installed_at")
+                .contains("model_code='risk-reasoning-llm-v1'")
+                .contains("model.model_code='qiliang-risk-llm-v1'")
+                .contains("policy.model_id=model.model_id")
+                .contains("Exactly one QL-Risk model identity is required")
+                .doesNotContain("DELETE FROM risk.training_run")
+                .doesNotContain("DELETE FROM risk.model_version");
+    }
 }
