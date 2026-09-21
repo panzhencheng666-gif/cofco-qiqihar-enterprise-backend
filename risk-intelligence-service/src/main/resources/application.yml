@@ -22,6 +22,17 @@ qiqihar:
   risk:
     expected-database: ${RISK_EXPECTED_DATABASE:qiqihar_enterprise}
     ingestion-key: ${RISK_INGESTION_KEY:}
+    training:
+      enabled: ${RISK_TRAINING_ENABLED:false}
+      artifact-root: ${RISK_MODEL_ARTIFACT_ROOT:}
+      poll-delay: ${RISK_TRAINING_POLL_DELAY:10s}
+      schedule-reconcile-delay: ${RISK_TRAINING_SCHEDULE_RECONCILE_DELAY:1m}
+      lifecycle-delay: ${RISK_TRAINING_LIFECYCLE_DELAY:30s}
+      llm:
+        endpoint: ${RISK_LLM_TRAINER_URL:}
+        scoring-endpoint: ${RISK_LLM_SCORING_URL:}
+        bearer-token: ${RISK_LLM_BEARER_TOKEN:}
+        base-model-reference: ${RISK_LLM_BASE_MODEL:}
 
 management:
   endpoints:
