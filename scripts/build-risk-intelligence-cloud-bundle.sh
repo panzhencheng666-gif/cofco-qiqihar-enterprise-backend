@@ -43,8 +43,13 @@ install -m 500 "${backend_root}/ops/risk-intelligence/run-risk-migration.sh" "$s
 install -m 500 "${backend_root}/scripts/verify-risk-database-boundary.sh" "$stage/"
 install -m 400 "${backend_root}/ops/risk-intelligence/create-risk-runtime-roles.sql" "$stage/"
 install -m 400 "${backend_root}/ops/systemd/cofco-risk-intelligence.service" "$stage/"
-find "${backend_root}/src/main/resources/db/migration" -maxdepth 1 -type f -name 'V*.sql' \
-  -exec install -m 400 {} "$stage/migrations/" \;
+for migration in V214__create_inventory_risk_foundation.sql \
+    V215__operate_daily_risk_ai_training.sql \
+    V216__automate_risk_model_promotion.sql \
+    V217__isolate_risk_schema_runtime.sql; do
+  install -m 400 "${backend_root}/src/main/resources/db/migration/${migration}" \
+    "$stage/migrations/"
+done
 
 (cd "$stage" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)
 tar -C "$output_dir" -czf "$archive" "$bundle_name"

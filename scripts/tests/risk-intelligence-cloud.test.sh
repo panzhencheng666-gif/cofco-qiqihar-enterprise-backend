@@ -15,6 +15,8 @@ assert_not_contains() {
 
 deploy_script="ops/risk-intelligence/deploy-cloud-runtime.sh"
 unit="ops/systemd/cofco-risk-intelligence.service"
+runner="risk-intelligence-service/src/main/java/com/cofco/qiqihar/riskintelligence/operations/RiskMigrationRunner.java"
+bundle_script="scripts/build-risk-intelligence-cloud-bundle.sh"
 
 [[ -x "${backend_root}/${deploy_script}" ]] || fail "cloud deployment script is missing or not executable"
 [[ -f "${backend_root}/${unit}" ]] || fail "cloud systemd unit is missing"
@@ -36,8 +38,21 @@ assert_contains "$deploy_script" 'container_path="${container_tls_root}/$(basena
 assert_contains "$deploy_script" 'runtime_parameter="${parameter_key}=${container_path}"'
 assert_contains "$deploy_script" 'runtime_url+="${separator}${runtime_parameter}"'
 assert_contains "$deploy_script" 'migration_tls_mount_args+=(--volume "${runtime_tls_root}:${container_tls_root}:ro")'
-assert_contains "$deploy_script" 'install -m 444 "${bundle_root}"/migrations/V*.sql "$release_dir/migrations/"'
+assert_contains "$deploy_script" 'for migration in V214__create_inventory_risk_foundation.sql'
+assert_contains "$deploy_script" 'V217__isolate_risk_schema_runtime.sql; do'
+assert_contains "$deploy_script" 'install -m 444 "${bundle_root}/migrations/${migration}" "$release_dir/migrations/"'
 assert_not_contains "$deploy_script" 'cp -a "${bundle_root}/migrations"'
+assert_not_contains "$deploy_script" 'migrations/V*.sql'
+assert_contains "$bundle_script" 'for migration in V214__create_inventory_risk_foundation.sql'
+assert_contains "$bundle_script" 'V217__isolate_risk_schema_runtime.sql; do'
+assert_not_contains "$bundle_script" "-name 'V*.sql'"
+assert_contains "$runner" 'private static final String RISK_HISTORY_TABLE="risk_flyway_schema_history";'
+assert_contains "$runner" '.table(RISK_HISTORY_TABLE)'
+assert_contains "$runner" '.baselineOnMigrate(true)'
+assert_contains "$runner" 'private static final String SHARED_BASELINE_VERSION="213";'
+assert_contains "$runner" '.baselineVersion(SHARED_BASELINE_VERSION)'
+assert_contains "$runner" "select count(*) from public.flyway_schema_history where version='213' and success"
+assert_contains "$runner" "version in ('214','215','216','217')"
 assert_contains "$deploy_script" 'configure_runtime_tls'
 assert_contains "$deploy_script" 'unit_source="${RISK_UNIT_SOURCE:-${bundle_root}/cofco-risk-intelligence.service}"'
 assert_contains "$deploy_script" 'install -m 644 "$unit_source" "$unit_target"'

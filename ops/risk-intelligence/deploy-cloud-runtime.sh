@@ -148,7 +148,12 @@ install_release() {
   install -m 500 "${bundle_root}/run-risk-migration.sh" "$release_dir/"
   install -m 400 "${bundle_root}/create-risk-runtime-roles.sql" "$release_dir/"
   mkdir -m 755 "$release_dir/migrations"
-  install -m 444 "${bundle_root}"/migrations/V*.sql "$release_dir/migrations/"
+  for migration in V214__create_inventory_risk_foundation.sql \
+      V215__operate_daily_risk_ai_training.sql \
+      V216__automate_risk_model_promotion.sql \
+      V217__isolate_risk_schema_runtime.sql; do
+    install -m 444 "${bundle_root}/migrations/${migration}" "$release_dir/migrations/"
+  done
 }
 
 migrate_database() {

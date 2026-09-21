@@ -6,12 +6,12 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.Statement;
-import java.util.Set;
 import org.flywaydb.core.Flyway;
 
-/** Explicit, non-web entry point for the shared database's controlled Flyway history. */
+/** Explicit, non-web entry point for the risk subsystem's isolated Flyway history. */
 public final class RiskMigrationRunner {
-    private static final Set<String> ALLOWED_START_VERSIONS=Set.of("213","214","215","216","217");
+    private static final String RISK_HISTORY_TABLE="risk_flyway_schema_history";
+    private static final String SHARED_BASELINE_VERSION="213";
 
     private RiskMigrationRunner() { }
 
@@ -23,7 +23,7 @@ public final class RiskMigrationRunner {
         Path migrations=Path.of(require("RISK_MIGRATION_PATH")).toAbsolutePath().normalize();
         requireMigrationSet(migrations);
 
-        String currentVersion;
+        String sharedLatestVersion;
         try (Connection connection=DriverManager.getConnection(url,username,password);
              Statement statement=connection.createStatement()) {
             try (ResultSet result=statement.executeQuery("select current_database()")) {
@@ -37,27 +37,46 @@ public final class RiskMigrationRunner {
                     "select version from public.flyway_schema_history "
                     +"where success order by installed_rank desc limit 1")) {
                 if (!result.next()) throw new IllegalStateException("Flyway history is empty");
-                currentVersion=result.getString(1);
+                sharedLatestVersion=result.getString(1);
             }
-        }
-        if (!ALLOWED_START_VERSIONS.contains(currentVersion)) {
-            throw new IllegalStateException("Refusing migration from unexpected version "+currentVersion);
+            try (ResultSet result=statement.executeQuery(
+                    "select count(*) from public.flyway_schema_history where version='213' and success")) {
+                result.next();
+                if (result.getInt(1)!=1) {
+                    throw new IllegalStateException("Shared Flyway baseline 213 is not applied exactly once");
+                }
+            }
+            try (ResultSet result=statement.executeQuery(
+                    "select count(*) from public.flyway_schema_history "
+                    +"where version in ('214','215','216','217')")) {
+                result.next();
+                if (result.getInt(1)!=0) {
+                    throw new IllegalStateException(
+                            "Shared Flyway history already owns one or more risk migration versions");
+                }
+            }
         }
 
         Flyway flyway=Flyway.configure()
                 .dataSource(url,username,password)
                 .locations("filesystem:"+migrations)
+                .defaultSchema("public")
+                .table(RISK_HISTORY_TABLE)
+                .baselineOnMigrate(true)
+                .baselineVersion(SHARED_BASELINE_VERSION)
+                .baselineDescription("Risk intelligence isolated baseline")
                 .validateMigrationNaming(true)
                 .failOnMissingLocations(true)
                 .load();
-        flyway.validate();
         var result=flyway.migrate();
+        flyway.validate();
         String finalVersion=flyway.info().current().getVersion().getVersion();
         if (!"217".equals(finalVersion)) {
             throw new IllegalStateException("Risk migration stopped at version "+finalVersion);
         }
-        System.out.printf("RISK_FLYWAY_MIGRATION_OK from=%s to=%s executed=%d%n",
-                currentVersion,finalVersion,result.migrationsExecuted);
+        System.out.printf("RISK_FLYWAY_MIGRATION_OK sharedLatest=%s baseline=%s to=%s executed=%d history=%s%n",
+                sharedLatestVersion,SHARED_BASELINE_VERSION,finalVersion,
+                result.migrationsExecuted,RISK_HISTORY_TABLE);
     }
 
     private static String require(String name) {
