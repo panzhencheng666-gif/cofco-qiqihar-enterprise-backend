@@ -102,5 +102,8 @@ jobs:
         run: |
           mvn -B -ntp -DskipTests package
           mvn -B -ntp \
-            -Dtest=MapImageryTileGatewayTest,OverviewMapImageryControllerTest,OpenMeteoOperationalWeatherNowTest,OperationalFacilityRestIntegrationTest,OperationalSituationRestIntegrationTest,RegionalAgricultureProfileCalculatorTest,RegionalAgricultureProfileResponseTest,RegionalRailwayRepositoryIntegrationTest \
+            -Dtest=MapImageryTileGatewayTest,OverviewMapImageryControllerTest,OpenMeteoOperationalWeatherNowTest,OperationalFacilityRestIntegrationTest,OperationalSituationRestIntegrationTest,RegionalAgricultureProfileCalculatorTest,RegionalAgricultureProfileResponseTest \
+            test
+          mvn -B -ntp \
+            -Dtest=RegionalRailwayRepositoryIntegrationTest \
             test
