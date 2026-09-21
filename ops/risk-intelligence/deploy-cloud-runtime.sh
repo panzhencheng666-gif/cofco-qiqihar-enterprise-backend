@@ -93,11 +93,30 @@ install_release() {
 
 migrate_database() {
   local migration_url migration_user migration_password expected_database runtime_password migration_secret
+  local query parameter parameter_key encoded_path decoded_path
+  local -a migration_tls_mount_args=()
   migration_url="$(read_named_env "$migration_env" MIGRATION_URL)"
   migration_user="$(read_named_env "$migration_env" MIGRATION_USER)"
   migration_password="$(read_named_env "$migration_env" MIGRATION_PASSWORD)"
   expected_database="$(read_named_env "$runtime_env" RISK_EXPECTED_DATABASE)"
   runtime_password="$(read_named_env "$runtime_env" RISK_DB_PASSWORD)"
+  if [[ "$migration_url" == *\?* ]]; then
+    query=${migration_url#*\?}
+    IFS='&' read -r -a parameters <<< "$query"
+    for parameter in "${parameters[@]}"; do
+      parameter_key=${parameter%%=*}
+      case "$parameter_key" in
+        sslrootcert|sslcert|sslkey)
+          encoded_path=${parameter#*=}
+          decoded_path=${encoded_path//+/ }
+          printf -v decoded_path '%b' "${decoded_path//%/\\x}"
+          [[ "$decoded_path" == /* ]] || fail "$parameter_key must use an absolute path"
+          [[ -f "$decoded_path" ]] || fail "$parameter_key file is missing on the host: $decoded_path"
+          migration_tls_mount_args+=(--volume "${decoded_path}:${decoded_path}:ro")
+          ;;
+      esac
+    done
+  fi
   migration_secret="$(mktemp /run/risk-migration.XXXXXX)"
   chmod 600 "$migration_secret"
   {
@@ -116,6 +135,7 @@ migrate_database() {
   [[ "$connection_headroom" -ge 10 ]] || { rm -f "$migration_secret"; fail "RDS has fewer than 10 free connections"; }
   if ! podman run --rm --network host --memory=384m --cpus=0.75 --pids-limit=256 \
       --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m --env-file "$migration_secret" \
+      "${migration_tls_mount_args[@]}" \
       -v "${release_dir}:/release:ro" --entrypoint java "$image" \
       -Dloader.main=com.cofco.qiqihar.riskintelligence.operations.RiskMigrationRunner \
       -cp /release/risk-intelligence-service.jar \
