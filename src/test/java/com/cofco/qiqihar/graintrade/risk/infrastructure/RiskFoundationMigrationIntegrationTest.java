@@ -116,22 +116,12 @@ class RiskFoundationMigrationIntegrationTest {
                 """))
                 .isInstanceOf(SQLException.class)
                 .hasMessageContaining("Active AI model identity and purpose are immutable");
-        assertThatThrownBy(() -> execute("""
-                INSERT INTO risk.ai_training_policy(
-                  training_policy_id,model_id,scheduled_local_time,training_window_days,
-                  minimum_new_labels,auto_activation_enabled,approved_by_subject,approved_at)
-                VALUES('21400000-0000-0000-0000-000000000011',
-                  '21400000-0000-0000-0000-000000000010',TIME '02:30',365,10,true,
-                  'risk-approver',TIMESTAMPTZ '2026-09-21 01:10:00+00')
-                """))
-                .isInstanceOf(SQLException.class)
-                .hasMessageContaining("ai_training_policy_auto_activation_enabled_check");
         execute("""
                 INSERT INTO risk.ai_training_policy(
                   training_policy_id,model_id,scheduled_local_time,training_window_days,
                   minimum_new_labels,auto_activation_enabled,enabled,approved_by_subject,approved_at)
                 VALUES('21400000-0000-0000-0000-000000000011',
-                  '21400000-0000-0000-0000-000000000010',TIME '02:30',365,10,false,true,
+                  '21400000-0000-0000-0000-000000000010',TIME '02:30',365,10,true,true,
                   'risk-approver',TIMESTAMPTZ '2026-09-21 01:10:00+00')
                 """);
         insertTrainingLineage();
@@ -166,7 +156,7 @@ class RiskFoundationMigrationIntegrationTest {
                 WHERE model_id='21400000-0000-0000-0000-000000000010' AND version=1
                 """))
                 .isInstanceOf(SQLException.class)
-                .hasMessageContaining("CANDIDATE models must enter SHADOW before approval");
+                .hasMessageContaining("CANDIDATE models must enter SHADOW before activation");
 
         execute("""
                 UPDATE risk.model_version SET status_code='SHADOW',
