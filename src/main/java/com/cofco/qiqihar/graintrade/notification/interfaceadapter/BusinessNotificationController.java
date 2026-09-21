@@ -30,9 +30,12 @@ public class BusinessNotificationController {
         return new ApiResponse<>(ItemResponse.from(service.markRead(eventId)));
     }
 
-    record PageResponse(List<ItemResponse> items, long unreadCount) {
+    record PageResponse(List<ItemResponse> items, long unreadCount, long currentSequence) {
         static PageResponse from(BusinessNotificationPage page) {
-            return new PageResponse(page.items().stream().map(ItemResponse::from).toList(), page.unreadCount());
+            return new PageResponse(
+                    page.items().stream().map(ItemResponse::from).toList(),
+                    page.unreadCount(),
+                    page.currentSequence());
         }
     }
 
