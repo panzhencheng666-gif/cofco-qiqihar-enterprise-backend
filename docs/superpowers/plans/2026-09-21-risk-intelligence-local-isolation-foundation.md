@@ -276,14 +276,16 @@ git commit -m "feat(risk): isolate schema from business tables"
 
 **Interfaces:**
 - Consumes: PostgreSQL administrator connection supplied only at execution time.
-- Produces: `qiqihar_risk_flyway` and `qiqihar_risk_runtime` roles plus a machine-readable privilege verification report.
+- Produces: the `qiqihar_risk_runtime` group role, the `qiqihar_risk_runtime_login` service account, and a machine-readable privilege verification report. The existing controlled Flyway history remains the only migration authority for the shared database.
 
 - [ ] **Step 1: Write the failing shell contract test**
 
 ```bash
-assert_contains "CREATE ROLE qiqihar_risk_runtime"
+assert_contains "CREATE ROLE qiqihar_risk_runtime NOLOGIN"
+assert_contains "CREATE ROLE qiqihar_risk_runtime_login LOGIN"
+assert_contains "GRANT qiqihar_risk_runtime TO qiqihar_risk_runtime_login"
 assert_contains "GRANT USAGE ON SCHEMA risk TO qiqihar_risk_runtime"
-assert_contains "ALTER DEFAULT PRIVILEGES IN SCHEMA risk"
+assert_contains "ALTER DEFAULT PRIVILEGES FOR ROLE qiqihar_migration_owner IN SCHEMA risk"
 assert_not_contains "GRANT INSERT ON ALL TABLES IN SCHEMA platform"
 assert_not_contains "GRANT UPDATE ON ALL TABLES IN SCHEMA overview"
 ```
@@ -300,7 +302,7 @@ Expected: failure because the role script is absent.
 
 - [ ] **Step 3: Implement idempotent role provisioning**
 
-The SQL creates roles only when absent, never stores passwords in Git, and applies:
+The SQL creates roles only when absent, receives the login password as a psql variable at execution time, never stores passwords in Git, and applies:
 
 ```sql
 GRANT CONNECT ON DATABASE :"database_name" TO qiqihar_risk_runtime;
