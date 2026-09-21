@@ -10,7 +10,7 @@ RestartSec=5
 TimeoutStopSec=45
 EnvironmentFile=/var/lib/cofco/risk-intelligence/secrets/runtime.env
 ExecStartPre=-/usr/bin/podman rm -f cofco-risk-intelligence
-ExecStart=/usr/bin/podman run --name cofco-risk-intelligence --rm --network bridge --memory=384m --cpus=0.75 --pids-limit=256 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m -p 127.0.0.1:19384:63184 -v /var/lib/cofco/risk-intelligence/current/risk-intelligence-service.jar:/app/application.jar:ro -v /var/lib/cofco/risk-intelligence/model-artifacts:/var/lib/cofco/risk-intelligence/model-artifacts:rw -v /var/lib/cofco/risk-intelligence/runtime-tls:/var/lib/cofco/risk-intelligence/tls:ro -e RISK_SERVER_ADDRESS=0.0.0.0 --env-file /var/lib/cofco/risk-intelligence/secrets/runtime.env --entrypoint java localhost/cofco-local/backend:stage9-20260814-amd64 -jar /app/application.jar
+ExecStart=/usr/bin/podman run --name cofco-risk-intelligence --rm --network host --memory=384m --cpus=0.75 --pids-limit=256 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m -v /var/lib/cofco/risk-intelligence/current/risk-intelligence-service.jar:/app/application.jar:ro -v /var/lib/cofco/risk-intelligence/model-artifacts:/var/lib/cofco/risk-intelligence/model-artifacts:rw -v /var/lib/cofco/risk-intelligence/runtime-tls:/var/lib/cofco/risk-intelligence/tls:ro --env-file /var/lib/cofco/risk-intelligence/secrets/runtime.env -e RISK_SERVER_ADDRESS=127.0.0.1 -e RISK_SERVER_PORT=19384 --entrypoint java localhost/cofco-local/backend:stage9-20260814-amd64 -jar /app/application.jar
 ExecStop=/usr/bin/podman stop --time 30 cofco-risk-intelligence
 
 [Install]

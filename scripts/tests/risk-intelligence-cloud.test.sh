@@ -59,12 +59,14 @@ assert_contains "$deploy_script" 'install -m 644 "$unit_source" "$unit_target"'
 assert_contains "$deploy_script" 'install -o 10001 -g 10001 -m 400 "$host_path" "$staged_path"'
 assert_contains "$unit" '--memory=384m'
 assert_contains "$unit" '--cpus=0.75'
-assert_contains "$unit" '127.0.0.1:19384:63184'
-assert_contains "$unit" 'RISK_SERVER_ADDRESS=0.0.0.0'
+assert_contains "$unit" '--network host'
+assert_contains "$unit" 'RISK_SERVER_ADDRESS=127.0.0.1'
+assert_contains "$unit" 'RISK_SERVER_PORT=19384'
 assert_contains "$unit" '/var/lib/cofco/risk-intelligence/runtime-tls:/var/lib/cofco/risk-intelligence/tls:ro'
 assert_not_contains "$unit" ':/run:ro'
 assert_not_contains "$unit" '--privileged'
 assert_not_contains "$unit" '0.0.0.0:19384'
+assert_contains "$deploy_script" 'RISK_BUSINESS_SESSION_URL=http://127.0.0.1:19090/api/v1/session/me'
 
 bash -n "${backend_root}/${deploy_script}"
 

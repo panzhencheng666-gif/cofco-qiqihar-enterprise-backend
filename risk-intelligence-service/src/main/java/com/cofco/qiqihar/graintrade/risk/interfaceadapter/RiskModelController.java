@@ -4,13 +4,13 @@ import com.cofco.qiqihar.graintrade.risk.application.RiskModelOperationsService;
 import com.cofco.qiqihar.graintrade.risk.application.RiskModelOverview;
 import com.cofco.qiqihar.graintrade.risk.application.RiskTrainingRequest;
 import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
-import com.cofco.qiqihar.riskintelligence.security.RiskRequestIdentity;
+import com.cofco.qiqihar.riskintelligence.security.RiskBusinessSession;
+import jakarta.servlet.http.HttpServletRequest;
 import java.util.UUID;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -23,16 +23,15 @@ public class RiskModelController {
     }
 
     @GetMapping("/overview")
-    ApiResponse<RiskModelOverview> overview(
-            @RequestHeader(value="X-Actor",required=false) String actor) {
-        RiskRequestIdentity.requireActor(actor);
+    ApiResponse<RiskModelOverview> overview(HttpServletRequest request) {
+        RiskBusinessSession.require(request);
         return new ApiResponse<>(service.overview());
     }
 
     @PostMapping("/{modelId}/training-requests")
     ApiResponse<RiskTrainingRequest> requestTraining(
             @PathVariable UUID modelId,
-            @RequestHeader(value="X-Actor",required=false) String actor) {
-        return new ApiResponse<>(service.requestTraining(modelId,RiskRequestIdentity.requireActor(actor)));
+            HttpServletRequest request) {
+        return new ApiResponse<>(service.requestTraining(modelId,RiskBusinessSession.require(request).subjectId()));
     }
 }
