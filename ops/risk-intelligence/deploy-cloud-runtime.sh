@@ -27,6 +27,19 @@ read_named_env() {
   return 1
 }
 
+resolve_tls_host_path() {
+  local container_path=$1 candidate
+  if [[ -f "$container_path" ]]; then
+    printf '%s' "$container_path"
+    return
+  fi
+  [[ -n "${RISK_MIGRATION_TLS_SOURCE_DIR:-}" ]] \
+    || fail "TLS path exists only inside a container; set RISK_MIGRATION_TLS_SOURCE_DIR"
+  candidate="${RISK_MIGRATION_TLS_SOURCE_DIR%/}/$(basename "$container_path")"
+  [[ -f "$candidate" ]] || fail "TLS source file is missing on the host: $candidate"
+  printf '%s' "$candidate"
+}
+
 assert_host_capacity() {
   local available_kib root_free_kib
   available_kib="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
@@ -81,7 +94,7 @@ write_runtime_env() {
 }
 
 configure_runtime_tls() {
-  local migration_url query parameter parameter_key encoded_path decoded_path runtime_url separator
+  local migration_url query parameter parameter_key encoded_path decoded_path host_path runtime_url separator
   migration_url="$(read_named_env "$migration_env" MIGRATION_URL)"
   runtime_url=${migration_url%%\?*}
   mkdir -p "$tls_root"
@@ -100,8 +113,8 @@ configure_runtime_tls() {
           decoded_path=${encoded_path//+/ }
           printf -v decoded_path '%b' "${decoded_path//%/\\x}"
           [[ "$decoded_path" == /* ]] || fail "$parameter_key must use an absolute path"
-          [[ -f "$decoded_path" ]] || fail "$parameter_key file is missing on the host: $decoded_path"
-          install -o 10001 -g 10001 -m 400 "$decoded_path" "${tls_root}/${parameter_key}"
+          host_path="$(resolve_tls_host_path "$decoded_path")"
+          install -o 10001 -g 10001 -m 400 "$host_path" "${tls_root}/${parameter_key}"
           parameter="${parameter_key}=/run/risk-rds/${parameter_key}"
           ;;
       esac
@@ -136,7 +149,7 @@ install_release() {
 
 migrate_database() {
   local migration_url migration_user migration_password expected_database runtime_password migration_secret
-  local query parameter parameter_key encoded_path decoded_path
+  local query parameter parameter_key encoded_path decoded_path host_path
   local -a migration_tls_mount_args=()
   migration_url="$(read_named_env "$migration_env" MIGRATION_URL)"
   migration_user="$(read_named_env "$migration_env" MIGRATION_USER)"
@@ -154,8 +167,8 @@ migrate_database() {
           decoded_path=${encoded_path//+/ }
           printf -v decoded_path '%b' "${decoded_path//%/\\x}"
           [[ "$decoded_path" == /* ]] || fail "$parameter_key must use an absolute path"
-          [[ -f "$decoded_path" ]] || fail "$parameter_key file is missing on the host: $decoded_path"
-          migration_tls_mount_args+=(--volume "${decoded_path}:${decoded_path}:ro")
+          host_path="$(resolve_tls_host_path "$decoded_path")"
+          migration_tls_mount_args+=(--volume "${host_path}:${decoded_path}:ro")
           ;;
       esac
     done
