@@ -101,11 +101,21 @@ class RiskFoundationMigrationIntegrationTest {
         execute("""
                 INSERT INTO risk.ai_model(
                   model_id,model_code,model_name,model_kind,domain_code,base_model_reference,
-                  purpose_definition,status_code,created_by_subject,updated_by_subject)
+                  purpose_definition,created_by_subject,updated_by_subject)
                 VALUES('21400000-0000-0000-0000-000000000010','RISK_AI_CORE',
                   '粮食风险独立研判模型','DOMAIN_LLM','CROSS_DOMAIN','Qwen-compatible-base',
-                  '{"purpose":"evidence-bound risk judgement"}'::jsonb,'ACTIVE','risk-test','risk-test')
+                  '{"purpose":"evidence-bound risk judgement"}'::jsonb,'risk-test','risk-test')
                 """);
+        execute("""
+                UPDATE risk.ai_model SET status_code='ACTIVE',updated_at=now()
+                WHERE model_id='21400000-0000-0000-0000-000000000010'
+                """);
+        assertThatThrownBy(() -> execute("""
+                UPDATE risk.ai_model SET base_model_reference='changed-base'
+                WHERE model_id='21400000-0000-0000-0000-000000000010'
+                """))
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("Active AI model identity and purpose are immutable");
         assertThatThrownBy(() -> execute("""
                 INSERT INTO risk.ai_training_policy(
                   training_policy_id,model_id,scheduled_local_time,training_window_days,
@@ -131,6 +141,12 @@ class RiskFoundationMigrationIntegrationTest {
                 """))
                 .isInstanceOf(SQLException.class)
                 .hasMessageContaining("Training identity, inputs, code and parameters are immutable");
+        assertThatThrownBy(() -> execute("""
+                UPDATE risk.training_run SET started_at=started_at + interval '1 minute'
+                WHERE training_run_id='21400000-0000-0000-0000-000000000014'
+                """))
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("Recorded training lifecycle evidence is immutable");
 
         assertThatThrownBy(() -> execute("""
                 INSERT INTO risk.model_version(
@@ -190,6 +206,16 @@ class RiskFoundationMigrationIntegrationTest {
                 WHERE model_id='21400000-0000-0000-0000-000000000010' AND version=1
                 """);
         execute("""
+                INSERT INTO risk.risk_assessment(
+                  assessment_id,domain_code,subject_type,subject_id,model_id,model_version,
+                  evaluation_mode,risk_level,reason_codes,evidence_snapshot,score,
+                  evaluated_at,evaluation_duration_ms)
+                VALUES('21400000-0000-0000-0000-000000000021','INVENTORY','WAREHOUSE','WH-1',
+                  '21400000-0000-0000-0000-000000000010',1,'AI_ASSISTED','LOW',
+                  ARRAY['BALANCE_STABLE'],'{"movementCount":2}'::jsonb,0.1,
+                  TIMESTAMPTZ '2026-09-21 03:20:00+00',25)
+                """);
+        execute("""
                 UPDATE risk.model_version SET status_code='RETIRED',
                   retired_at=TIMESTAMPTZ '2026-09-21 04:00:00+00'
                 WHERE model_id='21400000-0000-0000-0000-000000000010' AND version=1
@@ -218,6 +244,42 @@ class RiskFoundationMigrationIntegrationTest {
                 """))
                 .isInstanceOf(SQLException.class)
                 .hasMessageContaining("Reviewed rule definitions are immutable");
+        execute("""
+                UPDATE risk.risk_rule_set_version SET status_code='APPROVED',
+                  approved_by_subject='risk-approver',
+                  approved_at=TIMESTAMPTZ '2026-09-21 04:10:00+00'
+                WHERE rule_set_id='21400000-0000-0000-0000-000000000020' AND version=1
+                """);
+        assertThatThrownBy(() -> execute("""
+                UPDATE risk.risk_rule_set_version SET status_code='ACTIVE',
+                  approved_at=TIMESTAMPTZ '2026-09-21 04:11:00+00',
+                  effective_from=TIMESTAMPTZ '2026-09-21 04:11:00+00'
+                WHERE rule_set_id='21400000-0000-0000-0000-000000000020' AND version=1
+                """))
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("Recorded rule lifecycle evidence is immutable");
+        assertThatThrownBy(() -> execute("""
+                INSERT INTO risk.risk_assessment(
+                  assessment_id,domain_code,subject_type,subject_id,evaluation_mode,risk_level,
+                  reason_codes,evidence_snapshot,evaluated_at,evaluation_duration_ms)
+                VALUES('21400000-0000-0000-0000-000000000022','INVENTORY','WAREHOUSE','WH-1',
+                  'RULE','LOW',ARRAY['RULE_TEST'],'{}'::jsonb,now(),1)
+                """))
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("RULE assessments require a rule set version");
+
+        insertMarketCandidate();
+        assertThatThrownBy(() -> execute("""
+                INSERT INTO risk.risk_assessment(
+                  assessment_id,domain_code,subject_type,subject_id,model_id,model_version,
+                  evaluation_mode,risk_level,reason_codes,evidence_snapshot,
+                  evaluated_at,evaluation_duration_ms)
+                VALUES('21400000-0000-0000-0000-000000000034','INVENTORY','MARKET_SUBJECT','M-1',
+                  '21400000-0000-0000-0000-000000000030',1,'MODEL_SHADOW','LOW',
+                  ARRAY['DOMAIN_TEST'],'{}'::jsonb,now(),1)
+                """))
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("Assessment domain must match the model domain or use CROSS_DOMAIN");
     }
 
     private static String sourceEventInsert(String sourceEventId) {
@@ -317,6 +379,56 @@ class RiskFoundationMigrationIntegrationTest {
                 VALUES('21400000-0000-0000-0000-000000000010',1,'CROSS_DOMAIN',
                   '21400000-0000-0000-0000-000000000014','mlflow://risk-ai/1',repeat('e',64),
                   '{"false_positive_rate":0.02}'::jsonb,'{"minimum_confidence":0.8}'::jsonb)
+                """);
+    }
+
+    private void insertMarketCandidate() throws SQLException {
+        execute("""
+                INSERT INTO risk.ai_model(
+                  model_id,model_code,model_name,model_kind,domain_code,base_model_reference,
+                  purpose_definition,created_by_subject,updated_by_subject)
+                VALUES('21400000-0000-0000-0000-000000000030','RISK_MARKET_MODEL','市场风险模型',
+                  'FORECAST','MARKET','market-base','{}'::jsonb,'risk-test','risk-test')
+                """);
+        execute("""
+                UPDATE risk.ai_model SET status_code='ACTIVE',updated_at=now()
+                WHERE model_id='21400000-0000-0000-0000-000000000030'
+                """);
+        execute("""
+                INSERT INTO risk.training_snapshot(
+                  training_snapshot_id,domain_code,snapshot_date,cutoff_at,knowledge_snapshot_id,
+                  data_sha256,feature_schema_version,row_count,positive_label_count,
+                  negative_label_count,source_watermarks,status_code)
+                VALUES('21400000-0000-0000-0000-000000000031','MARKET',DATE '2026-09-21',
+                  TIMESTAMPTZ '2026-09-21 00:00:00+00',
+                  '21400000-0000-0000-0000-000000000012',repeat('2',64),'market-v1',20,2,18,
+                  '{}'::jsonb,'FROZEN')
+                """);
+        execute("""
+                INSERT INTO risk.training_run(
+                  training_run_id,model_id,training_snapshot_id,domain_code,training_kind,
+                  algorithm_code,algorithm_version,code_sha256,parameter_definition,random_seed,
+                  status_code)
+                VALUES('21400000-0000-0000-0000-000000000032',
+                  '21400000-0000-0000-0000-000000000030',
+                  '21400000-0000-0000-0000-000000000031','MARKET','RETRAIN',
+                  'MARKET_TRAINER','1',repeat('3',64),'{}'::jsonb,32,'QUEUED')
+                """);
+        execute("""
+                UPDATE risk.training_run SET status_code='RUNNING',started_at=now()
+                WHERE training_run_id='21400000-0000-0000-0000-000000000032'
+                """);
+        execute("""
+                UPDATE risk.training_run SET status_code='SUCCEEDED',completed_at=now()
+                WHERE training_run_id='21400000-0000-0000-0000-000000000032'
+                """);
+        execute("""
+                INSERT INTO risk.model_version(
+                  model_id,version,domain_code,training_run_id,artifact_reference,artifact_sha256,
+                  metric_definition,threshold_definition)
+                VALUES('21400000-0000-0000-0000-000000000030',1,'MARKET',
+                  '21400000-0000-0000-0000-000000000032','mlflow://risk-market/1',repeat('4',64),
+                  '{}'::jsonb,'{}'::jsonb)
                 """);
     }
 

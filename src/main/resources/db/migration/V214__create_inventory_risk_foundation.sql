@@ -434,6 +434,89 @@ CREATE TABLE risk.ai_judgement (
     CHECK (advisory_only)
 );
 
+CREATE FUNCTION risk.validate_risk_assessment_model_scope()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    version_domain varchar(30);
+    version_status varchar(20);
+    rule_status varchar(20);
+BEGIN
+    IF NEW.model_id IS NULL THEN
+        IF NEW.evaluation_mode<>'RULE' THEN
+            RAISE EXCEPTION 'Model-backed assessments require a model version';
+        END IF;
+        IF NEW.rule_set_id IS NULL THEN
+            RAISE EXCEPTION 'RULE assessments require a rule set version';
+        END IF;
+        SELECT status_code INTO STRICT rule_status
+        FROM risk.risk_rule_set_version
+        WHERE rule_set_id=NEW.rule_set_id AND version=NEW.rule_set_version
+          AND domain_code=NEW.domain_code;
+        IF rule_status<>'ACTIVE' THEN
+            RAISE EXCEPTION 'RULE assessments require an ACTIVE rule set version';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF NEW.evaluation_mode='RULE' THEN
+        RAISE EXCEPTION 'RULE assessments cannot claim a model version';
+    END IF;
+    SELECT domain_code,status_code INTO STRICT version_domain,version_status
+    FROM risk.model_version
+    WHERE model_id=NEW.model_id AND version=NEW.model_version;
+    IF version_domain<>NEW.domain_code AND version_domain<>'CROSS_DOMAIN' THEN
+        RAISE EXCEPTION 'Assessment domain must match the model domain or use CROSS_DOMAIN';
+    END IF;
+    IF NEW.evaluation_mode='MODEL_SHADOW' AND version_status<>'SHADOW' THEN
+        RAISE EXCEPTION 'MODEL_SHADOW assessments require a SHADOW model version';
+    END IF;
+    IF NEW.evaluation_mode IN ('MODEL_GOVERNED','AI_ASSISTED')
+       AND version_status<>'ACTIVE' THEN
+        RAISE EXCEPTION 'Governed model assessments require an ACTIVE model version';
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER risk_assessment_model_scope_validated
+BEFORE INSERT OR UPDATE ON risk.risk_assessment
+FOR EACH ROW EXECUTE FUNCTION risk.validate_risk_assessment_model_scope();
+
+CREATE FUNCTION risk.enforce_ai_model_transition()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    IF TG_OP='INSERT' THEN
+        IF NEW.status_code<>'DRAFT' THEN
+            RAISE EXCEPTION 'AI model identities must be created as DRAFT';
+        END IF;
+        RETURN NEW;
+    END IF;
+    IF OLD.status_code<>'DRAFT' AND ROW(
+        OLD.model_id,OLD.model_code,OLD.model_kind,OLD.domain_code,OLD.isolation_scope,
+        OLD.base_model_reference,OLD.purpose_definition,OLD.created_by_subject,OLD.created_at
+    ) IS DISTINCT FROM ROW(
+        NEW.model_id,NEW.model_code,NEW.model_kind,NEW.domain_code,NEW.isolation_scope,
+        NEW.base_model_reference,NEW.purpose_definition,NEW.created_by_subject,NEW.created_at
+    ) THEN
+        RAISE EXCEPTION 'Active AI model identity and purpose are immutable';
+    END IF;
+    IF OLD.status_code=NEW.status_code THEN
+        RETURN NEW;
+    END IF;
+    IF OLD.status_code='DRAFT' AND NEW.status_code<>'ACTIVE'
+       OR OLD.status_code='ACTIVE' AND NEW.status_code NOT IN ('SUSPENDED','RETIRED')
+       OR OLD.status_code='SUSPENDED' AND NEW.status_code NOT IN ('ACTIVE','RETIRED')
+       OR OLD.status_code='RETIRED' THEN
+        RAISE EXCEPTION 'Invalid AI model lifecycle transition from % to %',
+            OLD.status_code,NEW.status_code;
+    END IF;
+    RETURN NEW;
+END
+$$;
+
+CREATE TRIGGER ai_model_governed_transition
+BEFORE INSERT OR UPDATE ON risk.ai_model
+FOR EACH ROW EXECUTE FUNCTION risk.enforce_ai_model_transition();
+
 CREATE FUNCTION risk.validate_inventory_movement()
 RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE
@@ -653,6 +736,14 @@ BEGIN
     ) THEN
         RAISE EXCEPTION 'Reviewed rule definitions are immutable; create a new version';
     END IF;
+    IF (OLD.approved_by_subject IS NOT NULL
+            AND OLD.approved_by_subject IS DISTINCT FROM NEW.approved_by_subject)
+       OR (OLD.approved_at IS NOT NULL AND OLD.approved_at IS DISTINCT FROM NEW.approved_at)
+       OR (OLD.effective_from IS NOT NULL
+            AND OLD.effective_from IS DISTINCT FROM NEW.effective_from)
+       OR (OLD.effective_to IS NOT NULL AND OLD.effective_to IS DISTINCT FROM NEW.effective_to) THEN
+        RAISE EXCEPTION 'Recorded rule lifecycle evidence is immutable';
+    END IF;
     IF OLD.status_code=NEW.status_code THEN
         IF OLD.status_code<>'DRAFT' AND ROW(
             OLD.approved_by_subject,OLD.approved_at,OLD.effective_from,OLD.effective_to
@@ -715,6 +806,13 @@ BEGIN
         NEW.parameter_definition,NEW.random_seed,NEW.created_at
     ) THEN
         RAISE EXCEPTION 'Training identity, inputs, code and parameters are immutable';
+    END IF;
+    IF (OLD.started_at IS NOT NULL AND OLD.started_at IS DISTINCT FROM NEW.started_at)
+       OR (OLD.completed_at IS NOT NULL AND OLD.completed_at IS DISTINCT FROM NEW.completed_at)
+       OR (OLD.failure_code IS NOT NULL AND OLD.failure_code IS DISTINCT FROM NEW.failure_code)
+       OR (OLD.failure_message IS NOT NULL
+            AND OLD.failure_message IS DISTINCT FROM NEW.failure_message) THEN
+        RAISE EXCEPTION 'Recorded training lifecycle evidence is immutable';
     END IF;
     IF OLD.status_code=NEW.status_code THEN
         IF ROW(

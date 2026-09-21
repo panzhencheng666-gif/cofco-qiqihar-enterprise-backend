@@ -87,7 +87,8 @@ class RiskFoundationMigrationContractTest {
                 .contains("Training requires an active model and accepted frozen snapshots")
                 .contains("Training identity, inputs, code and parameters are immutable")
                 .contains("CREATE FUNCTION risk.enforce_rule_set_version_transition()")
-                .contains("Reviewed rule definitions are immutable; create a new version");
+                .contains("Reviewed rule definitions are immutable; create a new version")
+                .contains("Recorded rule lifecycle evidence is immutable");
     }
 
     @Test
@@ -105,6 +106,11 @@ class RiskFoundationMigrationContractTest {
                 .contains("uncertainty_definition jsonb NOT NULL")
                 .contains("advisory_only boolean NOT NULL DEFAULT true")
                 .contains("CHECK (advisory_only)")
+                .contains("CREATE FUNCTION risk.enforce_ai_model_transition()")
+                .contains("Active AI model identity and purpose are immutable")
+                .contains("CREATE FUNCTION risk.validate_risk_assessment_model_scope()")
+                .contains("RULE assessments require a rule set version")
+                .contains("Assessment domain must match the model domain or use CROSS_DOMAIN")
                 .doesNotContain("consciousness", "self_aware", "autonomous_action");
     }
 }
