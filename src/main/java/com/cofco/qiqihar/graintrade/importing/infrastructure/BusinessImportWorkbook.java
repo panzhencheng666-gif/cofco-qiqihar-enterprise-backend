@@ -38,6 +38,7 @@ public final class BusinessImportWorkbook {
             "LOG_SAMPLE_LATITUDE", "LOG_SAMPLE_LONGITUDE");
     private static final Map<String, String> PUBLIC_CONTEXT_VALUES = Map.ofEntries(
             Map.entry("PRODUCTION", "产情"), Map.entry("MARKET", "市场"), Map.entry("LOGISTICS", "物流"),
+            Map.entry("OPERATIONAL_FACILITY", "库点"),
             Map.entry("DESIGN_SAMPLE_POINT", "设计样本点"),
             Map.entry("FORMAL_SAMPLE_POINT", "正式样本"),
             Map.entry("CORN", "玉米"), Map.entry("SOYBEAN", "大豆"), Map.entry("RICE", "稻谷"),
@@ -115,7 +116,7 @@ public final class BusinessImportWorkbook {
         }
 
         private static boolean requiresProductContext(String domainCode) {
-            return !Set.of("LOGISTICS", "DESIGN_SAMPLE_POINT", "FORMAL_SAMPLE_POINT")
+            return !Set.of("LOGISTICS", "DESIGN_SAMPLE_POINT", "FORMAL_SAMPLE_POINT", "OPERATIONAL_FACILITY")
                     .contains(domainCode);
         }
     }
@@ -359,7 +360,7 @@ public final class BusinessImportWorkbook {
     }
 
     private static boolean requiresProductContext(String domainCode) {
-        return !Set.of("LOGISTICS", "DESIGN_SAMPLE_POINT", "FORMAL_SAMPLE_POINT")
+        return !Set.of("LOGISTICS", "DESIGN_SAMPLE_POINT", "FORMAL_SAMPLE_POINT", "OPERATIONAL_FACILITY")
                 .contains(domainCode);
     }
 

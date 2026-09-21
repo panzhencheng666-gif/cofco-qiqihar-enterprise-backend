@@ -96,21 +96,19 @@ public class JdbcRegionalRailwayRepository implements RegionalRailwayRepository 
                 .query((rs,n) -> rs.getTimestamp("source_as_of") == null ? null : rs.getTimestamp("source_as_of").toInstant().toString())
                 .optional().orElse(null);
         var facilities = jdbc.sql("""
-                WITH boundary AS MATERIALIZED (SELECT geometry FROM overview.administrative_boundary WHERE region_code=:region),
-                pieces AS MATERIALIZED (
-                  SELECT geometry,geometry::geography AS geog
-                  FROM (SELECT ST_Subdivide(geometry,256) AS geometry FROM boundary) parts
+                WITH boundary AS MATERIALIZED (
+                  SELECT geometry,ST_Simplify(geometry,0.0001,true)::geography AS search_geography
+                  FROM overview.administrative_boundary WHERE region_code=:region
                 ),
                 inside AS MATERIALIZED (
-                  SELECT DISTINCT f.source_id FROM pieces p
-                  JOIN overview.regional_railway_feature f ON f.geometry && p.geometry
-                    AND f.kind<>'rail' AND ST_Covers(p.geometry,f.geometry)
+                  SELECT f.source_id FROM boundary b
+                  JOIN overview.regional_railway_feature f ON f.geometry && b.geometry
+                    AND f.kind<>'rail' AND ST_Covers(b.geometry,f.geometry)
                 ), nearby AS MATERIALIZED (
-                  SELECT f.source_id,min(ST_Distance(f.geometry::geography,p.geog))/1000 AS distance_km
-                  FROM pieces p JOIN overview.regional_railway_feature f
-                    ON f.kind<>'rail' AND ST_DWithin(f.geometry::geography,p.geog,25000)
+                  SELECT f.source_id,ST_Distance(f.geometry::geography,b.search_geography)/1000 AS distance_km
+                  FROM boundary b JOIN overview.regional_railway_feature f
+                    ON f.kind<>'rail' AND ST_DWithin(f.geometry::geography,b.search_geography,25000)
                   WHERE NOT EXISTS(SELECT 1 FROM inside i WHERE i.source_id=f.source_id)
-                  GROUP BY f.source_id
                 ), located AS (
                   SELECT source_id,true AS within_region,0::double precision AS distance_km FROM inside
                   UNION ALL SELECT source_id,false,distance_km FROM nearby
@@ -138,7 +136,9 @@ public class JdbcRegionalRailwayRepository implements RegionalRailwayRepository 
                 }).list();
         var lines = includeLines ? jdbc.sql("""
                 WITH pieces AS MATERIALIZED (
-                  SELECT ST_Subdivide(geometry,256) AS geometry
+                  SELECT ST_Subdivide(
+                    ST_CollectionExtract(ST_MakeValid(ST_Simplify(geometry,0.0001,true)),3),256
+                  ) AS geometry
                   FROM overview.administrative_boundary WHERE region_code=:region
                 ), fragments AS (
                   SELECT f.name,f.tags,f.source_id,ST_CollectionExtract(ST_Intersection(f.geometry,p.geometry),2) AS geometry
