@@ -45,14 +45,27 @@ export RISK_DB_USERNAME='qiqihar_risk_runtime_login'
 export RISK_DB_PASSWORD='<generated-risk-runtime-password>'
 export RISK_EXPECTED_DATABASE='qiqihar_enterprise_test'
 export RISK_INGESTION_KEY='<generated-local-ingestion-key>'
+export RISK_LLM_BEARER_TOKEN='<generated-local-trainer-token>'
+export RISK_LLM_BASE_MODEL='mlx-community/Qwen3-0.6B-4bit'
 ./scripts/risk-intelligence-local.sh install
 ./scripts/risk-intelligence-local.sh status
 ./scripts/healthcheck-risk-intelligence-local.sh
 ```
 
-服务仅监听 `127.0.0.1:63184`。`POST /api/v1/risk-intelligence/source-facts` 还要求请求头
+Java 服务仅监听 `127.0.0.1:63184`，受监管的 MLX LoRA 训练/评分服务仅监听
+`127.0.0.1:63201`。两者由同一 LaunchAgent 管理，任一退出都会重启完整服务对；模型工件写入
+`~/Library/Application Support/COFCO Qiqihar Risk Intelligence/model-artifacts`，不进入数据库。
+`POST /api/v1/risk-intelligence/source-facts` 还要求请求头
 `X-Risk-Ingestion-Key`；缺失或错误时不会写入。升级会创建新的只读发布快照并原子切换 `current`
 软链接，未知的运行目录或未归属的端口监听会被拒绝接管。
+
+完成独立服务切换后，必须关闭旧企业后端中的风险训练 worker，避免两个进程同时调度：
+
+```bash
+./scripts/disable-legacy-risk-training-worker.sh
+```
+
+该操作只写入本地运行配置 `QIQIHAR_RISK_TRAINING_ENABLED=false`；不会关闭旧后端的任何非风险功能。
 
 常用生命周期命令：
 

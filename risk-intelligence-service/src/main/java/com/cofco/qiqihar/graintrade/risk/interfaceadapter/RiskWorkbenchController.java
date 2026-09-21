@@ -31,14 +31,15 @@ public class RiskWorkbenchController {
             @RequestParam(defaultValue="OPEN") String status,
             @RequestParam(defaultValue="") String search,
             @RequestParam(defaultValue="100") int limit,
-            @RequestHeader("X-Actor") String actor) {
+            @RequestHeader(value="X-Actor",required=false) String actor) {
         RiskRequestIdentity.requireActor(actor);
         return new ApiResponse<>(service.assessments(domain,level,status,search,limit));
     }
 
     @GetMapping("/assessments/{assessmentId}")
     ApiResponse<RiskAssessmentDetail> assessment(
-            @PathVariable UUID assessmentId,@RequestHeader("X-Actor") String actor) {
+            @PathVariable UUID assessmentId,
+            @RequestHeader(value="X-Actor",required=false) String actor) {
         RiskRequestIdentity.requireActor(actor);
         return new ApiResponse<>(service.assessment(assessmentId));
     }
@@ -46,7 +47,7 @@ public class RiskWorkbenchController {
     @PostMapping("/assessments/{assessmentId}/feedback")
     ApiResponse<RiskFeedback> feedback(
             @PathVariable UUID assessmentId,@RequestBody FeedbackRequest request,
-            @RequestHeader("X-Actor") String actor) {
+            @RequestHeader(value="X-Actor",required=false) String actor) {
         return new ApiResponse<>(service.submitFeedback(
                 assessmentId,request.conclusionCode(),request.reasonCode(),request.dispositionNote(),
                 RiskRequestIdentity.requireActor(actor)));

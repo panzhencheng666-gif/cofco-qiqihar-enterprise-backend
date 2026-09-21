@@ -4,6 +4,7 @@ set -euo pipefail
 config_file="${HOME}/.config/cofco-qiqihar-risk-intelligence/local-runtime.env"
 port="${RISK_SERVER_PORT:-63184}"
 expected_database="${RISK_EXPECTED_DATABASE:-}"
+trainer_port="${RISK_LLM_PORT:-63201}"
 
 if [[ -f "$config_file" ]]; then
   mode="$(stat -f '%Lp' "$config_file")"
@@ -15,6 +16,7 @@ if [[ -f "$config_file" ]]; then
     case "$key" in
       RISK_SERVER_PORT) port=$value ;;
       RISK_EXPECTED_DATABASE) expected_database=$value ;;
+      RISK_LLM_PORT) trainer_port=$value ;;
     esac
   done < "$config_file"
 fi
@@ -45,3 +47,7 @@ grep -Fq "127.0.0.1:${port}" <<< "$listener" || {
   exit 1
 }
 echo "RISK_DATABASE_BOUNDARY_OK ${result}"
+
+trainer_json="$(curl -fsS --max-time 4 "http://127.0.0.1:${trainer_port}/health")"
+python3 -c 'import json,sys; payload=json.load(sys.stdin); assert payload.get("status") == "UP"; assert payload.get("engine") == "mlx-lm"' <<< "$trainer_json"
+echo "RISK_LLM_TRAINER_HEALTH_OK url=http://127.0.0.1:${trainer_port}/health"

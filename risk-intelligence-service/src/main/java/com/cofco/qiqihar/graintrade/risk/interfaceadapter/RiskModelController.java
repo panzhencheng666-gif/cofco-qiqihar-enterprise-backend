@@ -23,14 +23,16 @@ public class RiskModelController {
     }
 
     @GetMapping("/overview")
-    ApiResponse<RiskModelOverview> overview(@RequestHeader("X-Actor") String actor) {
+    ApiResponse<RiskModelOverview> overview(
+            @RequestHeader(value="X-Actor",required=false) String actor) {
         RiskRequestIdentity.requireActor(actor);
         return new ApiResponse<>(service.overview());
     }
 
     @PostMapping("/{modelId}/training-requests")
     ApiResponse<RiskTrainingRequest> requestTraining(
-            @PathVariable UUID modelId,@RequestHeader("X-Actor") String actor) {
+            @PathVariable UUID modelId,
+            @RequestHeader(value="X-Actor",required=false) String actor) {
         return new ApiResponse<>(service.requestTraining(modelId,RiskRequestIdentity.requireActor(actor)));
     }
 }
