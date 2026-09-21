@@ -3,6 +3,7 @@ package com.cofco.qiqihar.graintrade.risk.infrastructure;
 import com.cofco.qiqihar.graintrade.risk.application.LocalRiskClassifierTrainer;
 import com.cofco.qiqihar.graintrade.risk.application.ExternalLoraRiskModelTrainer;
 import com.cofco.qiqihar.graintrade.risk.application.RiskModelSummary;
+import com.cofco.qiqihar.graintrade.risk.application.RiskModelActivationSummary;
 import com.cofco.qiqihar.graintrade.risk.application.RiskTrainingArtifact;
 import com.cofco.qiqihar.graintrade.risk.application.RiskTrainingClaim;
 import com.cofco.qiqihar.graintrade.risk.application.RiskTrainingExample;
@@ -101,6 +102,22 @@ public class JdbcRiskTrainingRepository implements RiskTrainingRepository {
                         row.getString("outcome_code"),row.getString("outcome_message"),
                         uuid(row,"training_snapshot_id"),uuid(row,"training_run_id"),
                         instant(row,"created_at"),instant(row,"started_at"),instant(row,"completed_at"))).list();
+    }
+
+    @Override
+    @Transactional(readOnly=true)
+    public List<RiskModelActivationSummary> findRecentActivationEvents(int limit) {
+        return jdbc.sql("""
+                SELECT event.event_id,event.model_id,model.model_name,event.from_version,
+                       event.to_version,event.event_code,event.reason_code,event.occurred_at
+                FROM risk.model_activation_event event
+                JOIN risk.ai_model model ON model.model_id=event.model_id
+                ORDER BY event.occurred_at DESC,event.event_id DESC LIMIT :limit
+                """).param("limit",limit).query((row,index) -> new RiskModelActivationSummary(
+                        uuid(row,"event_id"),uuid(row,"model_id"),row.getString("model_name"),
+                        integer(row,"from_version"),row.getInt("to_version"),
+                        row.getString("event_code"),row.getString("reason_code"),
+                        instant(row,"occurred_at"))).list();
     }
 
     @Override
@@ -230,7 +247,7 @@ public class JdbcRiskTrainingRepository implements RiskTrainingRepository {
                 SELECT assessment.assessment_id,feedback.resolved_at,feedback.conclusion_code,
                        assessment.domain_code,assessment.subject_type,assessment.evaluation_mode,
                        assessment.risk_level,array_to_json(assessment.reason_codes)::text reason_codes,
-                       assessment.evidence_snapshot::text evidence_snapshot,feedback.reason_code
+                       assessment.evidence_snapshot::text evidence_snapshot
                 FROM risk.risk_case_feedback feedback
                 JOIN risk.risk_assessment assessment ON assessment.assessment_id=feedback.assessment_id
                 WHERE feedback.resolved_at>=:window_start AND feedback.resolved_at<=:cutoff
@@ -249,7 +266,6 @@ public class JdbcRiskTrainingRepository implements RiskTrainingRepository {
             payload.put("riskLevel",label.riskLevel());
             payload.put("reasonCodes",readJson(label.reasonCodes()));
             payload.put("evidence",readJson(label.evidenceSnapshot()));
-            payload.put("feedbackReasonCode",label.feedbackReasonCode());
             String canonical=writeJson(payload);
             boolean positive=!"FALSE_POSITIVE".equals(label.conclusionCode());
             examples.add(new RiskTrainingExample(label.assessmentId(),label.resolvedAt(),canonical,positive));
@@ -367,7 +383,7 @@ public class JdbcRiskTrainingRepository implements RiskTrainingRepository {
                     outcome_message=:message,completed_at=:completed,lease_owner=NULL,lease_until=NULL
                 WHERE execution_id=:execution AND status_code='RUNNING'
                 """).param("run",trainingRunId)
-                .param("message","已生成候选模型 v"+modelVersion+"，等待影子评估和人工审批")
+                .param("message","已生成候选模型 v"+modelVersion+"，等待真实影子结果与自动晋级")
                 .param("completed",dbTime(completedAt)).param("execution",executionId).update();
     }
 
@@ -409,7 +425,7 @@ public class JdbcRiskTrainingRepository implements RiskTrainingRepository {
                 row.getString("conclusion_code"),row.getString("domain_code"),
                 row.getString("subject_type"),row.getString("evaluation_mode"),
                 row.getString("risk_level"),row.getString("reason_codes"),
-                row.getString("evidence_snapshot"),row.getString("reason_code"));
+                row.getString("evidence_snapshot"));
     }
 
     private Object readJson(String value) {
@@ -463,5 +479,5 @@ public class JdbcRiskTrainingRepository implements RiskTrainingRepository {
 
     private record LabelRow(UUID assessmentId,Instant resolvedAt,String conclusionCode,
             String domainCode,String subjectType,String evaluationMode,String riskLevel,
-            String reasonCodes,String evidenceSnapshot,String feedbackReasonCode) { }
+            String reasonCodes,String evidenceSnapshot) { }
 }

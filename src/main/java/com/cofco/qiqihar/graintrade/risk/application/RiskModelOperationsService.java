@@ -27,7 +27,7 @@ public class RiskModelOperationsService {
     public RiskModelOverview overview() {
         access.requireBusinessReadScope();
         return new RiskModelOverview(repository.findModels(),repository.findRecentExecutions(50),
-                clock.instant());
+                repository.findRecentActivationEvents(50),clock.instant());
     }
 
     @Transactional

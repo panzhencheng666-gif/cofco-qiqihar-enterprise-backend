@@ -20,4 +20,18 @@ class RiskTrainingMigrationContractTest {
                 .contains("'RISK_CLASSIFIER'")
                 .contains("risk-domain-classifier-v1");
     }
+
+    @Test
+    void automaticPromotionMigrationRequiresRealShadowEvidenceAndRollbackLedger() throws Exception {
+        String sql=Files.readString(Path.of(
+                "src/main/resources/db/migration/V216__automate_risk_model_promotion.sql"));
+
+        assertThat(sql)
+                .contains("CREATE TABLE risk.model_live_prediction")
+                .contains("CREATE TABLE risk.model_activation_event")
+                .contains("minimum_shadow_labels")
+                .contains("minimum_shadow_hours")
+                .contains("auto_activation_enabled=true")
+                .contains("'STANDBY'");
+    }
 }

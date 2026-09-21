@@ -71,6 +71,25 @@ class JdbcRiskTrainingRepositoryIntegrationTest {
                         """.formatted(feedbackId,assessmentId,
                                 positive?"CONFIRMED":"FALSE_POSITIVE",index));
             }
+            statement.execute("""
+                    INSERT INTO risk.risk_assessment(
+                      assessment_id,domain_code,subject_type,subject_id,rule_set_id,rule_set_version,
+                      evaluation_mode,risk_level,reason_codes,evidence_snapshot,evaluated_at,
+                      evaluation_duration_ms)
+                    VALUES('21510000-0000-0000-0000-000000000999','INVENTORY','WAREHOUSE',
+                      'subject-insufficient','21510000-0000-0000-0000-000000000001',1,'RULE',
+                      'MEDIUM',ARRAY['EVIDENCE_GAP'],'{"source":"governed-test"}',
+                      TIMESTAMPTZ '2026-09-11 00:00:00+00',12)
+                    """);
+            statement.execute("""
+                    INSERT INTO risk.risk_case_feedback(
+                      feedback_id,assessment_id,conclusion_code,reason_code,disposition_note,
+                      resolved_by_subject,resolved_at)
+                    VALUES('21510000-0000-0000-0000-000000001999',
+                      '21510000-0000-0000-0000-000000000999','INSUFFICIENT_EVIDENCE',
+                      'SOURCE_UNAVAILABLE','证据不足，不得作为训练标签','reviewer',
+                      TIMESTAMPTZ '2026-09-11 01:00:00+00')
+                    """);
         }
     }
 
@@ -97,6 +116,19 @@ class JdbcRiskTrainingRepositoryIntegrationTest {
         assertThat(snapshot.examples()).hasSize(10);
         assertThat(snapshot.positiveLabelCount()).isEqualTo(6);
         assertThat(snapshot.negativeLabelCount()).isEqualTo(4);
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM risk.training_example example
+                JOIN risk.risk_case_feedback feedback ON feedback.assessment_id=example.assessment_id
+                WHERE example.training_snapshot_id=:snapshot
+                  AND feedback.conclusion_code='INSUFFICIENT_EVIDENCE'
+                """).param("snapshot",snapshot.trainingSnapshotId())
+                .query(Integer.class).single()).isZero();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM risk.training_example
+                WHERE training_snapshot_id=:snapshot
+                  AND jsonb_exists(feature_payload,'feedbackReasonCode')
+                """).param("snapshot",snapshot.trainingSnapshotId())
+                .query(Integer.class).single()).isZero();
         assertThat(Files.isRegularFile(Path.of(artifact.artifactReference()))).isTrue();
         assertThat(jdbc.sql("SELECT status_code FROM risk.training_schedule_execution WHERE execution_id=:id")
                 .param("id",executionId).query(String.class).single()).isEqualTo("SUCCEEDED");

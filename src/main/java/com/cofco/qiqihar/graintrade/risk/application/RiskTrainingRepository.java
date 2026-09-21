@@ -9,6 +9,7 @@ import java.util.UUID;
 public interface RiskTrainingRepository {
     List<RiskModelSummary> findModels();
     List<RiskTrainingExecutionSummary> findRecentExecutions(int limit);
+    List<RiskModelActivationSummary> findRecentActivationEvents(int limit);
     boolean configureExternalLlm(String baseModelReference,Instant configuredAt);
     int enqueueDueDailyExecutions(Instant now);
     int failExpiredExecutions(Instant now);

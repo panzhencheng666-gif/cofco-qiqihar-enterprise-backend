@@ -12,10 +12,13 @@ public class RiskTrainingWorker {
     private static final org.slf4j.Logger LOG=
             org.slf4j.LoggerFactory.getLogger(RiskTrainingWorker.class);
     private final RiskTrainingOrchestrator orchestrator;
+    private final RiskModelLifecycleOrchestrator lifecycle;
     private final String workerId=ManagementFactory.getRuntimeMXBean().getName()+":"+UUID.randomUUID();
 
-    public RiskTrainingWorker(RiskTrainingOrchestrator orchestrator) {
+    public RiskTrainingWorker(RiskTrainingOrchestrator orchestrator,
+            RiskModelLifecycleOrchestrator lifecycle) {
         this.orchestrator=orchestrator;
+        this.lifecycle=lifecycle;
     }
 
     @Scheduled(initialDelayString="5s",
@@ -33,5 +36,13 @@ public class RiskTrainingWorker {
         for (int processed=0;processed<4;processed++) {
             if (Thread.currentThread().isInterrupted() || !orchestrator.processNext(workerId)) return;
         }
+    }
+
+    @Scheduled(initialDelayString="12s",
+            fixedDelayString="${qiqihar.risk.training.lifecycle-delay:30s}",
+            scheduler="riskTrainingScheduler")
+    public void processAutomaticLifecycle() {
+        int changed=lifecycle.process();
+        if (changed>0) LOG.info("Advanced automatic risk model lifecycle [changes={}]",changed);
     }
 }
