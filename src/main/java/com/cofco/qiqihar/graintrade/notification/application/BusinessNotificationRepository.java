@@ -7,6 +7,9 @@ import java.util.Optional;
 import java.util.UUID;
 
 public interface BusinessNotificationRepository {
+    /** Cursor for the shared event stream, independent of the personal inbox scope. */
+    long latestSequence();
+
     List<BusinessNotification> findVisible(
             AuthorizedReadScope scope, String subjectId, int limit);
 

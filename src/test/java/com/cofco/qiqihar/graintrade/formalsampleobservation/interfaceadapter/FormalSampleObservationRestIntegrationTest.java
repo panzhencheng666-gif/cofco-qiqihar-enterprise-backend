@@ -303,6 +303,25 @@ class FormalSampleObservationRestIntegrationTest {
     }
 
     @Test
+    void pagesEligibleSamplesWithoutReturningTheFullCatalog() throws Exception {
+        for (String domain : java.util.List.of("PRODUCTION", "MARKET", "LOGISTICS")) {
+            mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
+                            .principal(() -> ACTOR)
+                            .queryParam("domain", domain)
+                            .queryParam("productCode", "CORN")
+                            .queryParam("keyword", "既有正式")
+                            .queryParam("year", "2026")
+                            .queryParam("observedAt", "2026-08-28T10:15:00+08:00")
+                            .queryParam("pageNumber", "0").queryParam("pageSize", "1"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.items.length()").value(1))
+                    .andExpect(jsonPath("$.data.pageNumber").value(0))
+                    .andExpect(jsonPath("$.data.pageSize").value(1))
+                    .andExpect(jsonPath("$.data.totalElements").value(1));
+        }
+    }
+
+    @Test
     void filtersEligibleSamplesByAuthoritativeObjectTypeAndBoundedKeyword() throws Exception {
         mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
                         .principal(() -> ACTOR)
