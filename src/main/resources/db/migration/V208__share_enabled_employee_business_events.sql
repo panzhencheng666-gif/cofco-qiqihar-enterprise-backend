@@ -150,4 +150,3 @@ LEFT JOIN platform.business_event_delivery_state state
 GROUP BY consumer.consumer_id,consumer.poll_next_retry_at,
          consumer.consecutive_poll_failures,consumer.updated_at,
          consumer.lease_expires_at,consumer.evaluated_at;
-
