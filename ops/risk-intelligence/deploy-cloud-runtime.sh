@@ -190,7 +190,8 @@ migrate_database() {
     --command="SELECT current_setting('max_connections')::int-count(*) FROM pg_stat_activity")"
   [[ "$connection_headroom" -ge 10 ]] || { rm -f "$migration_secret"; fail "RDS has fewer than 10 free connections"; }
   if ! podman run --rm --network host --memory=384m --cpus=0.75 --pids-limit=256 \
-      --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m --env-file "$migration_secret" \
+      --read-only --tmpfs /tmp:rw,noexec,nosuid,size=64m \
+      --tmpfs /run:rw,noexec,nosuid,size=4m --env-file "$migration_secret" \
       "${migration_tls_mount_args[@]}" \
       -v "${release_dir}:/release:ro" --entrypoint java "$image" \
       -Dloader.main=com.cofco.qiqihar.riskintelligence.operations.RiskMigrationRunner \
