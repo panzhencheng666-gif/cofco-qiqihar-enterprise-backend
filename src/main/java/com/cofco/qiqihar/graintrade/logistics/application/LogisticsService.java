@@ -77,7 +77,7 @@ public class LogisticsService {
         LogisticsDraft securedDraft=withReporter(draft,principal.displayName());
         validate(securedDraft);
         if(!repository.actionAllowed(securedDraft.productCode(),LogisticsStatus.DRAFT,"NEW"))throw invalid();
-        LogisticsRecordView created=repository.insert(UUID.randomUUID().toString(),securedDraft,principal.subjectId(),clock.instant()); audit(principal,created,"LOGISTICS_RECORD_CREATED"); return authorizedView(created);
+        LogisticsRecordView created=repository.insert(UUID.randomUUID().toString(),securedDraft,principal.subjectId(),clock.instant()); audit(principal,created,"LOGISTICS_RECORD_CREATED"); return persistValidated(created,principal);
     }
     @Transactional public LogisticsRecordView saveOfficialObservation(
             FormalSampleIdentity identity, OffsetDateTime observedAt,
@@ -107,32 +107,67 @@ public class LogisticsService {
         SecurityPrincipal principal=accessControl.require("BUSINESS_IMPORT",repository.regionsForDraft(securedDraft).iterator().next());
         LogisticsRecordView created=repository.insert(UUID.randomUUID().toString(),securedDraft,principal.subjectId(),clock.instant());
         audit(principal,created,"LOGISTICS_RECORD_IMPORTED");
-        return created.id();
+        return persistValidated(created,principal).id();
     }
     @Transactional public LogisticsRecordView save(String id,long version,LogisticsDraft draft) {
         LogisticsRecordView existing=required(id); SecurityPrincipal principal=authorize("BUSINESS_UPDATE",repository.regionsForRecord(id)); requireVersion(existing,version);
         if (!existing.productCode().equals(draft.productCode())) throw invalid();
-        if (existing.status()!=LogisticsStatus.DRAFT && existing.status()!=LogisticsStatus.RETURNED) throw invalid();
-        if(!repository.actionAllowed(existing.productCode(),existing.status(),"SAVE"))throw invalid();
+        if (existing.status()==LogisticsStatus.VOIDED) throw invalid();
+
+        if (existing.status()==LogisticsStatus.APPROVED) com.cofco.qiqihar.graintrade.shared.application.OfficialSampleIdentityGuard.requireUnchanged(existing.values(),draft.values(),"LOG_");
         String reporter=existing.values().get("LOG_REPORTER");
         LogisticsDraft securedDraft=withReporter(draft,blank(reporter)?principal.displayName():reporter);
-        validate(securedDraft); authorize("BUSINESS_UPDATE",repository.regionsForDraft(securedDraft)); LogisticsRecordView updated=repository.update(id,version,securedDraft,existing.status(),existing.returnReason(),principal.subjectId(),clock.instant()); audit(principal,updated,"LOGISTICS_RECORD_UPDATED"); return authorizedView(updated);
+        validate(securedDraft); authorize("BUSINESS_UPDATE",repository.regionsForDraft(securedDraft)); authorize("BUSINESS_SUBMIT",repository.regionsForRecord(id)); authorize("BUSINESS_SUBMIT",repository.regionsForDraft(securedDraft)); LogisticsRecordView updated=repository.update(id,version,securedDraft,LogisticsStatus.APPROVED,null,principal.subjectId(),clock.instant()); repository.linkApprovedSamplePoint(id,principal.subjectId(),clock.instant()); audit(principal,updated,"LOGISTICS_RECORD_SAVED"); return authorizedView(updated);
     }
-    @Transactional public LogisticsRecordView submit(String id,long version) { return transition(id,version,LogisticsStatus.PENDING_REVIEW,null,"BUSINESS_SUBMIT","LOGISTICS_RECORD_SUBMITTED"); }
-    @Transactional public LogisticsRecordView approve(String id,long version) { return transition(id,version,LogisticsStatus.APPROVED,null,"BUSINESS_APPROVE","LOGISTICS_RECORD_APPROVED"); }
+    private LogisticsRecordView persistValidated(LogisticsRecordView record, SecurityPrincipal principal) {
+        authorize("BUSINESS_SUBMIT",repository.regionsForRecord(record.id()));
+        LogisticsRecordView saved=repository.transition(record.id(),record.version(),LogisticsStatus.APPROVED,null,principal.subjectId(),clock.instant());
+        repository.linkApprovedSamplePoint(saved.id(),principal.subjectId(),clock.instant());
+        saved=required(saved.id());
+        audit(principal,saved,"LOGISTICS_RECORD_SAVED");
+        return authorizedView(saved);
+    }
+    @Transactional public LogisticsRecordView submit(String id,long version) {
+        LogisticsRecordView existing=required(id);
+        authorize("BUSINESS_SUBMIT",repository.regionsForRecord(id)); requireVersion(existing,version);
+        if(existing.status()==LogisticsStatus.APPROVED)return authorizedView(existing);
+        return save(id,version,storedDraft(existing));
+    }
+
+    private LogisticsDraft storedDraft(LogisticsRecordView existing) {
+        Map<String,String> values=new java.util.LinkedHashMap<>();
+        repository.definition(existing.productCode()).fields().stream()
+            .filter(field -> !field.controlType().startsWith("READONLY"))
+            .filter(field -> existing.values().get(field.code())!=null)
+            .forEach(field -> values.put(field.code(),existing.values().get(field.code())));
+        return new LogisticsDraft(existing.productCode(),values);
+    }
+    @Transactional public LogisticsRecordView approve(String id,long version) {
+        throw new ClientRequestException("BUSINESS_REVIEW_REMOVED", "业务人工审核已取消，请校验后保存记录。");
+    }
     @Transactional public LogisticsRecordView returned(String id,long version,String reason) {
-        if (reason==null || reason.isBlank()) throw invalid(); return transition(id,version,LogisticsStatus.RETURNED,reason.trim(),"BUSINESS_RETURN","LOGISTICS_RECORD_RETURNED");
+        throw new ClientRequestException("BUSINESS_REVIEW_REMOVED", "业务人工审核已取消，请校验后保存记录。");
     }
     @Transactional public LogisticsRecordView voidRecord(String id,long version) {
         return transition(id,version,LogisticsStatus.VOIDED,null,"BUSINESS_UPDATE","LOGISTICS_RECORD_VOIDED");
     }
     private LogisticsRecordView transition(String id,long version,LogisticsStatus target,String reason,String permission,String auditAction) {
-        LogisticsRecordView existing=required(id); SecurityPrincipal principal=authorize(permission,repository.regionsForRecord(id)); requireVersion(existing,version);
+        LogisticsRecordView existing=required(id);
+        Set<String> regions = repository.regionsForRecord(id);
+        SecurityPrincipal principal;
+        if (accessControl != null && target == LogisticsStatus.VOIDED) {
+            if (regions.isEmpty()) throw invalid();
+            principal = accessControl.requireBusinessVoid(regions.iterator().next());
+            regions.forEach(accessControl::requireBusinessVoid);
+        } else {
+            principal = authorize(permission, regions);
+        }
+        requireVersion(existing,version);
         boolean allowed=(target==LogisticsStatus.PENDING_REVIEW
                 && (existing.status()==LogisticsStatus.DRAFT || existing.status()==LogisticsStatus.RETURNED))
                 || ((target==LogisticsStatus.APPROVED || target==LogisticsStatus.RETURNED) && existing.status()==LogisticsStatus.PENDING_REVIEW);
         allowed=allowed || (target==LogisticsStatus.VOIDED
-                && (existing.status()==LogisticsStatus.DRAFT || existing.status()==LogisticsStatus.RETURNED));
+                && existing.status()!=LogisticsStatus.VOIDED);
         String action=target==LogisticsStatus.PENDING_REVIEW?"SUBMIT"
                 :target==LogisticsStatus.APPROVED?"APPROVE"
                 :target==LogisticsStatus.RETURNED?"RETURN":"VOID";
@@ -173,7 +208,7 @@ public class LogisticsService {
         if(blank(surveyYear))throw new IllegalStateException("Logistics survey year is missing");
         audit.record(principal,"LOGISTICS_RECORD",record.id(),action,clock.instant(),
                 "{\"regionCodes\":["+regions+"],\"productCode\":\""+record.productCode()
-                        +"\",\"surveyYear\":"+surveyYear+"}");
+                        +"\",\"surveyYear\":"+surveyYear+",\"version\":"+record.version()+"}");
     }
     private LogisticsRecordView required(String id){LogisticsRecordView value=repository.find(id); if(value==null) throw new ResourceNotFoundException("LOGISTICS_RECORD_NOT_FOUND","Logistics record was not found"); return value;}
     private LogisticsDraft securedImportDraft(LogisticsDraft draft) {
@@ -196,6 +231,9 @@ public class LogisticsService {
         if(principal==null)return record;
         boolean regionAllowed=principal.isRootAdministrator() || repository.regionsForRecord(record.id()).stream().allMatch(principal::includesRegion);
         java.util.List<String> actions=record.allowedActions().stream().filter(action -> {
+            if ("VOID".equals(action)) return !repository.regionsForRecord(record.id()).isEmpty()
+                    && repository.regionsForRecord(record.id()).stream()
+                            .allMatch(region -> accessControl.canVoidBusinessRecord(principal, region));
             String permission=switch(action){
                 case "VIEW" -> "BUSINESS_READ";
                 case "SAVE" -> "BUSINESS_UPDATE";
@@ -206,7 +244,7 @@ public class LogisticsService {
                 default -> null;
             };
             if(permission==null||!principal.permits(permission))return false;
-            if(!"VIEW".equals(action) && !regionAllowed)return false;
+            if(!principal.hasSharedReportingScope(permission) && !regionAllowed)return false;
             if(separationOfDuties==null)return true;
             return switch(action){
                 case "APPROVE" -> separationOfDuties.canApprove(

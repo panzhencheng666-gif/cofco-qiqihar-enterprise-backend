@@ -25,7 +25,7 @@ public class AccessControl {
         return new AuthorizedReadScope(principal.subjectId(), principal.regionCodes());
     }
 
-    /** Global business browsing never expands the principal's write authority. */
+    /** Business data is shared independently of task and responsibility assignments. */
     @Transactional(readOnly = true)
     public AuthorizedReadScope requireBusinessReadScope() {
         SecurityPrincipal principal = require("BUSINESS_READ", null);
@@ -35,8 +35,7 @@ public class AccessControl {
     @Transactional(readOnly = true)
     public AuthorizedReadScope requireTaskReadScope() {
         SecurityPrincipal principal = require("BUSINESS_READ", null);
-        return new AuthorizedReadScope(principal.subjectId(), principal.isRootAdministrator()
-                ? java.util.Set.of("*") : principal.regionCodes());
+        return new AuthorizedReadScope(principal.subjectId(), java.util.Set.of("*"));
     }
 
     @Transactional(readOnly = true)
@@ -48,7 +47,7 @@ public class AccessControl {
         return principal;
     }
 
-    /** Map visibility is shared by enabled accounts; responsibility still governs writes. */
+    /** Map visibility is shared by enabled accounts. */
     @Transactional(readOnly = true)
     public AuthorizedReadScope requireOverviewReadScope() {
         SecurityPrincipal principal = requireAuthenticated();
@@ -78,26 +77,24 @@ public class AccessControl {
         if (!principal.permits(permissionCode)) {
             throw new AccessDeniedException("ACCESS_PERMISSION_DENIED", "Operation permission is denied");
         }
-        if (regionCode != null && !regionCode.isBlank() && !principal.includesRegion(regionCode)) {
+        if (!principal.hasSharedReportingScope(permissionCode)
+                && regionCode != null && !regionCode.isBlank() && !principal.includesRegion(regionCode)) {
             throw new AccessDeniedException("ACCESS_REGION_DENIED", "Data region is outside the assigned scope");
-        }
-        if (regionCode != null && !regionCode.isBlank()
-                && (permissionCode.equals("BUSINESS_CREATE") || permissionCode.equals("BUSINESS_UPDATE"))) {
-            requireResponsible(principal,regionCode,false);
         }
         return principal;
     }
 
-    public void requireCountyReporter(SecurityPrincipal principal,String regionCode) {
-        requireResponsible(principal,regionCode,true);
+    @Transactional(readOnly = true)
+    public SecurityPrincipal requireBusinessVoid(String regionCode) {
+        return require("BUSINESS_VOID", regionCode);
     }
 
-    private void requireResponsible(SecurityPrincipal principal,String regionCode,boolean countyReporting) {
-        if (principal.isRootAdministrator()) return;
-        var owner=principals.responsibleSubject(regionCode,countyReporting);
-        if(owner.isPresent() && !owner.get().equals(principal.subjectId())) {
-            throw new AccessDeniedException("REGION_RESPONSIBILITY_DENIED",
-                    "该地区由指定负责人填报；整县分属多人时请由县级管理员办理地区填报");
-        }
+    public boolean canVoidBusinessRecord(SecurityPrincipal principal, String regionCode) {
+        return principal.permits("BUSINESS_VOID");
+    }
+
+    /** County reporting is available to every enabled authenticated account. */
+    public void requireCountyReporter(SecurityPrincipal principal, String regionCode) {
+        requireAuthenticated();
     }
 }

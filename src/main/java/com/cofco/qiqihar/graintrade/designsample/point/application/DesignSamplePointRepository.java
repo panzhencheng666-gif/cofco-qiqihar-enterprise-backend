@@ -19,6 +19,8 @@ public interface DesignSamplePointRepository {
 
     Optional<DesignSamplePointView> find(UUID id);
 
+    Optional<DesignSamplePointView> findIncludingExpired(UUID id);
+
     Optional<CreateResult> insert(
             UUID id,
             DesignSamplePointDraft draft,

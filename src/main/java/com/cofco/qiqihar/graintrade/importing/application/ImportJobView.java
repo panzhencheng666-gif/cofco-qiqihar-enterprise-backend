@@ -10,13 +10,49 @@ public record ImportJobView(UUID id, UUID actionJobId, String domainCode, String
         int importedRows, int failedRows,
         int warningRows, List<String> productCodes, List<String> surveyPeriods,
         UUID retryOf, Instant createdAt, Instant startedAt, Instant completedAt, int attemptCount,
-        String failureCode, String failureMessage) {
+        String failureCode, String failureMessage, List<RowError> rowErrors) {
     public static ImportJobView from(ImportJob job) {
         return new ImportJobView(job.id(), job.id(), job.domainCode(), job.statusCode(),
                 job.importedRows(), job.failedRows(),
                 job.warningRows(), values(job, "productCode"), periods(job),
                 job.retryOf(), job.createdAt(), job.startedAt(), job.completedAt(), job.attemptCount(),
-                job.failureCode(), job.failureMessage());
+                job.failureCode(), job.failureMessage(), job.rows().stream()
+                        .filter(row -> "ERROR".equals(row.outcomeCode())).map(RowError::from).toList());
+    }
+
+    /** Compatibility constructor for the lightweight, scope-filtered history list. */
+    public ImportJobView(UUID id, UUID actionJobId, String domainCode, String statusCode,
+            int importedRows, int failedRows, int warningRows, List<String> productCodes,
+            List<String> surveyPeriods, UUID retryOf, Instant createdAt, Instant startedAt,
+            Instant completedAt, int attemptCount, String failureCode, String failureMessage) {
+        this(id, actionJobId, domainCode, statusCode, importedRows, failedRows, warningRows,
+                productCodes, surveyPeriods, retryOf, createdAt, startedAt, completedAt,
+                attemptCount, failureCode, failureMessage, List.of());
+    }
+
+    public record RowError(int rowNumber, String worksheet, String field, String message) {
+        static RowError from(com.cofco.qiqihar.graintrade.importing.domain.ImportRowOutcome row) {
+            String message = row.errorMessage() == null ? "本行未通过校验，请查看错误清单。" : row.errorMessage();
+            String field = row.values().get("错误列");
+            var located = java.util.regex.Pattern.compile("^工作表“(.+?)”第[0-9]+行(?:“(.+?)”列)?：(.+)$").matcher(message);
+            String worksheet = row.values().get("工作表");
+            if (located.matches()) {
+                worksheet = located.group(1);
+                field = located.group(2);
+                message = located.group(3);
+            }
+            if (field == null && message.startsWith("“") && message.contains("”"))
+                field = message.substring(1, message.indexOf('”'));
+            if (field == null && message.contains("：")) {
+                field = message.substring(0, message.indexOf('：'));
+                message = message.substring(message.indexOf('：') + 1);
+            }
+            if (field == null) field = "整行";
+            int number = row.rowNumber();
+            String sheetRow = row.values().get("工作表行号");
+            if (sheetRow != null && sheetRow.matches("[0-9]+")) number = Integer.parseInt(sheetRow);
+            return new RowError(number, worksheet, field, message);
+        }
     }
 
     private static List<String> values(ImportJob job, String key) {

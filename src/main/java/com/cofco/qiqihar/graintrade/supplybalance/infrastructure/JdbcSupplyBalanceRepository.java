@@ -48,7 +48,7 @@ public class JdbcSupplyBalanceRepository implements SupplyBalanceRepository {
                 LEFT JOIN production.supply_demand_balance balance
                   ON balance.region_code=county.code AND balance.survey_year=:surveyYear
                  AND balance.product_code=:productCode
-                WHERE county.code IN (:authorizedRegions)
+                WHERE ('*' IN (:authorizedRegions) OR county.code IN (:authorizedRegions))
                 ORDER BY county.sort_order,county.code
                 """).param("regionCode", regionCode).param("surveyYear", surveyYear)
                 .param("productCode", productCode).param("authorizedRegions", authorizedRegions)

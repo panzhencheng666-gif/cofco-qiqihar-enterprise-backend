@@ -221,6 +221,21 @@ class DesignSamplePointRestIntegrationTest {
     }
 
     @Test
+    void requeriesExpiredPointByIdForMapInspection() throws Exception {
+        String id = create("design-sample-expired-get", "作废设计样本点", "10");
+        jdbc.sql("""
+                UPDATE platform.design_sample_point
+                SET lifecycle_status='EXPIRED',expired_at=clock_timestamp()
+                WHERE design_sample_point_id=CAST(:id AS uuid)
+                """).param("id", id).update();
+
+        mvc.perform(get(ENDPOINT + "/{id}", id).principal(() -> READER))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.id").value(id))
+                .andExpect(jsonPath("$.data.values.DSP_NAME").value("作废设计样本点"));
+    }
+
+    @Test
     void backfillsAddressWithoutDeletingHistoricalStoredValues()
             throws Exception {
         String id = create("design-sample-historical-values", "历史设计样本点", "旧址");

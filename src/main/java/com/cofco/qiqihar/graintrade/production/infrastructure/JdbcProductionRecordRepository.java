@@ -467,6 +467,12 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
     @Override
     public void linkApprovedSamplePoint(
             ProductionRecord record, String approvingActorId, Instant approvedAt) {
+        linkValidatedSamplePoint(record, approvingActorId, approvedAt);
+        com.cofco.qiqihar.graintrade.shared.infrastructure.FormalBusinessSaveGuard.verify(jdbc,"PRODUCTION",record.id());
+    }
+
+    private void linkValidatedSamplePoint(
+            ProductionRecord record, String approvingActorId, Instant approvedAt) {
         String subjectId = record.submissionMetadata().get("PROD_SAMPLE_SUBJECT_CODE");
         String canonicalName = record.submissionMetadata().get("PROD_SAMPLE_NAME");
         String contact = record.submissionMetadata().get("PROD_SAMPLE_CONTACT");
@@ -513,7 +519,7 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
             requireMatchingCoordinate(point.longitude(), point.latitude(), longitude, latitude);
             int linked = jdbc.sql("""
                     UPDATE production.production_record SET sample_point_id=:samplePointId
-                    WHERE record_id=:recordId AND status_code='APPROVED' AND sample_point_id IS NULL
+                    WHERE record_id=:recordId AND status_code='APPROVED' AND (sample_point_id IS NULL OR sample_point_id=:samplePointId)
                     """).param("samplePointId", point.samplePointId())
                     .param("recordId", record.id()).update();
             requireUpdated(linked);
@@ -530,8 +536,8 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         String submittingActorId = jdbc.sql("""
                 SELECT actor_subject_id FROM platform.business_event_outbox
                 WHERE aggregate_type='PRODUCTION_RECORD' AND aggregate_id=:recordId
-                  AND action_code='PRODUCTION_RECORD_SUBMITTED'
-                ORDER BY event_sequence DESC LIMIT 1
+                  AND action_code IN ('PRODUCTION_RECORD_CREATED','PRODUCTION_RECORD_IMPORTED','PRODUCTION_RECORD_SUBMITTED')
+                ORDER BY event_sequence ASC LIMIT 1
                 """).param("recordId", record.id()).query(String.class).single();
         UUID samplePointId = UUID.randomUUID();
         OffsetDateTime approvedTime = OffsetDateTime.ofInstant(approvedAt, ZoneOffset.UTC);
@@ -568,7 +574,7 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
         }
         int linked = jdbc.sql("""
                 UPDATE production.production_record SET sample_point_id=:samplePointId
-                WHERE record_id=:recordId AND status_code='APPROVED' AND sample_point_id IS NULL
+                WHERE record_id=:recordId AND status_code='APPROVED' AND (sample_point_id IS NULL OR sample_point_id=:samplePointId)
                 """).param("samplePointId", samplePointId).param("recordId", record.id()).update();
         requireUpdated(linked);
     }
@@ -650,7 +656,7 @@ public class JdbcProductionRecordRepository implements ProductionRecordRepositor
                 .query((row, ignored) -> Boolean.TRUE).single();
         int linked = jdbc.sql("""
                 UPDATE production.production_record SET sample_point_id=:samplePointId
-                WHERE record_id=:recordId AND status_code='APPROVED' AND sample_point_id IS NULL
+                WHERE record_id=:recordId AND status_code='APPROVED' AND (sample_point_id IS NULL OR sample_point_id=:samplePointId)
                 """).param("samplePointId", targetSamplePointId)
                 .param("recordId", record.id()).update();
         requireUpdated(linked);

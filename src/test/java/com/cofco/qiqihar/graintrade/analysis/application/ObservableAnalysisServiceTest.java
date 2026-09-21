@@ -12,6 +12,10 @@ import com.cofco.qiqihar.graintrade.analysis.domain.ObservableSupplyCalculator;
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.security.application.AccessControl;
 import com.cofco.qiqihar.graintrade.shared.security.application.AuthorizedReadScope;
+import com.cofco.qiqihar.graintrade.shared.security.domain.SecurityPrincipal;
+import java.util.Optional;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
@@ -30,7 +34,7 @@ class ObservableAnalysisServiceTest {
         AccessControl accessControl = mock(AccessControl.class);
         AuthorizedReadScope readScope = new AuthorizedReadScope("employee-1", Set.of("230200"));
         ObservableAnalysisSnapshot expected = snapshot(SCOPE, "OBSERVABLE_ANALYSIS_V1", 3);
-        when(accessControl.requireReadScope()).thenReturn(readScope);
+        when(accessControl.requireBusinessReadScope()).thenReturn(readScope);
         when(repository.knownProduct("CORN")).thenReturn(true);
         when(repository.knownRegion("230200")).thenReturn(true);
         when(repository.canNavigateRegion("230200", readScope.regionCodes())).thenReturn(true);
@@ -48,7 +52,7 @@ class ObservableAnalysisServiceTest {
         ObservableAnalysisRepository repository = mock(ObservableAnalysisRepository.class);
         AccessControl accessControl = mock(AccessControl.class);
         AuthorizedReadScope readScope = new AuthorizedReadScope("employee-1", Set.of("230200"));
-        when(accessControl.requireReadScope()).thenReturn(readScope);
+        when(accessControl.requireBusinessReadScope()).thenReturn(readScope);
         when(repository.knownProduct("CORN")).thenReturn(true);
         when(repository.knownRegion("150700")).thenReturn(true);
         when(repository.canNavigateRegion("150700", readScope.regionCodes())).thenReturn(false);
@@ -56,6 +60,28 @@ class ObservableAnalysisServiceTest {
         assertThatThrownBy(() -> new ObservableAnalysisService(repository, accessControl)
                 .snapshot("CORN", "150700", 2026, 8, null, null))
                 .hasMessageContaining("assigned scope");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"BUSINESS_OPERATOR", "NO_ROLE"})
+    void enabledEmployeeWithoutAssignedRegionsCanReadSharedAnalysis(String role) {
+        ObservableAnalysisRepository repository = mock(ObservableAnalysisRepository.class);
+        SecurityPrincipal principal = new SecurityPrincipal(
+                "employee-1", "员工", "unit", "单位", "ACTIVE", "ACTIVE",
+                role.equals("NO_ROLE") ? Set.of() : Set.of(role),
+                List.of(), Set.of(), Set.of());
+        AccessControl accessControl = new AccessControl(
+                () -> Optional.of(principal.subjectId()),
+                subject -> Optional.of(principal), true);
+        ObservableAnalysisSnapshot expected = snapshot(SCOPE, "OBSERVABLE_ANALYSIS_V1", 3);
+        when(repository.knownProduct("CORN")).thenReturn(true);
+        when(repository.knownRegion("230200")).thenReturn(true);
+        when(repository.canNavigateRegion("230200", Set.of("*"))).thenReturn(true);
+        when(repository.load(SCOPE, Set.of("*"))).thenReturn(expected);
+
+        assertThat(new ObservableAnalysisService(repository, accessControl)
+                .snapshot("CORN", "230200", 2026, 8, null, null)).isSameAs(expected);
+        verify(repository).load(SCOPE, Set.of("*"));
     }
 
     @Test

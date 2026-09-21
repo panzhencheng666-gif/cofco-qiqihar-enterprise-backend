@@ -61,7 +61,7 @@ public class ImportDraftPromotionService {
 
     @Transactional
     public ImportDraft submitAfterIdentityReview(UUID id) {
-        return submit(id, true);
+        throw new ClientRequestException("BUSINESS_REVIEW_REMOVED", "人工审核已取消，请修正字段后重新校验保存。");
     }
 
     private ImportDraft submit(UUID id, boolean reviewedIdentity) {
@@ -90,7 +90,7 @@ public class ImportDraftPromotionService {
             throw exception;
         } catch (IllegalArgumentException exception) {
             throw new ClientRequestException("IMPORT_DRAFT_INCOMPLETE",
-                    "草稿缺少正式提交所需字段，或字段内容不符合业务规则；请补充后再提交审核");
+                    "草稿缺少正式提交所需字段，或字段内容不符合业务规则；请补充后再校验保存");
         }
         ImportDraft promoted = drafts.markPromoted(id, draft.version(), recordId, clock.instant());
         audit.record(principal, "IMPORT_DRAFT", id.toString(), "IMPORT_DRAFT_SUBMITTED",

@@ -160,7 +160,8 @@ class ProductionImportRestIntegrationTest {
                         .queryParam("productCode", "CORN").queryParam("pageKind", "MONITORING")
                         .queryParam("pageNumber", "0").queryParam("pageSize", "20"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.totalElements").value(0));
+                .andExpect(jsonPath("$.data.totalElements").value(1));
+        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record WHERE status_code='APPROVED' AND sample_point_id IS NOT NULL").query(Long.class).single()).isEqualTo(1L);
         String importedId = jdbc.sql("SELECT record_id FROM production.production_record")
                 .query(String.class).single();
         mvc.perform(get("/api/v1/production-records/{id}", importedId))

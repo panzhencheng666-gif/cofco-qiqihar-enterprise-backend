@@ -89,3 +89,21 @@ cd "/Users/federal/Library/Application Support/COFCO Qiqihar Enterprise/runtime/
 
 - `VITE_BUSINESS_PLATFORM_HOST / VITE_BUSINESS_PLATFORM_PORT`
 - `VITE_OVERVIEW_MAP_HOST / VITE_OVERVIEW_MAP_PORT`
+
+## 8. 商业月更卫星影像
+
+公开态势地图只访问本系统的同源瓦片接口，商业供应商密钥保留在后端。采购
+Planet Global Monthly Mosaics 权限后，在受保护的运行环境中配置：
+
+```bash
+export QIQIHAR_MAP_IMAGERY_TILE_URL_TEMPLATE='https://tiles.planet.com/basemaps/v1/planet-tiles/global_monthly_{year}_{month}_mosaic/gmap/{z}/{x}/{y}.png?api_key={apiKey}'
+export QIQIHAR_MAP_IMAGERY_API_KEY='由密钥管理服务注入，不写入仓库或前端'
+export QIQIHAR_MAP_IMAGERY_PROVIDER='Planet Global Monthly'
+export QIQIHAR_MAP_IMAGERY_ATTRIBUTION='Planet Labs PBC'
+export QIQIHAR_MAP_IMAGERY_PERIOD_LAG_MONTHS=1
+```
+
+重启后端后，`/api/v1/overview/map-imagery/metadata` 应显示
+`commercialConfigured=true`、`updateCadence=MONTHLY`。网关在每月自动切换年月；
+考虑供应商发布窗口，每月前 7 天继续使用上一个已发布周期。未配置商业密钥时，
+系统使用 Esri World Imagery 兼容回退，不能将其表述为“已启用商业月更影像”。

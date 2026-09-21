@@ -51,7 +51,7 @@ public class SupplyBalanceService {
         }
         SecurityPrincipal principal = access.require("BUSINESS_READ", regionCode);
         List<SupplyBalanceRepository.CountySource> sources = repository.countySources(
-                regionCode, surveyYear, product, principal.regionCodes());
+                regionCode, surveyYear, product, Set.of("*"));
         if (sources.isEmpty()) {
             throw invalid("SUPPLY_BALANCE_SCOPE_EMPTY", "当前辖区没有可读取的区县");
         }

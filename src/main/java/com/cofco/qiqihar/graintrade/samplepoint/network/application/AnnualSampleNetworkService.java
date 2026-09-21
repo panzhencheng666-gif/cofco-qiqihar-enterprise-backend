@@ -47,14 +47,14 @@ public class AnnualSampleNetworkService {
     @Transactional(readOnly = true)
     public List<DesignSamplePointView> designPoints(String regionCode) {
         SecurityPrincipal principal = access.require("BUSINESS_READ", regionCode);
-        return repository.designPoints(regionCode, principal.regionCodes());
+        return repository.designPoints(regionCode, java.util.Set.of("*"));
     }
 
     @Transactional(readOnly = true)
     public AnnualSampleNetworkView find(int year) {
         validateYear(year);
         SecurityPrincipal principal = access.require("BUSINESS_READ", null);
-        return required(year, principal.regionCodes());
+        return required(year, java.util.Set.of("*"));
     }
 
     @Transactional(readOnly = true)
@@ -66,14 +66,14 @@ public class AnnualSampleNetworkService {
             throw invalid("SAMPLE_NETWORK_PRODUCT_INVALID", "产品代码不存在或已停用");
         }
         return repository.comparison(
-                year, regionCode, normalizedProduct, principal.regionCodes());
+                year, regionCode, normalizedProduct, java.util.Set.of("*"));
     }
 
     @Transactional(readOnly = true)
     public SampleNetworkDesignComparisonView designComparison(int year, String regionCode) {
         validateYear(year);
         SecurityPrincipal principal = access.require("BUSINESS_READ", regionCode);
-        return repository.designComparison(year, regionCode, principal.regionCodes());
+        return repository.designComparison(year, regionCode, java.util.Set.of("*"));
     }
 
     @Transactional
@@ -83,18 +83,18 @@ public class AnnualSampleNetworkService {
         if (repository.exists(year)) {
             throw conflict("SAMPLE_NETWORK_ALREADY_EXISTS", "该年度样本网络已经存在");
         }
-        requireWholeNetworkScope(year, principal.regionCodes());
+        requireWholeNetworkScope(year, java.util.Set.of("*"));
         if (carriedFromYear != null) {
             validateYear(carriedFromYear);
             if (carriedFromYear >= year || !repository.isPublished(carriedFromYear)) {
                 throw invalid("SAMPLE_NETWORK_CARRY_SOURCE_INVALID", "只能引用较早年度已发布的样本网络");
             }
-            requireWholeNetworkScope(carriedFromYear, principal.regionCodes());
+            requireWholeNetworkScope(carriedFromYear, java.util.Set.of("*"));
         }
         Instant now = clock.instant();
         repository.create(year, carriedFromYear, principal.subjectId(), now);
         recordNetworkEvent(principal, year, "SAMPLE_NETWORK_CREATED", now);
-        return required(year, principal.regionCodes());
+        return required(year, java.util.Set.of("*"));
     }
 
     @Transactional
@@ -110,7 +110,7 @@ public class AnnualSampleNetworkService {
                 repository.samplePointLocation(samplePointId, year)
                         .orElseThrow(() -> new ResourceNotFoundException(
                                 "SAMPLE_POINT_NOT_FOUND", "真实样本点不存在或尚未通过主数据审核"));
-        if (!principal.includesRegion(location.regionCode())) {
+        if (!principal.hasSharedReportingScope("BUSINESS_UPDATE") && !principal.includesRegion(location.regionCode())) {
             throw new ResourceNotFoundException(
                     "SAMPLE_POINT_NOT_FOUND", "真实样本点不存在或尚未通过主数据审核");
         }
@@ -123,7 +123,7 @@ public class AnnualSampleNetworkService {
                         || !location.regionCode().equals(designVillageRegionCode))) {
             throw invalid("SAMPLE_NETWORK_RELATION_INVALID", "精确关系必须连接同村的村级真实样本");
         }
-        AnnualSampleNetworkView existing = required(year, principal.regionCodes());
+        AnnualSampleNetworkView existing = required(year, java.util.Set.of("*"));
         if (!"DRAFT".equals(existing.statusCode()) || !repository.lockDraft(year)) {
             throw conflict("SAMPLE_NETWORK_NOT_EDITABLE", "只有草稿年度网络可以修改样本名单");
         }
@@ -138,7 +138,7 @@ public class AnnualSampleNetworkService {
         }
         recordNetworkEvent(principal, year, "SAMPLE_NETWORK_MEMBER_DECIDED", now,
                 location.regionCode(), designVillageRegionCode);
-        return required(year, principal.regionCodes());
+        return required(year, java.util.Set.of("*"));
     }
 
     @Transactional
@@ -148,13 +148,13 @@ public class AnnualSampleNetworkService {
         if (!repository.lockDraft(year)) {
             throw conflict("SAMPLE_NETWORK_SUBMIT_CONFLICT", "年度样本网络状态或版本已经变化");
         }
-        requireWholeNetworkScope(year, principal.regionCodes());
+        requireWholeNetworkScope(year, java.util.Set.of("*"));
         Instant now = clock.instant();
         if (repository.submit(year, version, principal.subjectId(), now) != 1) {
             throw conflict("SAMPLE_NETWORK_SUBMIT_CONFLICT", "年度样本网络状态或版本已经变化");
         }
         recordNetworkEvent(principal, year, SUBMITTED, now);
-        return required(year, principal.regionCodes());
+        return required(year, java.util.Set.of("*"));
     }
 
     @Transactional

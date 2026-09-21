@@ -68,15 +68,22 @@ public record MarketMonitoringRecord(
     public MarketMonitoringRecord revise(String object, String region, LocalDate date, OffsetDateTime reported,
             MarketTradeDirection nextDirection, BigDecimal purchase, BigDecimal sale, BigDecimal carriage,
             BigDecimal packagingAmount, BigDecimal freight, String packaging, Map<String, BigDecimal> nextFacts) {
-        if (status != MarketStatus.DRAFT && status != MarketStatus.RETURNED) throw new IllegalStateException("Only DRAFT or RETURNED records may be revised");
+        if (status == MarketStatus.VOIDED) throw new IllegalStateException("Voided records cannot be revised");
         return create(id, productCode, object, region, date, reported, nextDirection, purchase, sale, carriage,
                 packagingAmount, freight, packaging, status, returnReason, nextFacts, version);
+    }
+    /** APPROVED is the persisted compatibility code for an automatically validated fact. */
+    public MarketMonitoringRecord validatedForSave() {
+        if (status == MarketStatus.VOIDED) throw new IllegalStateException("Voided records cannot be saved");
+        return new MarketMonitoringRecord(id, productCode, objectTypeCode, regionCode, tradeDate, reportedAt,
+                direction, purchaseBasePrice, saleBasePrice, carriageBoardAmount, freightAmount,
+                packagingAmount, packagingForm, actualTradePrice, MarketStatus.APPROVED, null, facts, version);
     }
     public MarketMonitoringRecord submit() { return transition(MarketStatus.DRAFT, MarketStatus.PENDING_REVIEW, null, true); }
     public MarketMonitoringRecord approve() { return transition(MarketStatus.PENDING_REVIEW, MarketStatus.APPROVED, null, false); }
     public MarketMonitoringRecord returnForCorrection(String reason) { return transition(MarketStatus.PENDING_REVIEW, MarketStatus.RETURNED, reason, false); }
     public MarketMonitoringRecord voidRecord() {
-        if (status != MarketStatus.DRAFT && status != MarketStatus.RETURNED)
+        if (status == MarketStatus.VOIDED)
             throw new IllegalStateException("Only DRAFT or RETURNED market records may be voided");
         return new MarketMonitoringRecord(id, productCode, objectTypeCode, regionCode, tradeDate, reportedAt,
                 direction, purchaseBasePrice, saleBasePrice, carriageBoardAmount, freightAmount,

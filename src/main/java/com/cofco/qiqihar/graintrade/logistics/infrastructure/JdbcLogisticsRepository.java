@@ -147,13 +147,16 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
         } catch (RuntimeException exception) {
             return false;
         }
-        return Boolean.TRUE.equals(jdbc.sql("""
+        boolean admitted = Boolean.TRUE.equals(jdbc.sql("""
                 SELECT coalesce(overview.sample_coordinate_admission_state(
                   CAST(:region AS varchar),CAST(:longitude AS numeric),CAST(:latitude AS numeric))='INSIDE',false)
                 """).param("region", draft.values().get("LOG_REGION"))
                 .param("longitude", new BigDecimal(draft.values().get("LOG_SAMPLE_LONGITUDE")))
                 .param("latitude", new BigDecimal(draft.values().get("LOG_SAMPLE_LATITUDE")))
                 .query(Boolean.class).single());
+        if (!admitted) throw com.cofco.qiqihar.graintrade.shared.application.ClientRequestException.field(
+                "SAMPLE_COORDINATE_OUTSIDE_REGION", "LOG_REGION", "样点坐标不在所选地区内，请核对地区与经纬度。");
+        return true;
     }
 
     @Override
@@ -287,7 +290,8 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
             String id, long version, LogisticsStatus status, String reason, String actor, Instant now) {
         int count = jdbc.sql("""
                 UPDATE logistics.route_event SET status_code=:status,return_reason=:reason,
-                  last_modified_by=:actor,updated_at=:now,version=version+1
+                  last_modified_by=:actor,updated_at=:now,version=version+1,
+                  submitted_at=CASE WHEN :status='APPROVED' THEN COALESCE(submitted_at,:now) ELSE submitted_at END
                 WHERE event_id::text=:id AND version=:version
                 """).param("status", status.name()).param("reason", reason).param("actor", actor)
                 .param("now", OffsetDateTime.ofInstant(now, ZoneOffset.UTC)).param("id", id)
@@ -298,6 +302,17 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
 
     @Override
     public void linkApprovedSamplePoint(String id, String approvingActorId, Instant approvedAt) {
+        linkValidatedSamplePoint(id, approvingActorId, approvedAt);
+        com.cofco.qiqihar.graintrade.shared.infrastructure.FormalBusinessSaveGuard.verify(jdbc,"LOGISTICS",id);
+        // Existing logistics facts also change the sample content consumed by the map.
+        jdbc.sql("""
+                UPDATE registry.sample_point SET updated_by=:actor,updated_at=:updatedAt
+                WHERE sample_point_id=(SELECT sample_point_id FROM logistics.route_event WHERE event_id::text=:id)
+                """).param("actor",approvingActorId)
+                .param("updatedAt",OffsetDateTime.ofInstant(approvedAt,ZoneOffset.UTC)).param("id",id).update();
+    }
+
+    private void linkValidatedSamplePoint(String id, String approvingActorId, Instant approvedAt) {
         ApprovedLogisticsSample sample = jdbc.sql("""
                 SELECT event.source_organization,event.sample_contact,event.business_region_code,
                        event.sample_longitude,event.sample_latitude,event.collection_date,event.sample_point_id
@@ -385,8 +400,8 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
             String submittingActorId = jdbc.sql("""
                     SELECT actor_subject_id FROM platform.business_event_outbox
                     WHERE aggregate_type='LOGISTICS_RECORD' AND aggregate_id=:id
-                      AND action_code='LOGISTICS_RECORD_SUBMITTED'
-                    ORDER BY event_sequence DESC LIMIT 1
+                      AND action_code IN ('LOGISTICS_RECORD_CREATED','LOGISTICS_RECORD_IMPORTED','LOGISTICS_RECORD_SUBMITTED')
+                    ORDER BY event_sequence ASC LIMIT 1
                     """).param("id", id).query(String.class).single();
             samplePointId = UUID.randomUUID();
             jdbc.sql("""
@@ -404,7 +419,7 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
         }
         int linked = jdbc.sql("""
                 UPDATE logistics.route_event SET sample_point_id=:samplePointId
-                WHERE event_id::text=:id AND status_code='APPROVED' AND sample_point_id IS NULL
+                WHERE event_id::text=:id AND status_code='APPROVED' AND (sample_point_id IS NULL OR sample_point_id=:samplePointId)
                 """).param("samplePointId", samplePointId).param("id", id).update();
         require(linked);
     }
@@ -557,7 +572,8 @@ public class JdbcLogisticsRepository implements LogisticsRepository {
                     "origin_region_code=:businessRegion", "destination_region_code=:businessRegion",
                     "survey_period_precision=CASE WHEN :compatMonth IS NULL THEN 'YEAR' ELSE 'YEAR_MONTH' END",
                     "survey_period_governance_state='CONFIRMED'",
-                    "reported_at=:now", "status_code=:status", "return_reason=:returnReason", "last_modified_by=:actor",
+                    "reported_at=:now", "status_code=:status",
+                    "submitted_at=CASE WHEN :status='APPROVED' THEN COALESCE(submitted_at,:now) ELSE submitted_at END", "return_reason=:returnReason", "last_modified_by=:actor",
                     "updated_at=:now", "version=version+1"));
             parameters.put("version", expectedVersion);
             int count = jdbc.sql("UPDATE logistics.route_event SET " + String.join(",", assignments)

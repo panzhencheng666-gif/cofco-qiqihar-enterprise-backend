@@ -137,6 +137,155 @@ class MarketMonitoringRestIntegrationTest {
         boundarySnapshot.restore(jdbc);
     }
 
+    @Test void removedRecoveryEndpointsDoNotDeleteExistingRecordsOrBreakNormalSave() throws Exception {
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        try (var ordinary = OrdinarySecurityFixture.create(jdbc, "ci-recovery", null)) {
+            useReportingRole(jdbc, "ci-recovery");
+            mockMvc.perform(post("/api/v1/market-records/submit").principal(() -> "ci-recovery")
+                    .contentType(MediaType.APPLICATION_JSON).content(sharedSubmissionBody()))
+                .andExpect(status().isCreated());
+            String id = jdbc.sql("SELECT record_id FROM market.market_record").query(String.class).single();
+            // Dedicated test database only: represent a pre-automatic-save historical record.
+            jdbc.sql("UPDATE market.market_record SET status_code='PENDING_REVIEW',sample_point_id=NULL WHERE record_id=:id").param("id",id).update();
+            jdbc.sql("UPDATE market.market_record_core_value SET value='bad-contact' WHERE record_id=:id AND field_code='MKT_SAMPLE_CONTACT'").param("id",id).update();
+            mockMvc.perform(get("/api/v1/market-records").principal(() -> "ci-recovery")
+                    .param("productCode","CORN").param("pageKind","MONITORING").param("pageNumber","0").param("pageSize","20"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(0));
+            mockMvc.perform(get("/api/v1/market-records").principal(() -> "ci-recovery")
+                    .param("productCode","CORN").param("pageKind","MONITORING").param("pageNumber","0").param("pageSize","20")
+                    .param("recovery","true").param("scope","MY_TASKS").param("filter.status","PENDING_REVIEW"))
+                .andExpect(status().isBadRequest());
+            mockMvc.perform(get("/api/v1/market-records/{id}/validation-preview",id).principal(() -> "ci-recovery"))
+                .andExpect(status().isNotFound());
+            mockMvc.perform(get("/api/v1/market-records").principal(() -> "ci-recovery")
+                    .param("productCode","CORN").param("pageKind","MONITORING").param("pageSize","20")
+                    .param("recovery","true").param("filter.status","APPROVED"))
+                .andExpect(status().isBadRequest());
+            mockMvc.perform(put("/api/v1/market-records/{id}/submit",id).principal(() -> "ci-recovery")
+                    .contentType(MediaType.APPLICATION_JSON).content(versioned(sharedSubmissionBody(),0)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.id").value(id))
+                .andExpect(jsonPath("$.data.status").value("APPROVED")).andExpect(jsonPath("$.data.version").value(1));
+            assertThat(jdbc.sql("SELECT count(*) FROM market.market_record WHERE record_id=:id AND sample_point_id IS NOT NULL").param("id",id).query(Long.class).single()).isEqualTo(1L);
+            mockMvc.perform(get("/api/v1/market-records").principal(() -> "ci-recovery")
+                    .param("productCode","CORN").param("pageKind","MONITORING").param("pageSize","20"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items[0].id").value(id));
+            jdbc.sql("UPDATE platform.security_user SET enabled=false WHERE subject_id='ci-recovery'").update();
+            mockMvc.perform(get("/api/v1/market-records").principal(() -> "ci-recovery")
+                    .param("productCode","CORN").param("pageKind","MONITORING").param("pageSize","20"))
+                .andExpect(status().isForbidden());
+        }
+    }
+
+    @Test void automaticSaveCreatesLinkedFactAndUpdatesSameRecord() throws Exception {
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        try (var ordinary = OrdinarySecurityFixture.create(jdbc, "ci-auto-save", null)) {
+            jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id='ci-auto-save'").update();
+            mockMvc.perform(post("/api/v1/market-records/submit").principal(() -> "ci-auto-save")
+                    .contentType(MediaType.APPLICATION_JSON).content(sharedSubmissionBody()))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.data.status").value("APPROVED"));
+            String id = jdbc.sql("SELECT record_id FROM market.market_record").query(String.class).single();
+            assertThat(jdbc.sql("SELECT count(*) FROM market.market_record WHERE sample_point_id IS NOT NULL")
+                .query(Long.class).single()).isEqualTo(1L);
+            mockMvc.perform(get("/api/v1/market-records/{id}/validation-preview",id).principal(() -> "ci-auto-save"))
+                .andExpect(status().isNotFound());
+            mockMvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
+                    .principal(() -> "ci-auto-save").param("domain","MARKET").param("productCode","CORN")
+                    .param("year","2026").param("observedAt","2026-08-11T12:00:00+08:00"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data[0].sampleName").value("共享提交事务验收"));
+            mockMvc.perform(put("/api/v1/market-records/{id}",id).principal(() -> "ci-auto-save")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(versioned(sharedSubmissionBody().replace("共享提交事务验收","变更样本身份"),0)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.details.fieldErrors.MKT_SAMPLE_NAME").isNotEmpty());
+            mockMvc.perform(put("/api/v1/market-records/{id}", id).principal(() -> "ci-auto-save")
+                    .contentType(MediaType.APPLICATION_JSON).content(versioned(sharedSubmissionBody(), 0)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("APPROVED"))
+                .andExpect(jsonPath("$.data.version").value(1));
+            mockMvc.perform(put("/api/v1/market-records/{id}", id).principal(() -> "ci-auto-save")
+                    .contentType(MediaType.APPLICATION_JSON).content(versioned(sharedSubmissionBody(), 0)))
+                .andExpect(status().isConflict());
+            mockMvc.perform(post("/api/v1/market-records/{id}/submit", id).principal(() -> "ci-auto-save")
+                    .contentType(MediaType.APPLICATION_JSON).content("{\"version\":1}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.version").value(1));
+            assertThat(jdbc.sql("SELECT count(*) FROM market.market_record").query(Long.class).single()).isEqualTo(1L);
+            mockMvc.perform(post("/api/v1/market-records/submit").principal(() -> "ci-auto-save")
+                    .contentType(MediaType.APPLICATION_JSON).content(sharedSubmissionBody()))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("SAMPLE_PERIOD_RECORD_CONFLICT"));
+            assertThat(jdbc.sql("SELECT count(*) FROM market.market_record").query(Long.class).single()).isEqualTo(1L);
+            assertThat(jdbc.sql("SELECT count(*) FROM platform.business_event_outbox WHERE aggregate_id=:id AND action_code='MARKET_RECORD_SAVED'")
+                .param("id",id).query(Long.class).single()).isEqualTo(2L);
+            mockMvc.perform(get("/api/v1/imports/market/template").principal(() -> "ci-auto-save"))
+                .andExpect(status().isOk());
+            mockMvc.perform(get("/api/v1/identity/employees").principal(() -> "ci-auto-save"))
+                .andExpect(status().isForbidden());
+            mockMvc.perform(post("/api/v1/market-records/{id}/void", id).principal(() -> "ci-auto-save")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"version\":1}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("VOIDED"));
+
+        }
+    }
+
+    @Test void unassignedReporterCreatesAndSubmitsOneMarketRecord() throws Exception {
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        try (var ordinary = OrdinarySecurityFixture.create(jdbc, "ci-shared-submitter", null)) {
+            useReportingRole(jdbc, "ci-shared-submitter");
+            mockMvc.perform(post("/api/v1/market-records/submit").principal(() -> "ci-shared-submitter")
+                            .contentType(MediaType.APPLICATION_JSON).content(sharedSubmissionBody()))
+                    .andExpect(status().isCreated())
+                    .andExpect(jsonPath("$.data.status").value("APPROVED"));
+            assertThat(jdbc.sql("SELECT count(*) FROM market.market_record").query(Long.class).single()).isEqualTo(1L);
+            assertThat(jdbc.sql("SELECT count(*) FROM platform.business_audit_event WHERE action_code='MARKET_RECORD_SAVED'")
+                    .query(Long.class).single()).isEqualTo(1L);
+        }
+    }
+
+    @Test void deniedCreateAndSubmitRollsBackBeforeOneSuccessfulRetry() throws Exception {
+        JdbcClient jdbc = JdbcClient.create(dataSource);
+        try (var ordinary = OrdinarySecurityFixture.create(jdbc, "ci-scoped-submitter", "231100")) {
+            useReportingRole(jdbc, "ci-scoped-submitter");
+            mockMvc.perform(post("/api/v1/market-records/submit").principal(() -> "ci-scoped-submitter")
+                            .contentType(MediaType.APPLICATION_JSON).content(sharedSubmissionBody()))
+                    .andExpect(status().isForbidden())
+                    .andExpect(jsonPath("$.error.code").value("ACCESS_REGION_DENIED"));
+            assertThat(jdbc.sql("SELECT count(*) FROM market.market_record").query(Long.class).single()).isZero();
+            assertThat(jdbc.sql("SELECT count(*) FROM platform.business_audit_event WHERE actor_subject_id='ci-scoped-submitter'")
+                    .query(Long.class).single()).isZero();
+            jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id='ci-scoped-submitter'").update();
+            mockMvc.perform(post("/api/v1/market-records/submit").principal(() -> "ci-scoped-submitter")
+                            .contentType(MediaType.APPLICATION_JSON).content(sharedSubmissionBody()))
+                    .andExpect(status().isCreated())
+                    .andExpect(jsonPath("$.data.status").value("APPROVED"));
+            assertThat(jdbc.sql("SELECT count(*) FROM market.market_record").query(Long.class).single()).isEqualTo(1L);
+            assertThat(jdbc.sql("SELECT count(*) FROM platform.business_audit_event WHERE action_code='MARKET_RECORD_CREATED'")
+                    .query(Long.class).single()).isEqualTo(1L);
+        }
+    }
+
+    private void useReportingRole(JdbcClient jdbc, String subject) {
+        jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:subject").param("subject", subject).update();
+        jdbc.sql("INSERT INTO platform.security_user_role(subject_id,role_code) VALUES(:subject,'BUSINESS_OPERATOR')")
+                .param("subject", subject).update();
+    }
+
+    private String sharedSubmissionBody() {
+        return """
+                {"productCode":"CORN","coreValues":{
+                 "MKT_OBJECT_TYPE":"TRADER","MKT_REGION":"230200","MKT_TRADE_DATE":"2026-08-01",
+                 "MKT_SAMPLE_NAME":"共享提交事务验收","MKT_SAMPLE_CONTACT":"00000000000",
+                 "MKT_SAMPLE_LATITUDE":"47.35","MKT_SAMPLE_LONGITUDE":"123.92",
+                 "MKT_SOURCE_NOTE":"临时验收"},"facts":{},"evidencePhotoIds":[]}
+                """;
+    }
+
+    @Test void locatesAnInvalidContactOnTheSubmittedMarketField() throws Exception {
+        String body = draftBody("CORN", "FEED_MILL", "MOISTURE", null)
+                .replace("13900000000", "bad-contact");
+        mockMvc.perform(post("/api/v1/market-records").principal(() -> "market-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.details.fieldErrors.MKT_SAMPLE_CONTACT").isNotEmpty());
+    }
+
     @Test void createsAndTransitionsCornFeedMillWithPurchasePriceOnly() throws Exception {
         String body = draftBody("CORN", "FEED_MILL", "MOISTURE", null)
                 .replace("\"MKT_SAMPLE_LATITUDE\":\"47.3543\"", "\"MKT_SAMPLE_LATITUDE\":\"47\"")

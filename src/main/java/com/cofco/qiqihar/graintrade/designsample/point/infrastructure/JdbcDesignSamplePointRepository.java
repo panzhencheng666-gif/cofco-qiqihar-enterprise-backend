@@ -66,7 +66,8 @@ public class JdbcDesignSamplePointRepository implements DesignSamplePointReposit
         return jdbc.sql("""
                 SELECT EXISTS(SELECT 1 FROM platform.design_sample_point
                   WHERE domain_code=:domain AND product_code=:product AND object_type_code=:objectType
-                    AND region_code=:region AND lower(btrim(sample_name))=lower(btrim(:name)))
+                    AND region_code=:region AND lifecycle_status='ACTIVE'
+                    AND lower(btrim(sample_name))=lower(btrim(:name)))
                 """).param("domain",context.domainCode()).param("product",context.productCode())
                 .param("objectType",context.objectTypeCode()).param("region",regionCode)
                 .param("name",sampleName).query(Boolean.class).single();
@@ -104,7 +105,15 @@ public class JdbcDesignSamplePointRepository implements DesignSamplePointReposit
     @Override
     public Optional<DesignSamplePointView> find(UUID id) {
         return jdbc.sql(REGION_PATH + SELECT
-                        + " WHERE point.design_sample_point_id=:id")
+                        + " WHERE point.design_sample_point_id=:id AND point.lifecycle_status='ACTIVE'")
+                .param("id", id).query(this::map).optional();
+    }
+
+    @Override
+    public Optional<DesignSamplePointView> findIncludingExpired(UUID id) {
+        return jdbc.sql(REGION_PATH + SELECT
+                        + " WHERE point.design_sample_point_id=:id"
+                        + " AND point.lifecycle_status IN ('ACTIVE','EXPIRED')")
                 .param("id", id).query(this::map).optional();
     }
 
@@ -202,7 +211,7 @@ public class JdbcDesignSamplePointRepository implements DesignSamplePointReposit
                     region_code=:regionCode,
                     governed_point=ST_SetSRID(ST_MakePoint(:longitude,:latitude),4326),
                     version=version+1,updated_by=:actor,updated_at=:now
-                WHERE design_sample_point_id=:id AND version=:expectedVersion
+                WHERE design_sample_point_id=:id AND version=:expectedVersion AND lifecycle_status='ACTIVE'
                 """).param("contractVersion", draft.contractVersion())
                 .param("domainCode", draft.context().domainCode())
                 .param("productCode", draft.context().productCode())
@@ -219,7 +228,7 @@ public class JdbcDesignSamplePointRepository implements DesignSamplePointReposit
     public boolean delete(UUID id, long expectedVersion) {
         return jdbc.sql("""
                 DELETE FROM platform.design_sample_point
-                WHERE design_sample_point_id=:id AND version=:expectedVersion
+                WHERE design_sample_point_id=:id AND version=:expectedVersion AND lifecycle_status='ACTIVE'
                 """).param("id", id).param("expectedVersion", expectedVersion).update() == 1;
     }
 
@@ -244,7 +253,7 @@ public class JdbcDesignSamplePointRepository implements DesignSamplePointReposit
 
     private QueryFilter filter(DesignSamplePointQuery query) {
         if (query.authorizedRegionCodes().isEmpty()) return QueryFilter.noRows();
-        StringBuilder where = new StringBuilder(" WHERE 1=1");
+        StringBuilder where = new StringBuilder(" WHERE point.lifecycle_status='ACTIVE'");
         Map<String, Object> parameters = new LinkedHashMap<>();
         if (!query.authorizedRegionCodes().contains("*")) {
             where.append(" AND point.region_code IN (:authorizedRegions)");

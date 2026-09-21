@@ -13,6 +13,10 @@ public interface BusinessNotificationRepository {
     List<BusinessNotification> findVisibleAfter(
             AuthorizedReadScope scope, String subjectId, long afterSequence, int limit);
 
+    /** Only shared reporting refresh events; never the notification inbox or identity events. */
+    List<BusinessNotification> findReportingChangesAfter(
+            String subjectId, long afterSequence, int limit);
+
     long countUnread(AuthorizedReadScope scope, String subjectId);
 
     Optional<BusinessNotification> findVisibleById(

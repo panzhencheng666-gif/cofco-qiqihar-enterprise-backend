@@ -228,19 +228,19 @@ class ProductionSecurityConfigurationTest {
     }
 
     @Test
-    void disabledAndRolelessOidcSubjectsAreRejectedOnEveryRequest() throws Exception {
-        when(principals.findEnabled("disabled-subject")).thenReturn(Optional.empty());
-        when(principals.findEnabled("roleless-subject"))
+    void disabledOidcSubjectIsRejectedWhileEnabledRolelessSubjectCanEnter() throws Exception {
+        when(principals.findEnabledByOidcIdentity("https://issuer.example.test","disabled-subject")).thenReturn(Optional.empty());
+        when(principals.findEnabledByOidcIdentity("https://issuer.example.test","roleless-subject"))
                 .thenReturn(Optional.of(principal("roleless-subject",Set.of())));
 
         mockMvc.perform(get("/api/v1/whoami").with(oidcLogin()
-                        .idToken(token -> token.subject("disabled-subject")
+                        .idToken(token -> token.issuer("https://issuer.example.test").subject("disabled-subject")
                                 .claim("amr",List.of("mfa")))))
                 .andExpect(status().isForbidden());
         mockMvc.perform(get("/api/v1/whoami").with(oidcLogin()
-                        .idToken(token -> token.subject("roleless-subject")
+                        .idToken(token -> token.issuer("https://issuer.example.test").subject("roleless-subject")
                                 .claim("amr",List.of("mfa")))))
-                .andExpect(status().isForbidden());
+                .andExpect(status().isOk());
     }
 
     @Test

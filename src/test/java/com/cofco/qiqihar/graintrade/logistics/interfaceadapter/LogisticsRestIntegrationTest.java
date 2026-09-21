@@ -10,7 +10,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import com.cofco.qiqihar.graintrade.bootstrap.GrainTradeApplication;
 import com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabaseConfiguration;
 import com.cofco.qiqihar.graintrade.testsupport.UsesProtectedTestDatabase;
-import java.util.Set;
 import java.util.UUID;
 import javax.sql.DataSource;
 import org.junit.jupiter.api.BeforeEach;
@@ -32,41 +31,77 @@ class LogisticsRestIntegrationTest {
     JdbcClient jdbc;
 
     @Test
+    void automaticSaveCreatesLinkedFactAndUpdatesSameRecord() throws Exception {
+        mvc.perform(post("/api/v1/logistics-records").principal(() -> "logistics-tester")
+                .contentType(MediaType.APPLICATION_JSON).content(publicBody(null)))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.data.status").value("APPROVED"));
+        String id=jdbc.sql("SELECT event_id::text FROM logistics.route_event").query(String.class).single();
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql("SELECT count(*) FROM logistics.route_event WHERE sample_point_id IS NOT NULL")
+            .query(Long.class).single()).isEqualTo(1L);
+        String mapRevision=jdbc.sql("SELECT revision::text FROM overview.map_revision").query(String.class).single();
+        mvc.perform(put("/api/v1/logistics-records/{id}",id).principal(() -> "logistics-tester")
+                .contentType(MediaType.APPLICATION_JSON).content(publicBody(1)))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("APPROVED"));
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql("SELECT revision::text FROM overview.map_revision").query(String.class).single()).isNotEqualTo(mapRevision);
+        mvc.perform(put("/api/v1/logistics-records/{id}",id).principal(() -> "logistics-tester")
+                .contentType(MediaType.APPLICATION_JSON).content(publicBody(1)))
+            .andExpect(status().isConflict());
+    }
+
+    @Test
+    void savingALegacyRecordCapturesFirstFillingTimeAndPreservesItOnRevision() throws Exception {
+        String id=create("CORN","RAIL","TEST_RAIL","TEST_ROAD",true);
+        jdbc.sql("UPDATE logistics.route_event SET status_code='DRAFT',submitted_at=NULL,sample_point_id=NULL WHERE event_id::text=:id")
+                .param("id",id).update();
+        mvc.perform(get("/api/v1/logistics-records").principal(() -> "logistics-tester")
+                .param("productCode","CORN").param("pageSize","20").param("recovery","true")
+                .param("filter.status","DRAFT").param("scope","MY_TASKS"))
+            .andExpect(status().isBadRequest());
+        transition(id,"submit",1,null)
+                .andExpect(jsonPath("$.data.status").value("APPROVED"))
+                .andExpect(jsonPath("$.data.version").value(2));
+        String savedAt=jdbc.sql("SELECT submitted_at::text FROM logistics.route_event WHERE event_id::text=:id")
+                .param("id",id).query(String.class).single();
+        org.assertj.core.api.Assertions.assertThat(savedAt).isNotBlank();
+        mvc.perform(put("/api/v1/logistics-records/{id}",id).principal(() -> "logistics-tester")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body("CORN","RAIL","TEST_RAIL","TEST_ROAD","14.500",true,2)))
+                .andExpect(status().isOk());
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql(
+                        "SELECT submitted_at::text FROM logistics.route_event WHERE event_id::text=:id")
+                .param("id",id).query(String.class).single()).isEqualTo(savedAt);
+    }
+
+    @Test
     void rejectsAnOutOfCountyLogisticsDraft() throws Exception {
         mvc.perform(post("/api/v1/logistics-records").principal(() -> "logistics-tester")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body("CORN", "RAIL", "TEST_RAIL", "TEST_ROAD", "10", true, null)
                                 .replace("123.918200", "130.000000")))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.details.fieldErrors.LOG_REGION").isNotEmpty());
     }
 
     @Test
-    void onlyAnIndependentAuthorizedReviewerCanApproveOrReturnALogisticsRecord() throws Exception {
-        try (var ordinary = OrdinarySecurityFixture.create(
-                JdbcClient.create(dataSource), "ci-ordinary-reviewer", "230200")) {
-            String id=create("CORN","RAIL","TEST_RAIL","TEST_ROAD",true);
-            mvc.perform(post("/api/v1/logistics-records/{id}/submit",id)
-                            .principal(() -> "ci-ordinary-reviewer").contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"version\":0}"))
-                    .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.data.allowedActions.length()").value(1))
-                    .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"));
-            mvc.perform(post("/api/v1/logistics-records/{id}/approve",id)
-                            .principal(() -> "ci-ordinary-reviewer").contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"version\":1}"))
-                    .andExpect(status().isForbidden())
-                    .andExpect(jsonPath("$.error.code").value("SELF_APPROVAL_FORBIDDEN"));
-            mvc.perform(post("/api/v1/logistics-records/{id}/return",id)
-                            .principal(() -> "ci-ordinary-reviewer").contentType(MediaType.APPLICATION_JSON)
-                            .content("{\"version\":1,\"reason\":\"补充依据\"}"))
-                    .andExpect(status().isForbidden())
-                    .andExpect(jsonPath("$.error.code").value("SELF_RETURN_FORBIDDEN"));
-            transition(id,"approve",1,null).andExpect(jsonPath("$.data.status").value("APPROVED"));
+    void humanReviewRoutesAreRemovedForReportersAndAdministrators() throws Exception {
+        String id=create("CORN","RAIL","TEST_RAIL","TEST_ROAD",true);
+        for (String actor : new String[] {"logistics-tester", "production-tester"}) {
+            for (String action : new String[] {"approve", "return"}) {
+                mvc.perform(post("/api/v1/logistics-records/{id}/" + action, id)
+                                .principal(() -> actor).contentType(MediaType.APPLICATION_JSON)
+                                .content("{\"version\":1,\"reason\":\"补充依据\"}"))
+                        .andExpect(status().isNotFound());
+            }
         }
+        mvc.perform(get("/api/v1/logistics-records/{id}", id))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("APPROVED"))
+                .andExpect(jsonPath("$.data.version").value(1))
+                .andExpect(jsonPath("$.data.allowedActions[?(@ == 'APPROVE' || @ == 'RETURN')]").isEmpty());
     }
 
     @Test
-    void approvalReusesTheSameVisibleSampleIdentityAcrossMarketAndLogistics() throws Exception {
+    void automaticSaveReusesTheSameVisibleSampleIdentityAcrossMarketAndLogistics() throws Exception {
         UUID samplePointId = UUID.fromString("64000000-0000-0000-0000-000000000001");
         String marketRecordId = "64000000-0000-0000-0000-000000000002";
         try {
@@ -104,8 +139,6 @@ class LogisticsRestIntegrationTest {
                                             "\"LOG_REGION\":\"230202\"")))
                     .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()
                     .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
-            transition(logisticsId,"submit",0,null);
-            transition(logisticsId,"approve",1,null);
 
             org.assertj.core.api.Assertions.assertThat(jdbc.sql("""
                     SELECT sample_point_id FROM logistics.route_event WHERE event_id::text=:id
@@ -145,12 +178,28 @@ class LogisticsRestIntegrationTest {
     }
 
     @Test
-    void voidsALogisticsDraftThroughHttpAndPersistsATerminalAuditedState() throws Exception {
+    void unassignedSharedReporterCannotVoidAnotherRegionsSavedRecord() throws Exception {
+        String id = create("CORN", "RAIL", "TEST_RAIL", "TEST_ROAD", true);
+        try (var ordinary = OrdinarySecurityFixture.create(jdbc, "ci-shared-void-reader", "230200")) {
+            jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id='ci-shared-void-reader'").update();
+            jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id='ci-shared-void-reader'").update();
+            mvc.perform(post("/api/v1/logistics-records/{id}/void", id)
+                            .principal(() -> "ci-shared-void-reader").contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"version\":1}"))
+                    .andExpect(status().isForbidden());
+            org.assertj.core.api.Assertions.assertThat(jdbc.sql(
+                    "SELECT status_code FROM logistics.route_event WHERE event_id::text=:id")
+                    .param("id", id).query(String.class).single()).isEqualTo("APPROVED");
+        }
+    }
+
+    @Test
+    void voidsASavedLogisticsRecordThroughHttpAndPersistsATerminalAuditedState() throws Exception {
         String id=create("CORN","RAIL","TEST_RAIL","TEST_ROAD",true);
 
-        transition(id,"void",0,null)
+        transition(id,"void",1,null)
                 .andExpect(jsonPath("$.data.status").value("VOIDED"))
-                .andExpect(jsonPath("$.data.version").value(1))
+                .andExpect(jsonPath("$.data.version").value(2))
                 .andExpect(jsonPath("$.data.allowedActions.length()").value(1))
                 .andExpect(jsonPath("$.data.allowedActions[0]").value("VIEW"));
 
@@ -169,7 +218,7 @@ class LogisticsRestIntegrationTest {
                 """).param("id", id).query(Long.class).single()).isEqualTo(1L);
         mvc.perform(post("/api/v1/logistics-records/{id}/submit",id)
                         .principal(() -> "logistics-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":1}"))
+                        .content("{\"version\":2}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.error.code").value("INVALID_LOGISTICS_RECORD"));
     }
@@ -195,10 +244,6 @@ class LogisticsRestIntegrationTest {
         jdbc.sql("""
                 INSERT INTO platform.logistics_core_field_applicability(field_code,product_code,sort_order)
                 VALUES('LOG_REFERENCE','CORN',115)
-                """).update();
-        jdbc.sql("""
-                INSERT INTO platform.logistics_action_applicability(product_code,status_code,action_code)
-                VALUES('CORN','PENDING_REVIEW','APPROVE') ON CONFLICT DO NOTHING
                 """).update();
     }
 
@@ -240,7 +285,7 @@ class LogisticsRestIntegrationTest {
 
         mvc.perform(put("/api/v1/logistics-records/{id}", id).principal(() -> "logistics-tester")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(body("CORN", "RAIL", "TEST_RAIL", "TEST_ROAD", "12.500", true, 0)
+                        .content(body("CORN", "RAIL", "TEST_RAIL", "TEST_ROAD", "12.500", true, 1)
                                 .replace("客户端伪造账号", "再次伪造姓名")))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.values.LOG_REPORTER").value("物流测试员"));
@@ -309,8 +354,6 @@ class LogisticsRestIntegrationTest {
                         .contentType(MediaType.APPLICATION_JSON).content(publicBody(null)))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()
                 .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
-        transition(id, "submit", 0, null);
-        transition(id, "approve", 1, null);
 
         String outflow = mvc.perform(post("/api/v1/logistics-records").principal(() -> "logistics-tester")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -320,8 +363,22 @@ class LogisticsRestIntegrationTest {
                                 .replace("2650.0000", "999999.0000")))
                 .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()
                 .replaceAll(".*\\\"id\\\":\\\"([^\\\"]+).*", "$1");
-        transition(outflow, "submit", 0, null);
-        transition(outflow, "approve", 1, null);
+
+        // Opposite directions are distinct facts; the same direction and period still cannot duplicate.
+        mvc.perform(post("/api/v1/logistics-records").principal(() -> "logistics-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(publicBody(null)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("SAMPLE_PERIOD_RECORD_CONFLICT"));
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql("SELECT count(*) FROM logistics.route_event")
+                .query(Long.class).single()).isEqualTo(2L);
+
+        mvc.perform(put("/api/v1/logistics-records/{id}",outflow).principal(() -> "logistics-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content(publicBody(1)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.code").value("SAMPLE_PERIOD_RECORD_CONFLICT"));
+        mvc.perform(get("/api/v1/logistics-records/{id}",outflow))
+                .andExpect(jsonPath("$.data.version").value(1))
+                .andExpect(jsonPath("$.data.values.LOG_DIRECTION").value("OUTFLOW"));
 
         mvc.perform(get("/api/v1/overview/indicators").principal(() -> "logistics-tester")
                         .queryParam("productCode", "CORN").queryParam("regionCode", "230200")
@@ -366,7 +423,7 @@ class LogisticsRestIntegrationTest {
                 .andExpect(jsonPath("$.data.fields[?(@.code == 'surveyYear')].label").value("数据年份"))
                 .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_STATUS')].readOnly").value(true))
                 .andExpect(jsonPath("$.data.fields[?(@.code == 'LOG_REFERENCE')]").doesNotExist())
-                .andExpect(jsonPath("$.data.actions[?(@.code == 'APPROVE')]").exists());
+                .andExpect(jsonPath("$.data.actions[?(@.code == 'APPROVE' || @.code == 'RETURN')]").isEmpty());
         mvc.perform(post("/api/v1/logistics-records/not-disclosed/submit")
                         .contentType(MediaType.APPLICATION_JSON).content("{"))
                 .andExpect(status().isUnauthorized());
@@ -380,36 +437,23 @@ class LogisticsRestIntegrationTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(1))
                 .andExpect(jsonPath("$.data.items[0].productCode").value("SOYBEAN"));
 
-        transition(corn, "submit", 0, null).andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"));
-        transition(corn, "return", 1, "补充运单编号").andExpect(jsonPath("$.data.status").value("RETURNED"));
+        for (String injectedField : new String[] {"__originNodeId", "LOG_REFERENCE", "UNKNOWN_FIELD"}) {
+            mvc.perform(put("/api/v1/logistics-records/{id}",corn).principal(() -> "logistics-tester")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(body("CORN","RAIL","TEST_RAIL","TEST_ROAD","99",true,1)
+                                    .replace("\"LOG_BOARD_PRICE\":\"2650.0000\"",
+                                            "\"" + injectedField + "\":\"not-authorized\"")))
+                    .andExpect(status().isBadRequest());
+        }
+
         mvc.perform(put("/api/v1/logistics-records/{id}", corn).principal(() -> "logistics-tester")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(body("CORN", "RAIL", "TEST_RAIL", "TEST_ROAD", "13.500", true, 2)))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("RETURNED"))
-                .andExpect(jsonPath("$.data.returnReason").value("补充运单编号"))
-                .andExpect(jsonPath("$.data.version").value(3));
-        transition(corn, "submit", 3, null);
-        jdbc.sql("""
-                DELETE FROM platform.logistics_action_applicability
-                WHERE product_code='CORN' AND status_code='PENDING_REVIEW' AND action_code='APPROVE'
-                """).update();
-        mvc.perform(post("/api/v1/logistics-records/{id}/approve", corn)
-                        .principal(() -> "logistics-tester").contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"version\":4}"))
-                .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("INVALID_LOGISTICS_RECORD"));
-        mvc.perform(get("/api/v1/logistics-records/{id}", corn))
-                .andExpect(jsonPath("$.data.status").value("PENDING_REVIEW"))
-                .andExpect(jsonPath("$.data.version").value(4))
-                .andExpect(jsonPath("$.data.allowedActions[?(@ == 'APPROVE')]").doesNotExist());
-        jdbc.sql("""
-                INSERT INTO platform.logistics_action_applicability(product_code,status_code,action_code)
-                VALUES('CORN','PENDING_REVIEW','APPROVE')
-                """).update();
-        transition(corn, "approve", 4, null).andExpect(jsonPath("$.data.status").value("APPROVED"));
+                        .content(body("CORN", "RAIL", "TEST_RAIL", "TEST_ROAD", "13.500", true, 1)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("APPROVED"))
+                .andExpect(jsonPath("$.data.version").value(2));
         mvc.perform(put("/api/v1/logistics-records/{id}", corn).principal(() -> "logistics-tester")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(body("CORN", "RAIL", "TEST_RAIL", "TEST_ROAD", "99", true, 3)))
+                        .content(body("CORN", "RAIL", "TEST_RAIL", "TEST_ROAD", "99", true, 1)))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.error.code").value("LOGISTICS_RECORD_VERSION_CONFLICT"));
         mvc.perform(get("/api/v1/logistics-records/{id}", corn))
@@ -421,7 +465,7 @@ class LogisticsRestIntegrationTest {
                 .andExpect(jsonPath("$.data.displayValues.LOG_REGION").value("齐齐哈尔市"))
                 .andExpect(jsonPath("$.data.displayValues.LOG_TRANSPORT_MODE").value("铁路"))
                 .andExpect(jsonPath("$.data.displayValues.LOG_DIRECTION").value("流入"))
-                .andExpect(jsonPath("$.data.displayValues.LOG_STATUS").value("已审核"))
+                .andExpect(jsonPath("$.data.displayValues.LOG_STATUS").value("已入库"))
                 .andExpect(jsonPath("$.data.values.LOG_ROUTE_VOLUME").value("13.5000"))
                 .andExpect(jsonPath("$.data.values.LOG_BOARD_PRICE").value("2650.0000"))
                 .andExpect(jsonPath("$.data.values.LOG_REFERENCE").doesNotExist())
@@ -429,7 +473,7 @@ class LogisticsRestIntegrationTest {
         org.assertj.core.api.Assertions.assertThat(jdbc.sql("""
                 SELECT count(*) FROM platform.business_audit_event
                 WHERE aggregate_type = 'LOGISTICS_RECORD' AND aggregate_id = :id
-                """).param("id", corn).query(Long.class).single()).isEqualTo(6L);
+                """).param("id", corn).query(Long.class).single()).isEqualTo(3L);
 
         mvc.perform(post("/api/v1/logistics-records").principal(() -> "logistics-tester")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -443,9 +487,13 @@ class LogisticsRestIntegrationTest {
     @Test
     void filtersByExplicitSurveyPeriodRealFillingTimeAndStatus() throws Exception {
         String id = create("CORN", "RAIL", "TEST_RAIL", "TEST_ROAD", true);
+        org.assertj.core.api.Assertions.assertThat(jdbc.sql(
+                        "SELECT submitted_at IS NOT NULL FROM logistics.route_event WHERE event_id::text=:id")
+                .param("id", id).query(Boolean.class).single()).isTrue();
         jdbc.sql("""
                 UPDATE logistics.route_event
-                SET created_at=TIMESTAMPTZ '2026-08-05 09:00:00+08',
+                SET created_at=TIMESTAMPTZ '2026-08-04 09:00:00+08',
+                    submitted_at=TIMESTAMPTZ '2026-08-05 09:00:00+08',
                     reported_at=TIMESTAMPTZ '2030-01-01 09:00:00+08'
                 WHERE event_id::text=:id
                 """).param("id", id).update();
@@ -457,7 +505,7 @@ class LogisticsRestIntegrationTest {
                         .queryParam("filter.regionCode", "230200")
                         .queryParam("filter.fillingDateFrom", "2026-08-05")
                         .queryParam("filter.fillingDateTo", "2026-08-05")
-                        .queryParam("filter.status", "DRAFT"))
+                        .queryParam("filter.status", "APPROVED"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(1))
                 .andExpect(jsonPath("$.data.items[0].values.surveyYear").value("2026"))
                 .andExpect(jsonPath("$.data.items[0].values.surveyMonth").value("8"))
@@ -474,6 +522,11 @@ class LogisticsRestIntegrationTest {
                         .queryParam("pageSize", "20").queryParam("filter.nodeTypeCode", "RAIL_NODE"))
                 .andExpect(status().isBadRequest());
 
+        mvc.perform(get("/api/v1/logistics-records")
+                        .queryParam("productCode","CORN").queryParam("pageNumber","0")
+                        .queryParam("pageSize","20").queryParam("filter.status","DRAFT"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(0));
+
         jdbc.sql("""
                 UPDATE logistics.route_event SET survey_month=NULL,survey_period_precision='YEAR'
                 WHERE event_id::text=:id
@@ -488,7 +541,6 @@ class LogisticsRestIntegrationTest {
                         .queryParam("pageSize", "20").queryParam("filter.surveyYear", "2026"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(1));
 
-        transition(id, "submit", 0, null);
         org.assertj.core.api.Assertions.assertThat(jdbc.sql(
                         "SELECT submitted_at IS NOT NULL FROM logistics.route_event WHERE event_id::text=:id")
                 .param("id", id).query(Boolean.class).single()).isTrue();
@@ -501,7 +553,7 @@ class LogisticsRestIntegrationTest {
                         .queryParam("pageSize", "20").queryParam("filter.surveyYear", "2026")
                         .queryParam("filter.fillingDateFrom", "2026-08-06")
                         .queryParam("filter.fillingDateTo", "2026-08-06")
-                        .queryParam("filter.status", "PENDING_REVIEW"))
+                        .queryParam("filter.status", "APPROVED"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(1))
                 .andExpect(jsonPath("$.data.items[0].values.fillingDate").value("2026-08-06"))
                 .andExpect(jsonPath("$.data.items[0].values.LOG_FILLING_TIME_BASIS").doesNotExist());
@@ -521,8 +573,7 @@ class LogisticsRestIntegrationTest {
         String body = reason == null ? "{\"version\":" + version + "}"
                 : "{\"version\":" + version + ",\"reason\":\"" + reason + "\"}";
         return mvc.perform(post("/api/v1/logistics-records/{id}/" + action, id)
-                        .principal(() -> Set.of("approve", "return").contains(action)
-                                ? "production-tester" : "logistics-tester")
+                        .principal(() -> "logistics-tester")
                         .contentType(MediaType.APPLICATION_JSON).content(body))
                 .andExpect(status().isOk());
     }

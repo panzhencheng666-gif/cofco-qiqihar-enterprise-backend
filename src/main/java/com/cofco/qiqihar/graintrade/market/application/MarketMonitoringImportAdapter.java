@@ -44,7 +44,6 @@ final class MarketMonitoringImportAdapter implements MarketImportPort {
     @Override
     public String importAndSubmit(MarketImportRow row) {
         String id = service.importDraft(toDraft(row));
-        service.submit(id, 0);
         return id;
     }
 

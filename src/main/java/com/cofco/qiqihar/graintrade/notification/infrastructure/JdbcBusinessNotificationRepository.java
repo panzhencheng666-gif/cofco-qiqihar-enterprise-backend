@@ -81,6 +81,29 @@ public class JdbcBusinessNotificationRepository implements BusinessNotificationR
     }
 
     @Override
+    public List<BusinessNotification> findReportingChangesAfter(
+            String subjectId, long afterSequence, int limit) {
+        // Filter before LIMIT so sensitive/unknown events cannot consume or starve a batch.
+        String sql = SELECT + """
+                 WHERE ((event.aggregate_type='MARKET_RECORD' AND event.action_code IN ('MARKET_RECORD_CREATED','MARKET_RECORD_SAVED','MARKET_RECORD_VOIDED','MARKET_RECORD_SUBMITTED','MARKET_RECORD_IMPORTED'))
+ OR (event.aggregate_type='PRODUCTION_RECORD' AND event.action_code IN ('PRODUCTION_RECORD_CREATED','PRODUCTION_RECORD_SAVED','PRODUCTION_RECORD_VOIDED','PRODUCTION_RECORD_SUBMITTED','PRODUCTION_RECORD_IMPORTED'))
+ OR (event.aggregate_type='LOGISTICS_RECORD' AND event.action_code IN ('LOGISTICS_RECORD_CREATED','LOGISTICS_RECORD_SAVED','LOGISTICS_RECORD_VOIDED','LOGISTICS_RECORD_SUBMITTED','LOGISTICS_RECORD_IMPORTED'))
+ OR (event.aggregate_type='FORMAL_SAMPLE_OBSERVATION' AND event.action_code='FORMAL_SAMPLE_OBSERVATION_SAVED')
+ OR (event.aggregate_type='FORMAL_SAMPLE_POINT' AND event.action_code IN ('FORMAL_SAMPLE_POINT_CREATED','FORMAL_SAMPLE_POINT_UPDATED','FORMAL_SAMPLE_POINT_RETIRED'))
+ OR (event.aggregate_type='DESIGN_SAMPLE_POINT' AND event.action_code IN ('DESIGN_SAMPLE_POINT_CREATED','DESIGN_SAMPLE_POINT_UPDATED','DESIGN_SAMPLE_POINT_DELETED'))
+ OR (event.aggregate_type='MARKET_OBJECT' AND event.action_code IN ('MARKET_OBJECT_CREATED','MARKET_OBJECT_UPDATED'))
+ OR (event.aggregate_type='PRODUCTION_OBJECT' AND event.action_code IN ('PRODUCTION_OBJECT_CREATED','PRODUCTION_OBJECT_UPDATED'))
+ OR (event.aggregate_type='REGIONAL_CROP_ANNUAL_STAT' AND event.action_code='REGIONAL_CROP_ANNUAL_STAT_UPSERTED')
+ OR (event.aggregate_type='SUPPLY_DEMAND_BALANCE' AND event.action_code='SUPPLY_BALANCE_UPSERTED'))
+                   AND event.event_sequence > :afterSequence
+                 ORDER BY event.event_sequence ASC LIMIT :limit
+                """;
+        return jdbc.sql(sql).param("subjectId", subjectId)
+                .param("afterSequence", afterSequence).param("limit", limit)
+                .query(this::notification).list();
+    }
+
+    @Override
     public long countUnread(AuthorizedReadScope scope, String subjectId) {
         if (hasNoAuthorizedRegions(scope)) {
             return 0;

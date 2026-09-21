@@ -1,0 +1,2 @@
+GRANT SELECT ON TABLE production.regional_public_indicator
+TO qiqihar_enterprise_runtime;

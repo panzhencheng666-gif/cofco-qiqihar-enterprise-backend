@@ -42,7 +42,7 @@ public class FormalSampleRetirementBatchService {
         var actor = actor();
         LocalDate date = points.retirementDate();
         var batch = new FormalSampleRetirementBatch(UUID.randomUUID(), actor.subjectId(),
-                actor.workUnitCode(), actor.regionCodes().stream().sorted().toList(), date,
+                actor.workUnitCode(), java.util.List.of("*"), date,
                 clock.instant().plus(Duration.ofMinutes(10)), candidates(actor, date), null, null);
         batches.save(batch);
         return batch;
@@ -66,7 +66,7 @@ public class FormalSampleRetirementBatchService {
         LocalDate date = points.retirementDate();
         if (!clock.instant().isBefore(batch.expiresAt()) || !date.equals(batch.businessDate())
                 || !batch.workUnitCode().equals(actor.workUnitCode())
-                || !batch.authorizedRegions().equals(actor.regionCodes().stream().sorted().toList())
+                || !batch.authorizedRegions().equals(java.util.List.of("*"))
                 || !batch.candidates().equals(candidates(actor, date))) throw stale();
         for (var point : batch.candidates()) {
             lifecycle.retire(point.id(), point.version(), reason);
@@ -83,14 +83,12 @@ public class FormalSampleRetirementBatchService {
     private FormalSampleRetirementBatch owned(UUID id, SecurityPrincipal actor, boolean lock) {
         var batch = batches.find(id, lock).orElseThrow(FormalSampleRetirementBatchService::notFound);
         if (!batch.actorSubjectId().equals(actor.subjectId())
-                || !batch.workUnitCode().equals(actor.workUnitCode())
-                || !actor.regionCodes().containsAll(batch.candidates().stream()
-                        .map(FormalSampleRetirementBatch.Candidate::regionCode).toList())) throw notFound();
+                || !batch.workUnitCode().equals(actor.workUnitCode())) throw notFound();
         return batch;
     }
 
     private List<FormalSampleRetirementBatch.Candidate> candidates(SecurityPrincipal actor, LocalDate date) {
-        return current.readAtLifecycleCutoff(date.getYear(), null, null, null, date, actor.regionCodes())
+        return current.readAtLifecycleCutoff(date.getYear(), null, null, null, date, java.util.Set.of("*"))
                 .stream().map(CurrentOverviewSamplePoint::samplePointId).distinct().sorted()
                 .map(id -> {
                     var point = points.find(id).orElseThrow(FormalSampleRetirementBatchService::stale);

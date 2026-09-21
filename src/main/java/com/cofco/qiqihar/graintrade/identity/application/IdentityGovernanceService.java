@@ -128,10 +128,10 @@ public class IdentityGovernanceService {
                 UUID.randomUUID(),subjectId,invitationTokens.sha256(token),
                 invitationTokens.encryptDeliveryPayload(deliveryAddress.strip(),token),
                 invitationTokens.sha256(deliveryAddress.strip().toLowerCase(java.util.Locale.ROOT)),
-                clock.instant().plus(Duration.ofHours(24)),actor.subjectId(),idempotencyKey,requestSha256);
+                clock.instant().plus(Duration.ofHours(24)),actor.subjectId(),idempotencyKey,requestSha256,phoneHash(deliveryAddress));
         audit.record(actor,assignment.workUnitCode(),"SECURITY_USER",subjectId,
                 IdentityLifecycleContract.AUDIT_INVITED,clock.instant(),
-                "{\"accountStatus\":\"INVITED\",\"deliveryStatus\":\"QUEUED\","
+                "{\"accountStatus\":\"INVITED\",\"deliveryStatus\":\""+invitation.deliveryStatus()+"\","
                         +"\"contractVersion\":\""+IdentityInvitationReceipt.CONTRACT_VERSION+"\"}");
         return IdentityInvitationReceipt.from(businessProfile(created),invitation,false);
     }
@@ -214,7 +214,7 @@ public class IdentityGovernanceService {
                 subjectId,deliveryAddress,actor.subjectId(),idempotencyKey,requestFingerprint);
         audit.record(actor,employee.workUnitCode(),"SECURITY_USER",subjectId,
                 IdentityLifecycleContract.AUDIT_REINVITED,
-                clock.instant(),"{\"deliveryStatus\":\"QUEUED\"}");
+                clock.instant(),"{\"deliveryStatus\":\""+invitation.deliveryStatus()+"\"}");
         return IdentityInvitationReceipt.from(businessProfile(employee),invitation,false);
     }
 
@@ -334,9 +334,13 @@ public class IdentityGovernanceService {
                 IdentityLifecycleContract.ERROR_INVALID_IDEMPOTENCY_KEY,"幂等键格式不正确");
     }
     private static void requireDeliveryAddress(String value){
+        if(phoneHash(value)!=null)return;
         if(value==null||value.length()>254||!value.matches("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"))
             throw new ClientRequestException(IdentityLifecycleContract.ERROR_INVALID_DELIVERY_ADDRESS,
                     "邀请送达地址格式不正确");
+    }
+    private static String phoneHash(String value) {
+        return value!=null&&value.matches("1[3-9][0-9]{9}")?SmsChallengeService.hash(value):null;
     }
     private static boolean trustedHttpsIssuer(String value){
         try {
@@ -369,6 +373,6 @@ public class IdentityGovernanceService {
                 UUID.randomUUID(),subjectId,invitationTokens.sha256(token),
                 invitationTokens.encryptDeliveryPayload(deliveryAddress.strip(),token),
                 invitationTokens.sha256(deliveryAddress.strip().toLowerCase(java.util.Locale.ROOT)),
-                clock.instant().plus(Duration.ofHours(24)),actorSubjectId,idempotencyKey,requestFingerprint);
+                clock.instant().plus(Duration.ofHours(24)),actorSubjectId,idempotencyKey,requestFingerprint,phoneHash(deliveryAddress));
     }
 }

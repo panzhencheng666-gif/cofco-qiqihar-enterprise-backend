@@ -46,6 +46,34 @@ class ProductionRecordRestIntegrationTest {
     private DataSource dataSource;
     private AdministrativeBoundarySnapshot boundarySnapshot;
 
+    @Test
+    void automaticSaveCreatesLinkedFactAndUpdatesSameRecord() throws Exception {
+        String body=withSampleName(fullDraftBody("CORN","FARMER","MOISTURE",null),"自动入库产情");
+        mockMvc.perform(post("/api/v1/production-records/submit").principal(() -> "production-tester")
+                .contentType(MediaType.APPLICATION_JSON).content(body))
+            .andExpect(status().isCreated()).andExpect(jsonPath("$.data.status").value("APPROVED"));
+        JdbcClient jdbc=JdbcClient.create(dataSource);
+        String id=jdbc.sql("SELECT record_id FROM production.production_record").query(String.class).single();
+        assertThat(jdbc.sql("SELECT count(*) FROM production.production_record WHERE sample_point_id IS NOT NULL")
+            .query(Long.class).single()).isEqualTo(1L);
+        jdbc.sql("UPDATE production.production_record SET status_code='PENDING_REVIEW',sample_point_id=NULL WHERE record_id=:id").param("id",id).update();
+        mockMvc.perform(get("/api/v1/production-records").principal(() -> "production-tester")
+                .param("productCode","CORN").param("pageKind","MONITORING").param("pageSize","20")
+                .param("recovery","true").param("filter.status","PENDING_REVIEW").param("scope","MY_TASKS"))
+            .andExpect(status().isBadRequest());
+        mockMvc.perform(get("/api/v1/production-records").principal(() -> "production-tester")
+                .param("productCode","CORN").param("pageKind","MONITORING").param("pageSize","20"))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.totalElements").value(0));
+        String revised=body.strip().replaceFirst("}$",",\"version\":0}");
+        mockMvc.perform(put("/api/v1/production-records/{id}",id).principal(() -> "production-tester")
+                .contentType(MediaType.APPLICATION_JSON).content(revised))
+            .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("APPROVED"))
+            .andExpect(jsonPath("$.data.version").value(1));
+        mockMvc.perform(put("/api/v1/production-records/{id}",id).principal(() -> "production-tester")
+                .contentType(MediaType.APPLICATION_JSON).content(revised))
+            .andExpect(status().isConflict());
+    }
+
     @BeforeEach
     void stageEvidencePhoto() {
         JdbcClient jdbc = JdbcClient.create(dataSource);
@@ -119,6 +147,20 @@ class ProductionRecordRestIntegrationTest {
                   platform.import_job_photo,evidence.evidence_photo
                 """).update();
         boundarySnapshot.restore(jdbc);
+    }
+
+    @Test void blankOptionalNumbersDoNotHideTheContactValidationOnAtomicSubmit() throws Exception {
+        mockMvc.perform(post("/api/v1/production-records/submit")
+                        .principal(() -> "production-tester")
+                        .contentType(MediaType.APPLICATION_JSON).content("""
+                        {"productCode":"CORN","objectTypeCode":"FARMER","regionCode":"230200",
+                         "surveyYear":2026,"cultivatedAreaMu":"","yieldPerMuKilograms":"",
+                         "quality":{},"costs":{},"insurance":{},"subsidies":{},
+                         "submissionMetadata":{"PROD_SAMPLE_CONTACT":"bad-contact",
+                         "PROD_SAMPLE_LATITUDE":"47.5","PROD_SAMPLE_LONGITUDE":"123.8"}}
+                        """))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.error.details.fieldErrors.PROD_SAMPLE_CONTACT").isNotEmpty());
     }
 
     @Test

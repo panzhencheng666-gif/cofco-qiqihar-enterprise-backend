@@ -313,7 +313,7 @@ public class SupplyAccountService {
     }
 
     private AuthorizedReadScope readScope() {
-        return accessControl == null ? AuthorizedReadScope.unrestricted() : accessControl.requireReadScope();
+        return accessControl == null ? AuthorizedReadScope.unrestricted() : accessControl.requireBusinessReadScope();
     }
 
     private void audit(SecurityPrincipal principal, String aggregateType, String aggregateId,

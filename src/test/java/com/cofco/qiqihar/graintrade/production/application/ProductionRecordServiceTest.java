@@ -106,7 +106,7 @@ class ProductionRecordServiceTest {
 
         PagedResult<ProductionListItem> result = service.read(query);
 
-        assertThat(result.items().get(0).allowedActions()).containsExactly("VIEW", "SUBMIT");
+        assertThat(result.items().get(0).allowedActions()).containsExactly("VIEW");
     }
 
     @Test
@@ -119,7 +119,7 @@ class ProductionRecordServiceTest {
         ProductionRecordView result = service.detail("record-1");
 
         assertThat(result.record()).isSameAs(record);
-        assertThat(result.allowedActions()).containsExactly("VIEW", "SAVE", "SUBMIT", "VOID");
+        assertThat(result.allowedActions()).containsExactly("VIEW", "SAVE", "VOID");
     }
 
     @Test
@@ -159,6 +159,10 @@ class ProductionRecordServiceTest {
                 .isInstanceOf(ClientRequestException.class)
                 .extracting("code")
                 .isEqualTo("INVALID_PRODUCTION_RECORD");
+        assertThatThrownBy(() -> service.create(draft))
+                .extracting("details")
+                .isEqualTo(Map.of("fieldErrors", Map.of("cultivatedAreaMu", "播种面积不能为负数。")));
+
     }
 
     @Test
@@ -180,6 +184,8 @@ class ProductionRecordServiceTest {
         Map<String, String> expected = new java.util.LinkedHashMap<>(submissionMetadata());
         expected.put("PROD_REPORTER_NAME", "tester");
         assertThat(created.record().submissionMetadata()).containsExactlyInAnyOrderEntriesOf(expected);
+        assertThat(created.record().status()).isEqualTo(com.cofco.qiqihar.graintrade.production.domain.ProductionStatus.APPROVED);
+        org.mockito.Mockito.verify(repository).linkApprovedSamplePoint(eq(created.record()), eq("tester"), eq(fixedClock().instant()));
     }
 
     @Test
@@ -228,6 +234,7 @@ class ProductionRecordServiceTest {
     private static Map<String, String> submissionMetadata() {
         return Map.of(
                 "PROD_REPORTER_NAME", "测试填报员",
+                "PROD_SAMPLE_NAME", "测试样本",
                 "PROD_SURVEYOR_PHONE", "13800000000",
                 "PROD_SAMPLE_CONTACT", "13900000000",
                 "PROD_SAMPLE_LATITUDE", "47.3543",

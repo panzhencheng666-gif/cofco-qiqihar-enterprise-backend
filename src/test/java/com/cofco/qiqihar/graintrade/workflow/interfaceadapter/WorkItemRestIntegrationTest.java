@@ -20,9 +20,17 @@ class WorkItemRestIntegrationTest {
     @Autowired
     private MockMvc mockMvc;
 
+    @Autowired javax.sql.DataSource dataSource;
+
+    @org.junit.jupiter.api.BeforeEach
+    void enabledEmployeeWithoutRoleOrRegion() {
+        org.springframework.jdbc.core.simple.JdbcClient.create(dataSource).sql(
+            "INSERT INTO platform.security_user(subject_id,display_name,work_unit_code) VALUES('task-employee','业务员工','TEST') ON CONFLICT DO NOTHING").update();
+    }
+
     @Test
     void returnsAnEmptyCanonicalServerPageForAValidNonMonitoringRegion() throws Exception {
-        mockMvc.perform(get("/api/v1/work-items")
+        mockMvc.perform(get("/api/v1/work-items").principal(() -> "task-employee")
                         .queryParam("scope", "PENDING")
                         .queryParam("regionId", "150721")
                         .queryParam("page", "0")
@@ -37,40 +45,40 @@ class WorkItemRestIntegrationTest {
 
     @Test
     void rejectsUnknownRepeatedBlankAndIllegalQueriesWithOneControlledCode() throws Exception {
-        assertInvalid(get("/api/v1/work-items")
+        assertInvalid(get("/api/v1/work-items").principal(() -> "task-employee")
                 .queryParam("scope", "PENDING")
                 .queryParam("page", "0")
                 .queryParam("pageSize", "20")
                 .queryParam("pageNubmer", "1"));
-        assertInvalid(get("/api/v1/work-items")
+        assertInvalid(get("/api/v1/work-items").principal(() -> "task-employee")
                 .queryParam("scope", "PENDING", "COMPLETED")
                 .queryParam("page", "0")
                 .queryParam("pageSize", "20"));
-        assertInvalid(get("/api/v1/work-items")
+        assertInvalid(get("/api/v1/work-items").principal(() -> "task-employee")
                 .queryParam("scope", "PENDING")
                 .queryParam("status", " ")
                 .queryParam("page", "0")
                 .queryParam("pageSize", "20"));
-        assertInvalid(get("/api/v1/work-items")
+        assertInvalid(get("/api/v1/work-items").principal(() -> "task-employee")
                 .queryParam("scope", "COMPLETED")
                 .queryParam("status", "TO_FILL")
                 .queryParam("page", "0")
                 .queryParam("pageSize", "20"));
-        assertInvalid(get("/api/v1/work-items")
+        assertInvalid(get("/api/v1/work-items").principal(() -> "task-employee")
                 .queryParam("scope", "PENDING")
                 .queryParam("page", "abc")
                 .queryParam("pageSize", "20"));
-        assertInvalid(get("/api/v1/work-items")
+        assertInvalid(get("/api/v1/work-items").principal(() -> "task-employee")
                 .queryParam("scope", "PENDING")
                 .queryParam("domain", "UNKNOWN")
                 .queryParam("page", "0")
                 .queryParam("pageSize", "20"));
-        assertInvalid(get("/api/v1/work-items")
+        assertInvalid(get("/api/v1/work-items").principal(() -> "task-employee")
                 .queryParam("scope", "PENDING")
                 .queryParam("regionId", "999999")
                 .queryParam("page", "0")
                 .queryParam("pageSize", "20"));
-        assertInvalid(get("/api/v1/work-items")
+        assertInvalid(get("/api/v1/work-items").principal(() -> "task-employee")
                 .queryParam("scope", "PENDING")
                 .queryParam("productCode", "UNKNOWN")
                 .queryParam("page", "0")
@@ -79,7 +87,7 @@ class WorkItemRestIntegrationTest {
 
     @Test
     void returnsAConsistentEmptyPageForTheLargestSupportedPageNumber() throws Exception {
-        mockMvc.perform(get("/api/v1/work-items")
+        mockMvc.perform(get("/api/v1/work-items").principal(() -> "task-employee")
                         .queryParam("scope", "PENDING")
                         .queryParam("regionId", "150721")
                         .queryParam("page", String.valueOf(Integer.MAX_VALUE))

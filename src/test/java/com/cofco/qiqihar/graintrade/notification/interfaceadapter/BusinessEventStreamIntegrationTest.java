@@ -50,6 +50,7 @@ class BusinessEventStreamIntegrationTest {
     @LocalServerPort int port;
     @Autowired DataSource dataSource;
     @Autowired BusinessNotificationRepository notifications;
+    @Autowired com.cofco.qiqihar.graintrade.notification.application.BusinessEventConsumerRegistrar registrar;
     private JdbcClient jdbc;
 
     @BeforeEach
@@ -122,6 +123,122 @@ class BusinessEventStreamIntegrationTest {
                 .doesNotContain(FIRST_VISIBLE.toString())
                 .doesNotContain(HIDDEN.toString())
                 .doesNotContain("stream-market-hidden");
+    }
+
+    @Test
+    void unassignedEnabledReaderReceivesSavedChangesWithoutSensitiveEventsAndResumes() throws Exception {
+        jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:reader").param("reader", READER).update();
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id=:reader")
+                .param("reader", READER).update();
+        jdbc.sql("""
+                UPDATE platform.business_event_outbox SET action_code='MARKET_RECORD_SAVED'
+                WHERE event_id IN (:first,:second)
+                """).param("first", FIRST_VISIBLE).param("second", SECOND_VISIBLE).update();
+        jdbc.sql("""
+                UPDATE platform.business_event_outbox
+                SET aggregate_type='IDENTITY_INVITATION',action_code='IDENTITY_INVITATION_CREATED'
+                WHERE event_id=:id
+                """).param("id", HIDDEN).update();
+        long firstSequence = eventSequence(FIRST_VISIBLE);
+        long secondSequence = eventSequence(SECOND_VISIBLE);
+        Socket socket = openStreamSocket("/api/v1/business-events/stream?after=" + (firstSequence - 1), null);
+        String received;
+        try {
+            received = readUntil(socket, "stream-market-second");
+        } finally {
+            abort(socket);
+        }
+        assertThat(received).contains("event:business-change")
+                .contains(FIRST_VISIBLE.toString()).contains(SECOND_VISIBLE.toString())
+                .contains("MARKET_RECORD_SAVED").doesNotContain(HIDDEN.toString());
+        Socket reconnected = openStreamSocket("/api/v1/business-events/stream?after=0",
+                Long.toString(firstSequence));
+        try {
+            assertThat(readUntil(reconnected, "stream-market-second"))
+                    .contains("id:" + secondSequence).contains(SECOND_VISIBLE.toString())
+                    .doesNotContain(FIRST_VISIBLE.toString()).doesNotContain(HIDDEN.toString());
+        } finally {
+            abort(reconnected);
+        }
+        triggerDisconnectAndAwaitRetirement();
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM platform.business_event_delivery_state
+                WHERE consumer_id LIKE :prefix AND event_id=:id AND status_code='DELIVERED'
+                """).param("prefix", "sse:" + READER + ":%")
+                .param("id", SECOND_VISIBLE).query(Integer.class).single()).isEqualTo(2);
+        // Opening realtime access must not broaden the notification inbox.
+        assertThat(notifications.findVisible(new AuthorizedReadScope(READER, Set.of()), READER, 20))
+                .isEmpty();
+    }
+
+    @Test
+    void reportingRefreshAllowlistFiltersBeforeBatchLimitAndChecksAggregateAndAction() {
+        long start = eventSequence(FIRST_VISIBLE) - 1;
+        jdbc.sql("""
+                UPDATE platform.business_event_outbox SET aggregate_type='IDENTITY_INVITATION',
+                    action_code='MARKET_RECORD_SAVED' WHERE event_id=:id
+                """).param("id", FIRST_VISIBLE).update();
+        jdbc.sql("""
+                UPDATE platform.business_event_outbox SET aggregate_type='MARKET_RECORD',
+                    action_code='IDENTITY_INVITATION_CREATED' WHERE event_id=:id
+                """).param("id", HIDDEN).update();
+        jdbc.sql("""
+                UPDATE platform.business_event_outbox SET aggregate_type='PRODUCTION_RECORD',
+                    action_code='PRODUCTION_RECORD_SAVED' WHERE event_id=:id
+                """).param("id", SECOND_VISIBLE).update();
+        assertThat(notifications.findReportingChangesAfter(READER, start, 1))
+                .extracting(event -> event.id()).containsExactly(SECOND_VISIBLE);
+        assertThat(notifications.findReportingChangesAfter(READER, eventSequence(SECOND_VISIBLE), 1))
+                .isEmpty();
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+        "MARKET_RECORD,MARKET_RECORD_CREATED", "MARKET_RECORD,MARKET_RECORD_SAVED",
+        "MARKET_RECORD,MARKET_RECORD_VOIDED",
+        "PRODUCTION_RECORD,PRODUCTION_RECORD_CREATED", "PRODUCTION_RECORD,PRODUCTION_RECORD_SAVED",
+        "PRODUCTION_RECORD,PRODUCTION_RECORD_VOIDED",
+        "LOGISTICS_RECORD,LOGISTICS_RECORD_CREATED", "LOGISTICS_RECORD,LOGISTICS_RECORD_SAVED",
+        "LOGISTICS_RECORD,LOGISTICS_RECORD_VOIDED",
+        "FORMAL_SAMPLE_OBSERVATION,FORMAL_SAMPLE_OBSERVATION_SAVED"
+    })
+    void sharedRefreshIncludesExistingReportingMutation(String aggregateType, String actionCode) {
+        jdbc.sql("""
+                UPDATE platform.business_event_outbox SET aggregate_type=:aggregate,action_code=:action
+                WHERE event_id=:id
+                """).param("aggregate", aggregateType).param("action", actionCode)
+                .param("id", FIRST_VISIBLE).update();
+        assertThat(notifications.findReportingChangesAfter(READER, eventSequence(FIRST_VISIBLE) - 1, 1))
+                .extracting(event -> event.id()).containsExactly(FIRST_VISIBLE);
+    }
+
+    @Test
+    void rolelessEnabledReaderStillMeetsJavaReadPolicyButExistingRegistrarRejectsIt() {
+        jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:reader")
+                .param("reader", READER).update();
+        var principal = new com.cofco.qiqihar.graintrade.shared.security.infrastructure.JdbcSecurityPrincipalRepository(jdbc)
+                .findEnabled(READER).orElseThrow();
+        assertThat(principal.permits("BUSINESS_READ")).isTrue();
+        // Known pre-existing Java/DB policy mismatch; this scope fix does not change registration policy.
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> registrar.ensureCheckpoint(
+                "sse:" + READER + ":roleless", "test-instance", 0, READER))
+                .hasStackTraceContaining("authorization subject cannot read business events");
+    }
+
+    @Test
+    void disabledReaderCannotOpenStream() throws Exception {
+        jdbc.sql("UPDATE platform.security_user SET enabled=false WHERE subject_id=:reader")
+                .param("reader", READER).update();
+        HttpResponse<String> response = HttpClient.newHttpClient().send(
+                HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port
+                        + "/api/v1/business-events/stream?after=0")).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+        assertThat(response.statusCode()).isEqualTo(403);
+    }
+
+    private long eventSequence(UUID id) {
+        return jdbc.sql("SELECT event_sequence FROM platform.business_event_outbox WHERE event_id=:id")
+                .param("id", id).query(Long.class).single();
     }
 
     @Test
@@ -245,7 +362,12 @@ class BusinessEventStreamIntegrationTest {
     private static String readUntil(Socket socket, String marker) throws IOException {
         StringBuilder received = new StringBuilder();
         while (!received.toString().contains(marker) && received.length() < 1_000_000) {
-            int next = socket.getInputStream().read();
+            int next;
+            try {
+                next = socket.getInputStream().read();
+            } catch (java.net.SocketTimeoutException noMoreEvents) {
+                break;
+            }
             if (next < 0) break;
             received.append((char) next);
         }

@@ -164,7 +164,7 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
                 SELECT region.code,region.name,region.administrative_level,region.parent_code
                 FROM platform.region region
                 JOIN authorized_region authorized ON authorized.code=region.code
-                WHERE (region.administrative_level='TOWNSHIP'
+                WHERE ((region.administrative_level='TOWNSHIP'
                    OR (region.administrative_level='COUNTY'
                      AND EXISTS (
                        SELECT 1 FROM platform.monitoring_scope_region governed
@@ -179,6 +179,19 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
                          FROM platform.region child
                          JOIN descendant parent ON child.parent_code=parent.code)
                        SELECT 1 FROM descendant WHERE administrative_level='TOWNSHIP')))
+                   OR EXISTS (
+                     SELECT 1 FROM platform.security_user_region_scope existing
+                     JOIN platform.security_user_role role ON role.subject_id=existing.subject_id
+                     JOIN platform.access_role definition ON definition.code=role.role_code AND definition.active
+                     WHERE existing.subject_id=CAST(:subject AS varchar)
+                       AND existing.region_code=region.code
+                       AND role.role_code IN ('SYSTEM_ADMIN','BUSINESS_REVIEWER','IDENTITY_ADMIN')
+                       AND CURRENT_TIMESTAMP>=existing.valid_from
+                       AND (existing.valid_until IS NULL OR CURRENT_TIMESTAMP<existing.valid_until)
+                       AND (existing.review_due_at IS NULL OR CURRENT_TIMESTAMP<existing.review_due_at)
+                       AND CURRENT_TIMESTAMP>=role.valid_from
+                       AND (role.valid_until IS NULL OR CURRENT_TIMESTAMP<role.valid_until)
+                       AND (role.review_due_at IS NULL OR CURRENT_TIMESTAMP<role.review_due_at)))
                 AND platform.employee_region_available(region.code,CAST(:subject AS varchar))
                 ORDER BY region.code
                 """).param("unit",workUnitCode).param("subject",subjectId,java.sql.Types.VARCHAR).query((row,index)->new AssignmentOptions.RegionOption(
@@ -191,6 +204,7 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
 
     @Override
     public void lockInvitationIdempotency(String actorSubjectId,String idempotencyKey) {
+        com.cofco.qiqihar.graintrade.identity.application.PhoneIdentityLock.acquire(jdbc);
         jdbc.sql("""
                 SELECT pg_advisory_xact_lock(hashtextextended(:lockKey,0::bigint)),1
                 """).param("lockKey",actorSubjectId+"\n"+idempotencyKey)
@@ -262,18 +276,28 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
     public IdentityInvitation createInvitation(
             UUID invitationId,String subjectId,String tokenSha256,
             String encryptedDeliveryPayload,String deliveryAddressSha256,Instant expiresAt,
-            String actorSubjectId,String idempotencyKey,String requestSha256) {
+            String actorSubjectId,String idempotencyKey,String requestSha256,String activationPhoneSha256) {
+        if(activationPhoneSha256!=null) {
+            jdbc.sql("UPDATE platform.identity_invitation SET state='EXPIRED',version=version+1 WHERE activation_phone_sha256=:phone AND state='PENDING' AND expires_at<=now()")
+                    .param("phone",activationPhoneSha256).update();
+            boolean occupied=jdbc.sql("SELECT EXISTS(SELECT 1 FROM platform.phone_identity WHERE encode(sha256(convert_to(phone,'UTF8')),'hex')=:phone OR subject_id=:subject) OR EXISTS(SELECT 1 FROM platform.identity_invitation WHERE activation_phone_sha256=:phone AND state='PENDING')")
+                    .param("phone",activationPhoneSha256).param("subject",subjectId).query(Boolean.class).single();
+            if(occupied)throw new com.cofco.qiqihar.graintrade.shared.application.ConflictException(
+                    "PHONE_ALREADY_BOUND","该手机号或账号已绑定，或已有待验证邀请，请检查现有账号和邀请");
+        }
         jdbc.sql("""
                 INSERT INTO platform.identity_invitation(
                     invitation_id,security_subject_id,token_hash,encrypted_delivery_payload,
-                    delivery_address_sha256,expires_at,created_by,idempotency_key,request_fingerprint)
-                VALUES(:id,:subject,:tokenHash,:payload,:addressHash,:expiresAt,:actor,:key,:requestHash)
+                    delivery_address_sha256,expires_at,created_by,idempotency_key,request_fingerprint,activation_phone_sha256,delivery_status)
+                VALUES(:id,:subject,:tokenHash,:payload,:addressHash,:expiresAt,:actor,:key,:requestHash,:phone,:deliveryStatus)
                 """).param("id",invitationId).param("subject",subjectId)
                 .param("tokenHash",tokenSha256).param("payload",encryptedDeliveryPayload)
                 .param("addressHash",deliveryAddressSha256).param("expiresAt",Timestamp.from(expiresAt))
                 .param("actor",actorSubjectId).param("key",idempotencyKey)
-                .param("requestHash",requestSha256).update();
-        jdbc.sql("""
+                .param("requestHash",requestSha256)
+                .param("phone",activationPhoneSha256,java.sql.Types.VARCHAR)
+                .param("deliveryStatus",activationPhoneSha256==null?"QUEUED":"AWAITING_VERIFICATION").update();
+        if(activationPhoneSha256==null)jdbc.sql("""
                 INSERT INTO platform.identity_delivery_outbox(
                     event_id,invitation_id,security_subject_id,event_type)
                 VALUES(:eventId,:invitationId,:subject,'INVITATION_DELIVERY')
@@ -289,7 +313,7 @@ public class JdbcIdentityGovernanceRepository implements IdentityGovernanceRepos
         Candidate candidate=jdbc.sql("""
                 SELECT invitation_id,security_subject_id,state,expires_at,created_by
                 FROM platform.identity_invitation
-                WHERE token_hash=:tokenHash
+                WHERE token_hash=:tokenHash AND activation_phone_sha256 IS NULL
                 FOR UPDATE
                 """).param("tokenHash",tokenSha256)
                 .query((row,index)->new Candidate(row.getObject(1,UUID.class),row.getString(2),

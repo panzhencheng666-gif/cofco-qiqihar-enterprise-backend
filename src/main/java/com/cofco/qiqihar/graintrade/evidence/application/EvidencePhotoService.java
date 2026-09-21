@@ -149,7 +149,7 @@ public class EvidencePhotoService {
             ClientRequestException.class, ConflictException.class, ResourceNotFoundException.class
     })
     public List<EvidencePhotoView> validateAvailable(List<UUID> ids, String subjectId) {
-        if (ids == null || ids.isEmpty() || ids.size() > 5 || new LinkedHashSet<>(ids).size() != ids.size()) {
+        if (ids == null || ids.size() > 5 || new LinkedHashSet<>(ids).size() != ids.size()) {
             throw invalid();
         }
         return ids.stream().map(id -> {

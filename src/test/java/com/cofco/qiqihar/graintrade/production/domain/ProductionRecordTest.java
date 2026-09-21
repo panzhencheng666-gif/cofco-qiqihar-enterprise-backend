@@ -87,10 +87,8 @@ class ProductionRecordTest {
         assertThat(draft.voidRecord().status()).isEqualTo(ProductionStatus.VOIDED);
         assertThat(draft.submit().returnForCorrection("补充").voidRecord().status())
                 .isEqualTo(ProductionStatus.VOIDED);
-        assertThatThrownBy(() -> draft.submit().voidRecord())
-                .isInstanceOf(IllegalStateException.class);
-        assertThatThrownBy(() -> draft.submit().approve().voidRecord())
-                .isInstanceOf(IllegalStateException.class);
+        assertThat(draft.submit().voidRecord().status()).isEqualTo(ProductionStatus.VOIDED);
+        assertThat(draft.validatedForSave().voidRecord().status()).isEqualTo(ProductionStatus.VOIDED);
         assertThatThrownBy(() -> draft.voidRecord().submit())
                 .isInstanceOf(IllegalStateException.class);
     }
@@ -122,12 +120,12 @@ class ProductionRecordTest {
         assertThat(revised.insurance()).containsEntry("INSURANCE_TEST", new BigDecimal("5.0000"));
         assertThat(revised.subsidies()).containsEntry("SUBSIDY_TEST", new BigDecimal("6.0000"));
         assertThat(revised.submissionMetadata()).containsEntry("PROD_REPORTER_NAME", "张三");
-        assertThatThrownBy(() -> draft.submit().revise(
+        assertThatThrownBy(() -> draft.voidRecord().revise(
                 "RICE", "VILLAGE_COMMITTEE", "230202", null,
                 LocalDate.of(2026, 8, 1), OffsetDateTime.parse("2026-08-02T09:00:00+08:00"),
                 BigDecimal.ONE, BigDecimal.ONE, Map.of(), Map.of(), Map.of(), Map.of()))
                 .isInstanceOf(IllegalStateException.class);
-        assertThatThrownBy(() -> draft.submit().approve().revise(
+        assertThatThrownBy(() -> draft.validatedForSave().voidRecord().revise(
                 "RICE", "VILLAGE_COMMITTEE", "230202", null,
                 LocalDate.of(2026, 8, 1), OffsetDateTime.parse("2026-08-02T09:00:00+08:00"),
                 BigDecimal.ONE, BigDecimal.ONE, Map.of(), Map.of(), Map.of(), Map.of()))

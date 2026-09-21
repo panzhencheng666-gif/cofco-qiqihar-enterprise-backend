@@ -38,6 +38,8 @@ public class MarketMonitoringCommandController {
         this.service = service;
     }
 
+
+
     @GetMapping("/api/v1/market-records/{id}")
     ApiResponse<RecordResponse> detail(@PathVariable String id) {
         return new ApiResponse<>(RecordResponse.from(service.detail(id)));
@@ -83,16 +85,9 @@ public class MarketMonitoringCommandController {
         return new ApiResponse<>(RecordResponse.from(service.submit(id, request.requiredVersion())));
     }
 
-    @PostMapping("/api/v1/market-records/{id}/approve")
-    ApiResponse<RecordResponse> approve(@PathVariable String id, @RequestBody VersionRequest request) {
-        return new ApiResponse<>(RecordResponse.from(service.approve(id, request.requiredVersion())));
-    }
 
-    @PostMapping("/api/v1/market-records/{id}/return")
-    ApiResponse<RecordResponse> returned(@PathVariable String id, @RequestBody ReturnRequest request) {
-        return new ApiResponse<>(RecordResponse.from(
-                service.returnForCorrection(id, request.requiredVersion(), request.validatedReason())));
-    }
+
+
 
     @PostMapping("/api/v1/market-records/{id}/void")
     ApiResponse<RecordResponse> voidRecord(@PathVariable String id, @RequestBody VersionRequest request) {

@@ -435,6 +435,12 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
     @Override
     public void linkApprovedSamplePoint(MarketMonitoringRecord record,
             Map<String, String> extensionCoreValues, String approvingActorId, Instant approvedAt) {
+        linkValidatedSamplePoint(record, extensionCoreValues, approvingActorId, approvedAt);
+        com.cofco.qiqihar.graintrade.shared.infrastructure.FormalBusinessSaveGuard.verify(jdbc,"MARKET",record.id());
+    }
+
+    private void linkValidatedSamplePoint(MarketMonitoringRecord record,
+            Map<String, String> extensionCoreValues, String approvingActorId, Instant approvedAt) {
         ReviewedIdentityDecision reviewedIdentity = reviewedIdentity(record.id()).orElse(null);
         if (reviewedIdentity != null && "SAMPLE_IDENTITY_LINK_EXISTING".equals(reviewedIdentity.actionCode())) {
             linkReviewedSamplePoint(record, extensionCoreValues,
@@ -553,8 +559,8 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
             String submittingActorId = jdbc.sql("""
                     SELECT actor_subject_id FROM platform.business_event_outbox
                     WHERE aggregate_type='MARKET_RECORD' AND aggregate_id=:recordId
-                      AND action_code='MARKET_RECORD_SUBMITTED'
-                    ORDER BY event_sequence DESC LIMIT 1
+                      AND action_code IN ('MARKET_RECORD_CREATED','MARKET_RECORD_IMPORTED','MARKET_RECORD_SUBMITTED')
+                    ORDER BY event_sequence ASC LIMIT 1
                     """).param("recordId", record.id()).query(String.class).single();
             samplePointId = UUID.randomUUID();
             OffsetDateTime approvedTime = OffsetDateTime.ofInstant(approvedAt, ZoneOffset.UTC);
@@ -585,7 +591,7 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
         }
         int linked = jdbc.sql("""
                 UPDATE market.market_record SET sample_point_id=:samplePointId
-                WHERE record_id=:recordId AND status_code='APPROVED' AND sample_point_id IS NULL
+                WHERE record_id=:recordId AND status_code='APPROVED' AND (sample_point_id IS NULL OR sample_point_id=:samplePointId)
                 """).param("samplePointId", samplePointId).param("recordId", record.id()).update();
         requireUpdated(linked);
     }
@@ -672,7 +678,7 @@ public class JdbcMarketMonitoringRepository implements MarketMonitoringRepositor
                 UPDATE market.market_record
                 SET party_id=:partyId,sample_point_id=:samplePointId
                 WHERE record_id=:recordId AND status_code='APPROVED'
-                  AND party_id IS NULL AND sample_point_id IS NULL
+                  AND party_id IS NULL AND (sample_point_id IS NULL OR sample_point_id=:samplePointId)
                 """).param("partyId", target.ownerPartyId(), Types.OTHER)
                 .param("samplePointId", targetSamplePointId)
                 .param("recordId", record.id()).update();

@@ -84,6 +84,7 @@ public class ProductionRecordService implements ProductionImportPort {
         return read(query, true, requestedScope);
     }
 
+
     private PagedResult<ProductionListItem> read(
             ProductionRecordQuery query, boolean currentFormalOnly, String requestedScope) {
         if (!pageDefinitions.allowsListQueryValues(DOMAIN, query.pageKind(), query.productCode(),
@@ -208,7 +209,7 @@ public class ProductionRecordService implements ProductionImportPort {
                     secured.surveyYear(), secured.surveyMonth(), secured.surveyDate(),
                     observedAt, secured.cultivatedAreaMu(), secured.yieldPerMuKilograms(), secured.quality(),
                     secured.costs(), secured.insurance(), secured.subsidies(), canonicalMetadata)
-                    .submit().approve();
+                    .validatedForSave();
         } catch (ProductionValidationException exception) {
             throw invalidDraft(exception.getMessage());
         }
@@ -231,12 +232,12 @@ public class ProductionRecordService implements ProductionImportPort {
 
     @Transactional
     public ProductionRecordView createAndSubmit(ProductionDraft draft) {
-        ProductionRecordView created = create(draft, true);
-        return submit(created.record().id(), created.record().version());
+        return create(draft, true);
     }
 
     private ProductionRecordView create(ProductionDraft draft, boolean requireEvidence) {
         SecurityPrincipal principal = authorize("BUSINESS_CREATE", draft.regionCode());
+        authorize("BUSINESS_SUBMIT", draft.regionCode());
         Map<String, String> submissionMetadata = canonicalSubmissionMetadata(
                 draft.submissionMetadata(), principal.displayName());
         validateDraft(draft, submissionMetadata);
@@ -247,7 +248,7 @@ public class ProductionRecordService implements ProductionImportPort {
                     draft.objectTypeCode(), draft.regionCode(), draft.cultivarCode(),
                     draft.surveyYear(), draft.surveyMonth(), draft.surveyDate(), now(),
                     draft.cultivatedAreaMu(), draft.yieldPerMuKilograms(), draft.quality(), draft.costs(),
-                    draft.insurance(), draft.subsidies(), submissionMetadata);
+                    draft.insurance(), draft.subsidies(), submissionMetadata).validatedForSave();
         } catch (ProductionValidationException exception) {
             throw invalidDraft(exception.getMessage());
         }
@@ -257,6 +258,8 @@ public class ProductionRecordService implements ProductionImportPort {
                     draft.evidencePhotoIds(), persisted.id(), persisted.regionCode(), principal.subjectId());
         }
         audit(principal, persisted, "PRODUCTION_RECORD_CREATED");
+        repository.linkApprovedSamplePoint(persisted, principal.subjectId(), clock.instant());
+        audit(principal, persisted, "PRODUCTION_RECORD_SAVED");
         return view(persisted);
     }
 
@@ -269,7 +272,7 @@ public class ProductionRecordService implements ProductionImportPort {
     @Transactional
     public String importAndSubmit(ProductionDraft draft) {
         ProductionRecordView created = create(draft, false);
-        return submit(created.record().id(), created.record().version()).record().id();
+        return created.record().id();
     }
 
     @Override
@@ -289,48 +292,62 @@ public class ProductionRecordService implements ProductionImportPort {
         SecurityPrincipal principal = authorize("BUSINESS_UPDATE", existing.regionCode());
         if (expectedVersion != existing.version()) throw stale();
         if (!existing.productCode().equals(draft.productCode())) throw invalidDraft("Record product cannot be changed");
+        if (existing.status() == com.cofco.qiqihar.graintrade.production.domain.ProductionStatus.APPROVED) com.cofco.qiqihar.graintrade.shared.application.OfficialSampleIdentityGuard.requireUnchanged(existing.submissionMetadata(),draft.submissionMetadata(),"PROD_");
         Map<String, String> submissionMetadata = canonicalSubmissionMetadata(
                 draft.submissionMetadata(), existing.submissionMetadata().get("PROD_REPORTER_NAME"));
         validateDraft(draft, submissionMetadata);
         authorize("BUSINESS_UPDATE", draft.regionCode());
+        authorize("BUSINESS_SUBMIT", existing.regionCode());
+        authorize("BUSINESS_SUBMIT", draft.regionCode());
         ProductionRecord revised;
         try {
             revised = existing.revise(draft.productCode(), draft.objectTypeCode(), draft.regionCode(),
                     draft.cultivarCode(), draft.surveyYear(), draft.surveyMonth(), draft.surveyDate(), now(),
                     draft.cultivatedAreaMu(), draft.yieldPerMuKilograms(), draft.quality(), draft.costs(),
                     draft.insurance(), draft.subsidies(),
-                    submissionMetadata);
+                    submissionMetadata).validatedForSave();
         } catch (ProductionValidationException exception) {
             throw invalidDraft(exception.getMessage());
         } catch (IllegalStateException exception) {
             throw invalidTransition(exception);
         }
         ProductionRecord persisted = repository.updateFacts(revised, expectedVersion, principal.subjectId());
-        audit(principal, persisted, "PRODUCTION_RECORD_UPDATED");
+        repository.linkApprovedSamplePoint(persisted, principal.subjectId(), clock.instant());
+        audit(principal, persisted, "PRODUCTION_RECORD_SAVED");
         return view(persisted);
     }
 
     @Transactional
     public ProductionRecordView saveAndSubmit(String id, long expectedVersion, ProductionDraft draft) {
-        ProductionRecordView saved = saveDraft(id, expectedVersion, draft);
-        return submit(saved.record().id(), saved.record().version());
+        return saveDraft(id, expectedVersion, draft);
     }
 
     @Transactional
     public ProductionRecordView submit(String id, long expectedVersion) {
-        return transition(id, expectedVersion, "BUSINESS_SUBMIT", "PRODUCTION_RECORD_SUBMITTED", ProductionRecord::submit);
+        ProductionRecord existing = requiredRecord(id);
+        authorize("BUSINESS_SUBMIT", existing.regionCode());
+        if (expectedVersion != existing.version()) throw stale();
+        if (existing.status() == com.cofco.qiqihar.graintrade.production.domain.ProductionStatus.APPROVED) return view(existing);
+        return saveDraft(id, expectedVersion, storedDraft(existing));
+    }
+
+
+
+    private ProductionDraft storedDraft(ProductionRecord existing) {
+        return new ProductionDraft(existing.productCode(), existing.objectTypeCode(),
+                existing.regionCode(), existing.cultivarCode(), existing.surveyDate(), existing.cultivatedAreaMu(),
+                existing.yieldPerMuKilograms(), existing.quality(), existing.costs(), existing.insurance(),
+                existing.subsidies(), existing.submissionMetadata(), List.of(), existing.surveyYear(), existing.surveyMonth());
     }
 
     @Transactional
     public ProductionRecordView approve(String id, long expectedVersion) {
-        return transition(id, expectedVersion, "BUSINESS_APPROVE", "PRODUCTION_RECORD_APPROVED",
-                ProductionRecord::approve, (record, principal) -> repository.linkApprovedSamplePoint(
-                        record, principal.subjectId(), clock.instant()));
+        throw new ClientRequestException("BUSINESS_REVIEW_REMOVED", "业务人工审核已取消，请校验后保存记录。");
     }
 
     @Transactional
     public ProductionRecordView returnForCorrection(String id, long expectedVersion, String reason) {
-        return transition(id, expectedVersion, "BUSINESS_RETURN", "PRODUCTION_RECORD_RETURNED", record -> record.returnForCorrection(reason));
+        throw new ClientRequestException("BUSINESS_REVIEW_REMOVED", "业务人工审核已取消，请校验后保存记录。");
     }
 
     @Transactional
@@ -348,7 +365,9 @@ public class ProductionRecordService implements ProductionImportPort {
             java.util.function.UnaryOperator<ProductionRecord> command,
             java.util.function.BiConsumer<ProductionRecord, SecurityPrincipal> afterStateUpdate) {
         ProductionRecord existing = requiredRecord(id);
-        SecurityPrincipal principal = authorize(permission, existing.regionCode());
+        SecurityPrincipal principal = accessControl != null && auditAction.equals("PRODUCTION_RECORD_VOIDED")
+                ? accessControl.requireBusinessVoid(existing.regionCode())
+                : authorize(permission, existing.regionCode());
         if (expectedVersion != existing.version()) throw stale();
         try {
             ProductionRecord transitioned = command.apply(existing);
@@ -372,6 +391,8 @@ public class ProductionRecordService implements ProductionImportPort {
     }
 
     private void validateDraft(ProductionDraft draft, Map<String, String> submissionMetadata) {
+        if (submissionMetadata.get("PROD_SAMPLE_NAME") == null || submissionMetadata.get("PROD_SAMPLE_NAME").isBlank())
+            throw ClientRequestException.field("FORMAL_SAMPLE_IDENTITY_REQUIRED", "PROD_SAMPLE_NAME", "请填写样本名称。");
         if (draft.surveyDate() == null || draft.surveyDate().isAfter(LocalDate.now(clock.withZone(REPORTING_ZONE)))) {
             throw invalidDraft("Survey date cannot be in the future");
         }
@@ -404,7 +425,11 @@ public class ProductionRecordService implements ProductionImportPort {
                 new java.math.BigDecimal(metadata.sampleLongitude()))) {
             throw new ClientRequestException(
                     "SAMPLE_COORDINATE_REGION_MISMATCH",
-                    "样本点经纬度不在所选地区范围内，请核对后重新填报");
+                    "样本点经纬度不在所选地区范围内，请核对后重新填报",
+                    Map.of("fieldErrors", Map.of(
+                            "regionCode", "所选地区与经纬度不一致，请核对地区和坐标。",
+                            "PROD_SAMPLE_LONGITUDE", "经纬度不在所选地区范围内。",
+                            "PROD_SAMPLE_LATITUDE", "经纬度不在所选地区范围内。")));
         }
         if (stableIdentityCoordinates != null) {
             stableIdentityCoordinates.requireCompatible(
@@ -451,6 +476,7 @@ public class ProductionRecordService implements ProductionImportPort {
         if (accessControl == null) return true;
         SecurityPrincipal principal = accessControl.authenticated().orElse(null);
         if (principal == null) return true; // Explicit unrestricted read identity exists only in test support.
+        if ("VOID".equals(action)) return accessControl.canVoidBusinessRecord(principal, regionCode);
         String permission = switch (action) {
             case "VIEW" -> "BUSINESS_READ";
             case "SAVE" -> "BUSINESS_UPDATE";
@@ -461,7 +487,8 @@ public class ProductionRecordService implements ProductionImportPort {
             default -> null;
         };
         if (permission == null || !principal.permits(permission)) return false;
-        if (!"VIEW".equals(action) && (regionCode == null || !principal.includesRegion(regionCode))) return false;
+        if (!principal.hasSharedReportingScope(permission)
+                && (regionCode == null || !principal.includesRegion(regionCode))) return false;
         if (separationOfDuties == null) return true;
         return switch (action) {
             case "APPROVE" -> separationOfDuties.canApprove(
@@ -494,7 +521,7 @@ public class ProductionRecordService implements ProductionImportPort {
             audit.record(principal, "PRODUCTION_RECORD", record.id(), actionCode, clock.instant(),
                     "{\"regionCode\":\"" + record.regionCode() + "\",\"productCode\":\""
                             + record.productCode() + "\",\"surveyYear\":"
-                            + record.surveyDate().getYear() + "}");
+                            + record.surveyDate().getYear() + ",\"version\":" + record.version() + "}");
         }
     }
 
@@ -504,7 +531,7 @@ public class ProductionRecordService implements ProductionImportPort {
         return new ClientRequestException("INVALID_PRODUCTION_RECORD_QUERY", "Production record query context is invalid");
     }
     private static ClientRequestException invalidDraft(String message) {
-        return new ClientRequestException("INVALID_PRODUCTION_RECORD", message == null ? "Invalid production record" : message);
+        return ProductionSubmissionErrors.invalid(message);
     }
     private static ConflictException invalidTransition(IllegalStateException exception) {
         return new ConflictException("INVALID_PRODUCTION_TRANSITION", exception.getMessage());

@@ -36,10 +36,13 @@ public final class ProductionImportTemplate {
             "IMPERFECT_GRAIN", "MILDEW", "PROTEIN", "OIL_YIELD", "MILLING_YIELD", "BROWN_RICE_YIELD");
     public static final List<String> COST_HEADERS = List.of("LAND_RENT", "SEED_COST", "PESTICIDE_COST",
             "FERTILIZER_COST", "IRRIGATION_COST", "LABOR_COST", "MACHINERY_COST", "OTHER_COST");
-    public static final List<String> HEADERS = List.of("productCode", "objectTypeCode", "regionCode", "cultivarCode",
+    public static final List<String> LEGACY_HEADERS = List.of("productCode", "objectTypeCode", "regionCode", "cultivarCode",
             "surveyDate", "cultivatedAreaMu", "yieldPerMuKilograms",
             "PROD_REPORTER_NAME", "PROD_SURVEYOR_NAME", "PROD_SURVEYOR_PHONE", "PROD_SAMPLE_CONTACT",
             "PROD_SAMPLE_LATITUDE", "PROD_SAMPLE_LONGITUDE", "evidencePhotoId");
+    public static final List<String> HEADERS = java.util.stream.Stream.concat(
+            LEGACY_HEADERS.subList(0,LEGACY_HEADERS.size()-1).stream(),
+            java.util.stream.Stream.of("PROD_SAMPLE_NAME","evidencePhotoId")).toList();
     public static final List<String> XLSX_HEADERS = List.of("regionCode", "surveyDate",
             "cultivatedAreaMu", "yieldPerMuKilograms", "PROD_SURVEYOR_NAME", "PROD_SURVEYOR_PHONE", "PROD_SAMPLE_CONTACT",
             "PROD_SAMPLE_LATITUDE", "PROD_SAMPLE_LONGITUDE", "PROD_SAMPLE_NAME", "PROD_HARVEST_AREA_MU",

@@ -98,13 +98,19 @@ public class DesignSampleMetadataService {
             JsonNode value = entry.getValue();
             if (value == null || value.isNull()) {
                 if (!field.nullable()) {
-                    throw error("FIELD_VALUE_INVALID", "不可空字段不能使用未知值");
+                    throw ClientRequestException.field("FIELD_VALUE_INVALID", code, field.label() + "不能为空。");
                 }
                 states.put(code, ValueState.UNKNOWN);
                 normalizedValues.put(code, json.getNodeFactory().nullNode());
                 continue;
             }
-            JsonNode normalized = normalizeKnown(field, value);
+            JsonNode normalized;
+            try {
+                normalized = normalizeKnown(field, value);
+            } catch (ClientRequestException exception) {
+                throw ClientRequestException.field(exception.code(), code,
+                        field.label() + "：" + exception.clientMessage());
+            }
             normalizedValues.put(code, normalized);
             if (field.valueType().equals("DECIMAL")) {
                 decimalValues.put(code, normalized.decimalValue());
@@ -112,14 +118,13 @@ public class DesignSampleMetadataService {
             states.put(code, ValueState.KNOWN);
         }
 
-        boolean missingRequired = applicable.stream()
-                .filter(DesignSampleFieldDefinition::editable)
-                .filter(DesignSampleFieldDefinition::required)
-                .filter(field -> field.defaultValue() == null)
-                .anyMatch(field -> !states.containsKey(field.code()));
-        if (missingRequired) {
-            throw error("REQUIRED_FIELD_MISSING", "缺少必填的设计样本点字段");
-        }
+        Map<String, String> missing = new LinkedHashMap<>();
+        applicable.stream().filter(DesignSampleFieldDefinition::editable)
+                .filter(DesignSampleFieldDefinition::required).filter(field -> field.defaultValue() == null)
+                .filter(field -> !states.containsKey(field.code()))
+                .forEach(field -> missing.put(field.code(), "请填写" + field.label() + "。"));
+        if (!missing.isEmpty()) throw new ClientRequestException("REQUIRED_FIELD_MISSING",
+                "请补齐必填项。", Map.of("fieldErrors", missing));
 
         validateProductionAreaRelationships(decimalValues);
         return new ValidatedDesignSampleValues(
@@ -187,13 +192,14 @@ public class DesignSampleMetadataService {
             int integerDigits = Math.max(normalized.precision() - normalized.scale(), 0);
             if (fractionalDigits > field.scale()
                     || integerDigits > field.precision() - field.scale()) {
-                invalidValue();
+                throw error("FIELD_VALUE_INVALID", "整数最多 " + (field.precision() - field.scale())
+                        + " 位，小数最多 " + field.scale() + " 位。");
             }
         }
         if (field.minimumValue() != null
-                && decimal.compareTo(new BigDecimal(field.minimumValue())) < 0) invalidValue();
+                && decimal.compareTo(new BigDecimal(field.minimumValue())) < 0) throw error("FIELD_VALUE_INVALID", "不能小于 " + field.minimumValue() + "。");
         if (field.maximumValue() != null
-                && decimal.compareTo(new BigDecimal(field.maximumValue())) > 0) invalidValue();
+                && decimal.compareTo(new BigDecimal(field.maximumValue())) > 0) throw error("FIELD_VALUE_INVALID", "不能大于 " + field.maximumValue() + "。");
         return decimal;
     }
 
@@ -219,7 +225,7 @@ public class DesignSampleMetadataService {
     }
 
     private static <T> T invalidValue() {
-        throw error("FIELD_VALUE_INVALID", "设计样本点字段值不符合类型、精度、枚举或范围合同");
+        throw error("FIELD_VALUE_INVALID", "填写值格式不正确，请按字段类型填写。");
     }
 
     private static ClientRequestException error(String code, String message) {

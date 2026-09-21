@@ -60,6 +60,13 @@ class PhoneIdentityIntegrationTest {
             .executeWithoutResult(status->{jdbc.sql("SET LOCAL session_replication_role=replica").update();work.run();});
     }
     void grant(String subject,String region){jdbc.sql("INSERT INTO platform.security_user_region_scope(subject_id,region_code,granted_by) VALUES(:s,:r,:s)").param("s",subject).param("r",region).update();}
+    @Test void rolelessEnabledPhoneAccountCanLoginAndDisabledAccountCannot() {
+        jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:s").param("s",SOURCE).update();
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id=:s").param("s",SOURCE).update();
+        assertThat(identities.login("13900000186").subject()).isEqualTo(SOURCE);
+        jdbc.sql("UPDATE platform.security_user SET enabled=false WHERE subject_id=:s").param("s",SOURCE).update();
+        assertThatThrownBy(() -> identities.login("13900000186")).hasMessageContaining("账号不可用");
+    }
     @Test void removingResponsibilityExpiresItsAuthorizationAndReleasesRegion() {
         jdbc.sql("INSERT INTO platform.region_responsibility(region_code,subject_id,updated_by,reason) VALUES('230202901',:s,:s,'test')").param("s",SOURCE).update();
         new org.springframework.transaction.support.TransactionTemplate(context.getBean(DataSourceTransactionManager.class)).executeWithoutResult(status -> {
@@ -204,10 +211,10 @@ class PhoneIdentityIntegrationTest {
     }
     @Configuration @EnableTransactionManagement(proxyTargetClass=true)
     static class Config {
-        @Bean DriverManagerDataSource dataSource(){return new DriverManagerDataSource("jdbc:postgresql://127.0.0.1:55435/qiqihar_enterprise_test","postgres","");}
-        @Bean JdbcClient jdbc(DriverManagerDataSource ds){return JdbcClient.create(ds);}
-        @Bean DataSourceTransactionManager transactionManager(DriverManagerDataSource ds){return new DataSourceTransactionManager(ds);}
+        @Bean javax.sql.DataSource dataSource(){return com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabase.shared().dataSource();}
+        @Bean JdbcClient jdbc(javax.sql.DataSource ds){return JdbcClient.create(ds);}
+        @Bean DataSourceTransactionManager transactionManager(javax.sql.DataSource ds){return new DataSourceTransactionManager(ds);}
         @Bean SmsChallengeService sms(JdbcClient jdbc){return new SmsChallengeService(jdbc,new SmsVerificationGateway(){public void send(String p,String u,String i){} public boolean verify(String p,String c,String i){return c.equals("123456");}},true);}
-        @Bean PhoneIdentityService identities(JdbcClient jdbc){return new PhoneIdentityService(jdbc,mock(EmployeeRegistrationService.class),new JdbcIdentitySessionInvalidator(jdbc,Clock.systemUTC()),new JdbcSecurityPrincipalRepository(jdbc));}
+        @Bean PhoneIdentityService identities(JdbcClient jdbc){return new PhoneIdentityService(jdbc,mock(EmployeeRegistrationService.class),new JdbcIdentitySessionInvalidator(jdbc,Clock.systemUTC()),new JdbcSecurityPrincipalRepository(jdbc),mock(com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder.class));}
     }
 }

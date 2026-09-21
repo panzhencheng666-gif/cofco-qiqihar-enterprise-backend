@@ -78,11 +78,8 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     ResponseEntity<ApiErrorResponse> handleClientRequest(
             ClientRequestException exception,
             HttpServletRequest request) {
-        return error(
-                HttpStatus.BAD_REQUEST,
-                exception.code(),
-                exception.clientMessage(),
-                request);
+        return ResponseEntity.badRequest().body(ApiErrorResponse.of(
+                exception.code(), exception.clientMessage(), exception.details(), traceId(request)));
     }
 
     @ExceptionHandler(ResourceNotFoundException.class)

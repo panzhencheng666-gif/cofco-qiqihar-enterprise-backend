@@ -112,6 +112,7 @@ public class MarketMonitoringService {
         return list(query, true, requestedScope);
     }
 
+
     private PagedResult<MarketListItem> list(
             MarketRecordQuery query, boolean currentFormalOnly, String requestedScope) {
         try {
@@ -233,7 +234,7 @@ public class MarketMonitoringService {
                     parsed.regionCode(), parsed.tradeDate(), observedAt, parsed.direction(),
                     parsed.purchaseBasePrice(), parsed.saleBasePrice(), parsed.carriageBoardAmount(),
                     parsed.packagingAmount(), parsed.freightAmount(), parsed.packagingForm(), parsed.facts())
-                    .submit().approve();
+                    .validatedForSave();
             MarketMonitoringRecord persisted = repository.insertOfficialObservation(
                     official, parsed.extensions(), identity.samplePointId(), principal.subjectId(), officialSavedAt);
             return persisted.id();
@@ -244,8 +245,7 @@ public class MarketMonitoringService {
 
     @Transactional
     public MarketRecordView createAndSubmit(MarketMonitoringDraft draft) {
-        MarketRecordView created = create(draft, true);
-        return submit(created.record().id(), created.record().version());
+        return create(draft, true);
     }
 
     private MarketRecordView create(MarketMonitoringDraft draft, boolean requireEvidence) {
@@ -256,19 +256,22 @@ public class MarketMonitoringService {
         validate(parsed);
         validateEntryCoordinates(parsed);
         principal = authorize("BUSINESS_CREATE", parsed.regionCode());
+        authorize("BUSINESS_SUBMIT", parsed.regionCode());
         if (requireEvidence || !securedDraft.evidencePhotoIds().isEmpty()) validateEvidence(securedDraft, principal);
         try {
             MarketMonitoringRecord record = MarketMonitoringRecord.draft(
                     UUID.randomUUID().toString(), parsed.productCode(), parsed.objectTypeCode(),
                     parsed.regionCode(), parsed.tradeDate(), now(), parsed.direction(),
                     parsed.purchaseBasePrice(), parsed.saleBasePrice(), parsed.carriageBoardAmount(),
-                    parsed.packagingAmount(), parsed.freightAmount(), parsed.packagingForm(), parsed.facts());
+                    parsed.packagingAmount(), parsed.freightAmount(), parsed.packagingForm(), parsed.facts()).validatedForSave();
             MarketMonitoringRecord persisted = repository.insert(record, principal.subjectId(), parsed.extensions());
             if (evidencePhotos != null && !securedDraft.evidencePhotoIds().isEmpty()) {
                 evidencePhotos.attachToMarket(
                         securedDraft.evidencePhotoIds(), persisted.id(), persisted.regionCode(), principal.subjectId());
             }
             audit(principal, persisted, "MARKET_RECORD_CREATED");
+            repository.linkApprovedSamplePoint(persisted, parsed.extensions(), principal.subjectId(), clock.instant());
+            audit(principal, persisted, "MARKET_RECORD_SAVED");
             return view(persisted, definitions, repository.findExtensionCoreValues(persisted.id()));
         } catch (MarketValidationException exception) {
             throw invalid(exception.getMessage());
@@ -343,6 +346,7 @@ public class MarketMonitoringService {
         // Forward-only compatibility: records created before reporter provenance existed
         // are bound to the first authenticated employee who revises them, never to input.
         if (originalReporter == null || originalReporter.isBlank()) originalReporter = principal.displayName();
+        if (existing.status() == com.cofco.qiqihar.graintrade.market.domain.MarketStatus.APPROVED) com.cofco.qiqihar.graintrade.shared.application.OfficialSampleIdentityGuard.requireUnchanged(originalExtensions,draft.coreValues(),"MKT_");
         MarketMonitoringDraft securedDraft = withReporter(draft, originalReporter);
         List<MarketCoreFieldDefinition> definitions = coreDefinitions(securedDraft);
         ParsedDraft parsed = parseDraft(securedDraft, definitions);
@@ -352,14 +356,17 @@ public class MarketMonitoringService {
         validate(parsed);
         validateEntryCoordinates(parsed);
         authorize("BUSINESS_UPDATE", parsed.regionCode());
+        authorize("BUSINESS_SUBMIT", existing.regionCode());
+        authorize("BUSINESS_SUBMIT", parsed.regionCode());
         try {
             MarketMonitoringRecord revised = existing.revise(
                     parsed.objectTypeCode(), parsed.regionCode(), parsed.tradeDate(), now(), parsed.direction(),
                     parsed.purchaseBasePrice(), parsed.saleBasePrice(), parsed.carriageBoardAmount(),
-                    parsed.packagingAmount(), parsed.freightAmount(), parsed.packagingForm(), parsed.facts());
+                    parsed.packagingAmount(), parsed.freightAmount(), parsed.packagingForm(), parsed.facts()).validatedForSave();
             MarketMonitoringRecord persisted = repository.updateFacts(
                     revised, expectedVersion, principal.subjectId(), parsed.extensions());
-            audit(principal, persisted, "MARKET_RECORD_UPDATED");
+            repository.linkApprovedSamplePoint(persisted, parsed.extensions(), principal.subjectId(), clock.instant());
+            audit(principal, persisted, "MARKET_RECORD_SAVED");
             return view(persisted, definitions, repository.findExtensionCoreValues(persisted.id()));
         } catch (MarketValidationException exception) {
             throw invalid(exception.getMessage());
@@ -371,26 +378,38 @@ public class MarketMonitoringService {
     @Transactional
     public MarketRecordView saveAndSubmit(
             String id, long expectedVersion, MarketMonitoringDraft draft) {
-        MarketRecordView saved = save(id, expectedVersion, draft);
-        return submit(saved.record().id(), saved.record().version());
+        return save(id, expectedVersion, draft);
     }
 
     @Transactional
     public MarketRecordView submit(String id, long expectedVersion) {
-        return transition(id, expectedVersion, "BUSINESS_SUBMIT", "MARKET_RECORD_SUBMITTED", MarketMonitoringRecord::submit);
+        MarketMonitoringRecord existing = required(id);
+        authorize("BUSINESS_SUBMIT", existing.regionCode());
+        if (expectedVersion != existing.version()) throw stale();
+        if (existing.status() == com.cofco.qiqihar.graintrade.market.domain.MarketStatus.APPROVED) return detail(id);
+        return save(id, expectedVersion, storedDraft(existing));
+    }
+
+
+
+    private MarketMonitoringDraft storedDraft(MarketMonitoringRecord existing) {
+        List<MarketCoreFieldDefinition> definitions = coreFields(existing.productCode(), existing.objectTypeCode());
+        MarketRecordView current = view(existing, definitions, repository.findExtensionCoreValues(existing.id()));
+        Map<String,String> editable = new LinkedHashMap<>();
+        definitions.stream().filter(field -> !isReadOnly(field.controlType()))
+                .filter(field -> current.coreValues().get(field.code()) != null)
+                .forEach(field -> editable.put(field.code(), current.coreValues().get(field.code())));
+        return new MarketMonitoringDraft(existing.productCode(), editable, existing.facts());
     }
 
     @Transactional
     public MarketRecordView approve(String id, long expectedVersion) {
-        return transition(id, expectedVersion, "BUSINESS_APPROVE", "MARKET_RECORD_APPROVED",
-                MarketMonitoringRecord::approve, (record, principal) -> repository.linkApprovedSamplePoint(
-                        record, repository.findExtensionCoreValues(record.id()),
-                        principal.subjectId(), clock.instant()));
+        throw new ClientRequestException("BUSINESS_REVIEW_REMOVED", "业务人工审核已取消，请校验后保存记录。");
     }
 
     @Transactional
     public MarketRecordView returnForCorrection(String id, long expectedVersion, String reason) {
-        return transition(id, expectedVersion, "BUSINESS_RETURN", "MARKET_RECORD_RETURNED", record -> record.returnForCorrection(reason));
+        throw new ClientRequestException("BUSINESS_REVIEW_REMOVED", "业务人工审核已取消，请校验后保存记录。");
     }
 
     @Transactional
@@ -409,7 +428,9 @@ public class MarketMonitoringService {
             java.util.function.UnaryOperator<MarketMonitoringRecord> command,
             BiConsumer<MarketMonitoringRecord, SecurityPrincipal> afterStateUpdate) {
         MarketMonitoringRecord existing = required(id);
-        SecurityPrincipal principal = authorize(permissionCode, existing.regionCode());
+        SecurityPrincipal principal = accessControl != null && auditAction.equals("MARKET_RECORD_VOIDED")
+                ? accessControl.requireBusinessVoid(existing.regionCode())
+                : authorize(permissionCode, existing.regionCode());
         if (expectedVersion != existing.version()) throw stale();
         try {
             MarketMonitoringRecord transitioned = command.apply(existing);
@@ -435,6 +456,8 @@ public class MarketMonitoringService {
     }
 
     private void validate(ParsedDraft draft) {
+        if (draft.extensions().get("MKT_SAMPLE_NAME") == null || draft.extensions().get("MKT_SAMPLE_NAME").isBlank())
+            throw ClientRequestException.field("FORMAL_SAMPLE_IDENTITY_REQUIRED", "MKT_SAMPLE_NAME", "请填写样本名称。");
         if (draft.tradeDate().isAfter(LocalDate.now(clock.withZone(REPORTING_ZONE)))) {
             throw invalid("Trade date cannot be in the future");
         }
@@ -456,7 +479,11 @@ public class MarketMonitoringService {
         if (!repository.supportsSampleLocation(draft.regionCode(), latitude, longitude)) {
             throw new ClientRequestException(
                     "SAMPLE_COORDINATE_REGION_MISMATCH",
-                    "样本点经纬度不在所选地区范围内，请核对后重新填报");
+                    "样本点经纬度不在所选地区范围内，请核对后重新填报",
+                    Map.of("fieldErrors", Map.of(
+                            "MKT_REGION", "所选地区与经纬度不一致，请核对地区和坐标。",
+                            "MKT_SAMPLE_LONGITUDE", "经纬度不在所选地区范围内。",
+                            "MKT_SAMPLE_LATITUDE", "经纬度不在所选地区范围内。")));
         }
         if (stableIdentityCoordinates != null) {
             stableIdentityCoordinates.requireCompatible(
@@ -573,7 +600,7 @@ public class MarketMonitoringService {
             }
             if (value == null || value.isBlank()) {
                 if (SYSTEM_MANAGED_OR_RETIRED_INPUT_CODES.contains(definition.code())) return;
-                if (definition.required()) throw invalid(definition.label() + " is required");
+                if (definition.required()) throw fieldInvalid(definition, "请填写" + definition.label() + "。");
                 return;
             }
             normalized.put(definition.code(), validateCoreValue(definition, value));
@@ -617,11 +644,15 @@ public class MarketMonitoringService {
         }
     }
 
+    private static ClientRequestException fieldInvalid(MarketCoreFieldDefinition definition, String reason) {
+        return ClientRequestException.field("INVALID_MARKET_RECORD", definition.code(), definition.label() + "：" + reason);
+    }
+
     private static String validateCoreValue(MarketCoreFieldDefinition definition, String value) {
         return switch (definition.controlType()) {
             case "SELECT" -> {
                 if (definition.options().stream().noneMatch(option -> option.value().equals(value))) {
-                    throw invalid("Invalid option for market core field: " + definition.code());
+                    throw fieldInvalid(definition, "请选择当前选项中的值。");
                 }
                 yield value;
             }
@@ -630,7 +661,7 @@ public class MarketMonitoringService {
                 try {
                     LocalDate.parse(value);
                 } catch (DateTimeException exception) {
-                    throw invalid("Invalid date for market core field: " + definition.code());
+                    throw fieldInvalid(definition, "请填写有效日期，格式为年-月-日。");
                 }
                 yield value;
             }
@@ -645,29 +676,34 @@ public class MarketMonitoringService {
                             ? definition.scale() : Math.max(definition.scale(), 15);
                     int acceptedIntegerDigits = coordinateLimit == null
                             ? definition.precision() - definition.scale() : 3;
-                    BigDecimal parsed = PlainDecimal.parse(value,
-                            acceptedIntegerDigits, acceptedFractionDigits, "INVALID_MARKET_RECORD");
+                    BigDecimal parsed;
+                    try {
+                        parsed = PlainDecimal.parse(value, acceptedIntegerDigits, acceptedFractionDigits, "INVALID_MARKET_RECORD");
+                    } catch (ClientRequestException exception) {
+                        throw fieldInvalid(definition, "须填写数值，整数最多 " + acceptedIntegerDigits
+                                + " 位，小数最多 " + acceptedFractionDigits + " 位。");
+                    }
                     if ((coordinateLimit == null && parsed.signum() < 0)
                             || (coordinateLimit != null && parsed.abs().compareTo(coordinateLimit) > 0)) {
-                        throw invalid("Decimal is outside range for market core field: " + definition.code());
+                        throw fieldInvalid(definition, "数值超出允许范围，请核对正负号、整数位数和经纬度范围。");
                     }
                     if (coordinateLimit != null && parsed.scale() > definition.scale()) {
                         yield parsed.toPlainString();
                     }
                     BigDecimal normalized = parsed.setScale(definition.scale(), RoundingMode.HALF_UP);
                     if (normalized.precision() > definition.precision()) {
-                        throw invalid("Decimal is outside range for market core field: " + definition.code());
+                        throw fieldInvalid(definition, "数值超出允许范围，请核对正负号、整数位数和经纬度范围。");
                     }
                     yield normalized.toPlainString();
                 } catch (NumberFormatException | ArithmeticException exception) {
-                    throw invalid("Invalid decimal for market core field: " + definition.code());
+                    throw fieldInvalid(definition, "请填写有效数值。");
                 }
             }
             case "TEXT" -> {
                 BoundedInput.requireText("INVALID_MARKET_RECORD", value);
                 if (Set.of("MKT_SURVEYOR_PHONE", "MKT_SAMPLE_CONTACT").contains(definition.code())
                         && !value.matches("^[0-9+()\\- ]{6,32}$")) {
-                    throw invalid("Invalid contact value for market core field: " + definition.code());
+                    throw fieldInvalid(definition, "须为 6 至 32 位电话号码，可含数字、加号、括号、短横线和空格。");
                 }
                 yield value;
             }
@@ -763,6 +799,7 @@ public class MarketMonitoringService {
         if (accessControl == null) return true;
         SecurityPrincipal principal = accessControl.authenticated().orElse(null);
         if (principal == null) return true;
+        if ("VOID".equals(action)) return accessControl.canVoidBusinessRecord(principal, regionCode);
         String permission = switch (action) {
             case "VIEW" -> "BUSINESS_READ";
             case "SAVE" -> "BUSINESS_UPDATE";
@@ -773,7 +810,8 @@ public class MarketMonitoringService {
             default -> null;
         };
         if (permission == null || !principal.permits(permission)) return false;
-        if (!"VIEW".equals(action) && (regionCode == null || !principal.includesRegion(regionCode))) return false;
+        if (!principal.hasSharedReportingScope(permission)
+                && (regionCode == null || !principal.includesRegion(regionCode))) return false;
         if (separationOfDuties == null) return true;
         return switch (action) {
             case "APPROVE" -> separationOfDuties.canApprove(
@@ -844,7 +882,7 @@ public class MarketMonitoringService {
             audit.record(principal, "MARKET_RECORD", record.id(), actionCode, clock.instant(),
                     "{\"regionCode\":\"" + record.regionCode() + "\",\"productCode\":\""
                             + record.productCode() + "\",\"surveyYear\":"
-                            + record.tradeDate().getYear() + "}");
+                            + record.tradeDate().getYear() + ",\"version\":" + record.version() + "}");
         }
     }
 

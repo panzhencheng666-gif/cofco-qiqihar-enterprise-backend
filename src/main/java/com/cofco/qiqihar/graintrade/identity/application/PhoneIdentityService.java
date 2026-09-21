@@ -14,13 +14,15 @@ public class PhoneIdentityService {
     public record Preview(UUID ticketId,String phoneAccount,String originalAccount,
             List<Region> phoneRegions,List<Region> originalRegions) {}
     public record Login(String subject,long sessionVersion) {}
+    private final com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder audit;
     private final JdbcClient jdbc;
     private final EmployeeRegistrationService registration;
     private final IdentitySessionInvalidator sessions;
     private final SecurityPrincipalRepository principals;
     public PhoneIdentityService(JdbcClient jdbc,EmployeeRegistrationService registration,
-            IdentitySessionInvalidator sessions,SecurityPrincipalRepository principals) {
-        this.jdbc=jdbc;this.registration=registration;this.sessions=sessions;this.principals=principals;
+            IdentitySessionInvalidator sessions,SecurityPrincipalRepository principals,
+            com.cofco.qiqihar.graintrade.shared.audit.application.BusinessAuditRecorder audit) {
+        this.audit=audit;this.jdbc=jdbc;this.registration=registration;this.sessions=sessions;this.principals=principals;
     }
     @Transactional
     public IdentityActivationResult register(String issuer,String providerSubject,String username,
@@ -33,6 +35,7 @@ public class PhoneIdentityService {
     @Transactional(readOnly=true)
     public void requireUnboundPhone(String phone) {
         SmsChallengeService.validatePhone(phone);
+        requireNoPendingInvitation(phone);
         if (jdbc.sql("SELECT EXISTS(SELECT 1 FROM platform.phone_identity WHERE phone=:phone)")
                 .param("phone",phone).query(Boolean.class).single())
             throw conflict("PHONE_ALREADY_BOUND","该手机号已绑定账号，请直接使用短信验证码登录");
@@ -41,15 +44,20 @@ public class PhoneIdentityService {
     public void bind(String subject,String verifiedPhone) {
         SmsChallengeService.validatePhone(verifiedPhone);
         lock();requireActive(subject);
+        requireNoPendingInvitation(verifiedPhone);
         if(jdbc.sql("SELECT count(*) FROM platform.phone_identity WHERE phone=:phone OR subject_id=:subject")
                 .param("phone",verifiedPhone).param("subject",subject).query(Long.class).single()>0)
             throw conflict("PHONE_ALREADY_BOUND","手机号或账号已绑定，请通过账号合并入口处理");
         jdbc.sql("INSERT INTO platform.phone_identity(phone,subject_id) VALUES(:phone,:subject)")
                 .param("phone",verifiedPhone).param("subject",subject).update();
     }
-    @Transactional(readOnly=true)
+    @Transactional
     public Login login(String verifiedPhone) {
-        String subject=phoneSubject(verifiedPhone);
+        SmsChallengeService.validatePhone(verifiedPhone);
+        lock();
+        String subject=jdbc.sql("SELECT subject_id FROM platform.phone_identity WHERE phone=:phone")
+                .param("phone",verifiedPhone).query(String.class).optional()
+                .orElseGet(()->activatePhoneInvitation(verifiedPhone));
         requireActive(subject);
         return new Login(subject,jdbc.sql("SELECT session_version FROM platform.security_user WHERE subject_id=:subject")
                 .param("subject",subject).query(Long.class).single());
@@ -137,9 +145,45 @@ public class PhoneIdentityService {
         sessions.invalidate(target,"PHONE_ACCOUNT_MERGED");
     }
     private void lock() {
-        jdbc.sql("SELECT platform.lock_region_responsibility_change()").query(Object.class).single();
-        jdbc.sql("SELECT pg_advisory_xact_lock(184,185)").query(Object.class).single();
-        jdbc.sql("LOCK TABLE platform.phone_identity IN SHARE ROW EXCLUSIVE MODE").update();
+        PhoneIdentityLock.acquire(jdbc);
+    }
+    // Called only after the controller consumes a session-bound LOGIN SMS challenge.
+    private String activatePhoneInvitation(String verifiedPhone) {
+        record Invitation(UUID id,String subject) {}
+        Invitation invitation=jdbc.sql("""
+                SELECT invitation_id,security_subject_id FROM platform.identity_invitation
+                WHERE activation_phone_sha256=:phone AND state='PENDING' AND expires_at>now()
+                FOR UPDATE
+                """).param("phone",SmsChallengeService.hash(verifiedPhone))
+                .query((r,n)->new Invitation(r.getObject(1,UUID.class),r.getString(2))).optional()
+                .orElseThrow(PhoneIdentityService::unavailableInvitation);
+        if(jdbc.sql("SELECT EXISTS(SELECT 1 FROM platform.phone_identity WHERE subject_id=:subject)")
+                .param("subject",invitation.subject()).query(Boolean.class).single())
+            throw unavailableInvitation();
+        int updated=jdbc.sql("""
+                UPDATE platform.security_user SET account_status='ACTIVE',enabled=true,
+                    activated_at=coalesce(activated_at,now()),version=version+1,updated_at=now()
+                WHERE subject_id=:subject AND account_status='INVITED' AND employment_status='ACTIVE'
+                """).param("subject",invitation.subject()).update();
+        if(updated!=1)throw unavailableInvitation();
+        requireActive(invitation.subject());
+        jdbc.sql("INSERT INTO platform.phone_identity(phone,subject_id) VALUES(:phone,:subject)")
+                .param("phone",verifiedPhone).param("subject",invitation.subject()).update();
+        jdbc.sql("UPDATE platform.identity_invitation SET state='ACTIVATED',activated_at=now(),version=version+1 WHERE invitation_id=:id")
+                .param("id",invitation.id()).update();
+        var principal=principals.findEnabled(invitation.subject()).orElseThrow(PhoneIdentityService::unavailableInvitation);
+        audit.record(principal,principal.workUnitCode(),"SECURITY_USER",invitation.subject(),
+                IdentityLifecycleContract.AUDIT_ACTIVATED,java.time.Instant.now(),
+                "{\"bindingStatus\":\"ACTIVE\",\"authenticationMethod\":\"sms\"}");
+        return invitation.subject();
+    }
+    private void requireNoPendingInvitation(String phone) {
+        if(jdbc.sql("SELECT EXISTS(SELECT 1 FROM platform.identity_invitation WHERE activation_phone_sha256=:phone AND state='PENDING' AND expires_at>now())")
+                .param("phone",SmsChallengeService.hash(phone)).query(Boolean.class).single())
+            throw conflict("PHONE_INVITATION_PENDING","该手机号已有待验证邀请，请直接使用短信验证码登录激活");
+    }
+    private static AccessDeniedException unavailableInvitation() {
+        return new AccessDeniedException("PHONE_ACCOUNT_UNAVAILABLE","手机号未绑定有效账号或邀请已失效，请联系管理员");
     }
     private void validatePair(String source,String target) {
         if(source.equals(target)||source.equals("admin"))throw conflict("MERGE_NOT_ALLOWED","请选择另一个普通手机账号进行合并");
@@ -149,7 +193,7 @@ public class PhoneIdentityService {
             throw conflict("PHONE_ALREADY_BOUND","原账号已绑定手机号，不能覆盖绑定");
     }
     private void requireActive(String subject) {
-        if(principals.findEnabled(subject).filter(p->!p.roleCodes().isEmpty()).isEmpty())
+        if(principals.findEnabled(subject).isEmpty())
             throw new AccessDeniedException("PHONE_ACCOUNT_UNAVAILABLE","账号不可用，请联系管理员");
     }
     private String phoneSubject(String phone) {

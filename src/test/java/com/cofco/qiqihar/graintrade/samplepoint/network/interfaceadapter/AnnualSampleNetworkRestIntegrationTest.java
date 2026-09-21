@@ -242,6 +242,8 @@ class AnnualSampleNetworkRestIntegrationTest {
 
     @Test
     void reportsEffectiveApprovedBusinessPointsWithoutAFormalAnnualNetwork() throws Exception {
+        jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:actor").param("actor", OPERATOR).update();
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id=:actor").param("actor", OPERATOR).update();
         jdbc.sql("""
                 INSERT INTO production.production_record(
                   record_id,product_code,object_type_code,region_code,survey_date,reported_at,

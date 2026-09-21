@@ -79,10 +79,6 @@ public class WorkObligationReportService {
                 && !principal.isRootAdministrator()) {
             throw denied();
         }
-        if (export.authorizedRegionCodes().isEmpty()
-                || !principal.regionCodes().containsAll(export.authorizedRegionCodes())) {
-            throw denied();
-        }
         audit.record(principal, "WORK_OBLIGATION_REPORT", export.id(),
                 "WORK_OBLIGATION_REPORT_DOWNLOADED", clock.instant(), "{}");
         return export;
@@ -112,7 +108,7 @@ public class WorkObligationReportService {
                     && !principal.workUnitCode().equals(workUnitCode)) throw denied();
         }
         return new WorkObligationReportRepository.Query(
-                command.weekStart(), subjectId, workUnitCode, domain, region, principal.regionCodes());
+                command.weekStart(), subjectId, workUnitCode, domain, region, java.util.Set.of("*"));
     }
 
     private static void validate(WorkObligationReportCommand command) {

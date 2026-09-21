@@ -95,12 +95,12 @@ public class BusinessEventStreamService implements SmartLifecycle {
                     break;
                 }
                 scope = new AuthorizedReadScope(subjectId, current.regionCodes());
-                var result = deliveries.drain(connection.consumerId(), instanceId, scope, subjectId,
-                        connection.cursor().get(), BATCH_SIZE,
-                        event -> connection.emitter().send(SseEmitter.event()
-                                .id(Long.toString(event.sequence()))
-                                .name("business-change")
-                                .data(event)));
+                BusinessEventDeliveryService.DeliverySink sink = event -> connection.emitter().send(
+                        SseEmitter.event().id(Long.toString(event.sequence()))
+                                .name("business-change").data(event));
+                // Business visibility is shared; governance notifications never enter this stream.
+                var result = deliveries.drainSharedReportingChanges(connection.consumerId(), instanceId,
+                        scope, subjectId, connection.cursor().get(), BATCH_SIZE, sink);
                 connection.cursor().set(result.resumeSequence());
                 long now = System.nanoTime();
                 if (result.deliveredCount() == 0 && result.failedCount() == 0

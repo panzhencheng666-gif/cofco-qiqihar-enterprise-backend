@@ -147,11 +147,14 @@ public class OverviewMapCatalogController {
                  p.object_type_code,p.sample_name,p.region_code,r.path,
                  ST_X(p.governed_point) lon,ST_Y(p.governed_point) lat,
                  ST_X(p.display_point) display_lon,ST_Y(p.display_point) display_lat,
-                 p.display_region_code,p.location_mode,p.version,p.updated_at
+                 p.display_region_code,p.location_mode,p.lifecycle_status,p.expired_at,
+                 p.version,p.updated_at
           FROM platform.design_sample_point p
           JOIN platform.design_sample_contract c ON c.contract_version=p.contract_version
           JOIN region_path r ON r.code=p.region_code
-          WHERE p.product_code=:product AND p.region_code IN (SELECT code FROM scope)
+          WHERE p.lifecycle_status IN ('ACTIVE','EXPIRED')
+            AND p.product_code IN (:product,'GENERAL')
+            AND p.region_code IN (SELECT code FROM scope)
             AND (:all OR p.region_code=ANY(string_to_array(:allowed,',')))
           ORDER BY p.sample_name,p.design_sample_point_id
           """).param("region",regionCode).param("product",productCode)
@@ -167,6 +170,8 @@ public class OverviewMapCatalogController {
               if(rs.getObject("display_lon")!=null){point.put("displayLongitude",rs.getDouble("display_lon"));point.put("displayLatitude",rs.getDouble("display_lat"));}
               if(rs.getString("display_region_code")!=null)point.put("displayRegionCode",rs.getString("display_region_code"));
               if(rs.getString("location_mode")!=null)point.put("locationMode",rs.getString("location_mode"));
+              point.put("lifecycleStatus",rs.getString("lifecycle_status"));
+              if(rs.getTimestamp("expired_at")!=null)point.put("expiredAt",rs.getTimestamp("expired_at").toInstant().toString());
               point.put("version",rs.getLong("version"));point.put("updatedAt",rs.getTimestamp("updated_at").toInstant().toString());
               return point;
           }).list();

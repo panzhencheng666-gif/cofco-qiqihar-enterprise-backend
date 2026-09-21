@@ -50,6 +50,8 @@ public class ProductionRecordController {
 
     public ProductionRecordController(ProductionRecordService service) { this.service = service; }
 
+
+
     @GetMapping("/api/v1/production-records")
     ApiResponse<PageResponse> records(@RequestParam MultiValueMap<String, String> parameters) {
         StrictQueryParameters parsed = StrictQueryParameters.parse(parameters,
@@ -135,16 +137,9 @@ public class ProductionRecordController {
         return new ApiResponse<>(RecordResponse.from(service.submit(id, request.requiredVersion())));
     }
 
-    @PostMapping("/api/v1/production-records/{id}/approve")
-    ApiResponse<RecordResponse> approve(@PathVariable String id, @RequestBody VersionRequest request) {
-        return new ApiResponse<>(RecordResponse.from(service.approve(id, request.requiredVersion())));
-    }
 
-    @PostMapping("/api/v1/production-records/{id}/return")
-    ApiResponse<RecordResponse> returnForCorrection(@PathVariable String id, @RequestBody ReturnRequest request) {
-        return new ApiResponse<>(RecordResponse.from(
-                service.returnForCorrection(id, request.requiredVersion(), request.validatedReason())));
-    }
+
+
 
     @PostMapping("/api/v1/production-records/{id}/void")
     ApiResponse<RecordResponse> voidRecord(@PathVariable String id, @RequestBody VersionRequest request) {
@@ -169,7 +164,7 @@ public class ProductionRecordController {
             validateCoordinates(submissionMetadata);
             SurveyTime time = surveyTime();
             return new ProductionDraft(productCode, objectTypeCode, regionCode, cultivarCode, time.compatibilityDate(),
-                    decimal(cultivatedAreaMu), decimal(yieldPerMuKilograms), values(quality), values(costs),
+                    decimal(cultivatedAreaMu, "cultivatedAreaMu"), decimal(yieldPerMuKilograms, "yieldPerMuKilograms"), values(quality), values(costs),
                     values(insurance), values(subsidies), submissionMetadata, evidencePhotoIds,
                     time.year(), time.month());
         }
@@ -178,12 +173,18 @@ public class ProductionRecordController {
                     "INVALID_PRODUCTION_RECORD", "A non-negative version is required");
             return version;
         }
-        private static BigDecimal decimal(String value) {
-            return value == null ? null : PlainDecimal.parse(value, 14, 4, "INVALID_PRODUCTION_RECORD");
+        private static BigDecimal decimal(String value, String field) {
+            if (value == null || value.isBlank()) return null;
+            try {
+                return PlainDecimal.parse(value, 14, 4, "INVALID_PRODUCTION_RECORD");
+            } catch (ClientRequestException exception) {
+                throw ClientRequestException.field("INVALID_PRODUCTION_RECORD", field,
+                        "须填写数值，整数最多 14 位，小数最多 4 位；不要填写单位或千位逗号。");
+            }
         }
         private static Map<String, BigDecimal> values(Map<String, String> values) {
             Map<String, BigDecimal> parsed = new LinkedHashMap<>();
-            if (values != null) values.forEach((code, value) -> parsed.put(code, decimal(value)));
+            if (values != null) values.forEach((code, value) -> parsed.put(code, decimal(value, code)));
             return parsed;
         }
         private static void validateCoordinates(Map<String, String> metadata) {

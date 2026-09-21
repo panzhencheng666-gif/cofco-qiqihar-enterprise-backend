@@ -83,7 +83,7 @@ public class DesignSamplePointService {
         String objectType = optionalCode(objectTypeCode, 80);
         String region = optionalText(regionCode, 12);
         String search = optionalText(keyword, 200);
-        AuthorizedReadScope scope = access.requireReadScope();
+        AuthorizedReadScope scope = access.requireBusinessReadScope();
         if (region != null) scope.requireRegion(region);
         return repository.findPage(new DesignSamplePointQuery(
                 domain, product, objectType, region, search,
@@ -92,8 +92,10 @@ public class DesignSamplePointService {
 
     @Transactional(readOnly = true)
     public DesignSamplePointView get(UUID id) {
-        AuthorizedReadScope scope = access.requireReadScope();
-        DesignSamplePointView point = required(id);
+        AuthorizedReadScope scope = access.requireBusinessReadScope();
+        DesignSamplePointView point = repository.findIncludingExpired(id)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "DESIGN_SAMPLE_POINT_NOT_FOUND", "设计样本点不存在"));
         scope.requireRegion(point.regionCode());
         return point;
     }
@@ -230,7 +232,7 @@ public class DesignSamplePointService {
         String name = requiredValue(normalizedValues, "DSP_NAME", 200);
         String region = requiredValue(normalizedValues, "DSP_REGION_CODE", 12);
         if (!normalizedValues.containsKey("DSP_ADDRESS")) {
-            throw new ClientRequestException("REQUIRED_FIELD_MISSING", "缺少详细地址");
+            throw ClientRequestException.field("REQUIRED_FIELD_MISSING", "DSP_ADDRESS", "请填写详细地址。");
         }
         requiredValue(normalizedValues, "DSP_ADDRESS", 500);
         BigDecimal longitude = decimal(normalizedValues.get("DSP_LONGITUDE"));
@@ -242,7 +244,11 @@ public class DesignSamplePointService {
             case UNAVAILABLE -> throw new ServiceUnavailableException(
                     "ADMIN_BOUNDARY_UNAVAILABLE", "所选行政区边界数据暂不可用");
             case OUTSIDE -> throw new ClientRequestException(
-                    "DESIGN_SAMPLE_POINT_OUTSIDE_REGION", "原始坐标必须位于所选县区内");
+                    "DESIGN_SAMPLE_POINT_OUTSIDE_REGION", "原始坐标必须位于所选县区内",
+                    Map.of("fieldErrors", Map.of(
+                            "DSP_REGION_CODE", "所选行政区与经纬度不一致，请核对地区和坐标。",
+                            "DSP_LONGITUDE", "经纬度必须位于所选县区内。",
+                            "DSP_LATITUDE", "经纬度必须位于所选县区内。")));
             case INSIDE -> { }
         }
         return new ValidatedDraft(

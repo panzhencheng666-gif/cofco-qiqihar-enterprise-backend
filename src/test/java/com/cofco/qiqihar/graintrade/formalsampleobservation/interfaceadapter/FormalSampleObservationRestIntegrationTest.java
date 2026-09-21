@@ -586,6 +586,32 @@ class FormalSampleObservationRestIntegrationTest {
     }
 
     @Test
+    void unassignedAccountCanFillAcrossRegionsWithoutChangingMaintainerOrTaskAssignments() throws Exception {
+        jdbc.sql("DELETE FROM platform.security_user_region_scope WHERE subject_id=:subject")
+                .param("subject", SAME_REGION_ACTOR).update();
+        jdbc.sql("DELETE FROM platform.security_user_role WHERE subject_id=:subject")
+                .param("subject", SAME_REGION_ACTOR).update();
+        String maintainerBefore = jdbc.sql("SELECT maintainer_subject_id FROM registry.sample_point WHERE sample_point_id=:id")
+                .param("id", SAMPLE_POINT_ID).query(String.class).single();
+        mvc.perform(get("/api/v1/formal-sample-observations/eligible-samples")
+                        .principal(() -> SAME_REGION_ACTOR)
+                        .queryParam("domain", "PRODUCTION").queryParam("productCode", "CORN")
+                        .queryParam("regionCode", "230221").queryParam("year", "2026")
+                        .queryParam("observedAt", "2026-08-28T10:15:00+08:00"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.length()").value(1));
+        mvc.perform(post("/api/v1/formal-sample-observations/observations")
+                        .principal(() -> SAME_REGION_ACTOR)
+                        .header("Idempotency-Key", "unassigned-cross-region-write")
+                        .contentType(MediaType.APPLICATION_JSON).content(minimalProductionObservationRequest()))
+                .andExpect(status().isCreated());
+        assertThat(jdbc.sql("SELECT maintainer_subject_id FROM registry.sample_point WHERE sample_point_id=:id")
+                .param("id", SAMPLE_POINT_ID).query(String.class).single()).isEqualTo(maintainerBefore);
+        assertThat(jdbc.sql("SELECT count(*) FROM platform.security_user_region_scope WHERE subject_id=:subject")
+                .param("subject", SAME_REGION_ACTOR).query(Long.class).single()).isZero();
+        assertThat(formalObservationAuditCount()).isEqualTo(formalObservationAuditCountBefore + 1);
+    }
+
+    @Test
     void allowsTheAssignedRegionOperatorToFillAnExistingSample() throws Exception {
         long recordsBefore = productionRecordCount();
 

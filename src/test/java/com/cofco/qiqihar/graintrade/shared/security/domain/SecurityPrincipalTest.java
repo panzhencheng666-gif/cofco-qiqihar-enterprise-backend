@@ -8,6 +8,17 @@ import org.junit.jupiter.api.Test;
 class SecurityPrincipalTest {
 
     @Test
+    void enabledPrincipalHasReportingPermissionsWithoutExpandingAssignedRegionsOrRoles() {
+        var user = new SecurityPrincipal("reporter", "unit", Set.of(), Set.of("230200"));
+        for (String permission : Set.of("BUSINESS_READ", "BUSINESS_CREATE", "BUSINESS_UPDATE", "BUSINESS_IMPORT", "BUSINESS_SUBMIT", "BUSINESS_VOID", "FORMAL_SAMPLE_MANAGE", "FORMAL_SAMPLE_DELETE", "MARKET_OBJECT_MANAGE", "OBLIGATION_REPORT_READ", "OBLIGATION_REPORT_EXPORT", "REPORT_PREVIEW", "REPORT_EXPORT", "REPORT_PUBLISH")) {
+            org.assertj.core.api.Assertions.assertThat(user.permits(permission)).isTrue();
+        }
+        org.assertj.core.api.Assertions.assertThat(user.includesRegion("231100")).isFalse();
+        org.assertj.core.api.Assertions.assertThat(user.isRootAdministrator()).isFalse();
+        org.assertj.core.api.Assertions.assertThat(user.permits("BUSINESS_APPROVE")).isFalse();
+    }
+
+    @Test
     void persistedWildcardRegionCannotBecomeUnrestrictedProductionScope() {
         assertThatThrownBy(() -> new SecurityPrincipal(
                 "subject", "unit", Set.of("BUSINESS_READ"), Set.of("*")))

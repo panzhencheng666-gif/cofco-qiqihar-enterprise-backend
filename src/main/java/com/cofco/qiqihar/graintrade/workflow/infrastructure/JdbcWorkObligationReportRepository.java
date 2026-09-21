@@ -33,7 +33,7 @@ public class JdbcWorkObligationReportRepository implements WorkObligationReportR
         if (query.businessDomain() != null) where.append(" AND item.business_domain=:domain");
         if (query.regionCode() != null) where.append(" AND item.region_code=:regionCode");
         if (query.authorizedRegionCodes().isEmpty()) where.append(" AND 1=0");
-        else where.append(" AND item.region_code IN (:authorizedRegions)");
+        else if (!query.authorizedRegionCodes().contains("*")) where.append(" AND item.region_code IN (:authorizedRegions)");
 
         JdbcClient.StatementSpec statement = jdbc.sql("""
                 SELECT item.work_item_id::text AS work_item_id,
@@ -68,7 +68,7 @@ public class JdbcWorkObligationReportRepository implements WorkObligationReportR
         if (query.workUnitCode() != null) statement = statement.param("workUnitCode", query.workUnitCode());
         if (query.businessDomain() != null) statement = statement.param("domain", query.businessDomain());
         if (query.regionCode() != null) statement = statement.param("regionCode", query.regionCode());
-        if (!query.authorizedRegionCodes().isEmpty()) {
+        if (!query.authorizedRegionCodes().isEmpty() && !query.authorizedRegionCodes().contains("*")) {
             statement = statement.param("authorizedRegions", query.authorizedRegionCodes());
         }
         List<WorkObligationWeeklyReport.Row> rows = statement.query((row, ignored) -> {

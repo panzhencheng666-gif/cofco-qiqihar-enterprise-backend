@@ -2005,7 +2005,11 @@ class GovernedProductWorkbookImportIntegrationTest {
                         .header("Idempotency-Key", key).principal(() -> principal))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.importedRows").value(0))
-                .andExpect(jsonPath("$.data.failedRows").value(2));
+                .andExpect(jsonPath("$.data.failedRows").value(2))
+                .andExpect(jsonPath("$.data.rowErrors[0].rowNumber").value(2))
+                .andExpect(jsonPath("$.data.rowErrors[1].rowNumber").value(3))
+                .andExpect(jsonPath("$.data.rowErrors[0].field").isNotEmpty())
+                .andExpect(jsonPath("$.data.rowErrors[0].message").isNotEmpty());
 
         mvc.perform(multipart("/api/v1/imports/" + route)
                 .file(file).file(invalidPhoto).param("productCode", "RICE")

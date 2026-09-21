@@ -167,7 +167,8 @@ class DesignSampleMetadataRestIntegrationTest {
                                 digest,
                                 requiredValues("\"DSP_LONGITUDE\":1e18"))))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.error.code").value("FIELD_VALUE_INVALID"));
+                .andExpect(jsonPath("$.error.code").value("FIELD_VALUE_INVALID"))
+                .andExpect(jsonPath("$.error.details.fieldErrors.DSP_LONGITUDE").isNotEmpty());
     }
 
     @Test

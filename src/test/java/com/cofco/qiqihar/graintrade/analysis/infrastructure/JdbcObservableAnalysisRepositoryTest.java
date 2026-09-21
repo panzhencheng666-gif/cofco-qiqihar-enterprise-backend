@@ -15,6 +15,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
 class JdbcObservableAnalysisRepositoryTest {
@@ -221,6 +223,82 @@ class JdbcObservableAnalysisRepositoryTest {
                 .contains(PREFIX + "new", PREFIX + "market-approved")
                 .doesNotContain(PREFIX + "old", PREFIX + "draft", PREFIX + "market-pending");
         assertThat(snapshot.analysisVersion()).startsWith("sha256:");
+    }
+
+    @Test
+    void metadataOnlyApprovedMarketRecordDoesNotBreakOtherAnalysisOrInventLineage() {
+        market("empty", "APPROVED", "2500", REGION);
+        clearMarketAnalysisValues("empty");
+        var scope = new ObservableAnalysisScope("CORN", "__ALL_AUTHORIZED__", 2026, null, null, null);
+        var snapshot = repository.load(scope, Set.of("*"));
+        var summary = repository.loadSupplySummary(scope, Set.of("*"));
+
+        assertMetric(snapshot.production().metrics(), "EXPECTED_OUTPUT", "149.9000");
+        assertMetric(snapshot.market().metrics(), "AVERAGE_PURCHASE_PRICE", "2500.0000");
+        assertThat(snapshot.lineage()).extracting("recordId")
+                .contains(PREFIX + "market-approved").doesNotContain(PREFIX + "market-empty");
+        assertThat(snapshot.warnings()).contains("存在未填报分析指标的已入库市场记录，未计入分析指标与来源覆盖。");
+        assertThat(summary.sourceCount()).isEqualTo(snapshot.coverage().recordCount());
+        assertThat(jdbc.sql("SELECT status_code FROM market.market_record WHERE record_id=:id")
+                .param("id", PREFIX + "market-empty").query(String.class).single())
+                .isEqualTo("APPROVED");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"80", "0"})
+    void inventoryOnlyMarketRecordRetainsItsAdoptedInventoryLineage(String inventory) {
+        clearMarketAnalysisValues("approved");
+        jdbc.sql("""
+                INSERT INTO market.market_record_fact(record_id,fact_code,value,product_code,object_type_code)
+                VALUES(:id,'ENDING_INVENTORY',:inventory,'CORN','TRADER')
+                """).param("id", PREFIX + "market-approved")
+                .param("inventory", new BigDecimal(inventory)).update();
+        var scope = new ObservableAnalysisScope("CORN", "230200", 2026, 8, null, null);
+        var snapshot = repository.load(scope, Set.of("*"));
+        assertMetric(snapshot.market().metrics(), "CURRENT_INVENTORY", new BigDecimal(inventory).setScale(4).toPlainString());
+        assertThat(snapshot.lineage()).filteredOn(item -> item.recordId().equals(PREFIX + "market-approved"))
+                .singleElement().satisfies(item -> assertThat(item.factCodes()).containsExactly("ENDING_INVENTORY"));
+        assertThat(repository.loadSupplySummary(scope, Set.of("*")).sourceCount())
+                .isEqualTo(snapshot.coverage().recordCount());
+    }
+
+    @Test
+    void onlyMetadataMarketRecordsProduceAnEmptyAnalysisWithAnExplanation() {
+        marketRecord("empty", "APPROVED", "2500", REGION, "空指标样本", "13900000003",
+                "47.3", "123.9", 2025, 8, "2025-08-10", 1);
+        clearMarketAnalysisValues("empty");
+        var scope = new ObservableAnalysisScope("CORN", "__ALL_AUTHORIZED__", 2025, null, null, null);
+        var snapshot = repository.load(scope, Set.of("*"));
+        assertThat(snapshot.qualityState()).isEqualTo(AnalysisQualityState.NO_APPROVED_DATA);
+        assertThat(snapshot.lineage()).isEmpty();
+        assertThat(snapshot.coverage().recordCount()).isZero();
+        assertThat(snapshot.dataCutoffAt()).isNull();
+        assertThat(snapshot.warnings()).contains("存在未填报分析指标的已入库市场记录，未计入分析指标与来源覆盖。");
+        assertThat(repository.loadSupplySummary(scope, Set.of("*")).sourceCount()).isZero();
+    }
+
+    @Test
+    void zeroMarketPriceRemainsAnObservedFact() {
+        clearMarketAnalysisValues("approved");
+        jdbc.sql("UPDATE market.market_record SET trade_direction='PURCHASE',purchase_base_price=0 WHERE record_id=:id")
+                .param("id", PREFIX + "market-approved").update();
+        var scope = new ObservableAnalysisScope("CORN", "230200", 2026, 8, null, null);
+        var snapshot = repository.load(scope, Set.of("*"));
+        assertMetric(snapshot.market().metrics(), "AVERAGE_PURCHASE_PRICE", "0.0000");
+        assertThat(snapshot.lineage()).filteredOn(item -> item.recordId().equals(PREFIX + "market-approved"))
+                .singleElement().satisfies(item -> assertThat(item.factCodes()).containsExactly("MKT_PURCHASE_BASE_PRICE"));
+        assertThat(repository.loadSupplySummary(scope, Set.of("*")).sourceCount())
+                .isEqualTo(snapshot.coverage().recordCount());
+    }
+
+    private void clearMarketAnalysisValues(String suffix) {
+        jdbc.sql("""
+                UPDATE market.market_record SET trade_direction='OBSERVATION',purchase_base_price=NULL,sale_base_price=NULL,
+                    carriage_board_amount=NULL,packaging_amount=NULL,
+                    freight_amount=NULL,packaging_form=NULL WHERE record_id=:id
+                """).param("id", PREFIX + "market-" + suffix).update();
+        jdbc.sql("DELETE FROM market.market_record_fact WHERE record_id=:id")
+                .param("id", PREFIX + "market-" + suffix).update();
     }
 
     @Test

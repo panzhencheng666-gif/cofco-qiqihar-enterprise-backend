@@ -12,15 +12,85 @@ import org.junit.jupiter.api.Test;
 
 class AccessControlTest {
     @Test
-    void mapReadIsSharedWhileWritesKeepResponsibilityScope() {
+    void enabledEmployeesHaveAllBusinessOperationsAcrossRegionsWithoutManagementGrants() {
+        for (Set<String> regions : java.util.List.of(Set.<String>of(), Set.of("230200"))) {
+            var user = new SecurityPrincipal("employee", "TEST", Set.of(), regions);
+            var access = new AccessControl(() -> Optional.of("employee"), id -> Optional.of(user), true);
+            for (String permission : Set.of("BUSINESS_READ", "BUSINESS_CREATE", "BUSINESS_UPDATE",
+                    "BUSINESS_IMPORT", "BUSINESS_SUBMIT", "BUSINESS_VOID", "FORMAL_SAMPLE_MANAGE",
+                    "FORMAL_SAMPLE_DELETE", "MARKET_OBJECT_MANAGE", "OBLIGATION_REPORT_READ", "OBLIGATION_REPORT_EXPORT", "REPORT_PREVIEW", "REPORT_EXPORT", "REPORT_PUBLISH")) {
+                assertThat(access.require(permission, "231100")).isEqualTo(user);
+            }
+            assertThat(access.requireBusinessVoid("231100")).isEqualTo(user);
+            assertThat(access.requireTaskReadScope().isUnrestricted()).isTrue();
+            for (String permission : Set.of("IDENTITY_ADMIN", "IDENTITY_READ", "ACCESS_REVIEW",
+                    "BUSINESS_APPROVE", "BUSINESS_RETURN", "MASTER_DATA_APPLY", "AUDIT_READ")) {
+                assertThatThrownBy(() -> access.require(permission, null))
+                    .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+            }
+            assertThatThrownBy(access::requireAdministrator)
+                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+        }
+    }
+
+    @Test
+    void unassignedReporterUsesAdministratorTaskCoverageWithoutAdministratorPowers() {
+        var reporter = new SecurityPrincipal("reporter", "TEST", Set.of("BUSINESS_UPDATE", "BUSINESS_SUBMIT"), Set.of());
+        var access = new AccessControl(() -> Optional.of("reporter"), id -> Optional.of(reporter), true);
+        assertThat(access.requireTaskReadScope().isUnrestricted()).isTrue();
+        for (String region : java.util.Arrays.asList("230200", "231100", null, "")) {
+            assertThat(access.requireBusinessVoid(region)).isEqualTo(reporter);
+        }
+        assertThatThrownBy(access::requireAdministrator)
+                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+        assertThatThrownBy(() -> access.require("BUSINESS_APPROVE", "230200"))
+                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+    }
+
+    @Test
+    void unassignedEnabledAccountCanReadCreateAndUpdateAcrossRegionsWithoutTakingResponsibility() {
+        var user = new SecurityPrincipal("reader", "TEST", Set.of(), Set.of());
+        var repository = new SecurityPrincipalRepository() {
+            public Optional<SecurityPrincipal> findEnabled(String id) { return Optional.of(user); }
+            public Optional<String> responsibleSubject(String region, boolean county) {
+                throw new AssertionError("Reporting must not change or check the assigned owner");
+            }
+        };
+        var access = new AccessControl(() -> Optional.of("reader"), repository, true);
+        for (String permission : Set.of("BUSINESS_READ", "BUSINESS_CREATE", "BUSINESS_UPDATE")) {
+            assertThat(access.require(permission, "231100")).isEqualTo(user);
+        }
+        access.requireCountyReporter(user, "231100");
+        assertThat(access.requireBusinessReadScope().isUnrestricted()).isTrue();
+        assertThat(access.requireTaskReadScope().isUnrestricted()).isTrue();
+        assertThatThrownBy(access::requireAdministrator)
+                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+        assertThatThrownBy(() -> access.require("BUSINESS_APPROVE", "231100"))
+                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+    }
+
+    @Test
+    void reportingStillRejectsAnonymousAndDisabledAccounts() {
+        var anonymous = new AccessControl(Optional::<String>empty, id -> Optional.empty(), true);
+        var disabled = new AccessControl(() -> Optional.of("disabled"), id -> Optional.empty(), true);
+        for (String permission : Set.of("BUSINESS_READ", "BUSINESS_CREATE", "BUSINESS_UPDATE")) {
+            assertThatThrownBy(() -> anonymous.require(permission, "231100"))
+                    .isInstanceOf(AuthenticationRequiredException.class);
+            assertThatThrownBy(() -> disabled.require(permission, "231100"))
+                    .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+        }
+    }
+
+    @Test
+    void businessWritesAreSharedWhileTaskAssignmentsKeepTheirScope() {
         var user = new SecurityPrincipal("reader", "TEST",
                 Set.of("BUSINESS_READ", "BUSINESS_UPDATE"), Set.of("230200"));
         var access = new AccessControl(() -> Optional.of("reader"), id -> Optional.of(user), true);
         assertThat(access.requireOverviewReadScope().isUnrestricted()).isTrue();
         assertThat(access.requireOverviewReadScope().subjectId()).isEqualTo("reader");
         assertThat(access.requireReadScope().regionCodes()).containsExactly("230200");
-        assertThatThrownBy(() -> access.require("BUSINESS_UPDATE", "231100"))
-                .isInstanceOf(com.cofco.qiqihar.graintrade.shared.application.AccessDeniedException.class);
+        assertThat(access.require("BUSINESS_UPDATE", "231100")).isEqualTo(user);
+        assertThat(access.requireTaskReadScope().isUnrestricted()).isTrue();
     }
 
     @Test

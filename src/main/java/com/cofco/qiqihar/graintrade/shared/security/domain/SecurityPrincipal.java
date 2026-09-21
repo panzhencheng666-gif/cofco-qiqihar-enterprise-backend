@@ -64,8 +64,33 @@ public record SecurityPrincipal(
         return roles.contains("SYSTEM_ADMIN") || roles.contains("BUSINESS_REVIEWER");
     }
 
+    /** Explicitly granted reporting access without a responsibility assignment. */
+    public boolean isUnassignedReporter() {
+        return regionCodes.isEmpty() && permissionCodes.contains("BUSINESS_UPDATE");
+    }
+
     public boolean permits(String permissionCode) {
-        return isRootAdministrator() || permissionCodes.contains(permissionCode);
+        return isRootAdministrator() || isSharedReportingPermission(permissionCode) || permissionCodes.contains(permissionCode);
+    }
+
+    private static final Set<String> SHARED_BUSINESS_PERMISSIONS = Set.of(
+            "BUSINESS_READ", "BUSINESS_CREATE", "BUSINESS_UPDATE", "BUSINESS_IMPORT",
+            "BUSINESS_SUBMIT", "BUSINESS_VOID", "FORMAL_SAMPLE_MANAGE", "FORMAL_SAMPLE_DELETE",
+            "MARKET_OBJECT_MANAGE", "OBLIGATION_REPORT_READ", "OBLIGATION_REPORT_EXPORT", "REPORT_PREVIEW", "REPORT_EXPORT", "REPORT_PUBLISH");
+
+    public static boolean isSharedReportingPermission(String permissionCode) {
+        return SHARED_BUSINESS_PERMISSIONS.contains(permissionCode);
+    }
+
+    public boolean hasSharedReportingScope(String permissionCode) {
+        return isSharedReportingPermission(permissionCode);
+    }
+
+    /** Effective business permissions; stored roles and responsibility assignments stay unchanged. */
+    public Set<String> effectivePermissionCodes() {
+        var effective = new java.util.HashSet<>(permissionCodes);
+        effective.addAll(SHARED_BUSINESS_PERMISSIONS);
+        return Set.copyOf(effective);
     }
 
     public boolean includesRegion(String regionCode) {
