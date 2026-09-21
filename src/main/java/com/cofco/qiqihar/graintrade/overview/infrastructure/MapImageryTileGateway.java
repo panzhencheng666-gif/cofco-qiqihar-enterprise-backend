@@ -35,7 +35,7 @@ public class MapImageryTileGateway {
     private static final int MAXIMUM_TILE_BYTES = 5 * 1024 * 1024;
     private static final int MONTHLY_PUBLICATION_BUFFER_DAYS = 7;
     private static final String DEFAULT_TILE_URL_TEMPLATE =
-            "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/"
+            "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/"
                     + "MapServer/tile/{z}/{y}/{x}";
 
     private final String tileUrlTemplate;
