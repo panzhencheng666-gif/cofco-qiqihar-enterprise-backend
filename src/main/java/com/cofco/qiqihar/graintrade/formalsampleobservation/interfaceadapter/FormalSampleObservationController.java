@@ -30,7 +30,7 @@ public class FormalSampleObservationController {
     }
 
     @GetMapping("/eligible-samples")
-    ApiResponse<List<EligibleFormalSample>> eligibleSamples(
+    ApiResponse<?> eligibleSamples(
             @RequestParam FormalSampleObservationDomain domain,
             @RequestParam String productCode,
             @RequestParam(required = false) String regionCode,
@@ -38,7 +38,14 @@ public class FormalSampleObservationController {
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) Integer year,
             @RequestParam OffsetDateTime observedAt,
-            @RequestParam(required = false) String scope) {
+            @RequestParam(required = false) String scope,
+            @RequestParam(required = false) Integer pageNumber,
+            @RequestParam(required = false) Integer pageSize) {
+        if (pageNumber != null || pageSize != null) {
+            return new ApiResponse<>(service.eligibleSamplesPage(domain, productCode, regionCode,
+                    objectTypeCode, keyword, year, observedAt, scope,
+                    pageNumber == null ? 0 : pageNumber, pageSize == null ? 20 : pageSize));
+        }
         return new ApiResponse<>(service.eligibleSamples(
                 domain, productCode, regionCode, objectTypeCode, keyword, year, observedAt, scope));
     }

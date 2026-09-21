@@ -1,6 +1,7 @@
 package com.cofco.qiqihar.graintrade.formalsampleobservation.infrastructure;
 
 import com.cofco.qiqihar.graintrade.formalsampleobservation.application.EligibleFormalSample;
+import com.cofco.qiqihar.graintrade.formalsampleobservation.application.EligibleFormalSamplePage;
 import com.cofco.qiqihar.graintrade.formalsampleobservation.application.FormalSampleObservationDomain;
 import com.cofco.qiqihar.graintrade.formalsampleobservation.application.FormalSampleObservationRepository;
 import com.cofco.qiqihar.graintrade.overview.api.CurrentOverviewSamplePoint;
@@ -91,13 +92,35 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
             String actorSubjectId,
             boolean administratorOverride,
             boolean filterByMaintainer) {
-        if (authorizedRegionCodes.isEmpty()) return List.of();
+        return findEligibleSamplesPage(domain, productCode, regionCode, objectTypeCode,
+                keywordPattern, observedOn, authorizedRegionCodes, actorSubjectId,
+                administratorOverride, filterByMaintainer, 0, Integer.MAX_VALUE).items();
+    }
+
+    @Override
+    public EligibleFormalSamplePage findEligibleSamplesPage(
+            FormalSampleObservationDomain domain, String productCode, String regionCode,
+            String objectTypeCode, String keywordPattern, LocalDate observedOn,
+            Set<String> authorizedRegionCodes, String actorSubjectId,
+            boolean administratorOverride, int pageNumber, int pageSize) {
+        return findEligibleSamplesPage(domain, productCode, regionCode, objectTypeCode,
+                keywordPattern, observedOn, authorizedRegionCodes, actorSubjectId,
+                administratorOverride, true, pageNumber, pageSize);
+    }
+
+    private EligibleFormalSamplePage findEligibleSamplesPage(
+            FormalSampleObservationDomain domain, String productCode, String regionCode,
+            String objectTypeCode, String keywordPattern, LocalDate observedOn,
+            Set<String> authorizedRegionCodes, String actorSubjectId,
+            boolean administratorOverride, boolean filterByMaintainer, int pageNumber, int pageSize) {
+        var empty = new EligibleFormalSamplePage(List.of(), pageNumber, pageSize, 0, 0);
+        if (authorizedRegionCodes.isEmpty()) return empty;
         Set<UUID> currentSamplePointIds = currentOverviewSamplePoints.readAtLifecycleCutoff(
                         observedOn.getYear(), productCode, regionCode, domain.name(), observedOn,
                         authorizedRegionCodes).stream()
                 .map(CurrentOverviewSamplePoint::samplePointId)
                 .collect(java.util.stream.Collectors.toUnmodifiableSet());
-        if (currentSamplePointIds.isEmpty()) return List.of();
+        if (currentSamplePointIds.isEmpty()) return empty;
         String latest = switch (domain) {
             case PRODUCTION -> """
                     SELECT record.record_id source_record_id,
@@ -185,8 +208,9 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                     LIMIT 1
                     """.formatted(LOGISTICS_PUBLIC_VALUES_SQL);
         };
-        return jdbc.sql("""
-                SELECT point.sample_point_id,point.canonical_name,profile.address,
+        var total = new java.util.concurrent.atomic.AtomicLong();
+        var items = jdbc.sql("""
+                SELECT count(*) OVER() AS total_elements,point.sample_point_id,point.canonical_name,profile.address,
                        latest.object_type_code,
                        object_type.name object_type_name,point.region_code,region.name region_name,
                        point.maintainer_subject_id,
@@ -229,7 +253,9 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                     OR point.canonical_name ILIKE :keywordPattern ESCAPE '\\'
                     OR region.name ILIKE :keywordPattern ESCAPE '\\')
                 ORDER BY point.canonical_name,point.sample_point_id
+                LIMIT :pageSize OFFSET :pageOffset
                 """).param("productCode", productCode)
+                .param("pageSize", pageSize).param("pageOffset", (long) pageNumber * pageSize)
                 .param("year", observedOn.getYear())
                 .param("domain", domain.name())
                 .param("observedOn", observedOn)
@@ -240,7 +266,9 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                 .param("regionCode", regionCode, java.sql.Types.VARCHAR)
                 .param("objectTypeCode", objectTypeCode, java.sql.Types.VARCHAR)
                 .param("keywordPattern", keywordPattern, java.sql.Types.VARCHAR)
-                .query((row, ignored) -> new EligibleFormalSample(
+                .query((row, ignored) -> {
+                    total.set(row.getLong("total_elements"));
+                    return new EligibleFormalSample(
                         row.getObject("sample_point_id", java.util.UUID.class),
                         row.getString("canonical_name"), row.getString("address"),
                         row.getString("object_type_code"),
@@ -255,8 +283,11 @@ public class JdbcFormalSampleObservationRepository implements FormalSampleObserv
                         row.getLong("network_membership_count"),
                         row.getString("source_record_id"),
                         row.getObject("latest_observed_at", OffsetDateTime.class),
-                        json(row.getString("latest_values"))))
+                        json(row.getString("latest_values")));
+                })
                 .list();
+        return new EligibleFormalSamplePage(items, pageNumber, pageSize, total.get(),
+                (int) ((total.get() + pageSize - 1L) / pageSize));
     }
 
     @Override

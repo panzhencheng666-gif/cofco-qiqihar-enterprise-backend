@@ -89,6 +89,26 @@ public class FormalSampleObservationService {
             FormalSampleObservationDomain domain, String productCode, String regionCode,
             String objectTypeCode, String keyword, Integer year, OffsetDateTime observedAt,
             String requestedScope) {
+        return eligibleSamplesResult(domain, productCode, regionCode, objectTypeCode, keyword,
+                year, observedAt, requestedScope, null, null).items();
+    }
+
+    @Transactional(readOnly = true)
+    public EligibleFormalSamplePage eligibleSamplesPage(
+            FormalSampleObservationDomain domain, String productCode, String regionCode,
+            String objectTypeCode, String keyword, Integer year, OffsetDateTime observedAt,
+            String requestedScope, int pageNumber, int pageSize) {
+        if (pageNumber < 0 || pageNumber > 100_000 || pageSize < 1 || pageSize > 100) {
+            throw invalid("样本分页参数不正确");
+        }
+        return eligibleSamplesResult(domain, productCode, regionCode, objectTypeCode, keyword,
+                year, observedAt, requestedScope, pageNumber, pageSize);
+    }
+
+    private EligibleFormalSamplePage eligibleSamplesResult(
+            FormalSampleObservationDomain domain, String productCode, String regionCode,
+            String objectTypeCode, String keyword, Integer year, OffsetDateTime observedAt,
+            String requestedScope, Integer pageNumber, Integer pageSize) {
         if (requestedScope != null && !"MY_TASKS".equals(requestedScope)) throw invalid("任务范围参数不正确");
         if (domain == null || productCode == null || productCode.isBlank() || observedAt == null) {
             throw invalid("领域、产品和实际观测时间不能为空");
@@ -111,10 +131,16 @@ public class FormalSampleObservationService {
         var scope = "MY_TASKS".equals(requestedScope)
                 ? accessControl.requireTaskReadScope() : accessControl.requireBusinessReadScope();
         if (regionCode != null && !regionCode.isBlank()) scope.requireRegion(regionCode);
-        return repository.findEligibleSamples(domain, normalizedProduct, regionCode, normalizedObjectType,
+        if (pageNumber != null) {
+            return repository.findEligibleSamplesPage(domain, normalizedProduct, regionCode, normalizedObjectType,
+                    keywordPattern(normalizedKeyword), observedAt.atZoneSameInstant(REPORTING_ZONE).toLocalDate(),
+                    scope.regionCodes(), scope.subjectId(), true, pageNumber, pageSize);
+        }
+        var items = repository.findEligibleSamples(domain, normalizedProduct, regionCode, normalizedObjectType,
                 keywordPattern(normalizedKeyword),
                 observedAt.atZoneSameInstant(REPORTING_ZONE).toLocalDate(), scope.regionCodes(),
                 scope.subjectId(), true);
+        return new EligibleFormalSamplePage(items, 0, items.size(), items.size(), items.isEmpty() ? 0 : 1);
     }
 
     @Transactional(readOnly = true)

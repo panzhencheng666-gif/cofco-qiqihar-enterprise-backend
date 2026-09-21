@@ -52,6 +52,12 @@ public class JdbcBusinessNotificationRepository implements BusinessNotificationR
     }
 
     @Override
+    public long latestSequence() {
+        return jdbc.sql("SELECT COALESCE(max(event_sequence),0) FROM platform.business_event_outbox")
+                .query(Long.class).single();
+    }
+
+    @Override
     public List<BusinessNotification> findVisible(
             AuthorizedReadScope scope, String subjectId, int limit) {
         if (hasNoAuthorizedRegions(scope)) {

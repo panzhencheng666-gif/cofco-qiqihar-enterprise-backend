@@ -10,6 +10,12 @@ import java.util.Set;
 import java.util.UUID;
 
 public interface FormalSampleObservationRepository {
+    EligibleFormalSamplePage findEligibleSamplesPage(
+            FormalSampleObservationDomain domain, String productCode, String regionCode,
+            String objectTypeCode, String keywordPattern, LocalDate observedOn,
+            Set<String> authorizedRegionCodes, String actorSubjectId,
+            boolean administratorOverride, int pageNumber, int pageSize);
+
     List<EligibleFormalSample> findEligibleSamples(
             FormalSampleObservationDomain domain,
             String productCode,

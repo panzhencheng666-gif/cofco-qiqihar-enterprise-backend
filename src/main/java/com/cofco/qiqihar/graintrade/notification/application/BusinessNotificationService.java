@@ -27,9 +27,10 @@ public class BusinessNotificationService {
     public BusinessNotificationPage list() {
         SecurityPrincipal principal = accessControl.requireAuthenticated();
         AuthorizedReadScope scope = accessControl.requireReadScope();
+        long currentSequence = repository.latestSequence();
         return new BusinessNotificationPage(
                 repository.findVisible(scope, principal.subjectId(), DEFAULT_LIMIT),
-                repository.countUnread(scope, principal.subjectId()));
+                repository.countUnread(scope, principal.subjectId()), currentSequence);
     }
 
     @Transactional
