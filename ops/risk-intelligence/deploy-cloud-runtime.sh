@@ -6,7 +6,8 @@ runtime_root=/var/lib/cofco/risk-intelligence
 releases_root="${runtime_root}/releases"
 secrets_root="${runtime_root}/secrets"
 artifact_root="${runtime_root}/model-artifacts"
-runtime_run_root="${runtime_root}/runtime-run"
+runtime_tls_root="${runtime_root}/runtime-tls"
+container_tls_root=/var/lib/cofco/risk-intelligence/tls
 runtime_env="${secrets_root}/runtime.env"
 migration_env=/var/lib/cofco/checkpoints/regional-controlled-20260915-1419/migration.env
 unit_target=/etc/systemd/system/cofco-risk-intelligence.service
@@ -94,19 +95,20 @@ write_runtime_env() {
 }
 
 configure_runtime_tls() {
-  local migration_url query parameter parameter_key encoded_path decoded_path host_path staged_path
-  local runtime_url separator
+  local migration_url query parameter runtime_parameter parameter_key encoded_path decoded_path
+  local host_path staged_path container_path runtime_url separator
   migration_url="$(read_named_env "$migration_env" MIGRATION_URL)"
   runtime_url=${migration_url%%\?*}
-  mkdir -p "$runtime_run_root"
-  chown 10001:10001 "$runtime_run_root"
-  chmod 700 "$runtime_run_root"
-  find "$runtime_run_root" -type f -delete
+  mkdir -p "$runtime_tls_root"
+  chown 10001:10001 "$runtime_tls_root"
+  chmod 700 "$runtime_tls_root"
+  find "$runtime_tls_root" -type f -delete
   if [[ "$migration_url" == *\?* ]]; then
     query=${migration_url#*\?}
     separator='?'
     IFS='&' read -r -a parameters <<< "$query"
     for parameter in "${parameters[@]}"; do
+      runtime_parameter=$parameter
       parameter_key=${parameter%%=*}
       case "$parameter_key" in
         sslrootcert|sslcert|sslkey)
@@ -114,16 +116,14 @@ configure_runtime_tls() {
           decoded_path=${encoded_path//+/ }
           printf -v decoded_path '%b' "${decoded_path//%/\\x}"
           [[ "$decoded_path" == /* ]] || fail "$parameter_key must use an absolute path"
-          [[ "$decoded_path" == /run/* ]] || fail "$parameter_key must resolve beneath /run"
           host_path="$(resolve_tls_host_path "$decoded_path")"
-          staged_path="${runtime_run_root}/${decoded_path#/run/}"
-          mkdir -p "$(dirname "$staged_path")"
-          chown -R 10001:10001 "$runtime_run_root"
-          chmod 700 "$(dirname "$staged_path")"
+          staged_path="${runtime_tls_root}/$(basename "$decoded_path")"
+          container_path="${container_tls_root}/$(basename "$decoded_path")"
           install -o 10001 -g 10001 -m 400 "$host_path" "$staged_path"
+          runtime_parameter="${parameter_key}=${container_path}"
           ;;
       esac
-      runtime_url+="${separator}${parameter}"
+      runtime_url+="${separator}${runtime_parameter}"
       separator='&'
     done
   fi
@@ -156,7 +156,7 @@ migrate_database() {
   local migration_url migration_user migration_password expected_database runtime_password migration_secret
   local query parameter parameter_key encoded_path decoded_path staged_path has_tls=false
   local -a migration_tls_mount_args=()
-  migration_url="$(read_named_env "$migration_env" MIGRATION_URL)"
+  migration_url="$(read_named_env "$runtime_env" RISK_DB_URL)"
   migration_user="$(read_named_env "$migration_env" MIGRATION_USER)"
   migration_password="$(read_named_env "$migration_env" MIGRATION_PASSWORD)"
   expected_database="$(read_named_env "$runtime_env" RISK_EXPECTED_DATABASE)"
@@ -172,8 +172,9 @@ migrate_database() {
           decoded_path=${encoded_path//+/ }
           printf -v decoded_path '%b' "${decoded_path//%/\\x}"
           [[ "$decoded_path" == /* ]] || fail "$parameter_key must use an absolute path"
-          [[ "$decoded_path" == /run/* ]] || fail "$parameter_key must resolve beneath /run"
-          staged_path="${runtime_run_root}/${decoded_path#/run/}"
+          [[ "$decoded_path" == "${container_tls_root}/"* ]] \
+            || fail "$parameter_key must resolve beneath the dedicated risk TLS directory"
+          staged_path="${runtime_tls_root}/$(basename "$decoded_path")"
           [[ -f "$staged_path" ]] || fail "$parameter_key staged file is missing: $staged_path"
           has_tls=true
           ;;
@@ -181,7 +182,7 @@ migrate_database() {
     done
   fi
   if [[ "$has_tls" == true ]]; then
-    migration_tls_mount_args+=(--volume "${runtime_run_root}:/run:ro")
+    migration_tls_mount_args+=(--volume "${runtime_tls_root}:${container_tls_root}:ro")
   fi
   migration_secret="$(mktemp /run/risk-migration.XXXXXX)"
   chmod 600 "$migration_secret"
