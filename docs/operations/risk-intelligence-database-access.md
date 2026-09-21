@@ -34,6 +34,37 @@ export RISK_DB_PASSWORD="$RISK_DB_RUNTIME_PASSWORD"
 
 成功输出必须为 `RISK_DATABASE_BOUNDARY_OK`。脚本一旦发现风险账号能写入非 `risk` 表、能在非 `risk` schema 创建对象，或连接了错误数据库，就会非零退出并打印实际对象。
 
+## 本地常驻服务
+
+先完成角色配置与边界核验，再以风险运行账号安装独立 LaunchAgent。安装口令和本地接入口令只写入权限为 `600` 的
+`~/.config/cofco-qiqihar-risk-intelligence/local-runtime.env`，不会复制进 Git 工作树或 JAR：
+
+```bash
+export RISK_DB_URL='jdbc:postgresql://127.0.0.1:65432/qiqihar_enterprise_test'
+export RISK_DB_USERNAME='qiqihar_risk_runtime_login'
+export RISK_DB_PASSWORD='<generated-risk-runtime-password>'
+export RISK_EXPECTED_DATABASE='qiqihar_enterprise_test'
+export RISK_INGESTION_KEY='<generated-local-ingestion-key>'
+./scripts/risk-intelligence-local.sh install
+./scripts/risk-intelligence-local.sh status
+./scripts/healthcheck-risk-intelligence-local.sh
+```
+
+服务仅监听 `127.0.0.1:63184`。`POST /api/v1/risk-intelligence/source-facts` 还要求请求头
+`X-Risk-Ingestion-Key`；缺失或错误时不会写入。升级会创建新的只读发布快照并原子切换 `current`
+软链接，未知的运行目录或未归属的端口监听会被拒绝接管。
+
+常用生命周期命令：
+
+```bash
+./scripts/risk-intelligence-local.sh restart
+./scripts/risk-intelligence-local.sh stop
+./scripts/risk-intelligence-local.sh start
+./scripts/risk-intelligence-local.sh uninstall
+```
+
+卸载只移除 LaunchAgent，数据库、运行快照和密钥配置会保留，避免误删数据。
+
 ## 云端约束
 
 云端执行相同 SQL 和核验脚本，但管理员连接只在配置时短暂提供。风险运行密码进入服务器密钥存储，不写入部署包。RDS 连接池上限、语句超时、锁等待超时和空闲事务超时不得放宽，除非重新完成现有业务负载门禁。
