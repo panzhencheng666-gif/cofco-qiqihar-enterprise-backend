@@ -14,7 +14,7 @@ spring:
     enabled: false
 
 server:
-  address: 127.0.0.1
+  address: ${RISK_SERVER_ADDRESS:127.0.0.1}
   port: ${RISK_SERVER_PORT:63184}
   shutdown: graceful
 
@@ -33,6 +33,13 @@ qiqihar:
         scoring-endpoint: ${RISK_LLM_SCORING_URL:}
         bearer-token: ${RISK_LLM_BEARER_TOKEN:}
         base-model-reference: ${RISK_LLM_BASE_MODEL:}
+      remote-node:
+        enabled: ${RISK_TRAINING_REMOTE_NODE_ENABLED:false}
+        token: ${RISK_TRAINING_NODE_TOKEN:}
+        lease-duration: ${RISK_TRAINING_NODE_LEASE_DURATION:35m}
+        artifact-root: ${RISK_TRAINING_NODE_ARTIFACT_ROOT:var/risk-remote-artifacts}
+        maximum-artifact-bytes: ${RISK_TRAINING_NODE_MAXIMUM_ARTIFACT_BYTES:67108864}
+        maximum-total-artifact-bytes: ${RISK_TRAINING_NODE_MAXIMUM_TOTAL_ARTIFACT_BYTES:1073741824}
 
 management:
   endpoints:

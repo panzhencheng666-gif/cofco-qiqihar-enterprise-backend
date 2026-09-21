@@ -206,11 +206,20 @@ public class JdbcRiskTrainingRepository implements RiskTrainingRepository {
     @Transactional
     public Optional<RiskTrainingClaim> claimNext(
             Instant now,String workerId,Duration leaseDuration) {
+        return claimNextByKind(now,workerId,leaseDuration,"");
+    }
+
+    @Override
+    @Transactional
+    public Optional<RiskTrainingClaim> claimNextByKind(
+            Instant now,String workerId,Duration leaseDuration,String modelKind) {
         return jdbc.sql("""
                 WITH candidate AS (
                   SELECT execution.execution_id
                   FROM risk.training_schedule_execution execution
+                  JOIN risk.ai_model candidate_model ON candidate_model.model_id=execution.model_id
                   WHERE execution.status_code='QUEUED' AND execution.due_at<=:now
+                    AND (:model_kind='' OR candidate_model.model_kind=:model_kind)
                     AND (execution.lease_until IS NULL OR execution.lease_until<:now)
                     AND NOT EXISTS (
                       SELECT 1 FROM risk.training_schedule_execution running
@@ -230,6 +239,7 @@ public class JdbcRiskTrainingRepository implements RiskTrainingRepository {
                           model.base_model_reference,policy.training_window_days,
                           policy.minimum_new_labels
                 """).param("now",dbTime(now)).param("worker",workerId)
+                .param("model_kind",modelKind)
                 .param("lease_until",dbTime(now.plus(leaseDuration)))
                 .query((row,index) -> new RiskTrainingClaim(
                         uuid(row,"execution_id"),uuid(row,"training_policy_id"),uuid(row,"model_id"),
@@ -237,6 +247,27 @@ public class JdbcRiskTrainingRepository implements RiskTrainingRepository {
                         row.getString("model_kind"),row.getString("domain_code"),
                         row.getString("base_model_reference"),row.getInt("training_window_days"),
                         row.getInt("minimum_new_labels"),seed(uuid(row,"execution_id")))).optional();
+    }
+
+    @Override
+    @Transactional(readOnly=true)
+    public int countNewLabelsSinceLastSuccessfulRun(RiskTrainingClaim claim,Instant cutoffAt) {
+        return jdbc.sql("""
+                SELECT count(*)::integer
+                FROM risk.risk_case_feedback feedback
+                JOIN risk.risk_assessment assessment ON assessment.assessment_id=feedback.assessment_id
+                WHERE feedback.resolved_at>COALESCE((
+                    SELECT max(snapshot.cutoff_at)
+                    FROM risk.training_run run
+                    JOIN risk.training_snapshot snapshot
+                      ON snapshot.training_snapshot_id=run.training_snapshot_id
+                    WHERE run.model_id=:model AND run.status_code='SUCCEEDED'
+                ),'-infinity'::timestamptz)
+                  AND feedback.resolved_at<=:cutoff
+                  AND feedback.conclusion_code IN ('CONFIRMED','MISSED_RISK','FALSE_POSITIVE')
+                  AND (:domain='CROSS_DOMAIN' OR assessment.domain_code=:domain)
+                """).param("model",claim.modelId()).param("cutoff",dbTime(cutoffAt))
+                .param("domain",claim.domainCode()).query(Integer.class).single();
     }
 
     @Override
@@ -407,6 +438,61 @@ public class JdbcRiskTrainingRepository implements RiskTrainingRepository {
         finishExecution(executionId,"SKIPPED",outcomeCode,outcomeMessage,completedAt,null);
     }
 
+    @Override
+    @Transactional
+    public boolean renewRemoteLease(UUID executionId,UUID trainingRunId,String workerId,
+            Instant now,Duration leaseDuration) {
+        return jdbc.sql("""
+                UPDATE risk.training_schedule_execution
+                SET lease_until=:lease_until
+                WHERE execution_id=:execution AND training_run_id=:run
+                  AND status_code='RUNNING' AND lease_owner=:worker AND lease_until>=:now
+                """).param("lease_until",dbTime(now.plus(leaseDuration)))
+                .param("execution",executionId).param("run",trainingRunId)
+                .param("worker",workerId).param("now",dbTime(now)).update()==1;
+    }
+
+    @Override
+    public boolean ownsRemoteLease(
+            UUID executionId,UUID trainingRunId,String workerId,Instant now) {
+        return jdbc.sql("""
+                SELECT EXISTS (
+                  SELECT 1 FROM risk.training_schedule_execution
+                  WHERE execution_id=:execution AND training_run_id=:run
+                    AND status_code='RUNNING' AND lease_owner=:worker AND lease_until>=:now
+                )
+                """).param("execution",executionId).param("run",trainingRunId)
+                .param("worker",workerId).param("now",dbTime(now))
+                .query(Boolean.class).single();
+    }
+
+    @Override
+    @Transactional
+    public boolean completeRemoteRun(UUID executionId,UUID trainingRunId,String workerId,
+            int expectedModelVersion,RiskTrainingArtifact artifact,Instant completedAt) {
+        Optional<RemoteCompletionRow> owned=jdbc.sql("""
+                SELECT execution.model_id,model.domain_code,
+                       (SELECT COALESCE(max(version),0)+1
+                        FROM risk.model_version
+                        WHERE model_id=execution.model_id) next_version
+                FROM risk.training_schedule_execution execution
+                JOIN risk.ai_model model ON model.model_id=execution.model_id
+                WHERE execution.execution_id=:execution AND execution.training_run_id=:run
+                  AND execution.status_code='RUNNING' AND execution.lease_owner=:worker
+                  AND execution.lease_until>=:completed
+                FOR UPDATE OF execution
+                """).param("execution",executionId).param("run",trainingRunId)
+                .param("worker",workerId).param("completed",dbTime(completedAt))
+                .query((row,index) -> new RemoteCompletionRow(
+                        uuid(row,"model_id"),row.getString("domain_code"),
+                        row.getInt("next_version"))).optional();
+        if (owned.isEmpty() || owned.get().nextVersion()!=expectedModelVersion) return false;
+        RemoteCompletionRow row=owned.get();
+        completeRunAndCreateCandidate(executionId,trainingRunId,row.modelId(),row.domainCode(),
+                expectedModelVersion,artifact,completedAt);
+        return true;
+    }
+
     private void finishExecution(UUID executionId,String status,String code,String message,
             Instant completedAt,UUID runId) {
         jdbc.sql("""
@@ -480,4 +566,6 @@ public class JdbcRiskTrainingRepository implements RiskTrainingRepository {
     private record LabelRow(UUID assessmentId,Instant resolvedAt,String conclusionCode,
             String domainCode,String subjectType,String evaluationMode,String riskLevel,
             String reasonCodes,String evidenceSnapshot) { }
+
+    private record RemoteCompletionRow(UUID modelId,String domainCode,int nextVersion) { }
 }

@@ -20,6 +20,7 @@ command -v psql >/dev/null 2>&1 || {
 }
 
 database_url=${RISK_DB_URL#jdbc:}
+database_url=${database_url%%\?*}
 query() {
   local sql=$1
   PGPASSWORD="$RISK_DB_PASSWORD" psql --no-psqlrc --tuples-only --no-align \

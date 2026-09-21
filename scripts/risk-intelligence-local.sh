@@ -19,7 +19,7 @@ port="${RISK_SERVER_PORT:-63184}"
 trainer_port="${RISK_LLM_PORT:-63201}"
 
 usage() {
-  echo "Usage: $0 {install|start|stop|restart|status|uninstall}"
+  echo "Usage: $0 {install|upgrade|start|stop|restart|status|uninstall}"
 }
 
 agent_is_loaded() {
@@ -69,7 +69,8 @@ assert_runtime_home_safe() {
 require_install_environment() {
   local name
   for name in RISK_DB_URL RISK_DB_USERNAME RISK_DB_PASSWORD RISK_EXPECTED_DATABASE \
-    RISK_INGESTION_KEY RISK_LLM_BEARER_TOKEN RISK_LLM_BASE_MODEL; do
+    RISK_INGESTION_KEY RISK_LLM_BEARER_TOKEN RISK_LLM_BASE_MODEL \
+    RISK_TRAINING_NODE_TOKEN; do
     if [[ -z "${!name:-}" ]]; then
       echo "Required install environment variable is missing: $name" >&2
       return 1
@@ -104,6 +105,10 @@ write_runtime_config() {
     printf 'RISK_LLM_BASE_MODEL=%s\n' "$RISK_LLM_BASE_MODEL"
     printf 'RISK_LLM_PORT=%s\n' "$trainer_port"
     printf 'RISK_LLM_ARTIFACT_ROOT=%s\n' "${runtime_home}/model-artifacts/lora"
+    printf 'RISK_TRAINING_NODE_TOKEN=%s\n' "$RISK_TRAINING_NODE_TOKEN"
+    printf 'RISK_TRAINING_NODE_LEASE_DURATION=35m\n'
+    printf 'RISK_TRAINING_NODE_ARTIFACT_ROOT=%s\n' "${runtime_home}/model-artifacts/remote"
+    printf 'RISK_TRAINING_NODE_MAXIMUM_ARTIFACT_BYTES=67108864\n'
     printf 'JAVA_HOME=%s\n' "$java_home_value"
   } > "${config_file}.new"
   chmod 600 "${config_file}.new"
@@ -179,6 +184,26 @@ install_agent() {
   status_agent
 }
 
+upgrade_agent() {
+  [[ -f "$installed_plist" && -f "$config_file" && -L "$current_release" ]] || {
+    echo "Risk LaunchAgent is not installed" >&2
+    return 1
+  }
+  local previous
+  previous="$(readlink "$current_release")"
+  if agent_is_loaded; then launchctl bootout "$service_target"; wait_for_port_release; fi
+  install_release
+  if ! launchctl bootstrap "$domain" "$installed_plist" || ! wait_for_health; then
+    if agent_is_loaded; then launchctl bootout "$service_target" || true; fi
+    ln -sfn "$previous" "${current_release}.new"; mv -fh "${current_release}.new" "$current_release"
+    launchctl bootstrap "$domain" "$installed_plist" || true
+    wait_for_health || true
+    echo "Risk intelligence upgrade failed; previous release restored" >&2
+    return 1
+  fi
+  echo "RISK_INTELLIGENCE_UPGRADE_OK release=$(readlink "$current_release")"
+}
+
 start_agent() {
   [[ -f "$installed_plist" && -L "$current_release" ]] || {
     echo "Risk LaunchAgent is not installed. Run: $0 install" >&2
@@ -242,6 +267,7 @@ uninstall_agent() {
 
 case "${1:-}" in
   install) install_agent ;;
+  upgrade) upgrade_agent ;;
   start) start_agent ;;
   stop) stop_agent ;;
   restart) restart_agent ;;

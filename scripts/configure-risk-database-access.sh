@@ -29,10 +29,12 @@ command -v psql >/dev/null 2>&1 || {
 }
 
 admin_url=${RISK_DB_ADMIN_URL#jdbc:}
+admin_url=${admin_url%%\?*}
 PGPASSWORD="$RISK_DB_ADMIN_PASSWORD" psql \
   --no-psqlrc --set=ON_ERROR_STOP=1 \
   --username="$RISK_DB_ADMIN_USERNAME" \
   --set=database_name="$RISK_EXPECTED_DATABASE" \
+  --set=migration_owner="$RISK_DB_ADMIN_USERNAME" \
   --set=risk_runtime_password="$RISK_DB_RUNTIME_PASSWORD" \
   --file="$role_sql" "$admin_url"
 

@@ -39,22 +39,28 @@ public class RiskTrainingOrchestrator {
     }
 
     public boolean processNext(String workerId) {
+        return processNext(workerId,null);
+    }
+
+    public boolean processNext(String workerId,String modelKind) {
         Instant now=clock.instant();
         int expired=repository.failExpiredExecutions(now);
         if (expired>0) LOG.warn("Marked abandoned risk model training as failed [count={}]",expired);
-        var optional=repository.claimNext(now,workerId,leaseDuration);
+        var optional=modelKind==null
+                ? repository.claimNext(now,workerId,leaseDuration)
+                : repository.claimNextByKind(now,workerId,leaseDuration,modelKind);
         if (optional.isEmpty()) return false;
         RiskTrainingClaim claim=optional.get();
         UUID runId=null;
         try {
-            RiskTrainingSnapshot snapshot=repository.freezeTrainingSnapshot(claim,now);
-            int labels=snapshot.examples().size();
-            if (labels<claim.minimumNewLabels()) {
-                repository.skipExecution(claim.executionId(),"INSUFFICIENT_LABELS",
-                        "可用监督标签 %d 条，低于策略门槛 %d 条"
-                                .formatted(labels,claim.minimumNewLabels()),now);
+            int newLabels=repository.countNewLabelsSinceLastSuccessfulRun(claim,now);
+            if (newLabels<claim.minimumNewLabels()) {
+                repository.skipExecution(claim.executionId(),"INSUFFICIENT_NEW_LABELS",
+                        "上次成功训练后新增监督标签 %d 条，低于策略门槛 %d 条"
+                                .formatted(newLabels,claim.minimumNewLabels()),now);
                 return true;
             }
+            RiskTrainingSnapshot snapshot=repository.freezeTrainingSnapshot(claim,now);
             if (!trainer.supports(claim.modelKind())) {
                 repository.skipExecution(claim.executionId(),"TRAINER_NOT_CONFIGURED",
                         "模型类型 %s 尚未配置独立训练器".formatted(claim.modelKind()),now);

@@ -15,6 +15,9 @@ public interface RiskTrainingRepository {
     int failExpiredExecutions(Instant now);
     UUID enqueueManualExecution(UUID modelId,String requestedBySubject,Instant now);
     Optional<RiskTrainingClaim> claimNext(Instant now,String workerId,Duration leaseDuration);
+    Optional<RiskTrainingClaim> claimNextByKind(
+            Instant now,String workerId,Duration leaseDuration,String modelKind);
+    int countNewLabelsSinceLastSuccessfulRun(RiskTrainingClaim claim,Instant cutoffAt);
     RiskTrainingSnapshot freezeTrainingSnapshot(RiskTrainingClaim claim,Instant cutoffAt);
     UUID createTrainingRun(RiskTrainingClaim claim,RiskTrainingSnapshot snapshot,
             Instant now,String algorithmCode);
@@ -25,4 +28,9 @@ public interface RiskTrainingRepository {
     void failRunAndExecution(UUID executionId,UUID trainingRunId,String failureCode,
             String failureMessage,Instant completedAt);
     void skipExecution(UUID executionId,String outcomeCode,String outcomeMessage,Instant completedAt);
+    boolean renewRemoteLease(UUID executionId,UUID trainingRunId,String workerId,
+            Instant now,Duration leaseDuration);
+    boolean ownsRemoteLease(UUID executionId,UUID trainingRunId,String workerId,Instant now);
+    boolean completeRemoteRun(UUID executionId,UUID trainingRunId,String workerId,
+            int expectedModelVersion,RiskTrainingArtifact artifact,Instant completedAt);
 }

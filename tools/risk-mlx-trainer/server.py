@@ -29,7 +29,7 @@ def canonical_hash(directory: Path) -> str:
     return digest.hexdigest()
 
 
-def write_dataset(directory: Path, examples: list[dict[str, Any]]) -> None:
+def split_examples(examples: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     rows = []
     for example in examples:
         label = "1" if bool(example["positive"]) else "0"
@@ -40,16 +40,49 @@ def write_dataset(directory: Path, examples: list[dict[str, Any]]) -> None:
                 + str(example["input"]) + "\n结论："
             ),
             "completion": label,
+            "domainCode": str(example.get("domainCode", "UNKNOWN")),
         })
     if len(rows) < 4 or len({row["completion"] for row in rows}) < 2:
         raise ValueError("LoRA 训练至少需要 4 条且同时包含正负真实标签")
-    split = max(1, min(len(rows) // 5, len(rows) - 2))
-    partitions = {"train": rows[split:], "valid": rows[:split], "test": rows[:split]}
+    holdout = max(1, min(len(rows) // 5, (len(rows) - 2) // 2))
+    return {
+        "train": rows[:len(rows) - 2 * holdout],
+        "valid": rows[len(rows) - 2 * holdout:len(rows) - holdout],
+        "test": rows[len(rows) - holdout:],
+    }
+
+
+def write_dataset(directory: Path, examples: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    partitions = split_examples(examples)
     directory.mkdir(parents=True, exist_ok=False)
     for name, values in partitions.items():
         (directory / f"{name}.jsonl").write_text(
-            "".join(json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n"
+            "".join(json.dumps({"prompt": value["prompt"], "completion": value["completion"]},
+                               ensure_ascii=False, separators=(",", ":")) + "\n"
                     for value in values), encoding="utf-8")
+    return partitions
+
+
+def completed_artifact(target: Path, training_examples: int) -> dict[str, Any]:
+    weights = target / "adapters.safetensors"
+    config = target / "adapter_config.json"
+    metrics_file = target / "training_metrics.json"
+    if (not weights.is_file() or weights.stat().st_size == 0 or not config.is_file()
+            or not metrics_file.is_file()):
+        raise RuntimeError("MLX LoRA 工件目录不完整，拒绝覆盖")
+    measured = json.loads(metrics_file.read_text(encoding="utf-8"))
+    return {
+        "artifactReference": str(target),
+        "artifactSha256": canonical_hash(target),
+        "metrics": {
+            "trainingExamples": training_examples,
+            "iterations": ITERATIONS,
+            "adapterBytes": weights.stat().st_size,
+            "engine": "mlx-lm-0.31.3",
+            "offlineEvaluation": measured,
+        },
+        "thresholds": {"positiveProbability": 0.5},
+    }
 
 
 def train(payload: dict[str, Any]) -> dict[str, Any]:
@@ -60,12 +93,19 @@ def train(payload: dict[str, Any]) -> dict[str, Any]:
     if not SAFE.fullmatch(model_id) or not SAFE.fullmatch(snapshot) or version < 1:
         raise ValueError("模型训练标识不合法")
     target = ROOT / model_id / f"v{version}-{snapshot}"
+    examples = list(payload["examples"])
+    partitions = split_examples(examples)
     if target.exists():
-        raise ValueError("同一模型版本工件已经存在，禁止覆盖")
+        if not (target / "training_metrics.json").is_file():
+            measured = evaluate_adapter(base, target, partitions)
+            (target / "training_metrics.json").write_text(
+                json.dumps(measured, ensure_ascii=False, separators=(",", ":")) + "\n",
+                encoding="utf-8")
+        return completed_artifact(target, len(examples))
     target.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="risk-lora-") as temporary:
         data = Path(temporary) / "data"
-        write_dataset(data, list(payload["examples"]))
+        partitions = write_dataset(data, examples)
         command = [
             sys.executable, "-m", "mlx_lm.lora", "--model", base, "--train",
             "--data", str(data), "--adapter-path", str(target), "--mask-prompt",
@@ -78,21 +118,53 @@ def train(payload: dict[str, Any]) -> dict[str, Any]:
         result = subprocess.run(command, text=True, capture_output=True, timeout=1800)
         if result.returncode != 0:
             raise RuntimeError("MLX LoRA 训练失败: " + result.stderr[-2000:])
-    weights = target / "adapters.safetensors"
-    config = target / "adapter_config.json"
-    if not weights.is_file() or weights.stat().st_size == 0 or not config.is_file():
-        raise RuntimeError("MLX LoRA 未生成可验证适配器工件")
-    return {
-        "artifactReference": str(target),
-        "artifactSha256": canonical_hash(target),
-        "metrics": {
-            "trainingExamples": len(payload["examples"]),
-            "iterations": ITERATIONS,
-            "adapterBytes": weights.stat().st_size,
-            "engine": "mlx-lm-0.31.3",
-        },
-        "thresholds": {"positiveProbability": 0.5},
-    }
+    measured = evaluate_adapter(base, target, partitions)
+    (target / "training_metrics.json").write_text(
+        json.dumps(measured, ensure_ascii=False, separators=(",", ":")) + "\n",
+        encoding="utf-8")
+    return completed_artifact(target, len(examples))
+
+
+def evaluate_adapter(base: str, artifact: Path,
+                     partitions: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    import mlx.core as mx
+    from mlx_lm import load
+
+    model, tokenizer = load(base, adapter_path=str(artifact))
+    positive_id = tokenizer.encode("1", add_special_tokens=False)[0]
+    negative_id = tokenizer.encode("0", add_special_tokens=False)[0]
+
+    def probability(prompt: str) -> float:
+        tokens = tokenizer.encode(prompt)
+        logits = model(mx.array(tokens)[None])[:, -1, :]
+        pair = mx.softmax(mx.array([logits[0, negative_id], logits[0, positive_id]]))
+        value = float(pair[1].item())
+        if not math.isfinite(value):
+            raise RuntimeError("LoRA 离线评估产生非有限概率")
+        return value
+
+    def metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        outcomes = [(row["completion"] == "1", probability(row["prompt"])) for row in rows]
+        tp = sum(actual and score >= 0.5 for actual, score in outcomes)
+        fp = sum(not actual and score >= 0.5 for actual, score in outcomes)
+        fn = sum(actual and score < 0.5 for actual, score in outcomes)
+        tn = len(outcomes) - tp - fp - fn
+        precision = tp / (tp + fp) if tp + fp else 0.0
+        recall = tp / (tp + fn) if tp + fn else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+        return {"count": len(outcomes), "truePositive": tp, "falsePositive": fp,
+                "falseNegative": fn, "trueNegative": tn, "precision": precision,
+                "recall": recall, "f1": f1,
+                "accuracy": (tp + tn) / len(outcomes) if outcomes else 0.0}
+
+    slices: dict[str, Any] = {}
+    for domain in sorted({row["domainCode"] for row in partitions["test"]}):
+        slices[domain] = metrics([row for row in partitions["test"]
+                                   if row["domainCode"] == domain])
+    return {"splitStrategy": "chronological_train_validation_test",
+            "trainCount": len(partitions["train"]),
+            "validation": metrics(partitions["valid"]),
+            "test": metrics(partitions["test"]), "testByDomain": slices}
 
 
 def score(payload: dict[str, Any]) -> dict[str, Any]:

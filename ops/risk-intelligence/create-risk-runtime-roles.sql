@@ -28,13 +28,34 @@ REVOKE ALL ON ALL SEQUENCES IN SCHEMA
 FROM qiqihar_risk_runtime,qiqihar_risk_runtime_login;
 
 GRANT USAGE ON SCHEMA risk TO qiqihar_risk_runtime;
-GRANT SELECT,INSERT,UPDATE ON ALL TABLES IN SCHEMA risk TO qiqihar_risk_runtime;
-GRANT USAGE,SELECT,UPDATE ON ALL SEQUENCES IN SCHEMA risk TO qiqihar_risk_runtime;
+REVOKE ALL ON ALL TABLES IN SCHEMA risk FROM qiqihar_risk_runtime;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA risk FROM qiqihar_risk_runtime;
+GRANT SELECT ON ALL TABLES IN SCHEMA risk TO qiqihar_risk_runtime;
+GRANT INSERT ON TABLE
+    risk.source_fact_snapshot,
+    risk.training_schedule_execution,
+    risk.training_snapshot,
+    risk.training_example,
+    risk.training_run,
+    risk.model_version,
+    risk.risk_case_feedback,
+    risk.model_live_prediction,
+    risk.model_evaluation,
+    risk.model_activation_event
+TO qiqihar_risk_runtime;
+GRANT UPDATE ON TABLE
+    risk.ai_model,
+    risk.ai_training_policy,
+    risk.training_schedule_execution,
+    risk.training_run,
+    risk.model_version
+TO qiqihar_risk_runtime;
+GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA risk TO qiqihar_risk_runtime;
 
-ALTER DEFAULT PRIVILEGES FOR ROLE qiqihar_migration_owner IN SCHEMA risk
-    GRANT SELECT,INSERT,UPDATE ON TABLES TO qiqihar_risk_runtime;
-ALTER DEFAULT PRIVILEGES FOR ROLE qiqihar_migration_owner IN SCHEMA risk
-    GRANT USAGE,SELECT,UPDATE ON SEQUENCES TO qiqihar_risk_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"migration_owner" IN SCHEMA risk
+    GRANT SELECT ON TABLES TO qiqihar_risk_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE :"migration_owner" IN SCHEMA risk
+    GRANT USAGE,SELECT ON SEQUENCES TO qiqihar_risk_runtime;
 
 ALTER ROLE qiqihar_risk_runtime_login SET statement_timeout='15s';
 ALTER ROLE qiqihar_risk_runtime_login SET lock_timeout='2s';

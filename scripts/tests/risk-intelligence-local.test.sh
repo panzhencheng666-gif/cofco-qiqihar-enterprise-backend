@@ -31,6 +31,7 @@ assert_file_contains "scripts/run-risk-intelligence-launch-agent.sh" "local-runt
 assert_file_contains "scripts/run-risk-intelligence-launch-agent.sh" "stat -f '%Lp'"
 assert_file_contains "scripts/run-risk-intelligence-launch-agent.sh" "risk-mlx-trainer.py"
 assert_file_contains "scripts/risk-intelligence-local.sh" "RISK_TRAINING_ENABLED=true"
+assert_file_contains "scripts/risk-intelligence-local.sh" "RISK_TRAINING_NODE_TOKEN"
 assert_file_contains "scripts/risk-intelligence-local.sh" "RISK_LLM_TRAINER_URL=http://127.0.0.1:"
 assert_file_contains "scripts/healthcheck-risk-intelligence-local.sh" "/api/v1/risk-intelligence/operations/boundary"
 assert_file_contains "scripts/healthcheck-risk-intelligence-local.sh" "RISK_DATABASE_BOUNDARY_OK"

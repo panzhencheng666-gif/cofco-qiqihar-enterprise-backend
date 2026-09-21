@@ -2,6 +2,7 @@ package com.cofco.qiqihar.graintrade.risk.application;
 
 import java.lang.management.ManagementFactory;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -13,12 +14,16 @@ public class RiskTrainingWorker {
             org.slf4j.LoggerFactory.getLogger(RiskTrainingWorker.class);
     private final RiskTrainingOrchestrator orchestrator;
     private final RiskModelLifecycleOrchestrator lifecycle;
+    private final boolean remoteNodeEnabled;
     private final String workerId=ManagementFactory.getRuntimeMXBean().getName()+":"+UUID.randomUUID();
 
     public RiskTrainingWorker(RiskTrainingOrchestrator orchestrator,
-            RiskModelLifecycleOrchestrator lifecycle) {
+            RiskModelLifecycleOrchestrator lifecycle,
+            @Value("${qiqihar.risk.training.remote-node.enabled:false}")
+            boolean remoteNodeEnabled) {
         this.orchestrator=orchestrator;
         this.lifecycle=lifecycle;
+        this.remoteNodeEnabled=remoteNodeEnabled;
     }
 
     @Scheduled(initialDelayString="5s",
@@ -34,7 +39,10 @@ public class RiskTrainingWorker {
             scheduler="riskTrainingScheduler")
     public void processPendingExecutions() {
         for (int processed=0;processed<4;processed++) {
-            if (Thread.currentThread().isInterrupted() || !orchestrator.processNext(workerId)) return;
+            boolean completed=remoteNodeEnabled
+                    ? orchestrator.processNext(workerId,"RISK_CLASSIFIER")
+                    : orchestrator.processNext(workerId);
+            if (Thread.currentThread().isInterrupted() || !completed) return;
         }
     }
 

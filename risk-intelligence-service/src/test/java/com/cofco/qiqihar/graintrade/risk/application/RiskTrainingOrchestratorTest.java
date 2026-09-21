@@ -28,13 +28,14 @@ class RiskTrainingOrchestratorTest {
         RiskTrainingClaim claim=claim(10);
         when(trainer.supports("RISK_CLASSIFIER")).thenReturn(true);
         when(repository.claimNext(NOW,"worker-1",Duration.ofMinutes(5))).thenReturn(Optional.of(claim));
-        when(repository.freezeTrainingSnapshot(claim,NOW)).thenReturn(snapshot(2));
+        when(repository.countNewLabelsSinceLastSuccessfulRun(claim,NOW)).thenReturn(2);
         var service=service(repository,trainer);
 
         assertThat(service.processNext("worker-1")).isTrue();
 
-        verify(repository).skipExecution(claim.executionId(),"INSUFFICIENT_LABELS",
-                "可用监督标签 2 条，低于策略门槛 10 条",NOW);
+        verify(repository).skipExecution(claim.executionId(),"INSUFFICIENT_NEW_LABELS",
+                "上次成功训练后新增监督标签 2 条，低于策略门槛 10 条",NOW);
+        verify(repository,never()).freezeTrainingSnapshot(any(),any());
         verify(trainer,never()).train(any());
         verify(repository,never()).createTrainingRun(any(),any(),any(),any());
     }
@@ -48,6 +49,7 @@ class RiskTrainingOrchestratorTest {
         RiskTrainingSnapshot snapshot=snapshot(2);
         UUID runId=UUID.randomUUID();
         when(repository.claimNext(NOW,"worker-1",Duration.ofMinutes(5))).thenReturn(Optional.of(claim));
+        when(repository.countNewLabelsSinceLastSuccessfulRun(claim,NOW)).thenReturn(2);
         when(repository.freezeTrainingSnapshot(claim,NOW)).thenReturn(snapshot);
         when(repository.createTrainingRun(claim,snapshot,NOW,"builtin-bernoulli-naive-bayes"))
                 .thenReturn(runId);
@@ -63,6 +65,21 @@ class RiskTrainingOrchestratorTest {
         verify(repository).markRunRunning(runId,NOW);
         verify(repository).completeRunAndCreateCandidate(
                 claim.executionId(),runId,claim.modelId(),claim.domainCode(),3,artifact,NOW);
+    }
+
+    @Test
+    void claimsOnlyTheRequestedModelKindForARestrictedWorker() {
+        RiskTrainingRepository repository=mock(RiskTrainingRepository.class);
+        RiskModelTrainer trainer=mock(RiskModelTrainer.class);
+        when(repository.claimNextByKind(NOW,"worker-1",Duration.ofMinutes(5),
+                "RISK_CLASSIFIER")).thenReturn(Optional.empty());
+        var service=service(repository,trainer);
+
+        assertThat(service.processNext("worker-1","RISK_CLASSIFIER")).isFalse();
+
+        verify(repository).claimNextByKind(NOW,"worker-1",Duration.ofMinutes(5),
+                "RISK_CLASSIFIER");
+        verify(repository,never()).claimNext(any(),any(),any());
     }
 
     private static RiskTrainingOrchestrator service(

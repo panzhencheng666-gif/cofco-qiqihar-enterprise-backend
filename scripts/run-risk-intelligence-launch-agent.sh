@@ -38,6 +38,10 @@ load_config() {
         RISK_LLM_BASE_MODEL|RISK_LLM_PORT|RISK_LLM_ARTIFACT_ROOT|JAVA_HOME)
         export "$key=$value"
         ;;
+      RISK_TRAINING_NODE_TOKEN|RISK_TRAINING_NODE_LEASE_DURATION|\
+        RISK_TRAINING_NODE_ARTIFACT_ROOT|RISK_TRAINING_NODE_MAXIMUM_ARTIFACT_BYTES)
+        export "$key=$value"
+        ;;
       *)
         echo "Unsupported key in risk runtime config: $key" >&2
         return 1
