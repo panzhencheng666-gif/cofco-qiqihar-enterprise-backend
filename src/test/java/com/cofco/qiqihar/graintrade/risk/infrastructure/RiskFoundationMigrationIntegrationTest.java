@@ -1,0 +1,329 @@
+package com.cofco.qiqihar.graintrade.risk.infrastructure;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabase;
+import java.sql.Connection;
+import java.sql.ResultSet;
+import java.sql.Savepoint;
+import java.sql.SQLException;
+import java.sql.Statement;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+class RiskFoundationMigrationIntegrationTest {
+    private static final ProtectedTestDatabase DATABASE = ProtectedTestDatabase.shared();
+    private Connection connection;
+
+    @BeforeAll
+    static void migrate() {
+        DATABASE.flyway().migrate();
+    }
+
+    @BeforeEach
+    void openTransaction() throws SQLException {
+        connection = DATABASE.openConnection();
+        connection.setAutoCommit(false);
+    }
+
+    @AfterEach
+    void rollBackTransaction() throws SQLException {
+        try {
+            connection.rollback();
+        } finally {
+            connection.close();
+        }
+    }
+
+    @Test
+    void enforcesIdempotentInventoryEvidenceAndGovernedAiPromotion() throws SQLException {
+        execute("""
+                INSERT INTO overview.storage_facility(
+                  facility_code,facility_name,relation_type,region_code,coordinate_precision,
+                  operational_status,source_origin,created_by_subject,updated_by_subject)
+                VALUES('RISK_TEST_DEPOT','风险底座测试库','OWNED','230200','UNKNOWN','ACTIVE',
+                  'USER_SUBMITTED','risk-test','risk-test')
+                """);
+        execute("SET LOCAL ROLE qiqihar_enterprise_runtime");
+        execute("""
+                INSERT INTO risk.inventory_source(
+                  source_code,source_name,facility_code,source_type,connection_mode,trust_level,
+                  status_code,maximum_receive_delay_seconds,created_by_subject,updated_by_subject)
+                VALUES('RISK_TEST_WMS','测试WMS','RISK_TEST_DEPOT','WMS','WEBHOOK','AUTHORITATIVE',
+                  'ACTIVE',30,'risk-test','risk-test')
+                """);
+        execute(sourceEventInsert("21400000-0000-0000-0000-000000000001"));
+
+        assertThatThrownBy(() -> execute(
+                sourceEventInsert("21400000-0000-0000-0000-000000000009")))
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("inventory_source_event_source_code_external_event_id_key");
+
+        execute("""
+                INSERT INTO risk.inventory_movement(
+                  movement_id,source_event_id,movement_leg,movement_type,facility_code,
+                  warehouse_code,cargo_owner_code,batch_code,product_code,grade_code,crop_year,
+                  quantity_delta_tonnes,occurred_at,posted_at,posted_by_subject)
+                VALUES('21400000-0000-0000-0000-000000000002',
+                  '21400000-0000-0000-0000-000000000001','SINGLE','STOCK_IN','RISK_TEST_DEPOT',
+                  'WH-1','COFCO','BATCH-1','CORN','GRADE-2',2026,10.000000,
+                  TIMESTAMPTZ '2026-09-21 01:00:00+00',TIMESTAMPTZ '2026-09-21 01:00:01+00','risk-test')
+                """);
+        execute("RESET ROLE");
+        assertThatThrownBy(() -> execute("""
+                UPDATE risk.inventory_movement SET quantity_delta_tonnes=9
+                WHERE movement_id='21400000-0000-0000-0000-000000000002'
+                """))
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("Inventory movements are immutable");
+        assertThatThrownBy(() -> execute("""
+                UPDATE risk.inventory_source_event SET original_quantity=9000
+                WHERE source_event_id='21400000-0000-0000-0000-000000000001'
+                """))
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("Inventory source evidence is immutable");
+        execute(reversalSourceEventInsert(
+                "21400000-0000-0000-0000-000000000003", "EVENT-REV-BAD", 2, "5000", "5"));
+        assertThatThrownBy(() -> execute(reversalMovementInsert(
+                "21400000-0000-0000-0000-000000000004",
+                "21400000-0000-0000-0000-000000000003", "-5")))
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("REVERSAL must exactly negate the referenced movement");
+        execute(reversalSourceEventInsert(
+                "21400000-0000-0000-0000-000000000005", "EVENT-REV-OK", 3, "10000", "10"));
+        execute(reversalMovementInsert(
+                "21400000-0000-0000-0000-000000000006",
+                "21400000-0000-0000-0000-000000000005", "-10"));
+
+        execute("""
+                INSERT INTO risk.ai_model(
+                  model_id,model_code,model_name,model_kind,domain_code,base_model_reference,
+                  purpose_definition,created_by_subject,updated_by_subject)
+                VALUES('21400000-0000-0000-0000-000000000010','RISK_AI_CORE',
+                  '粮食风险独立研判模型','DOMAIN_LLM','CROSS_DOMAIN','Qwen-compatible-base',
+                  '{"purpose":"evidence-bound risk judgement"}'::jsonb,'risk-test','risk-test')
+                """);
+        assertThatThrownBy(() -> execute("""
+                INSERT INTO risk.ai_training_policy(
+                  training_policy_id,model_id,scheduled_local_time,training_window_days,
+                  minimum_new_labels,auto_activation_enabled,approved_by_subject,approved_at)
+                VALUES('21400000-0000-0000-0000-000000000011',
+                  '21400000-0000-0000-0000-000000000010',TIME '02:30',365,10,true,
+                  'risk-approver',TIMESTAMPTZ '2026-09-21 01:10:00+00')
+                """))
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("ai_training_policy_auto_activation_enabled_check");
+        execute("""
+                INSERT INTO risk.ai_training_policy(
+                  training_policy_id,model_id,scheduled_local_time,training_window_days,
+                  minimum_new_labels,auto_activation_enabled,enabled,approved_by_subject,approved_at)
+                VALUES('21400000-0000-0000-0000-000000000011',
+                  '21400000-0000-0000-0000-000000000010',TIME '02:30',365,10,false,true,
+                  'risk-approver',TIMESTAMPTZ '2026-09-21 01:10:00+00')
+                """);
+        insertTrainingLineage();
+        assertThatThrownBy(() -> execute("""
+                UPDATE risk.training_run SET parameter_definition='{"changed":true}'::jsonb
+                WHERE training_run_id='21400000-0000-0000-0000-000000000014'
+                """))
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("Training identity, inputs, code and parameters are immutable");
+
+        assertThatThrownBy(() -> execute("""
+                INSERT INTO risk.model_version(
+                  model_id,version,domain_code,training_run_id,status_code,artifact_reference,
+                  artifact_sha256,metric_definition,threshold_definition,
+                  shadow_started_at,shadow_completed_at,approved_by_subject,approved_at,activated_at)
+                VALUES('21400000-0000-0000-0000-000000000010',2,'INVENTORY',
+                  '21400000-0000-0000-0000-000000000014','ACTIVE','mlflow://risk-ai/2',
+                  repeat('f',64),'{}'::jsonb,'{}'::jsonb,now(),now(),'risk-approver',now(),now())
+                """))
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("Model versions must be created as CANDIDATE");
+
+        assertThatThrownBy(() -> execute("""
+                UPDATE risk.model_version
+                SET status_code='ACTIVE',activated_at=now(),approved_by_subject='risk-approver',approved_at=now()
+                WHERE model_id='21400000-0000-0000-0000-000000000010' AND version=1
+                """))
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("CANDIDATE models must enter SHADOW before approval");
+
+        execute("""
+                UPDATE risk.model_version SET status_code='SHADOW',shadow_started_at=now()
+                WHERE model_id='21400000-0000-0000-0000-000000000010' AND version=1
+                """);
+        assertThatThrownBy(() -> execute("""
+                UPDATE risk.model_version
+                SET status_code='APPROVED',shadow_completed_at=now(),
+                    approved_by_subject='risk-approver',approved_at=now()
+                WHERE model_id='21400000-0000-0000-0000-000000000010' AND version=1
+                """))
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("passed recorded evaluation");
+        execute("""
+                INSERT INTO risk.model_evaluation(
+                  model_id,model_version,evaluation_window_start,evaluation_window_end,
+                  cohort_definition,metric_definition,passed,evaluated_at)
+                VALUES('21400000-0000-0000-0000-000000000010',1,
+                  TIMESTAMPTZ '2026-09-20 00:00:00+00',TIMESTAMPTZ '2026-09-21 00:00:00+00',
+                  '{"mode":"shadow"}'::jsonb,'{"false_positive_rate":0.02}'::jsonb,true,now())
+                """);
+        execute("""
+                UPDATE risk.model_version
+                SET status_code='APPROVED',shadow_completed_at=now(),
+                    approved_by_subject='risk-approver',approved_at=now()
+                WHERE model_id='21400000-0000-0000-0000-000000000010' AND version=1
+                """);
+        execute("""
+                UPDATE risk.model_version SET status_code='ACTIVE',activated_at=now()
+                WHERE model_id='21400000-0000-0000-0000-000000000010' AND version=1
+                """);
+
+        assertThat(queryString("""
+                SELECT status_code FROM risk.model_version
+                WHERE model_id='21400000-0000-0000-0000-000000000010' AND version=1
+                """)).isEqualTo("ACTIVE");
+
+        execute("""
+                INSERT INTO risk.risk_rule_set_version(
+                  rule_set_id,version,domain_code,rule_set_name,scope_definition,rule_definition,
+                  definition_sha256,missing_data_policy,late_event_policy,created_by_subject)
+                VALUES('21400000-0000-0000-0000-000000000020',1,'INVENTORY','库存异常规则',
+                  '{}'::jsonb,'{"rule":"balance"}'::jsonb,repeat('1',64),
+                  'MANUAL_REVIEW','REPLAY','risk-test')
+                """);
+        execute("""
+                UPDATE risk.risk_rule_set_version SET status_code='REVIEW_PENDING'
+                WHERE rule_set_id='21400000-0000-0000-0000-000000000020' AND version=1
+                """);
+        assertThatThrownBy(() -> execute("""
+                UPDATE risk.risk_rule_set_version SET rule_definition='{"rule":"changed"}'::jsonb
+                WHERE rule_set_id='21400000-0000-0000-0000-000000000020' AND version=1
+                """))
+                .isInstanceOf(SQLException.class)
+                .hasMessageContaining("Reviewed rule definitions are immutable");
+    }
+
+    private static String sourceEventInsert(String sourceEventId) {
+        return """
+                INSERT INTO risk.inventory_source_event(
+                  source_event_id,source_code,external_event_id,source_sequence,event_type,
+                  facility_code,warehouse_code,cargo_owner_code,batch_code,product_code,grade_code,
+                  crop_year,original_quantity,original_unit,standard_quantity_tonnes,
+                  conversion_rule_version,occurred_at,received_at,source_timezone,payload_sha256,
+                  signature_status,processing_status,posted_at)
+                VALUES('%s','RISK_TEST_WMS','EVENT-1',1,
+                  'STOCK_IN','RISK_TEST_DEPOT','WH-1','COFCO','BATCH-1','CORN','GRADE-2',2026,
+                  10000.000000,'KILOGRAM',10.000000,'KG_TO_TON_V1',
+                  TIMESTAMPTZ '2026-09-21 01:00:00+00',TIMESTAMPTZ '2026-09-21 01:00:01+00',
+                  'Asia/Shanghai',repeat('a',64),'VERIFIED','POSTED',
+                  TIMESTAMPTZ '2026-09-21 01:00:01+00')
+                """.formatted(sourceEventId);
+    }
+
+    private static String reversalSourceEventInsert(
+            String sourceEventId,
+            String externalEventId,
+            int sourceSequence,
+            String originalKilograms,
+            String standardTonnes) {
+        return """
+                INSERT INTO risk.inventory_source_event(
+                  source_event_id,source_code,external_event_id,source_sequence,event_type,
+                  facility_code,warehouse_code,cargo_owner_code,batch_code,product_code,grade_code,
+                  crop_year,original_quantity,original_unit,standard_quantity_tonnes,
+                  conversion_rule_version,occurred_at,received_at,source_timezone,payload_sha256,
+                  signature_status,processing_status,posted_at)
+                VALUES('%s','RISK_TEST_WMS','%s',%d,
+                  'REVERSAL','RISK_TEST_DEPOT','WH-1','COFCO','BATCH-1','CORN','GRADE-2',2026,
+                  %s,'KILOGRAM',%s,'KG_TO_TON_V1',
+                  TIMESTAMPTZ '2026-09-21 01:00:00+00',TIMESTAMPTZ '2026-09-21 01:05:00+00',
+                  'Asia/Shanghai',repeat('b',64),'VERIFIED','POSTED',
+                  TIMESTAMPTZ '2026-09-21 01:05:00+00')
+                """.formatted(
+                sourceEventId, externalEventId, sourceSequence, originalKilograms, standardTonnes);
+    }
+
+    private static String reversalMovementInsert(
+            String movementId, String sourceEventId, String quantityDeltaTonnes) {
+        return """
+                INSERT INTO risk.inventory_movement(
+                  movement_id,source_event_id,movement_leg,movement_type,facility_code,
+                  warehouse_code,cargo_owner_code,batch_code,product_code,grade_code,crop_year,
+                  quantity_delta_tonnes,reversal_of_movement_id,occurred_at,posted_at,posted_by_subject)
+                VALUES('%s','%s','SINGLE','REVERSAL','RISK_TEST_DEPOT','WH-1','COFCO','BATCH-1',
+                  'CORN','GRADE-2',2026,%s,'21400000-0000-0000-0000-000000000002',
+                  TIMESTAMPTZ '2026-09-21 01:00:00+00',TIMESTAMPTZ '2026-09-21 01:05:00+00','risk-test')
+                """.formatted(movementId, sourceEventId, quantityDeltaTonnes);
+    }
+
+    private void insertTrainingLineage() throws SQLException {
+        execute("""
+                INSERT INTO risk.knowledge_snapshot(
+                  knowledge_snapshot_id,snapshot_date,cutoff_at,content_sha256,
+                  embedding_model_reference,source_manifest,document_count,chunk_count,status_code)
+                VALUES('21400000-0000-0000-0000-000000000012',DATE '2026-09-21',
+                  TIMESTAMPTZ '2026-09-21 00:00:00+00',repeat('b',64),'embedding-v1',
+                  '{"sources":["approved-rules"]}'::jsonb,1,3,'ACTIVE')
+                """);
+        execute("""
+                INSERT INTO risk.training_snapshot(
+                  training_snapshot_id,domain_code,snapshot_date,cutoff_at,knowledge_snapshot_id,
+                  data_sha256,feature_schema_version,row_count,positive_label_count,
+                  negative_label_count,source_watermarks,status_code)
+                VALUES('21400000-0000-0000-0000-000000000013','INVENTORY',DATE '2026-09-21',
+                  TIMESTAMPTZ '2026-09-21 00:00:00+00',
+                  '21400000-0000-0000-0000-000000000012',repeat('c',64),'inventory-v1',100,10,90,
+                  '{"RISK_TEST_WMS":1}'::jsonb,'FROZEN')
+                """);
+        execute("""
+                INSERT INTO risk.training_run(
+                  training_run_id,model_id,training_snapshot_id,domain_code,training_kind,algorithm_code,
+                  algorithm_version,code_sha256,parameter_definition,random_seed,status_code,
+                  started_at,completed_at)
+                VALUES('21400000-0000-0000-0000-000000000014',
+                  '21400000-0000-0000-0000-000000000010',
+                  '21400000-0000-0000-0000-000000000013','INVENTORY','LORA_ADAPTER',
+                  'RISK_AI_TRAINER','1',repeat('d',64),'{}'::jsonb,214,'QUEUED',NULL,NULL)
+                """);
+        execute("""
+                UPDATE risk.training_run SET status_code='RUNNING',started_at=now()
+                WHERE training_run_id='21400000-0000-0000-0000-000000000014'
+                """);
+        execute("""
+                UPDATE risk.training_run SET status_code='SUCCEEDED',completed_at=now()
+                WHERE training_run_id='21400000-0000-0000-0000-000000000014'
+                """);
+        execute("""
+                INSERT INTO risk.model_version(
+                  model_id,version,domain_code,training_run_id,artifact_reference,artifact_sha256,
+                  metric_definition,threshold_definition)
+                VALUES('21400000-0000-0000-0000-000000000010',1,'INVENTORY',
+                  '21400000-0000-0000-0000-000000000014','mlflow://risk-ai/1',repeat('e',64),
+                  '{"false_positive_rate":0.02}'::jsonb,'{"minimum_confidence":0.8}'::jsonb)
+                """);
+    }
+
+    private void execute(String sql) throws SQLException {
+        Savepoint savepoint = connection.setSavepoint();
+        try (Statement statement = connection.createStatement()) {
+            statement.execute(sql);
+            connection.releaseSavepoint(savepoint);
+        } catch (SQLException exception) {
+            connection.rollback(savepoint);
+            throw exception;
+        }
+    }
+
+    private String queryString(String sql) throws SQLException {
+        try (Statement statement = connection.createStatement();
+                ResultSet result = statement.executeQuery(sql)) {
+            result.next();
+            return result.getString(1);
+        }
+    }
+}

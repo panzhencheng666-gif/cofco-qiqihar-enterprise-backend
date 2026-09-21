@@ -17,7 +17,7 @@ class IdentityLifecycleUpgradeReplayTest {
     private static final ProtectedTestDatabase DATABASE = ProtectedTestDatabase.shared();
     private static final String[] BUSINESS_SCHEMAS = {
         "platform", "production", "market", "logistics", "supply", "reporting",
-        "workflow", "overview", "evidence", "registry"
+        "workflow", "overview", "evidence", "registry", "risk"
     };
 
     @Test

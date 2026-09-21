@@ -55,6 +55,7 @@ class FlywayMigrationReplayTest {
             }
             statement.execute("DROP SCHEMA IF EXISTS evidence CASCADE");
             statement.execute("DROP SCHEMA IF EXISTS registry CASCADE");
+            statement.execute("DROP SCHEMA IF EXISTS risk CASCADE");
             statement.execute("DROP TABLE IF EXISTS public.flyway_schema_history");
         }
     }

@@ -20,7 +20,7 @@ public final class ProtectedTestDatabase {
     public static final String DATABASE_NAME = "qiqihar_enterprise_test";
     private static final String[] APPLICATION_SCHEMAS = {
         "platform", "production", "market", "logistics", "supply", "reporting",
-        "workflow", "overview", "evidence", "registry"
+        "workflow", "overview", "evidence", "registry", "risk"
     };
     private final String url;
     private final String username;
