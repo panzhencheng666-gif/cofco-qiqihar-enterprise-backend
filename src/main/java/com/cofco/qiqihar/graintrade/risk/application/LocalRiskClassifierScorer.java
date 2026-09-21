@@ -13,12 +13,20 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 @Component
-public class LocalRiskClassifierScorer {
+public class LocalRiskClassifierScorer implements RiskLiveScorerBackend {
     private static final Pattern WORD=Pattern.compile("[\\p{IsHan}]{1,4}|[\\p{L}\\p{N}_-]{2,}");
     private final ObjectMapper json;
 
     public LocalRiskClassifierScorer(ObjectMapper json) {
         this.json=json;
+    }
+
+    @Override
+    public boolean supports(String modelKind) { return "RISK_CLASSIFIER".equals(modelKind); }
+
+    @Override
+    public RiskModelScore score(RiskScoringTask task) throws Exception {
+        return score(Path.of(task.artifactReference()),task.artifactSha256(),task.canonicalEvidence());
     }
 
     public RiskModelScore score(Path artifact,String expectedSha256,String canonicalEvidence)

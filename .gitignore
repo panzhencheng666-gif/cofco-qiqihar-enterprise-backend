@@ -9,3 +9,6 @@ var/
 !.env.example
 .superpowers/
 *.log
+.venv/
+__pycache__/
+*.pyc

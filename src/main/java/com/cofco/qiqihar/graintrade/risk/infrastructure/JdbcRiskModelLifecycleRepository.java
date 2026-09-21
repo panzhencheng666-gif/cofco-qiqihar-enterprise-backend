@@ -55,7 +55,8 @@ public class JdbcRiskModelLifecycleRepository implements RiskModelLifecycleRepos
     @Transactional(readOnly=true)
     public List<RiskScoringTask> findPendingScoringTasks(Instant now,int limit) {
         return jdbc.sql("""
-                SELECT version.model_id,version.version,version.artifact_reference,
+                SELECT version.model_id,version.version,model.model_kind,model.base_model_reference,
+                       version.artifact_reference,
                        version.artifact_sha256,assessment.assessment_id,version.status_code,
                        jsonb_build_object(
                          'domainCode',assessment.domain_code,
@@ -72,7 +73,8 @@ public class JdbcRiskModelLifecycleRepository implements RiskModelLifecycleRepos
                  AND assessment.evaluated_at>=CASE WHEN version.status_code='SHADOW'
                        THEN version.shadow_started_at ELSE version.activated_at END
                 WHERE version.status_code IN ('SHADOW','ACTIVE','STANDBY')
-                  AND model.model_kind='RISK_CLASSIFIER' AND policy.auto_activation_enabled
+                  AND model.model_kind IN ('RISK_CLASSIFIER','DOMAIN_LLM')
+                  AND policy.auto_activation_enabled
                   AND NOT EXISTS (
                     SELECT 1 FROM risk.model_live_prediction prediction
                     WHERE prediction.model_id=version.model_id
@@ -87,7 +89,8 @@ public class JdbcRiskModelLifecycleRepository implements RiskModelLifecycleRepos
                 LIMIT :limit
                 """).param("now",dbTime(now)).param("limit",limit)
                 .query((row,index) -> new RiskScoringTask(
-                        uuid(row,"model_id"),row.getInt("version"),
+                        uuid(row,"model_id"),row.getInt("version"),row.getString("model_kind"),
+                        row.getString("base_model_reference"),
                         row.getString("artifact_reference"),row.getString("artifact_sha256"),
                         uuid(row,"assessment_id"),row.getString("canonical_evidence"),
                         row.getString("status_code"))).list();

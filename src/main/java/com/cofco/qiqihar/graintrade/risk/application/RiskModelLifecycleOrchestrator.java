@@ -1,6 +1,5 @@
 package com.cofco.qiqihar.graintrade.risk.application;
 
-import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -11,18 +10,18 @@ public class RiskModelLifecycleOrchestrator {
     private static final org.slf4j.Logger LOG=
             org.slf4j.LoggerFactory.getLogger(RiskModelLifecycleOrchestrator.class);
     private final RiskModelLifecycleRepository repository;
-    private final LocalRiskClassifierScorer scorer;
+    private final RiskLiveScorer scorer;
     private final RiskPromotionGate gate;
     private final Clock clock;
 
     @Autowired
     public RiskModelLifecycleOrchestrator(RiskModelLifecycleRepository repository,
-            LocalRiskClassifierScorer scorer,RiskPromotionGate gate) {
+            RiskLiveScorer scorer,RiskPromotionGate gate) {
         this(repository,scorer,gate,Clock.systemUTC());
     }
 
     public RiskModelLifecycleOrchestrator(RiskModelLifecycleRepository repository,
-            LocalRiskClassifierScorer scorer,RiskPromotionGate gate,Clock clock) {
+            RiskLiveScorer scorer,RiskPromotionGate gate,Clock clock) {
         this.repository=repository;
         this.scorer=scorer;
         this.gate=gate;
@@ -34,8 +33,8 @@ public class RiskModelLifecycleOrchestrator {
         int changed=repository.startEligibleShadowCandidates(now);
         for (RiskScoringTask task:repository.findPendingScoringTasks(now,200)) {
             try {
-                RiskModelScore score=scorer.score(Path.of(task.artifactReference()),
-                        task.artifactSha256(),task.canonicalEvidence());
+                if (!scorer.supports(task.modelKind())) continue;
+                RiskModelScore score=scorer.score(task);
                 repository.recordPrediction(task,score,now);
                 changed++;
             } catch (Exception exception) {
