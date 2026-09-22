@@ -59,6 +59,7 @@ class Candidate:
     authorized: bool
     assets: Mapping[str, str]
     grid_code: str | None = None
+    bounds: tuple[float, float, float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -207,6 +208,9 @@ def parse_candidates(payload: Mapping[str, Any], allowed_hosts: Sequence[str]) -
                 True,
                 {key: value for key, value in normalized.items() if value is not None},
                 str(properties.get("grid:code") or properties.get("s2:mgrs_tile") or "") or None,
+                tuple(float(value) for value in feature["bbox"])
+                if isinstance(feature.get("bbox"), list) and len(feature["bbox"]) == 4
+                else None,
             )
         )
     return parsed
@@ -326,18 +330,10 @@ def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: in
     scene.mkdir()
     rgb = scene / "rgb.tif"
     if "visual" in candidate.assets:
-        _run(
-            [
-                "gdal_translate",
-                "-of",
-                "GTiff",
-                "-co",
-                "TILED=YES",
-                _vsicurl(candidate.assets["visual"], config.allowed_hosts),
-                str(rgb),
-            ],
-            config.command_timeout_seconds,
-        )
+        # Warp the cloud-optimized remote asset directly. Copying every complete
+        # 100 km Sentinel scene first exhausts the small production volume before
+        # the AOI crop is applied.
+        rgb_source = _vsicurl(candidate.assets["visual"], config.allowed_hosts)
     else:
         vrt = scene / "rgb.vrt"
         _run(
@@ -369,8 +365,20 @@ def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: in
             ],
             config.command_timeout_seconds,
         )
+        rgb_source = str(rgb)
     warped_rgb = scene / "rgb-3857.tif"
     warped_scl = scene / "scl-3857.tif"
+    aoi_west, aoi_south, aoi_east, aoi_north = aoi_bounds(config.aoi)
+    if candidate.bounds is not None:
+        scene_west, scene_south, scene_east, scene_north = candidate.bounds
+        west = max(aoi_west, scene_west)
+        south = max(aoi_south, scene_south)
+        east = min(aoi_east, scene_east)
+        north = min(aoi_north, scene_north)
+        if west >= east or south >= north:
+            raise RuntimeError(f"candidate does not intersect AOI: {candidate.product_id}")
+    else:
+        west, south, east, north = aoi_west, aoi_south, aoi_east, aoi_north
     warp_common = [
         "-t_srs",
         "EPSG:3857",
@@ -378,15 +386,27 @@ def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: in
         "10",
         "10",
         "-tap",
+        "-te_srs",
+        "EPSG:4326",
+        "-te",
+        str(west),
+        str(south),
+        str(east),
+        str(north),
         "-cutline",
         str(config.aoi),
-        "-crop_to_cutline",
         "-multi",
         "-wo",
         "NUM_THREADS=ALL_CPUS",
+        "-co",
+        "TILED=YES",
+        "-co",
+        "COMPRESS=DEFLATE",
+        "-co",
+        "BIGTIFF=IF_SAFER",
     ]
     _run(
-        ["gdalwarp", *warp_common, "-r", "cubic", str(rgb), str(warped_rgb)],
+        ["gdalwarp", *warp_common, "-r", "cubic", rgb_source, str(warped_rgb)],
         config.command_timeout_seconds,
     )
     _run(
@@ -425,10 +445,15 @@ def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: in
             "--NoDataValue=0",
             "--co=TILED=YES",
             "--co=COMPRESS=DEFLATE",
+            "--co=BIGTIFF=IF_SAFER",
             f"--outfile={masked}",
         ],
         config.command_timeout_seconds,
     )
+    warped_rgb.unlink()
+    warped_scl.unlink()
+    if rgb.exists():
+        rgb.unlink()
     return masked
 
 
@@ -441,10 +466,11 @@ def build_release(
     try:
         work = staging / "work"
         work.mkdir()
-        scenes = [
-            _build_scene(config, candidate, work, index)
-            for index, candidate in enumerate(reversed(candidates))
-        ]
+        scenes = []
+        for index, candidate in enumerate(reversed(candidates)):
+            require_free_space(config.root, config.minimum_free_bytes)
+            scenes.append(_build_scene(config, candidate, work, index))
+        require_free_space(config.root, config.minimum_free_bytes)
         mosaic_vrt = work / "mosaic.vrt"
         _run(
             [
@@ -468,11 +494,14 @@ def build_release(
                 "TILED=YES",
                 "-co",
                 "COMPRESS=DEFLATE",
+                "-co",
+                "BIGTIFF=IF_SAFER",
                 str(mosaic_vrt),
                 str(mosaic),
             ],
             config.command_timeout_seconds,
         )
+        require_free_space(config.root, config.minimum_free_bytes)
         tiles = staging / "tiles"
         _run(
             [
