@@ -26,7 +26,7 @@ done
   exit 1
 }
 
-for command in python3.11 flock gdalbuildvrt gdalwarp gdal_translate gdal_calc.py gdal2tiles.py; do
+for command in python3.11 flock setfacl gdalbuildvrt gdalwarp gdal_translate gdal_calc.py gdal2tiles.py; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "required command is unavailable: $command" >&2
     exit 1
@@ -43,7 +43,9 @@ fi
 
 install -d -m 750 -o root -g cofco-imagery /etc/cofco
 install -d -m 755 -o root -g root /usr/local/lib/cofco-imagery
+setfacl -m u:cofco-imagery:--x /var/lib/cofco
 install -d -m 750 -o cofco-imagery -g cofco-imagery /var/lib/cofco/imagery
+runuser -u cofco-imagery -- test -x /var/lib/cofco
 install -m 755 -o root -g root \
   "${backend_root}/scripts/weekly_imagery_sync.py" \
   /usr/local/lib/cofco-imagery/weekly_imagery_sync.py
