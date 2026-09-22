@@ -17,6 +17,7 @@ from scripts.weekly_imagery_sync import (  # noqa: E402
     ReleaseValidationError,
     _legacy_webp_band_args,
     _mgrs_grid_code,
+    _vsicurl,
     _xyz_webp_relative,
     complete_week,
     parse_candidates,
@@ -64,6 +65,21 @@ class WeeklyImagerySyncTest(unittest.TestCase):
                 ["-b", "1", "-b", "1", "-b", "1", "-b", "2"],
                 _legacy_webp_band_args(source),
             )
+
+    def test_earth_search_assets_use_faster_public_global_bucket_endpoint(self):
+        regional = (
+            "https://e84-earth-search-sentinel-data.s3.us-west-2.amazonaws.com/"
+            "sentinel-2-c1-l2a/52/U/CV/product/TCI.tif"
+        )
+
+        self.assertEqual(
+            "/vsicurl/https://e84-earth-search-sentinel-data.s3.amazonaws.com/"
+            "sentinel-2-c1-l2a/52/U/CV/product/TCI.tif",
+            _vsicurl(
+                regional,
+                ("e84-earth-search-sentinel-data.s3.us-west-2.amazonaws.com",),
+            ),
+        )
 
     def test_complete_week_uses_previous_monday_to_sunday(self):
         window = complete_week(datetime(2026, 9, 22, 2, tzinfo=timezone.utc))
