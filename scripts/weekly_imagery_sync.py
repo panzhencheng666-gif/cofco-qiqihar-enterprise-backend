@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 
-DEFAULT_STAC_URL = "https://stac.dataspace.copernicus.eu/v1/search"
+DEFAULT_STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
 DEFAULT_COLLECTION = "sentinel-2-l2a"
 DEFAULT_ALLOWED_HOSTS = (
     "stac.dataspace.copernicus.eu",
@@ -33,9 +33,13 @@ DEFAULT_ALLOWED_HOSTS = (
     "sentinel-cogs.s3.us-west-2.amazonaws.com",
     "e84-earth-search-sentinel-data.s3.us-west-2.amazonaws.com",
     "e84-earth-search-sentinel-data.s3.amazonaws.com",
+    "planetarycomputer.microsoft.com",
+    "sentinel2l2a01.blob.core.windows.net",
 )
 EARTH_SEARCH_REGIONAL_HOST = "e84-earth-search-sentinel-data.s3.us-west-2.amazonaws.com"
 EARTH_SEARCH_GLOBAL_HOST = "e84-earth-search-sentinel-data.s3.amazonaws.com"
+PLANETARY_COMPUTER_HOST = "planetarycomputer.microsoft.com"
+PLANETARY_SENTINEL_HOST = "sentinel2l2a01.blob.core.windows.net"
 REQUIRED_GDAL_COMMANDS = (
     "gdalbuildvrt",
     "gdalwarp",
@@ -439,13 +443,30 @@ def _build_web_tiles(mosaic: Path, tiles: Path, config: SyncConfig) -> None:
     shutil.rmtree(tms_tiles)
 
 
-def _vsicurl(url: str, allowed_hosts: Sequence[str]) -> str:
+def _vsicurl(url: str, allowed_hosts: Sequence[str], timeout: int = 60) -> str:
     if not _trusted_https(url, allowed_hosts):
         raise ValueError("imagery asset is not on an allowed HTTPS host")
     parsed = urllib.parse.urlparse(url)
     if parsed.hostname == EARTH_SEARCH_REGIONAL_HOST:
         parsed = parsed._replace(netloc=EARTH_SEARCH_GLOBAL_HOST)
         url = urllib.parse.urlunparse(parsed)
+    elif parsed.hostname == PLANETARY_SENTINEL_HOST:
+        sign_url = (
+            f"https://{PLANETARY_COMPUTER_HOST}/api/sas/v1/sign?href="
+            + urllib.parse.quote(url, safe="")
+        )
+        signed_payload = _read_json_response(urllib.request.Request(sign_url), timeout)
+        signed_url = signed_payload.get("href")
+        if not isinstance(signed_url, str):
+            raise RuntimeError("Planetary Computer did not return a signed imagery URL")
+        signed = urllib.parse.urlparse(signed_url)
+        if (
+            signed.scheme != "https"
+            or signed.hostname != parsed.hostname
+            or signed.path != parsed.path
+        ):
+            raise RuntimeError("Planetary Computer returned an invalid signed imagery URL")
+        url = signed_url
     return "/vsicurl/" + url
 
 
@@ -463,7 +484,9 @@ def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: in
         # Warp the cloud-optimized remote asset directly. Copying every complete
         # 100 km Sentinel scene first exhausts the small production volume before
         # the AOI crop is applied.
-        rgb_source = _vsicurl(candidate.assets["visual"], config.allowed_hosts)
+        rgb_source = _vsicurl(
+            candidate.assets["visual"], config.allowed_hosts, config.request_timeout_seconds
+        )
     else:
         vrt = scene / "rgb.vrt"
         _run(
@@ -472,7 +495,11 @@ def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: in
                 "-separate",
                 str(vrt),
                 *[
-                    _vsicurl(candidate.assets[channel], config.allowed_hosts)
+                    _vsicurl(
+                        candidate.assets[channel],
+                        config.allowed_hosts,
+                        config.request_timeout_seconds,
+                    )
                     for channel in ("red", "green", "blue")
                 ],
             ],
@@ -545,7 +572,9 @@ def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: in
             *warp_common,
             "-r",
             "near",
-            _vsicurl(candidate.assets["scl"], config.allowed_hosts),
+            _vsicurl(
+                candidate.assets["scl"], config.allowed_hosts, config.request_timeout_seconds
+            ),
             str(warped_scl),
         ],
         config.command_timeout_seconds,
