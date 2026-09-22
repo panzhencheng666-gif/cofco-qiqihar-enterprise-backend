@@ -81,6 +81,26 @@ class WeeklyImagerySyncTest(unittest.TestCase):
             ),
         )
 
+    @patch("scripts.weekly_imagery_sync._read_json_response")
+    def test_planetary_computer_assets_are_anonymously_signed(self, read_json):
+        unsigned = (
+            "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/"
+            "52/U/CV/product/visual.tif"
+        )
+        signed = unsigned + "?se=temporary&sig=read-only"
+        read_json.return_value = {"href": signed}
+
+        result = _vsicurl(unsigned, ("sentinel2l2a01.blob.core.windows.net",), 45)
+
+        self.assertEqual("/vsicurl/" + signed, result)
+        request, timeout = read_json.call_args.args
+        self.assertEqual(45, timeout)
+        self.assertTrue(
+            request.full_url.startswith(
+                "https://planetarycomputer.microsoft.com/api/sas/v1/sign?href="
+            )
+        )
+
     def test_complete_week_uses_previous_monday_to_sunday(self):
         window = complete_week(datetime(2026, 9, 22, 2, tzinfo=timezone.utc))
 
