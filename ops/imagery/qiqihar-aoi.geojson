@@ -1,0 +1,27 @@
+{
+  "type": "FeatureCollection",
+  "name": "qiqihar-imagery-coverage-envelope",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "regionCode": "230200",
+        "source": "Derived envelope of the 16 pinned Qiqihar county geometries in V160",
+        "sourceDataset": "geoboundaries-chn-adm3-9469f09-qiqihar-2017",
+        "officialSurvey": false
+      },
+      "geometry": {
+        "type": "Polygon",
+        "coordinates": [
+          [
+            [122.38880269958497, 46.21903989997145],
+            [126.6584927996031, 46.21903989997145],
+            [126.6584927996031, 48.919872500415636],
+            [122.38880269958497, 48.919872500415636],
+            [122.38880269958497, 46.21903989997145]
+          ]
+        ]
+      }
+    }
+  ]
+}

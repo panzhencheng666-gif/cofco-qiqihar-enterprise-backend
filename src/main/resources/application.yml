@@ -106,6 +106,7 @@ qiqihar:
   request-limits:
     json-body-bytes: ${QIQIHAR_JSON_BODY_MAX_BYTES:1048576}
   map-imagery:
+    release-root: ${QIQIHAR_MAP_IMAGERY_RELEASE_ROOT:}
     tile-url-template: ${QIQIHAR_MAP_IMAGERY_TILE_URL_TEMPLATE:}
     api-key: ${QIQIHAR_MAP_IMAGERY_API_KEY:}
     provider: ${QIQIHAR_MAP_IMAGERY_PROVIDER:Esri World Imagery fallback}

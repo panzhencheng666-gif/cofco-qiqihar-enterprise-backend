@@ -18,6 +18,8 @@ import org.springframework.web.server.ResponseStatusException;
 public class OverviewMapImageryController {
     private static final String CACHE_CONTROL =
             "public, max-age=86400, stale-if-error=1209600";
+    private static final String IMMUTABLE_CACHE_CONTROL =
+            "public, max-age=31536000, immutable";
 
     private final AccessControl access;
     private final MapImageryTileGateway imagery;
@@ -65,9 +67,40 @@ public class OverviewMapImageryController {
         }
     }
 
+    @GetMapping("/api/v1/overview/map-imagery/tiles/{version}/{zoom}/{x}/{y}")
+    ResponseEntity<byte[]> versionedTile(
+            @PathVariable String version,
+            @PathVariable int zoom,
+            @PathVariable int x,
+            @PathVariable int y,
+            @RequestHeader(name = HttpHeaders.IF_NONE_MATCH, required = false)
+                    String ifNoneMatch) {
+        access.requireOverviewReadScope();
+        try {
+            var tile = imagery.tile(version, zoom, x, y);
+            var headers = headers(tile, IMMUTABLE_CACHE_CONTROL);
+            if (tile.etag().equals(ifNoneMatch)) {
+                return ResponseEntity.status(HttpStatus.NOT_MODIFIED).headers(headers).build();
+            }
+            return ResponseEntity.ok()
+                    .headers(headers)
+                    .contentType(MediaType.parseMediaType(tile.contentType()))
+                    .body(tile.bytes());
+        } catch (IllegalArgumentException invalid) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, invalid.getMessage());
+        } catch (IOException unavailable) {
+            throw new ResponseStatusException(
+                    HttpStatus.NOT_FOUND, "Imagery release tile is unavailable");
+        }
+    }
+
     private static HttpHeaders headers(MapImageryTileGateway.Tile tile) {
+        return headers(tile, CACHE_CONTROL);
+    }
+
+    private static HttpHeaders headers(MapImageryTileGateway.Tile tile, String cacheControl) {
         var headers = new HttpHeaders();
-        headers.setCacheControl(CACHE_CONTROL);
+        headers.setCacheControl(cacheControl);
         headers.setETag(tile.etag());
         headers.set(HttpHeaders.VARY, "Cookie");
         headers.set("X-Imagery-Period", tile.period());

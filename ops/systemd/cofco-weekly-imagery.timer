@@ -1,0 +1,12 @@
+[Unit]
+Description=Run COFCO Qiqihar weekly imagery synchronization every Monday
+
+[Timer]
+OnCalendar=Mon *-*-* 03:10:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=5m
+AccuracySec=1m
+Unit=cofco-weekly-imagery.service
+
+[Install]
+WantedBy=timers.target

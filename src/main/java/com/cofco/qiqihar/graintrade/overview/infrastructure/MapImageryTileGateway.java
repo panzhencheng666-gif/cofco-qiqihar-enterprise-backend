@@ -19,6 +19,7 @@ import java.time.temporal.IsoFields;
 import java.time.temporal.TemporalAdjusters;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -47,6 +48,7 @@ public class MapImageryTileGateway {
     private final long maximumCacheBytes;
     private final HttpClient http;
     private final Clock clock;
+    private final LocalImageryReleaseStore localReleases;
     private final Map<TileKey, CacheEntry> cache = new LinkedHashMap<>(64, 0.75f, true);
     private long cachedBytes;
 
@@ -57,7 +59,8 @@ public class MapImageryTileGateway {
             @Value("${qiqihar.map-imagery.provider:Enterprise imagery}") String provider,
             @Value("${qiqihar.map-imagery.attribution:Enterprise imagery service}") String attribution,
             @Value("${qiqihar.map-imagery.period-lag-weeks:0}") int periodLagWeeks,
-            @Value("${qiqihar.map-imagery.maximum-cache-bytes:67108864}") long maximumCacheBytes) {
+            @Value("${qiqihar.map-imagery.maximum-cache-bytes:67108864}") long maximumCacheBytes,
+            LocalImageryReleaseStore localReleases) {
         this(
                 tileUrlTemplate,
                 apiKey,
@@ -69,7 +72,8 @@ public class MapImageryTileGateway {
                         .connectTimeout(Duration.ofSeconds(3))
                         .followRedirects(HttpClient.Redirect.NEVER)
                         .build(),
-                Clock.systemUTC());
+                Clock.systemUTC(),
+                localReleases);
     }
 
     MapImageryTileGateway(
@@ -81,6 +85,28 @@ public class MapImageryTileGateway {
             long maximumCacheBytes,
             HttpClient http,
             Clock clock) {
+        this(
+                tileUrlTemplate,
+                apiKey,
+                provider,
+                attribution,
+                periodLagWeeks,
+                maximumCacheBytes,
+                http,
+                clock,
+                null);
+    }
+
+    MapImageryTileGateway(
+            String tileUrlTemplate,
+            String apiKey,
+            String provider,
+            String attribution,
+            int periodLagWeeks,
+            long maximumCacheBytes,
+            HttpClient http,
+            Clock clock,
+            LocalImageryReleaseStore localReleases) {
         tileUrlTemplate = tileUrlTemplate.isBlank()
                 ? DEFAULT_TILE_URL_TEMPLATE
                 : tileUrlTemplate;
@@ -103,10 +129,22 @@ public class MapImageryTileGateway {
         this.maximumCacheBytes = maximumCacheBytes;
         this.http = http;
         this.clock = clock;
+        this.localReleases = localReleases;
     }
 
     public Tile tile(int zoom, int x, int y) throws IOException, InterruptedException {
         validateCoordinate(zoom, x, y);
+        if (localReleases != null && localReleases.currentMetadata().isPresent()) {
+            try {
+                var tile = localReleases.currentTile(zoom, x, y);
+                return new Tile(
+                        tile.bytes(), tile.contentType(), tile.etag(), tile.version(), false);
+            } catch (IOException outsideLocalCoverage) {
+                // The public overview includes context outside Qiqihar. Keep the
+                // historical fallback there instead of turning the whole raster
+                // source into a partially missing layer.
+            }
+        }
         ImageryPeriod period = imageryPeriod();
         var key = new TileKey(period.id(), zoom, x, y);
         var cached = cached(key);
@@ -127,7 +165,35 @@ public class MapImageryTileGateway {
         }
     }
 
+    public Tile tile(String version, int zoom, int x, int y) throws IOException {
+        validateCoordinate(zoom, x, y);
+        if (localReleases == null) throw new IOException("Local imagery releases are disabled");
+        var tile = localReleases.tile(version, zoom, x, y);
+        return new Tile(tile.bytes(), tile.contentType(), tile.etag(), tile.version(), false);
+    }
+
     public Metadata metadata() {
+        if (localReleases != null) {
+            var local = localReleases.currentMetadata();
+            if (local.isPresent()) {
+                var metadata = local.orElseThrow();
+                return new Metadata(
+                        metadata.provider(),
+                        metadata.attribution(),
+                        metadata.updateCadence(),
+                        metadata.version(),
+                        metadata.acquisitionFrom(),
+                        metadata.acquisitionTo(),
+                        false,
+                        true,
+                        metadata.syncedAt(),
+                        metadata.spatialResolutionMeters(),
+                        metadata.cloudCoveragePercent(),
+                        metadata.status(),
+                        metadata.sourceProductIds(),
+                        metadata.truthStatement());
+            }
+        }
         var period = imageryPeriod();
         boolean automaticWeeklyPeriod = automaticWeeklyPeriod();
         boolean weeklyConfigured = automaticWeeklyPeriod
@@ -140,7 +206,15 @@ public class MapImageryTileGateway {
                 weeklyConfigured ? period.start().toString() : null,
                 weeklyConfigured ? period.end().toString() : null,
                 weeklyConfigured && !apiKey.isBlank(),
-                automaticWeeklyPeriod);
+                automaticWeeklyPeriod,
+                null,
+                null,
+                null,
+                weeklyConfigured ? "CURRENT" : "FALLBACK",
+                List.of(),
+                weeklyConfigured
+                        ? "Latest available governed weekly observation; not live video."
+                        : "Unversioned historical fallback; no weekly freshness claim.");
     }
 
     private CacheEntry fetch(ImageryPeriod period, int zoom, int x, int y)
@@ -293,7 +367,17 @@ public class MapImageryTileGateway {
             String acquisitionFrom,
             String acquisitionTo,
             boolean commercialConfigured,
-            boolean automaticWeeklyPeriod) {}
+            boolean automaticWeeklyPeriod,
+            String syncedAt,
+            Integer spatialResolutionMeters,
+            Double cloudCoveragePercent,
+            String status,
+            List<String> sourceProductIds,
+            String truthStatement) {
+        public Metadata {
+            sourceProductIds = List.copyOf(sourceProductIds);
+        }
+    }
 
     private record ImageryPeriod(
             String id, LocalDate start, LocalDate end, int weekBasedYear, int week) {}
