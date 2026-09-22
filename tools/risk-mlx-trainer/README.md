@@ -145,6 +145,75 @@ origin/verification 和完整来源保存在 records 与 manifest，不伪装成
 这种格式和提示词不证明模型一定遵守，也不证明答案质量。
 后续训练引擎只能用 train 训练、valid 验证，**test 必须留出，不用于训练或调参**。
 
+## 有界专家 SFT 候选执行器（Expert SFT Task2）
+
+`expert_training.train_expert(payload) -> dict` 是给 Task3 在已有 `WORKLOAD_GATE`
+内调用的 Python 接口，没有公开训练 CLI。本任务不增加 HTTP 路由、不修改原有训练、
+评分、RAG 或鉴权。`validate_training_request(payload)` 可用于 HTTP 预校验；
+不合法请求抛出固定消息的 `ValueError` 或保留字段级诊断的 `DatasetValidationError`。
+
+请求精确包含 `runId,dataset,config`。runId 使用上述安全 ID 规则；dataset 使用 Task1
+原始契约。config 精确包含 `iterations: 1..1000`、`learningRate: 1e-6..1e-4`、
+`maxSeqLength: 256..2048`、`numLayers: 1..8`、`seed: 0..2147483647`。
+除有限数值 learningRate 外均为整数，所有数值拒绝布尔值。客户端不能指定路径或模型。
+
+仅通过 `expert.configured_model()` 读取服务器配置的本地快照；校验 config/tokenizer
+JSON 对象和非空 safetensors。Worker 严格检查 `mlx-lm==0.31.3`，离线 `load` 同时传入
+`local_files_only=True, trust_remote_code=False`，不调用 `lora.run/main`。
+聊天 tokenizer 包装器对完整对话和提示掩码都强制 `enable_thinking=False`，逐行预检查
+三个 split 的 token 长度、答案掩码和提示前缀对齐；超长样本拒绝，不静默截断。
+
+真实训练调用 `train_model`，使用 batch=1、LoRA rank=8/dropout=0/scale=20、
+梯度检查点、指定随机种子、64 GiB MLX 内存限制、无恢复适配器和无追踪回调。
+仅 train 参与优化，valid 用于训练内验证。test 全量 LM loss 在任何适配器修改前和训练后
+各评估一次；记录最后实际 train/valid loss、baseline/candidate test loss、testCount、
+peakMemoryBytes、milliseconds、iterations，并确认可训练参数发生变化。MLX 的最后一次
+训练内 valid loss 在最后一个优化步骤之前测得，并非额外的训练后 valid 评估。
+所有指标必须有限、非负；不计算困惑度、不要求 test loss 必须改善。
+这些指标明确为 `LM_ONLY`，不能证明事实准确率或专家资格。
+
+候选位于 `RISK_LLM_ARTIFACT_ROOT/expert-sft/<runId>`，默认根为
+`var/risk-llm-adapters`。拒绝配置根、expert-sft、目标目录符号链接；专家子目录和暂存
+目录0700、文件0600。根须由当前用户控制，expert-sft 私有权限不合格时失败，
+不擅自修改已有目录权限。服务器本地模型缓存的元数据链接可解析到本地 blob。
+
+固定产物为 `adapters.safetensors`、`adapter_config.json`、`training_metrics.json`、
+`model_manifest.json` 及 Task1 的完整五文件 `dataset/` 快照。仅成功且验证通过后用
+macOS `renamex_np(RENAME_EXCL)` / Linux `renameat2(RENAME_NOREPLACE)` 原子发布，
+其他平台失败关闭，绝不替换已有目录。相同 runId 使用独占 `.lock`；已有锁或请求身份
+冲突抛出 `ExpertTrainingConflict`，训练/文件/清理错误仅暴露
+`ExpertTrainingUnavailable('EXPERT_TRAINING_FAILED')`，不回显 worker 输出。
+
+身份包含 runId、dataset SHA、规范配置、本地模型解析路径及 JSON 元数据 SHA、
+权重相对文件名/大小/mtime_ns、固定引擎版本，以及 engine/worker/dataset/两个 helper
+的全部五个源码 SHA。权重身份是本地文件指纹，**不是密码学权重审计**。
+重复请求仅在 manifest、request SHA、完整固定文件集合及所有文件 SHA 校验通过后返回。
+manifest 不记录自身哈希；返回 `artifactSha256` 按相对路径排序累加
+`路径 + NUL + 文件字节 + NUL`，包含 manifest。SHA 检查不是数字签名，不能阻止同一
+受信任操作系统用户同时篡改文件和 manifest。API 不覆盖也不是文件系统防写锁。
+
+返回字段为 `runId,kind,status,publicationStatus,requestSha256,artifactSha256,artifactPath,metrics`；
+kind 固定 `EXPERT_SFT_ADAPTER`，status 固定 `CANDIDATE`，publicationStatus 固定
+`NOT_EVALUATED`。无自动发布、风险阈值或质量晋升。
+
+子进程沿用 `sys.executable`，参数列表调用绝对 worker 路径，stdin=DEVNULL，移除包含
+TOKEN/SECRET/PASSWORD/API_KEY 的环境键，强制离线及关闭遥测。stdout/stderr 各通过
+管道排入最多1 MiB的私有临时文件，超限立即失败；整体截止时间1800秒，超时先 TERM，
+有界等待后 KILL 并收取自有子进程组（终止收尾最多额外4秒）。不记录或返回原始日志。
+Worker 在导入 MLX 前校验父 PID并启动250ms守护线程，父 HTTP 进程退出/重启导致
+getppid 改变时执行 `_exit(70)`，独立 session 不会让它正常继续训练。
+此保护依赖 Python 守护线程获得调度，不是内核级实时截止保证。
+
+普通失败只清理本次 mkdtemp；进程被强制杀死、断电、清理失败可能留下私有暂存目录或
+独占锁，后续不会擅自删除这些旧路径，也不会把它们视为成功。运维须确认无自有 worker
+运行后另行处理遗留锁/暂存；本任务不实现云租约或崩溃自动回收。
+
+Task3 安装包必须加入 `expert_training.py`、`expert_training_worker.py`、
+`expert_training_artifacts.py`、`expert_training_process.py`，并携带依赖
+`expert_dataset.py` 和现有 `expert.py`。服务接线、打包、真实运行验收留给父任务。
+测试只在临时目录使用契约夹具和替代 GPU 边界，不能据此声称真实训练完成；
+本任务未运行 GPU、线上 runtime 或部署，也未产生可用生产数据集。
+
 确定性验证（测试夹具只在测试进程和临时目录使用，不提供生产训练数据）：
 
 ```bash
