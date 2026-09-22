@@ -348,6 +348,14 @@ def _xyz_webp_relative(tms_png: Path) -> Path:
     return Path(str(zoom), str(x), f"{xyz_y}.webp")
 
 
+def _legacy_webp_band_args(source: Path) -> list[str]:
+    """Expand GDAL's grayscale+alpha PNG tiles to WebP-compatible RGBA."""
+    header = source.read_bytes()[:26]
+    if len(header) >= 26 and header[:8] == b"\x89PNG\r\n\x1a\n" and header[25] == 4:
+        return ["-b", "1", "-b", "1", "-b", "1", "-b", "2"]
+    return []
+
+
 def _build_web_tiles(mosaic: Path, tiles: Path, config: SyncConfig) -> None:
     try:
         help_result = subprocess.run(
@@ -405,6 +413,7 @@ def _build_web_tiles(mosaic: Path, tiles: Path, config: SyncConfig) -> None:
                 "WEBP",
                 "-co",
                 "QUALITY=82",
+                *_legacy_webp_band_args(source),
                 str(source),
                 str(destination),
             ],
