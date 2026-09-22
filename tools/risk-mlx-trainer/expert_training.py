@@ -52,8 +52,8 @@ def _manifest(identity, hashes):
 def _verified_result(directory, identity, request, deadline):
     if directory.is_symlink():
         raise ValueError('Symlink target')
-    manifest = artifacts.read_object(directory / 'model_manifest.json')
     hashes, content_hash = artifacts.layout_hashes(directory, deadline, manifest=True)
+    manifest = artifacts.read_object(directory / 'model_manifest.json')
     del hashes['model_manifest.json']
     # Validate integrity before deciding whether this is a replay or a conflict.
     if set(manifest) != set(_manifest(identity, hashes)):

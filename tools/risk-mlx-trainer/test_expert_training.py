@@ -170,6 +170,54 @@ class EngineTest(unittest.TestCase):
         with self.assertRaises(engine.ExpertTrainingConflict):
             self.train()
 
+    def _candidate_snapshot(self, final):
+        return {str(path.relative_to(final)): (
+            path.stat().st_mode, path.stat().st_uid, path.stat().st_ino,
+            None if path.is_dir() else path.read_bytes())
+            for path in [final, *final.rglob('*')]}
+
+    def test_replay_rejects_each_relaxed_mode_without_repair(self):
+        self.train()
+        final = self.artifacts / 'expert-sft' / 'unit-1'
+        for path in [final, *sorted(final.rglob('*'))]:
+            with self.subTest(path=path.relative_to(final)):
+                original = stat.S_IMODE(path.stat().st_mode)
+                path.chmod(0o755 if path.is_dir() else 0o644)
+                before = self._candidate_snapshot(final)
+                try:
+                    with patch.object(engine, 'run_worker') as run:
+                        with self.assertRaises(engine.ExpertTrainingUnavailable) as caught:
+                            engine.train_expert(payload())
+                        self.assertEqual(str(caught.exception), 'EXPERT_TRAINING_FAILED')
+                        run.assert_not_called()
+                    self.assertEqual(self._candidate_snapshot(final), before)
+                finally:
+                    path.chmod(original)  # Test fixture restoration only.
+
+    def test_replay_rejects_each_wrong_owner_without_repair(self):
+        self.train()
+        final = self.artifacts / 'expert-sft' / 'unit-1'
+        real_fstat = os.fstat
+        for path in [final, *sorted(final.rglob('*'))]:
+            with self.subTest(path=path.relative_to(final)):
+                target = path.stat()
+                before = self._candidate_snapshot(final)
+                def foreign_owner(fd):
+                    info = real_fstat(fd)
+                    if (info.st_dev, info.st_ino) == (target.st_dev, target.st_ino):
+                        values = list(info)
+                        values[4] = os.getuid() + 1
+                        return os.stat_result(values)
+                    return info
+                # No privileged chown: substitute only the OS ownership observation.
+                with patch.object(engine.artifacts.os, 'fstat', side_effect=foreign_owner):
+                    with patch.object(engine, 'run_worker') as run:
+                        with self.assertRaises(engine.ExpertTrainingUnavailable) as caught:
+                            engine.train_expert(payload())
+                        self.assertEqual(str(caught.exception), 'EXPERT_TRAINING_FAILED')
+                        run.assert_not_called()
+                self.assertEqual(self._candidate_snapshot(final), before)
+
     def test_tampered_incomplete_and_unexpected_files(self):
         self.train()
         final = self.artifacts / 'expert-sft' / 'unit-1'

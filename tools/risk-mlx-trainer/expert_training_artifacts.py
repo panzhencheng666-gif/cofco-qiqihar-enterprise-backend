@@ -41,19 +41,20 @@ def read_object(path, limit=16 * 1024 * 1024):
     return value
 
 
-def open_regular(path, limit):
+def open_regular(path, limit, *, private=False):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     info = os.fstat(fd)
-    if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= limit or info.st_nlink != 1:
+    if (not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= limit or info.st_nlink != 1
+            or (private and (info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600))):
         os.close(fd)
         raise ValueError('Invalid artifact file')
     return os.fdopen(fd, 'rb')
 
 
-def file_hash(path, deadline, limit=512 * 1024 * 1024, content=None):
+def file_hash(path, deadline, limit=512 * 1024 * 1024, content=None, *, private=False):
     digest = hashlib.sha256()
     total = 0
-    with open_regular(path, limit) as stream:
+    with open_regular(path, limit, private=private) as stream:
         while True:
             check_deadline(deadline)
             chunk = stream.read(1024 * 1024)
@@ -82,6 +83,17 @@ def layout_hashes(directory, deadline, *, manifest=False):
     names = REQUIRED_FILES | ({'model_manifest.json'} if manifest else set())
     if directory.is_symlink() or (directory / 'dataset').is_symlink():
         raise ValueError('Symlink artifact')
+    if manifest:
+        # Completed candidates (including final staging verification) must already
+        # be private. Never chmod/chown an existing artifact to make replay pass.
+        for path in (directory, directory / 'dataset'):
+            fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                info = os.fstat(fd)
+                if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+                    raise ValueError('Non-private artifact directory')
+            finally:
+                os.close(fd)
     expected_top = {name.split('/')[0] for name in names}
     if _entries(directory, 10) != expected_top or _entries(directory / 'dataset', 6) != {
             name.split('/')[1] for name in DATA_FILES}:
@@ -91,7 +103,7 @@ def layout_hashes(directory, deadline, *, manifest=False):
         content.update(name.encode() + b'\0')
         hashes[name] = file_hash(directory / name, deadline,
                                  limit=2 * 1024**3 if name.endswith('.safetensors') else 512 * 1024**2,
-                                 content=content)
+                                 content=content, private=manifest)
         content.update(b'\0')
     return hashes, content.hexdigest()
 
