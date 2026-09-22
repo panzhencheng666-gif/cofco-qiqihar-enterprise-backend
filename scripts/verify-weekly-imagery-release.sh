@@ -5,6 +5,8 @@ release_root="/var/lib/cofco/imagery"
 maximum_age_hours="192"
 verification_now=""
 verify_systemd=true
+python_command="python3"
+[[ -x /usr/bin/python3.11 ]] && python_command="/usr/bin/python3.11"
 
 usage() {
   echo "usage: $0 [--root PATH] [--max-age-hours HOURS] [--now ISO-8601] [--skip-systemd]" >&2
@@ -49,7 +51,7 @@ if $verify_systemd; then
   systemctl is-active --quiet cofco-weekly-imagery.timer || fail "timer is not active"
 fi
 
-python3 - "$release_root" "$maximum_age_hours" "$verification_now" <<'PY'
+"$python_command" - "$release_root" "$maximum_age_hours" "$verification_now" <<'PY'
 from __future__ import annotations
 
 from datetime import datetime, timezone

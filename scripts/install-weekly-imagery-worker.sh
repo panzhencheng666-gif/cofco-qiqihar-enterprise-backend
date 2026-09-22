@@ -26,7 +26,7 @@ done
   exit 1
 }
 
-for command in python3 flock gdalbuildvrt gdalwarp gdal_translate gdal_calc.py gdal2tiles.py; do
+for command in python3.11 flock gdalbuildvrt gdalwarp gdal_translate gdal_calc.py gdal2tiles.py; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "required command is unavailable: $command" >&2
     exit 1
@@ -67,7 +67,7 @@ set -a
 source /etc/cofco/weekly-imagery.env
 set +a
 runuser -u cofco-imagery -- \
-  /usr/bin/python3 /usr/local/lib/cofco-imagery/weekly_imagery_sync.py \
+  /usr/bin/python3.11 /usr/local/lib/cofco-imagery/weekly_imagery_sync.py \
   --root /var/lib/cofco/imagery --aoi /usr/local/lib/cofco-imagery/qiqihar-aoi.geojson \
   --dry-run
 
