@@ -56,6 +56,7 @@ class WeeklyImagerySyncTest(unittest.TestCase):
                         "eo:cloud_cover": 8.5,
                         "grid:code": "MGRS-52UEU",
                     },
+                    "bbox": [123.0, 46.0, 124.0, 47.0],
                     "assets": {
                         "red": {"href": "https://example.test/red.tif"},
                         "green": {"href": "https://example.test/green.tif"},
@@ -78,6 +79,7 @@ class WeeklyImagerySyncTest(unittest.TestCase):
 
         self.assertEqual(["S2-good"], [candidate.product_id for candidate in parsed])
         self.assertEqual("MGRS-52UEU", parsed[0].grid_code)
+        self.assertEqual((123.0, 46.0, 124.0, 47.0), parsed[0].bounds)
 
     def test_select_grid_candidates_keeps_best_ranked_scene_per_grid(self):
         ranked = [
