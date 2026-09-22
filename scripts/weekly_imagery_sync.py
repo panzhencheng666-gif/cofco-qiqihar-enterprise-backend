@@ -32,7 +32,10 @@ DEFAULT_ALLOWED_HOSTS = (
     "earth-search.aws.element84.com",
     "sentinel-cogs.s3.us-west-2.amazonaws.com",
     "e84-earth-search-sentinel-data.s3.us-west-2.amazonaws.com",
+    "e84-earth-search-sentinel-data.s3.amazonaws.com",
 )
+EARTH_SEARCH_REGIONAL_HOST = "e84-earth-search-sentinel-data.s3.us-west-2.amazonaws.com"
+EARTH_SEARCH_GLOBAL_HOST = "e84-earth-search-sentinel-data.s3.amazonaws.com"
 REQUIRED_GDAL_COMMANDS = (
     "gdalbuildvrt",
     "gdalwarp",
@@ -314,10 +317,20 @@ def search_candidates(config: SyncConfig, start: date, end: date) -> list[Candid
 
 
 def _run(command: Sequence[str], timeout: int, cwd: Path | None = None) -> None:
+    environment = os.environ.copy()
+    if Path(command[0]).name.startswith("gdal"):
+        environment.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
+        environment.setdefault("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".tif,.TIF")
+        environment.setdefault("GDAL_HTTP_MULTIRANGE", "YES")
+        environment.setdefault("GDAL_HTTP_MERGE_CONSECUTIVE_RANGES", "YES")
+        environment.setdefault("VSI_CACHE", "TRUE")
+        environment.setdefault("VSI_CACHE_SIZE", "50000000")
+        environment.setdefault("CPL_VSIL_CURL_CACHE_SIZE", "200000000")
     try:
         subprocess.run(
             list(command),
             cwd=cwd,
+            env=environment,
             check=True,
             timeout=timeout,
             stdout=subprocess.PIPE,
@@ -429,6 +442,10 @@ def _build_web_tiles(mosaic: Path, tiles: Path, config: SyncConfig) -> None:
 def _vsicurl(url: str, allowed_hosts: Sequence[str]) -> str:
     if not _trusted_https(url, allowed_hosts):
         raise ValueError("imagery asset is not on an allowed HTTPS host")
+    parsed = urllib.parse.urlparse(url)
+    if parsed.hostname == EARTH_SEARCH_REGIONAL_HOST:
+        parsed = parsed._replace(netloc=EARTH_SEARCH_GLOBAL_HOST)
+        url = urllib.parse.urlunparse(parsed)
     return "/vsicurl/" + url
 
 
