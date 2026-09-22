@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -17,6 +18,7 @@ from scripts.weekly_imagery_sync import (  # noqa: E402
     ReleaseValidationError,
     _legacy_webp_band_args,
     _mgrs_grid_code,
+    _scene_worker_count,
     _vsicurl,
     _xyz_webp_relative,
     complete_week,
@@ -31,6 +33,14 @@ from scripts.weekly_imagery_sync import (  # noqa: E402
 
 
 class WeeklyImagerySyncTest(unittest.TestCase):
+    def test_scene_workers_are_bounded_for_production_capacity(self):
+        with patch.dict(os.environ, {"QIQIHAR_IMAGERY_SCENE_WORKERS": "8"}):
+            self.assertEqual(4, _scene_worker_count(19))
+
+    def test_scene_workers_do_not_exceed_candidate_count(self):
+        with patch.dict(os.environ, {"QIQIHAR_IMAGERY_SCENE_WORKERS": "4"}):
+            self.assertEqual(2, _scene_worker_count(2))
+
     def test_grid_code_falls_back_to_earth_search_product_id(self):
         self.assertEqual(
             "51TVM",
