@@ -41,4 +41,27 @@ class OverviewMapImageryControllerTest {
         assertThat(notModified.getBody()).isNull();
         assertThat(notModified.getHeaders().getFirst(HttpHeaders.VARY)).isEqualTo("Cookie");
     }
+
+    @Test
+    void returnsAnImmutableVersionedTileWithoutChangingTheCurrentAlias() throws Exception {
+        var access = mock(AccessControl.class);
+        var gateway = mock(MapImageryTileGateway.class);
+        var tile = new MapImageryTileGateway.Tile(
+                "versioned".getBytes(StandardCharsets.UTF_8),
+                "image/webp",
+                "\"versioned-digest\"",
+                "2026-W38",
+                false);
+        when(gateway.tile("2026-W38", 14, 13871, 5612)).thenReturn(tile);
+        var controller = new OverviewMapImageryController(access, gateway);
+
+        var response = controller.versionedTile("2026-W38", 14, 13871, 5612, null);
+
+        verify(access).requireOverviewReadScope();
+        assertThat(response.getStatusCode().value()).isEqualTo(200);
+        assertThat(response.getHeaders().getCacheControl())
+                .isEqualTo("public, max-age=31536000, immutable");
+        assertThat(response.getHeaders().getFirst("X-Imagery-Period"))
+                .isEqualTo("2026-W38");
+    }
 }
