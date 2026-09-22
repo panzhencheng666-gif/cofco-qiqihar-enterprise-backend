@@ -4,6 +4,7 @@ import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
 import com.cofco.qiqihar.riskintelligence.security.RiskApiException;
+import com.cofco.qiqihar.riskintelligence.experttraining.ExpertDatasetValidationException;
 import java.util.Map;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
@@ -13,6 +14,13 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 
 @RestControllerAdvice
 class RiskApiErrorHandler {
+    @ExceptionHandler(ExpertDatasetValidationException.class)
+    ResponseEntity<ErrorBody> expertValidation(ExpertDatasetValidationException exception) {
+        return ResponseEntity.badRequest().body(new ErrorBody(
+                "EXPERT_DATASET_INVALID", "专家训练请求校验失败",
+                Map.of("errors", exception.errors()), UUID.randomUUID().toString()));
+    }
+
     @ExceptionHandler(RiskApiException.class)
     ResponseEntity<ErrorBody> riskError(RiskApiException exception) {
         return response(exception.status(), exception.code(), exception.getMessage());

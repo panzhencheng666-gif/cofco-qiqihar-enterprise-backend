@@ -48,7 +48,7 @@ public final class RiskMigrationRunner {
             }
             try (ResultSet result=statement.executeQuery(
                     "select count(*) from public.flyway_schema_history "
-                    +"where version in ('214','215','216','217','218','219')")) {
+                    +"where version in ('214','215','216','217','218','219','220')")) {
                 result.next();
                 if (result.getInt(1)!=0) {
                     throw new IllegalStateException(
@@ -104,7 +104,7 @@ public final class RiskMigrationRunner {
         var result=flyway.migrate();
         flyway.validate();
         String finalVersion=flyway.info().current().getVersion().getVersion();
-        if (!"219".equals(finalVersion)) {
+        if (!"220".equals(finalVersion)) {
             throw new IllegalStateException("Risk migration stopped at version "+finalVersion);
         }
         System.out.printf("RISK_FLYWAY_MIGRATION_OK sharedLatest=%s baseline=%s to=%s executed=%d history=%s%n",
@@ -123,7 +123,8 @@ public final class RiskMigrationRunner {
     private static void requireMigrationSet(Path migrations) {
         if (!Files.isDirectory(migrations)
                 || !Files.isRegularFile(migrations.resolve("V214__create_inventory_risk_foundation.sql"))
-                || !Files.isRegularFile(migrations.resolve("V219__harden_qiliang_model_lineage.sql"))) {
+                || !Files.isRegularFile(migrations.resolve("V219__harden_qiliang_model_lineage.sql"))
+                || !Files.isRegularFile(migrations.resolve("V220__create_expert_sft_queue.sql"))) {
             throw new IllegalArgumentException("Controlled migration directory is incomplete: "+migrations);
         }
     }

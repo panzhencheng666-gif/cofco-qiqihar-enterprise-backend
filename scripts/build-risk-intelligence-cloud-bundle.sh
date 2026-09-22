@@ -53,7 +53,8 @@ for migration in V214__create_inventory_risk_foundation.sql \
     V216__automate_risk_model_promotion.sql \
     V217__isolate_risk_schema_runtime.sql \
     V218__establish_qiliang_risk_model_identity.sql \
-    V219__harden_qiliang_model_lineage.sql; do
+    V219__harden_qiliang_model_lineage.sql \
+    V220__create_expert_sft_queue.sql; do
   git -C "$backend_root" ls-files --error-unmatch \
     "src/main/resources/db/migration/${migration}" >/dev/null \
     || { echo "Migration is not tracked by git: ${migration}" >&2; exit 1; }

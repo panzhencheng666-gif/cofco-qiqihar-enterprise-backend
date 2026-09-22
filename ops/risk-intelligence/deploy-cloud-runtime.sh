@@ -227,7 +227,8 @@ install_release() {
       V216__automate_risk_model_promotion.sql \
       V217__isolate_risk_schema_runtime.sql \
       V218__establish_qiliang_risk_model_identity.sql \
-      V219__harden_qiliang_model_lineage.sql; do
+      V219__harden_qiliang_model_lineage.sql \
+      V220__create_expert_sft_queue.sql; do
     install -m 444 "${bundle_root}/migrations/${migration}" "$release_dir/migrations/"
   done
 }

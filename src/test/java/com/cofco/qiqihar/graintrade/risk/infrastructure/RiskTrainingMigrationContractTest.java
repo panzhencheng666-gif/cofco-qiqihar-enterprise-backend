@@ -67,4 +67,22 @@ class RiskTrainingMigrationContractTest {
                 .doesNotContain("DELETE FROM risk.training_run")
                 .doesNotContain("DELETE FROM risk.model_version");
     }
+
+    @Test
+    void expertQueueMigrationIsImmutableSeparateAndLeastPrivilege() throws Exception {
+        String sql=Files.readString(Path.of(
+                "src/main/resources/db/migration/V220__create_expert_sft_queue.sql"));
+
+        assertThat(sql)
+                .contains("CREATE TABLE risk.expert_dataset_snapshot")
+                .contains("UNIQUE (dataset_id,dataset_sha256)")
+                .contains("CREATE TABLE risk.expert_training_task")
+                .contains("training_kind text NOT NULL DEFAULT 'EXPERT_SFT'")
+                .contains("CREATE TABLE risk.expert_training_audit")
+                .contains("FOR EACH ROW EXECUTE FUNCTION risk.reject_expert_immutable_change()")
+                .contains("FOR EACH ROW EXECUTE FUNCTION risk.protect_expert_task_identity()")
+                .contains("GRANT SELECT,INSERT,UPDATE ON risk.expert_training_task")
+                .doesNotContain("GRANT DELETE")
+                .doesNotContain("GRANT CREATE ON SCHEMA");
+    }
 }
