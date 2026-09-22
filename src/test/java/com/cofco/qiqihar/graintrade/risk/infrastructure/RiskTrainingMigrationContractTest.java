@@ -85,4 +85,25 @@ class RiskTrainingMigrationContractTest {
                 .doesNotContain("GRANT DELETE")
                 .doesNotContain("GRANT CREATE ON SCHEMA");
     }
+
+    @Test
+    void expertQueueRepairGrantsOnlyRequiredRiskRuntimePrivileges() throws Exception {
+        String migration=Files.readString(Path.of(
+                "src/main/resources/db/migration/V221__grant_expert_queue_risk_runtime.sql"));
+        String roleSql=Files.readString(Path.of(
+                "ops/risk-intelligence/create-risk-runtime-roles.sql"));
+
+        assertThat(migration)
+                .contains("CREATE ROLE qiqihar_risk_runtime NOLOGIN")
+                .contains("GRANT USAGE ON SCHEMA risk TO qiqihar_risk_runtime")
+                .contains("GRANT SELECT,INSERT ON risk.expert_dataset_snapshot TO qiqihar_risk_runtime")
+                .contains("GRANT SELECT,INSERT,UPDATE ON risk.expert_training_task TO qiqihar_risk_runtime")
+                .contains("GRANT SELECT,INSERT ON risk.expert_training_audit TO qiqihar_risk_runtime")
+                .doesNotContain("GRANT DELETE")
+                .doesNotContain("GRANT CREATE ON SCHEMA");
+        assertThat(roleSql)
+                .contains("risk.expert_dataset_snapshot")
+                .contains("risk.expert_training_task")
+                .contains("risk.expert_training_audit");
+    }
 }

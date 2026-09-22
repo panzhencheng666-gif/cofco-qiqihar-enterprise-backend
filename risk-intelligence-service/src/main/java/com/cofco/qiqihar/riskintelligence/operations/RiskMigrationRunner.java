@@ -104,7 +104,7 @@ public final class RiskMigrationRunner {
         var result=flyway.migrate();
         flyway.validate();
         String finalVersion=flyway.info().current().getVersion().getVersion();
-        if (!"220".equals(finalVersion)) {
+        if (!"221".equals(finalVersion)) {
             throw new IllegalStateException("Risk migration stopped at version "+finalVersion);
         }
         System.out.printf("RISK_FLYWAY_MIGRATION_OK sharedLatest=%s baseline=%s to=%s executed=%d history=%s%n",
@@ -124,7 +124,8 @@ public final class RiskMigrationRunner {
         if (!Files.isDirectory(migrations)
                 || !Files.isRegularFile(migrations.resolve("V214__create_inventory_risk_foundation.sql"))
                 || !Files.isRegularFile(migrations.resolve("V219__harden_qiliang_model_lineage.sql"))
-                || !Files.isRegularFile(migrations.resolve("V220__create_expert_sft_queue.sql"))) {
+                || !Files.isRegularFile(migrations.resolve("V220__create_expert_sft_queue.sql"))
+                || !Files.isRegularFile(migrations.resolve("V221__grant_expert_queue_risk_runtime.sql"))) {
             throw new IllegalArgumentException("Controlled migration directory is incomplete: "+migrations);
         }
     }

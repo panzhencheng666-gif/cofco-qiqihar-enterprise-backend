@@ -41,14 +41,18 @@ GRANT INSERT ON TABLE
     risk.risk_case_feedback,
     risk.model_live_prediction,
     risk.model_evaluation,
-    risk.model_activation_event
+    risk.model_activation_event,
+    risk.expert_dataset_snapshot,
+    risk.expert_training_task,
+    risk.expert_training_audit
 TO qiqihar_risk_runtime;
 GRANT UPDATE ON TABLE
     risk.ai_model,
     risk.ai_training_policy,
     risk.training_schedule_execution,
     risk.training_run,
-    risk.model_version
+    risk.model_version,
+    risk.expert_training_task
 TO qiqihar_risk_runtime;
 GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA risk TO qiqihar_risk_runtime;
 
