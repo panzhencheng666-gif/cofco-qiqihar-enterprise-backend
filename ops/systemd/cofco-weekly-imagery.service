@@ -1,0 +1,37 @@
+[Unit]
+Description=COFCO Qiqihar weekly Sentinel-2 imagery synchronization
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=1d
+StartLimitBurst=4
+
+[Service]
+Type=oneshot
+User=cofco-imagery
+Group=cofco-imagery
+EnvironmentFile=/etc/cofco/weekly-imagery.env
+RuntimeDirectory=cofco-imagery
+RuntimeDirectoryMode=0750
+ExecStart=/usr/bin/flock --nonblock /run/cofco-imagery/sync.lock /usr/bin/python3 /usr/local/lib/cofco-imagery/weekly_imagery_sync.py --root /var/lib/cofco/imagery --aoi /usr/local/lib/cofco-imagery/qiqihar-aoi.geojson
+Restart=on-failure
+RestartSec=3h
+TimeoutStartSec=6h
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadOnlyPaths=/usr/local/lib/cofco-imagery
+ReadWritePaths=/var/lib/cofco/imagery
+
+[Install]
+WantedBy=multi-user.target

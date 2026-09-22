@@ -116,3 +116,37 @@ Sentinel-2 可提供约 5 天重访、10 米级真彩色数据，不等同于建
 `{year}`、`{week}` 和 `{apiKey}` 占位符接入。页面必须展示实际采集周，不得写成
 “实时卫星”。未配置版本化供应源时系统使用 Esri World Imagery 兼容回退，不能将其
 表述为“已启用周更影像”。
+
+### 8.1 自托管周更影像
+
+生产推荐使用 `scripts/weekly_imagery_sync.py` 每周生成本地、版本化瓦片。用户浏览时
+只访问本系统，不再逐次调用上游。工作进程依赖 Python 3 和 GDAL CLI
+（`gdalbuildvrt`、`gdalwarp`、`gdal_translate`、`gdal_calc.py`、`gdal2tiles.py`）。
+
+先从示例创建仅存在于受保护服务器的环境文件：
+
+```bash
+install -m 600 ops/imagery/weekly-imagery.env.example /secure/weekly-imagery.env
+sudo scripts/install-weekly-imagery-worker.sh \
+  --env-file /secure/weekly-imagery.env
+```
+
+安装器创建无登录权限的 `cofco-imagery` 用户、只读程序目录、
+`/var/lib/cofco/imagery` 版本库以及 systemd timer。定时器每周一北京时间 03:10
+运行；失败由 systemd 每三小时重试，最多四次。同一周成功后再次运行会幂等退出。
+
+正式启用后执行一次受控首发并核验：
+
+```bash
+sudo systemctl start cofco-weekly-imagery.service
+sudo systemctl status cofco-weekly-imagery.service --no-pager
+sudo -u cofco-imagery python3 \
+  /usr/local/lib/cofco-imagery/weekly_imagery_sync.py \
+  --root /var/lib/cofco/imagery \
+  --aoi /usr/local/lib/cofco-imagery/qiqihar-aoi.geojson --dry-run
+readlink -f /var/lib/cofco/imagery/current
+sha256sum -c /var/lib/cofco/imagery/current/manifest.sha256
+```
+
+正常运行不需要人工下载。没有合格影像或处理失败时 `current` 不变，在线地图继续使用
+上一成功版本；不得在没有首次同步成功、接口读回和浏览器验收时声称周更已经上线。
