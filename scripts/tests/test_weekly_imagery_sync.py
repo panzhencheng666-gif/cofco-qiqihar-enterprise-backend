@@ -15,6 +15,8 @@ sys.path.insert(0, str(REPOSITORY_ROOT))
 from scripts.weekly_imagery_sync import (  # noqa: E402
     Candidate,
     ReleaseValidationError,
+    _mgrs_grid_code,
+    _xyz_webp_relative,
     complete_week,
     parse_candidates,
     publish_release,
@@ -27,6 +29,31 @@ from scripts.weekly_imagery_sync import (  # noqa: E402
 
 
 class WeeklyImagerySyncTest(unittest.TestCase):
+    def test_grid_code_falls_back_to_earth_search_product_id(self):
+        self.assertEqual(
+            "51TVM",
+            _mgrs_grid_code({}, "S2B_T51TVM_20260920T025542_L2A"),
+        )
+
+    def test_grid_code_uses_earth_search_mgrs_components(self):
+        self.assertEqual(
+            "51TVM",
+            _mgrs_grid_code(
+                {
+                    "mgrs:utm_zone": 51,
+                    "mgrs:latitude_band": "T",
+                    "mgrs:grid_square": "VM",
+                },
+                "unstructured-product-id",
+            ),
+        )
+
+    def test_legacy_tms_tile_is_mapped_to_xyz_webp(self):
+        self.assertEqual(
+            Path("14/1234/10705.webp"),
+            _xyz_webp_relative(Path("14/1234/5678.png")),
+        )
+
     def test_complete_week_uses_previous_monday_to_sunday(self):
         window = complete_week(datetime(2026, 9, 22, 2, tzinfo=timezone.utc))
 

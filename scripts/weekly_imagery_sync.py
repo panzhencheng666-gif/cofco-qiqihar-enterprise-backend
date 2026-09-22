@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -129,6 +131,22 @@ def select_grid_candidates(ranked: Iterable[Candidate]) -> list[Candidate]:
     return selected
 
 
+def _mgrs_grid_code(properties: Mapping[str, Any], product_id: str) -> str | None:
+    direct = properties.get("grid:code") or properties.get("s2:mgrs_tile")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip().upper()
+    zone = properties.get("mgrs:utm_zone")
+    latitude_band = properties.get("mgrs:latitude_band")
+    grid_square = properties.get("mgrs:grid_square")
+    if zone is not None and latitude_band and grid_square:
+        try:
+            return f"{int(zone):02d}{str(latitude_band).upper()}{str(grid_square).upper()}"
+        except (TypeError, ValueError):
+            pass
+    match = re.search(r"(?:^|_)T?(\d{2}[A-Z]{3})(?:_|$)", product_id.upper())
+    return match.group(1) if match else None
+
+
 def require_free_space(root: Path, minimum_free_bytes: int) -> None:
     if minimum_free_bytes < 0:
         raise ValueError("minimum free bytes cannot be negative")
@@ -207,7 +225,7 @@ def parse_candidates(payload: Mapping[str, Any], allowed_hosts: Sequence[str]) -
                 cloud_percent,
                 True,
                 {key: value for key, value in normalized.items() if value is not None},
-                str(properties.get("grid:code") or properties.get("s2:mgrs_tile") or "") or None,
+                _mgrs_grid_code(properties, product_id),
                 tuple(float(value) for value in feature["bbox"])
                 if isinstance(feature.get("bbox"), list) and len(feature["bbox"]) == 4
                 else None,
@@ -311,6 +329,92 @@ def _run(command: Sequence[str], timeout: int, cwd: Path | None = None) -> None:
     except subprocess.CalledProcessError as failure:
         message = (failure.stderr or failure.stdout or "")[-4000:]
         raise RuntimeError(f"command failed: {command[0]}: {message}") from failure
+
+
+def _xyz_webp_relative(tms_png: Path) -> Path:
+    if len(tms_png.parts) != 3 or tms_png.suffix.lower() != ".png":
+        raise ValueError(f"invalid GDAL tile path: {tms_png}")
+    try:
+        zoom = int(tms_png.parts[0])
+        x = int(tms_png.parts[1])
+        tms_y = int(tms_png.stem)
+    except ValueError as failure:
+        raise ValueError(f"invalid GDAL tile path: {tms_png}") from failure
+    if zoom < 0 or x < 0 or tms_y < 0:
+        raise ValueError(f"invalid GDAL tile coordinates: {tms_png}")
+    xyz_y = (1 << zoom) - 1 - tms_y
+    if xyz_y < 0:
+        raise ValueError(f"invalid GDAL tile coordinates: {tms_png}")
+    return Path(str(zoom), str(x), f"{xyz_y}.webp")
+
+
+def _build_web_tiles(mosaic: Path, tiles: Path, config: SyncConfig) -> None:
+    try:
+        help_result = subprocess.run(
+            ["gdal2tiles.py", "--help"],
+            check=True,
+            timeout=min(config.command_timeout_seconds, 120),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError) as failure:
+        raise RuntimeError("unable to inspect gdal2tiles.py capabilities") from failure
+    zoom = f"--zoom={config.minimum_zoom}-{config.maximum_zoom}"
+    if "--xyz" in help_result.stdout and "--tiledriver" in help_result.stdout:
+        _run(
+            [
+                "gdal2tiles.py",
+                "--xyz",
+                "--webviewer=none",
+                "--tiledriver=WEBP",
+                "--webp-quality=82",
+                zoom,
+                "--processes=2",
+                str(mosaic),
+                str(tiles),
+            ],
+            config.command_timeout_seconds,
+        )
+        return
+
+    tms_tiles = tiles.parent / ".tiles-tms"
+    shutil.rmtree(tms_tiles, ignore_errors=True)
+    _run(
+        [
+            "gdal2tiles.py",
+            "--webviewer=none",
+            zoom,
+            "--processes=2",
+            str(mosaic),
+            str(tms_tiles),
+        ],
+        config.command_timeout_seconds,
+    )
+    sources = sorted(tms_tiles.glob("*/*/*.png"))
+    if not sources:
+        raise ReleaseValidationError("legacy GDAL produced no PNG imagery tiles")
+
+    def convert(source: Path) -> None:
+        destination = tiles / _xyz_webp_relative(source.relative_to(tms_tiles))
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        _run(
+            [
+                "gdal_translate",
+                "-of",
+                "WEBP",
+                "-co",
+                "QUALITY=82",
+                str(source),
+                str(destination),
+            ],
+            config.command_timeout_seconds,
+        )
+
+    workers = min(4, max(1, os.cpu_count() or 1))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+        list(executor.map(convert, sources))
+    shutil.rmtree(tms_tiles)
 
 
 def _vsicurl(url: str, allowed_hosts: Sequence[str]) -> str:
@@ -503,20 +607,7 @@ def build_release(
         )
         require_free_space(config.root, config.minimum_free_bytes)
         tiles = staging / "tiles"
-        _run(
-            [
-                "gdal2tiles.py",
-                "--xyz",
-                "--webviewer=none",
-                "--tiledriver=WEBP",
-                "--webp-quality=82",
-                f"--zoom={config.minimum_zoom}-{config.maximum_zoom}",
-                "--processes=2",
-                str(mosaic),
-                str(tiles),
-            ],
-            config.command_timeout_seconds,
-        )
+        _build_web_tiles(mosaic, tiles, config)
         if not any(tiles.rglob("*.webp")):
             raise ReleaseValidationError("GDAL produced no imagery tiles")
         observed = sorted(candidate.observed_at for candidate in candidates)
