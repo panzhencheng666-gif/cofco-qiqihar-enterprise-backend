@@ -170,6 +170,58 @@ target.chmod(source.stat().st_mode & 0o777)
 PY
 }
 
+wait_until_stopped() {
+  # bootout acknowledges removal asynchronously. Do not activate another release
+  # until the old registration, trainer and listener have all disappeared.
+  python3 - "$service_target" "$current_release" "$config_file" "${1:-30}" <<'PY'
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+target, release, config, budget = sys.argv[1:]
+budget = min(30.0, float(budget))
+deadline = time.monotonic() + budget
+
+def observe(args):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError()
+    return subprocess.run(args, capture_output=True, text=True, timeout=remaining)
+
+try:
+    port = "63201"
+    for line in Path(config).read_text().splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key == "RISK_LLM_PORT":
+            port = value
+    if not port.isdecimal() or not 1 <= int(port) <= 65535:
+        sys.exit(1)
+    current = Path(release)
+    known = {str(current / "risk-mlx-trainer.py"),
+             str(current.resolve() / "risk-mlx-trainer.py")}
+    while time.monotonic() < deadline:
+        registered = observe(["launchctl", "print", target]).returncode == 0
+        processes = observe(["ps", "-axo", "pid=,ppid=,command="])
+        if processes.returncode != 0:
+            sys.exit(1)
+        trainer_alive = False
+        for row in processes.stdout.splitlines():
+            parts = row.strip().split(None, 2)
+            if len(parts) == 3 and any(f" {path} " in f" {parts[2]} " for path in known):
+                trainer_alive = True
+        listener = observe(["lsof", f"-tiTCP:{port}", "-sTCP:LISTEN", "-P", "-n"])
+        if listener.returncode not in (0, 1) or listener.stderr.strip():
+            sys.exit(1)
+        if not registered and not trainer_alive and not listener.stdout.strip():
+            sys.exit(0)
+        time.sleep(min(0.5, budget / 20, max(0, deadline - time.monotonic())))
+except (OSError, ValueError, TimeoutError, subprocess.SubprocessError):
+    pass
+sys.exit(1)
+PY
+}
+
 wait_until_healthy() {
   # Include the healthcheck execution time in the deadline (curl itself can
   # take four seconds). Suppress all boundary output, including error payloads.
@@ -228,18 +280,19 @@ upgrade_node() {
   cp -p "$config_file" "$backup/training-node.env" || return 1
   ln -s "$previous" "$backup/release" || return 1
   stage_expert_config "$backup/next.env" || return 1
-  if ! stop_node; then
-    echo "Training node could not be stopped; upgrade not applied" >&2
+  if ! stop_node || ! wait_until_stopped; then
+    echo "STOP_INCOMPLETE: old target/trainer/port did not stop cleanly; release/config unchanged; upgrade not applied" >&2
     return 1
   fi
-  if install_release && mv "$backup/next.env" "$config_file" && start_node && wait_until_healthy; then
+  if install_release && mv "$backup/next.env" "$config_file" &&
+      launchctl bootstrap "$domain" "$installed_plist" && wait_until_healthy; then
     echo "RISK_TRAINING_NODE_UPGRADE_OK release=$(readlink "$current_release")"
     return 0
   fi
-  if stop_node && activate_release "$previous" &&
+  if stop_node && wait_until_stopped && activate_release "$previous" &&
       cp -p "$backup/training-node.env" "${config_file}.new" &&
       mv "${config_file}.new" "$config_file"; then
-    if start_node && wait_until_healthy; then rollback_healthy=yes; fi
+    if launchctl bootstrap "$domain" "$installed_plist" && wait_until_healthy; then rollback_healthy=yes; fi
     echo "Training node upgrade failed; previous release/config restored; rollback healthy=$rollback_healthy" >&2
   else
     echo "Training node upgrade failed; rollback restore failed; rollback healthy=no; checkpoint=$backup" >&2

@@ -64,6 +64,7 @@ case "$1" in
 esac
 ''')
         self.executable(self.bin / "ps", '#!/bin/bash\ncat "$FIXTURE_ROOT/processes"\n')
+        self.executable(self.bin / "lsof", '#!/bin/bash\nexit 1\n')
         (self.root / "processes").write_text("")
         self.executable(self.bin / "curl", '#!/bin/bash\necho 200\n')
         self.executable(self.source / "scripts/healthcheck-risk-training-node-local.sh", '''#!/bin/bash
@@ -89,6 +90,7 @@ test -f "$FIXTURE_ROOT/loaded"
         script = (REPO / "scripts/risk-training-node-local.sh").read_text()
         script = script.split('case "${1:-}" in')[0]
         script = script.replace("wait_until_healthy() {", "real_wait_until_healthy() {")
+        script = script.replace("wait_until_stopped() {", "real_wait_until_stopped() {")
         harness = self.root / "harness.sh"
         harness.write_text(script + '''
 backend_root="$FIXTURE_ROOT/source"
@@ -103,6 +105,9 @@ log_dir="$FIXTURE_ROOT/logs"
 # Exercise the same bounded polling with a shorter budget in isolated tests.
 if declare -f real_wait_until_healthy >/dev/null; then
   wait_until_healthy() { real_wait_until_healthy 0.12; }
+fi
+if declare -f real_wait_until_stopped >/dev/null; then
+  wait_until_stopped() { real_wait_until_stopped 2; }
 fi
 upgrade_node
 ''')
@@ -292,6 +297,105 @@ load_config
                                 text=True, capture_output=True, timeout=5)
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertFalse((self.root / "SHOULD_NOT_EXIST").exists())
+
+    def asynchronous_stop_boundary(self, stuck=""):
+        """Three separate exit stages, advanced by target observations, no processes."""
+        (self.root / "stuck").write_text(stuck)
+        shutil.copyfile(self.config, self.root / "original-config")
+        boundary = '''#!/usr/bin/env python3
+import os
+from pathlib import Path
+import sys
+r = Path(os.environ["FIXTURE_ROOT"])
+name = Path(sys.argv[0]).name
+args = sys.argv[1:]
+stuck = (r / "stuck").read_text()
+pending = (r / "stopping").exists()
+n = int((r / "count").read_text()) if (r / "count").exists() else 0
+if name == "launchctl":
+    with (r / "actions").open("a") as f: f.write(" ".join(args) + "\\n")
+    if args[0] == "bootout":
+        (r / "stopping").touch()
+    elif args[0] == "print":
+        if pending:
+            if ((r / "runtime/current").resolve() != r / "runtime/releases/previous"
+                    or (r / "training-node.env").read_bytes() != (r / "original-config").read_bytes()):
+                (r / "early-switch").touch()
+            n += 1
+            (r / "count").write_text(str(n))
+            if n >= 2 and stuck != "registration":
+                (r / "loaded").unlink(missing_ok=True)
+        sys.exit(0 if (r / "loaded").exists() else 1)
+    elif args[0] == "bootstrap":
+        if not (r / "drained").exists(): sys.exit(4)
+        (r / "stopping").unlink(missing_ok=True)
+        (r / "loaded").touch()
+        (r / "new-registration").touch()
+    elif args[0] != "kickstart": sys.exit(99)
+elif name == "ps":
+    if not (r / "new-registration").exists() and (not pending or n < 4 or stuck == "trainer"):
+        print(f"100 1 /python {r}/runtime/releases/previous/risk-mlx-trainer.py")
+elif name == "lsof":
+    with (r / "port-checks").open("a") as f: f.write(" ".join(args) + "\\n")
+    if n < 6 or stuck == "port":
+        print("100" if stuck != "port" else "999")
+    else:
+        if stuck not in ("registration", "trainer"): (r / "drained").touch()
+        sys.exit(1)
+'''
+        for name in ("launchctl", "ps", "lsof"):
+            self.executable(self.bin / name, boundary)
+        self.executable(self.source / "scripts/healthcheck-risk-training-node-local.sh", '''#!/bin/bash
+if [[ -f "$FIXTURE_ROOT/new-registration" ]]; then
+  echo new >> "$FIXTURE_ROOT/health-generation"
+else
+  echo old >> "$FIXTURE_ROOT/health-generation"
+fi
+test -f "$FIXTURE_ROOT/loaded"
+''')
+
+    def test_async_stop_waits_for_registration_trainer_and_port_before_activation(self):
+        self.asynchronous_stop_boundary()
+        result = self.run_upgrade()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertTrue((self.root / "new-registration").exists(),
+                        "UPGRADE_OK accepted old registration and old healthy listener")
+        self.assertFalse((self.root / "early-switch").exists())
+        self.assertEqual("new\n", (self.root / "health-generation").read_text())
+        self.assertNotIn("kickstart", self.actions.read_text())
+
+    def test_async_stop_timeout_leaves_release_and_config_untouched(self):
+        self.asynchronous_stop_boundary("registration")
+        started = time.monotonic()
+        result = self.run_upgrade()
+        self.assertNotEqual(0, result.returncode, "Old healthy listener caused false success")
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(self.previous, self.current.resolve())
+        self.assertEqual(self.original, self.config.read_bytes())
+        self.assertIn("STOP_INCOMPLETE", result.stderr)
+        self.assertFalse((self.root / "health-generation").exists())
+        self.assertNotIn("bootstrap", self.actions.read_text())
+
+    def test_async_stop_waits_for_trainer_even_after_registration_disappears(self):
+        self.asynchronous_stop_boundary("trainer")
+        result = self.run_upgrade()
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("STOP_INCOMPLETE", result.stderr)
+        self.assertEqual(self.previous, self.current.resolve())
+        self.assertEqual(self.original, self.config.read_bytes())
+        self.assertFalse((self.root / "early-switch").exists())
+
+    def test_async_stop_does_not_kill_unfamiliar_listener_on_configured_port(self):
+        self.original = self.original.replace(b"RISK_LLM_PORT=63201", b"RISK_LLM_PORT=64321")
+        self.config.write_bytes(self.original)
+        self.asynchronous_stop_boundary("port")
+        result = self.run_upgrade()
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("STOP_INCOMPLETE", result.stderr)
+        self.assertEqual(self.previous, self.current.resolve())
+        self.assertEqual(self.original, self.config.read_bytes())
+        self.assertIn("-tiTCP:64321", (self.root / "port-checks").read_text())
+        self.assertNotIn("kickstart", self.actions.read_text())
 
 
 if __name__ == "__main__":
