@@ -59,8 +59,21 @@ final class HttpRiskBusinessSessionClient implements RiskBusinessSessionClient {
                     if (value.isTextual() && !value.asText().isBlank()) permissions.add(value.asText());
                 });
             }
+            JsonNode root = data.path("rootAdministrator");
+            if (!root.isMissingNode() && !root.isBoolean()) {
+                throw new IllegalArgumentException("Invalid rootAdministrator claim");
+            }
+            Set<String> regions = new HashSet<>();
+            JsonNode regionValues = data.path("regionCodes");
+            if (!regionValues.isMissingNode() && !regionValues.isNull()) {
+                if (!regionValues.isArray()) throw new IllegalArgumentException("Invalid regionCodes claim");
+                regionValues.forEach(value -> {
+                    if (!value.isTextual()) throw new IllegalArgumentException("Invalid regionCode claim");
+                    regions.add(RiskRegionScope.requireRegionCode(value.asText()));
+                });
+            }
             return Optional.of(new RiskBusinessSession(
-                    subjectId, permissions, data.path("rootAdministrator").asBoolean(false)));
+                    subjectId, permissions, root.isBoolean() && root.asBoolean(), regions));
         } catch (RiskSessionValidationUnavailableException exception) {
             throw exception;
         } catch (InterruptedException exception) {

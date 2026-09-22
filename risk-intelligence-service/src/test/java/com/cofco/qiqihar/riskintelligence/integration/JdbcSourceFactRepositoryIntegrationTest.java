@@ -13,7 +13,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE,
+        properties = "qiqihar.risk.ingestion-allowed-regions=230221")
 @EnabledIfEnvironmentVariable(named = "RISK_DB_URL", matches = ".+")
 class JdbcSourceFactRepositoryIntegrationTest {
     @Autowired
@@ -31,7 +32,7 @@ class JdbcSourceFactRepositoryIntegrationTest {
                 recordId,
                 "v1",
                 Instant.parse("2026-09-21T01:00:00Z"),
-                Map.of("status", "VERIFIED", "sequence", 1));
+                Map.of("regionCode", "230221", "status", "VERIFIED", "sequence", 1));
 
         SourceFactReceipt first = ingestion.ingest(fact);
         SourceFactReceipt repeated = ingestion.ingest(fact);

@@ -1,5 +1,7 @@
 package com.cofco.qiqihar.riskintelligence.integration;
 
+import com.cofco.qiqihar.riskintelligence.security.RiskRegionScope;
+
 import java.time.Instant;
 import java.util.Map;
 import java.util.Objects;
@@ -19,7 +21,13 @@ public record SourceFact(
         sourceVersion = requireText(sourceVersion, "sourceVersion", 160);
         businessOccurredAt = Objects.requireNonNull(businessOccurredAt, "businessOccurredAt");
         payload = Map.copyOf(Objects.requireNonNull(payload, "payload"));
+        if (!(payload.get("regionCode") instanceof String regionCode)) {
+            throw new IllegalArgumentException("payload.regionCode must be a string");
+        }
+        RiskRegionScope.requireRegionCode(regionCode);
     }
+
+    public String regionCode() { return (String) payload.get("regionCode"); }
 
     SourceFactKey key() {
         return new SourceFactKey(sourceSystem, sourceRecordType, sourceRecordId, sourceVersion);

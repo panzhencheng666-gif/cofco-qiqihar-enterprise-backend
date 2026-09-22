@@ -32,25 +32,25 @@ public class RiskWorkbenchController {
             @RequestParam(defaultValue="") String search,
             @RequestParam(defaultValue="100") int limit,
             HttpServletRequest request) {
-        RiskBusinessSession.require(request);
-        return new ApiResponse<>(service.assessments(domain,level,status,search,limit));
+        return new ApiResponse<>(service.assessments(domain,level,status,search,limit,
+                RiskBusinessSession.require(request).scope()));
     }
 
     @GetMapping("/assessments/{assessmentId}")
     ApiResponse<RiskAssessmentDetail> assessment(
             @PathVariable UUID assessmentId,
             HttpServletRequest request) {
-        RiskBusinessSession.require(request);
-        return new ApiResponse<>(service.assessment(assessmentId));
+        return new ApiResponse<>(service.assessment(assessmentId, RiskBusinessSession.require(request).scope()));
     }
 
     @PostMapping("/assessments/{assessmentId}/feedback")
     ApiResponse<RiskFeedback> feedback(
             @PathVariable UUID assessmentId,@RequestBody FeedbackRequest request,
             HttpServletRequest servletRequest) {
+        RiskBusinessSession session = RiskBusinessSession.require(servletRequest);
         return new ApiResponse<>(service.submitFeedback(
                 assessmentId,request.conclusionCode(),request.reasonCode(),request.dispositionNote(),
-                RiskBusinessSession.require(servletRequest).subjectId()));
+                session.subjectId(), session.scope()));
     }
 
     record FeedbackRequest(String conclusionCode,String reasonCode,String dispositionNote) { }

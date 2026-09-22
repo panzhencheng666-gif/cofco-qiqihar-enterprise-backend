@@ -43,7 +43,7 @@ public final class RiskBusinessSessionFilter extends OncePerRequestFilter {
             return;
         }
         String permission = HttpMethod.GET.matches(request.getMethod()) ? "BUSINESS_READ" : "BUSINESS_UPDATE";
-        if (!session.permits(permission)) {
+        if (!session.permits(permission) || !session.scope().hasAccess()) {
             response.sendError(HttpServletResponse.SC_FORBIDDEN, "当前账号没有风险系统所需权限");
             return;
         }

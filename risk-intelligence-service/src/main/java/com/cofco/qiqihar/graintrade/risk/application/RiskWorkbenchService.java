@@ -1,5 +1,7 @@
 package com.cofco.qiqihar.graintrade.risk.application;
 
+import com.cofco.qiqihar.riskintelligence.security.RiskRegionScope;
+
 import com.cofco.qiqihar.graintrade.shared.application.ClientRequestException;
 import com.cofco.qiqihar.graintrade.shared.application.ConflictException;
 import com.cofco.qiqihar.graintrade.shared.application.ResourceNotFoundException;
@@ -30,34 +32,40 @@ public class RiskWorkbenchService {
 
     @Transactional(readOnly=true)
     public List<RiskAssessmentSummary> assessments(
-            String domainCode,String riskLevel,String reviewStatus,String search,int limit) {
+            String domainCode,String riskLevel,String reviewStatus,String search,int limit, RiskRegionScope scope) {
         RiskAssessmentQuery query=query(domainCode,riskLevel,reviewStatus,search,limit);
-        return repository.findAssessments(query);
+        return repository.findAssessments(query, scope);
     }
 
     @Transactional(readOnly=true)
-    public RiskAssessmentDetail assessment(UUID assessmentId) {
+    public RiskAssessmentDetail assessment(UUID assessmentId, RiskRegionScope scope) {
         if(assessmentId==null)throw invalidQuery();
-        return repository.findAssessment(assessmentId).orElseThrow(() -> new ResourceNotFoundException(
+        return repository.findAssessment(assessmentId, scope).orElseThrow(() -> new ResourceNotFoundException(
                 "RISK_ASSESSMENT_NOT_FOUND","风险研判记录不存在或已失效"));
     }
 
     @Transactional
     public RiskFeedback submitFeedback(
             UUID assessmentId,String conclusionCode,String reasonCode,String dispositionNote,
-            String actorSubject) {
+            String actorSubject, RiskRegionScope scope) {
         if(assessmentId==null||!CONCLUSIONS.contains(conclusionCode)||blank(reasonCode)
                 ||!reasonCode.matches("[A-Z0-9_]{2,80}")||blank(dispositionNote)
                 ||dispositionNote.codePointCount(0,dispositionNote.length())>2000) {
             throw new ClientRequestException("INVALID_RISK_FEEDBACK","复核结论、原因和处置说明不完整");
         }
-        if(!repository.assessmentExists(assessmentId))throw new ResourceNotFoundException(
+        if(!repository.assessmentExists(assessmentId, scope))throw new ResourceNotFoundException(
                 "RISK_ASSESSMENT_NOT_FOUND","风险研判记录不存在或已失效");
         Instant now=clock.instant();
         RiskFeedback feedback=repository.createFeedback(
-                assessmentId,conclusionCode,reasonCode,dispositionNote.strip(),actorSubject,now)
-                .orElseThrow(() -> new ConflictException(
-                        "RISK_FEEDBACK_ALREADY_EXISTS","该风险事件已经完成复核，请刷新后查看"));
+                assessmentId,conclusionCode,reasonCode,dispositionNote.strip(),actorSubject,now,scope)
+                .orElseThrow(() -> {
+                    if (!repository.assessmentExists(assessmentId, scope)) {
+                        return new ResourceNotFoundException(
+                                "RISK_ASSESSMENT_NOT_FOUND","风险研判记录不存在或已失效");
+                    }
+                    return new ConflictException(
+                            "RISK_FEEDBACK_ALREADY_EXISTS","该风险事件已经完成复核，请刷新后查看");
+                });
         return feedback;
     }
 

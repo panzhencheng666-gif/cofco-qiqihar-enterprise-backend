@@ -26,6 +26,22 @@ class TrainingNodeControllerTest {
     private static final String TOKEN="node-secret";
     private static final String NODE="mac-m5-max";
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"claims", "scoring-claims"})
+    void businessSessionAndForgedRootHeadersCannotReadGlobalModelInputs(String endpoint) throws Exception {
+        var coordinator = mock(RemoteTrainingCoordinator.class);
+        var scoring = mock(RemoteScoringCoordinator.class);
+        var artifacts = mock(RemoteArtifactStore.class);
+        var mvc = MockMvcBuilders.standaloneSetup(
+                new TrainingNodeController(coordinator, scoring, artifacts, TOKEN)).build();
+        mvc.perform(post("/api/v1/risk-intelligence/training-node/" + endpoint)
+                .header("Cookie", "session=synthetic-regional-user")
+                .header("X-Root-Administrator", "true").header("X-Region-Codes", "*")
+                .header("X-Risk-Training-Node-Id", NODE))
+                .andExpect(status().isUnauthorized());
+        org.mockito.Mockito.verifyNoInteractions(coordinator, scoring, artifacts);
+    }
+
     @Test
     void rejectsAClaimWithoutTheTrainingNodeCredential() throws Exception {
         RemoteTrainingCoordinator coordinator=mock(RemoteTrainingCoordinator.class);

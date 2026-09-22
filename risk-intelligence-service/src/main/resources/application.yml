@@ -22,6 +22,7 @@ qiqihar:
   risk:
     expected-database: ${RISK_EXPECTED_DATABASE:qiqihar_enterprise}
     ingestion-key: ${RISK_INGESTION_KEY:}
+    ingestion-allowed-regions: ${RISK_INGESTION_ALLOWED_REGIONS:}
     business-session-url: ${RISK_BUSINESS_SESSION_URL:}
     training:
       enabled: ${RISK_TRAINING_ENABLED:false}

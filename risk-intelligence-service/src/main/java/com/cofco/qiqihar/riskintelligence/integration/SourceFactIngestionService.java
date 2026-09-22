@@ -11,6 +11,13 @@ import java.util.HexFormat;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.Set;
+import java.util.Arrays;
+import java.util.stream.Collectors;
+import com.cofco.qiqihar.riskintelligence.security.RiskRegionScope;
+import com.cofco.qiqihar.riskintelligence.security.RiskApiException;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
@@ -20,15 +27,23 @@ public class SourceFactIngestionService {
     private final SourceFactRepository repository;
     private final ObjectMapper json;
     private final Clock clock;
+    private final Set<String> allowedRegions;
 
-    public SourceFactIngestionService(SourceFactRepository repository, ObjectMapper json, Clock clock) {
+    public SourceFactIngestionService(SourceFactRepository repository, ObjectMapper json, Clock clock,
+            @Value("${qiqihar.risk.ingestion-allowed-regions:}") String allowedRegions) {
         this.repository = repository;
         this.json = json;
         this.clock = clock;
+        this.allowedRegions = allowedRegions.isEmpty() ? Set.of() : Arrays.stream(allowedRegions.split(",", -1))
+                .map(String::strip).map(RiskRegionScope::requireRegionCode).collect(Collectors.toUnmodifiableSet());
     }
 
     @Transactional
     public SourceFactReceipt ingest(SourceFact fact) {
+        if (!allowedRegions.contains(fact.regionCode())) {
+            throw new RiskApiException(HttpStatus.FORBIDDEN, "RISK_INGESTION_REGION_FORBIDDEN",
+                    "来源事实区域不在配置的接入范围内");
+        }
         SourceFactKey key = fact.key();
         String hash = hash(fact.payload());
         var existing = repository.find(key);
