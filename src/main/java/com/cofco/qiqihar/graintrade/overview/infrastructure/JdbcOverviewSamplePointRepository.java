@@ -53,12 +53,20 @@ public class JdbcOverviewSamplePointRepository
 
     private final JdbcClient jdbc;
     private final Clock clock;
+    private final ClientQueryCancellation queryCancellation;
     private final Map<ProjectionCacheKey, CompletableFuture<EntityProjection>> baseProjectionInFlight =
             new ConcurrentHashMap<>();
 
     public JdbcOverviewSamplePointRepository(JdbcClient jdbc, Clock clock) {
+        this(jdbc, clock, ClientQueryCancellation.inactive());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public JdbcOverviewSamplePointRepository(JdbcClient jdbc, Clock clock,
+            ClientQueryCancellation queryCancellation) {
         this.jdbc = jdbc;
         this.clock = clock;
+        this.queryCancellation = queryCancellation;
     }
 
     @Override
@@ -389,17 +397,16 @@ public class JdbcOverviewSamplePointRepository
     @Transactional(readOnly = true)
     public OverviewSamplePointList list(int year, String productCode, String regionCode,
             String categoryCode, String typeCode, String query, Set<String> authorizedRegionCodes) {
-        CompletableFuture<Map<UUID, StableIdentityRefs>> identityRefs = stableIdentityRefsAsync(year);
+        queryCancellation.arm(jdbc);
         EntityProjection projection = projection(year, productCode, regionCode, categoryCode, typeCode, query,
                 authorizedRegionCodes, false);
         EntityProjection catalogProjection = categoryCode == null && typeCode == null && query == null
                 ? projection
                 : projection(year, productCode, regionCode, null, null, null,
                         authorizedRegionCodes, false);
-        Map<UUID, StableIdentityRefs> stableIdentityRefs = identityRefs.join();
         return listFromProjection(
                 regionCode, productCode, categoryCode, typeCode, projection, catalogProjection,
-                stableIdentityRefs);
+                Map.of());
     }
 
     private OverviewSamplePointList listFromProjection(
@@ -431,6 +438,7 @@ public class JdbcOverviewSamplePointRepository
     @Transactional(readOnly = true)
     public List<OverviewSamplePointIcon> icons(int year, String productCode, String regionCode,
             String categoryCode, String typeCode, String query, Set<String> authorizedRegionCodes) {
+        queryCancellation.arm(jdbc);
         return iconsFromProjection(projection(
                 year, productCode, regionCode, categoryCode, typeCode, query, authorizedRegionCodes),
                 productCode);
@@ -612,7 +620,7 @@ public class JdbcOverviewSamplePointRepository
     @Transactional(readOnly = true)
     public OverviewSamplePointSnapshot snapshot(int year, String productCode, String regionCode,
             String categoryCode, String typeCode, String query, Set<String> authorizedRegionCodes) {
-        CompletableFuture<Map<UUID, StableIdentityRefs>> identityRefs = stableIdentityRefsAsync(year);
+        queryCancellation.arm(jdbc);
         EntityProjection projection = projection(
                 year, productCode, regionCode, categoryCode, typeCode, query,
                 authorizedRegionCodes, false);
@@ -620,56 +628,10 @@ public class JdbcOverviewSamplePointRepository
                 ? projection
                 : projection(year, productCode, regionCode, null, null, null,
                         authorizedRegionCodes, false);
-        Map<UUID, StableIdentityRefs> stableIdentityRefs = identityRefs.join();
         return new OverviewSamplePointSnapshot(
                 listFromProjection(regionCode, productCode, categoryCode, typeCode,
-                        projection, catalogProjection, stableIdentityRefs),
+                        projection, catalogProjection, Map.of()),
                 iconsFromProjection(projection, productCode));
-    }
-
-    private CompletableFuture<Map<UUID, StableIdentityRefs>> stableIdentityRefsAsync(int year) {
-        return CompletableFuture.supplyAsync(
-                () -> stableIdentityRefs(year),
-                command -> Thread.ofVirtual().name("overview-stable-identities").start(command));
-    }
-
-    private Map<UUID, StableIdentityRefs> stableIdentityRefs(int year) {
-        List<StableIdentityAssociation> associations = jdbc.sql("""
-                SELECT DISTINCT point.sample_point_id,source.category_code,
-                       source.category_name,source.product_code,source.product_name
-                FROM overview.current_sample_point_query_source(
-                  :year,''::varchar,true,false) source
-                LEFT JOIN registry.current_sample_subject_resolution resolution
-                  ON resolution.source_domain=source.category_code
-                 AND resolution.source_record_id=source.source_record_id
-                JOIN registry.sample_point point ON point.sample_point_id=COALESCE(
-                  resolution.target_sample_point_id,source.sample_point_id)
-                WHERE source.sample_point_id IS NOT NULL
-                  AND resolution.resolution_action IS DISTINCT FROM 'VOID'
-                  AND point.deletion_state='ACTIVE'
-                  AND point.approval_state='APPROVED'
-                  AND point.location_state='VALID'
-                ORDER BY point.sample_point_id,source.category_code,source.product_code
-                """).param("year", year)
-                .query((row, ignored) -> new StableIdentityAssociation(
-                        row.getObject("sample_point_id", UUID.class),
-                        new OverviewSamplePointList.CategoryRef(
-                                row.getString("category_code"), row.getString("category_name")),
-                        new OverviewSamplePointList.ProductRef(
-                                row.getString("product_code"), row.getString("product_name"))))
-                .list();
-        Map<UUID, List<StableIdentityAssociation>> byPoint = associations.stream()
-                .collect(Collectors.groupingBy(StableIdentityAssociation::samplePointId,
-                        LinkedHashMap::new, Collectors.toList()));
-        return byPoint.entrySet().stream().collect(Collectors.toMap(
-                Map.Entry::getKey,
-                entry -> new StableIdentityRefs(
-                        entry.getValue().stream().map(StableIdentityAssociation::category)
-                                .distinct().toList(),
-                        entry.getValue().stream().map(StableIdentityAssociation::product)
-                                .distinct().toList()),
-                (left, right) -> left,
-                LinkedHashMap::new));
     }
 
     private List<OverviewSamplePointIcon> iconsFromProjection(

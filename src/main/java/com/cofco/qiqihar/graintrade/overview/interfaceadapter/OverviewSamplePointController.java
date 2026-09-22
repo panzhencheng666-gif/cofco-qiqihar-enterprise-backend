@@ -11,6 +11,7 @@ import com.cofco.qiqihar.graintrade.shared.interfaceadapter.ApiResponse;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.context.request.async.WebAsyncTask;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -37,14 +38,15 @@ public class OverviewSamplePointController {
     }
 
     @GetMapping("/api/v1/overview/sample-points")
-    ApiResponse<OverviewSamplePointList> list(
+    WebAsyncTask<ApiResponse<OverviewSamplePointList>> list(
             @RequestParam(required = false) Integer year,
             @RequestParam(required = false) String productCode,
             @RequestParam String regionCode,
             @RequestParam(required = false) String categoryCode,
             @RequestParam(required = false) String typeCode,
             @RequestParam(required = false) String query) {
-        return new ApiResponse<>(service.list(year, productCode, regionCode, categoryCode, typeCode, query));
+        return cancellable(() -> new ApiResponse<>(service.list(
+                year, productCode, regionCode, categoryCode, typeCode, query)));
     }
 
     @GetMapping("/api/v1/overview/sample-points/export")
@@ -60,14 +62,15 @@ public class OverviewSamplePointController {
     }
 
     @GetMapping("/api/v1/overview/sample-point-icons")
-    ApiResponse<List<OverviewSamplePointIcon>> icons(
+    WebAsyncTask<ApiResponse<List<OverviewSamplePointIcon>>> icons(
             @RequestParam(required = false) Integer year,
             @RequestParam(required = false) String productCode,
             @RequestParam String regionCode,
             @RequestParam(required = false) String categoryCode,
             @RequestParam(required = false) String typeCode,
             @RequestParam(required = false) String query) {
-        return new ApiResponse<>(service.icons(year, productCode, regionCode, categoryCode, typeCode, query));
+        return cancellable(() -> new ApiResponse<>(service.icons(
+                year, productCode, regionCode, categoryCode, typeCode, query)));
     }
 
     @GetMapping("/api/v1/overview/historical-sample-point-aggregates")
@@ -103,15 +106,24 @@ public class OverviewSamplePointController {
     }
 
     @GetMapping("/api/v1/overview/sample-point-snapshot")
-    ApiResponse<OverviewSamplePointSnapshot> snapshot(
+    WebAsyncTask<ApiResponse<OverviewSamplePointSnapshot>> snapshot(
             @RequestParam(required = false) Integer year,
             @RequestParam(required = false) String productCode,
             @RequestParam String regionCode,
             @RequestParam(required = false) String categoryCode,
             @RequestParam(required = false) String typeCode,
             @RequestParam(required = false) String query) {
-        return new ApiResponse<>(service.snapshot(
-                year, productCode, regionCode, categoryCode, typeCode, query));
+        return cancellable(() -> new ApiResponse<>(service.snapshot(
+                year, productCode, regionCode, categoryCode, typeCode, query)));
+    }
+
+    private static <T> WebAsyncTask<T> cancellable(java.util.concurrent.Callable<T> work) {
+        WebAsyncTask<T> task = new WebAsyncTask<>(35_000L, work);
+        task.onTimeout(() -> {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.GATEWAY_TIMEOUT, "样本查询已取消");
+        });
+        return task;
     }
 
     @GetMapping("/api/v1/overview/sample-points/{samplePointId}")

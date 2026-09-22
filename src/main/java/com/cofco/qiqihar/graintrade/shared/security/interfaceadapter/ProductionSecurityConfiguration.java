@@ -126,7 +126,7 @@ public class ProductionSecurityConfiguration {
     SecurityFilterChain productionSecurityFilterChain(
             HttpSecurity http,
             SecurityStartupInvariant startupInvariant,
-            org.springframework.beans.factory.ObjectProvider<JdbcClient> jdbcProvider,
+            @org.springframework.beans.factory.annotation.Qualifier("sessionJdbcClient") JdbcClient sessionJdbc,
             com.cofco.qiqihar.graintrade.shared.security.application.RegistrationDraftCompletion registrationDrafts,
             @Value("${QIQIHAR_SMS_ENABLED:false}") boolean smsEnabled,
             @Value("${QIQIHAR_EMAIL_ENABLED:false}") boolean emailEnabled,
@@ -193,7 +193,7 @@ public class ProductionSecurityConfiguration {
                 .addFilterBefore(new OidcBackChannelFailureResponseFilter(), SecurityContextHolderFilter.class)
                 .addFilterBefore(new ExpiredSessionAuditFilter(sessionAudit),AnonymousAuthenticationFilter.class)
                 .addFilterBefore(new EnterpriseOidcAccessFilter(
-                        acceptedAmr,acceptedAcr,principals,sessionAudit,jdbcProvider.getIfAvailable(),smsEnabled,emailEnabled),AuthorizationFilter.class)
+                        acceptedAmr,acceptedAcr,principals,sessionAudit,sessionJdbc,smsEnabled,emailEnabled),AuthorizationFilter.class)
                 .addFilterAfter(new CsrfCookieExposureFilter(),AuthorizationFilter.class);
         return http.build();
     }
