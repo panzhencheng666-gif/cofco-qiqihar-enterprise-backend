@@ -58,6 +58,7 @@ class Candidate:
     cloud_percent: float
     authorized: bool
     assets: Mapping[str, str]
+    grid_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,8 @@ class SyncConfig:
     request_timeout_seconds: int
     command_timeout_seconds: int
     bearer_token: str
+    minimum_free_bytes: int
+    retention_count: int
 
 
 @dataclass(frozen=True)
@@ -110,6 +113,31 @@ def rank_candidates(
         key=lambda item: (item.observed_at, -item.cloud_percent, item.product_id),
         reverse=True,
     )
+
+
+def select_grid_candidates(ranked: Iterable[Candidate]) -> list[Candidate]:
+    """Keep the highest-ranked observation for each Sentinel acquisition grid."""
+    selected: list[Candidate] = []
+    seen: set[str] = set()
+    for candidate in ranked:
+        grid_key = candidate.grid_code or f"product:{candidate.product_id}"
+        if grid_key in seen:
+            continue
+        seen.add(grid_key)
+        selected.append(candidate)
+    return selected
+
+
+def require_free_space(root: Path, minimum_free_bytes: int) -> None:
+    if minimum_free_bytes < 0:
+        raise ValueError("minimum free bytes cannot be negative")
+    root.mkdir(parents=True, exist_ok=True)
+    free_bytes = shutil.disk_usage(root).free
+    if free_bytes < minimum_free_bytes:
+        raise RuntimeError(
+            "insufficient free disk space for weekly imagery build: "
+            f"available={free_bytes}, required={minimum_free_bytes}"
+        )
 
 
 def _asset_href(assets: Mapping[str, Any], aliases: Sequence[str]) -> str | None:
@@ -178,6 +206,7 @@ def parse_candidates(payload: Mapping[str, Any], allowed_hosts: Sequence[str]) -
                 cloud_percent,
                 True,
                 {key: value for key, value in normalized.items() if value is not None},
+                str(properties.get("grid:code") or properties.get("s2:mgrs_tile") or "") or None,
             )
         )
     return parsed
@@ -608,6 +637,10 @@ def _config(arguments: argparse.Namespace) -> SyncConfig:
         request_timeout_seconds=int(os.getenv("QIQIHAR_IMAGERY_REQUEST_TIMEOUT_SECONDS", "60")),
         command_timeout_seconds=int(os.getenv("QIQIHAR_IMAGERY_COMMAND_TIMEOUT_SECONDS", "18000")),
         bearer_token=os.getenv("COPERNICUS_ACCESS_TOKEN", ""),
+        minimum_free_bytes=int(
+            os.getenv("QIQIHAR_IMAGERY_MINIMUM_FREE_BYTES", str(6 * 1024**3))
+        ),
+        retention_count=int(os.getenv("QIQIHAR_IMAGERY_RETENTION_COUNT", "2")),
     )
 
 
@@ -655,9 +688,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     if not candidates:
         raise RuntimeError("no authorized cloud-qualified Sentinel-2 product is available")
+    candidates = select_grid_candidates(candidates)
+    require_free_space(config.root, config.minimum_free_bytes)
     staging = build_release(config, window, candidates, now)
     published = publish_release(config.root, staging)
-    retain_releases(config.root)
+    retain_releases(config.root, keep=config.retention_count)
     print(f"weekly imagery published: {published.name}")
     return 0
 
