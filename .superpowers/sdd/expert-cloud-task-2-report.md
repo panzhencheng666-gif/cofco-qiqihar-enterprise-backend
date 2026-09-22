@@ -1,6 +1,6 @@
 # Expert cloud Task 2 implementation report
 
-Status: implementation complete; independent review pending.
+Status: implementation and initial review remediation complete; clean re-review pending.
 
 ## Implemented
 
@@ -25,10 +25,21 @@ Self-review RED for durable completion replay:
 
 Result: `FAILED (failures=1)` because the retained claim restarted at `/progress` instead of replaying only exact completion. This drove persisted progress, result, and stored-artifact checkpoints.
 
+Review-remediation RED evidence:
+
+- Spawn/attach cancellation test: `test_cancel_in_spawn_attach_window_still_reaps_owned_child` failed because the spawned child remained live after `EXPERT_TRAINING_CANCELLED`.
+- Restart test: `test_stale_lock_from_dead_parent_is_recovered` failed with `EXPERT_TRAINING_BUSY` for a dead owner's lock.
+- Busy retry test: `test_local_workload_busy_is_retryable_and_does_not_mark_cloud_failed` failed because `503 WORKLOAD_BUSY` attempted `/failure`.
+- Malformed success test: `test_malformed_local_success_is_acknowledged_as_redacted_permanent_failure` raised `JSONDecodeError` instead of sending the fixed redacted failure.
+- Durable completion test with the uploaded local directory removed failed by calling `/failure` instead of replaying completion from the progress-95 checkpoint.
+- Duplicate live cancellation test observed multiple `_stop` paths (including a second `killpg` failure) instead of a single atomic stop owner.
+
+All six review regressions passed after the corresponding minimal fixes.
+
 Final GREEN:
 
-- `python3 -m unittest test_remote_worker.py test_expert_training.py test_expert_training_http.py test_node_deployment.py` -> `Ran 78 tests in 39.367s`, `OK`.
-- `python3 -m unittest discover -s tools/risk-mlx-trainer -p 'test_*.py'` -> `Ran 126 tests in 40.972s`, `OK`.
+- `python3 -m unittest test_remote_worker.py test_expert_training.py test_expert_training_http.py test_node_deployment.py` -> `Ran 82 tests in 43.062s`, `OK`.
+- `python3 -m unittest discover -s tools/risk-mlx-trainer -p 'test_*.py'` -> `Ran 130 tests in 42.896s`, `OK`.
 - `bash scripts/tests/risk-training-node-local.test.sh` -> `RISK_TRAINING_NODE_LOCAL_CONTRACT_OK`.
 - `python3 -m py_compile tools/risk-mlx-trainer/remote_worker.py tools/risk-mlx-trainer/expert_training_process.py tools/risk-mlx-trainer/expert_training.py tools/risk-mlx-trainer/server.py` -> exit 0.
 - `git diff --check` -> exit 0.
@@ -48,13 +59,20 @@ The full discovery output includes the pre-existing HTTP request log lines from 
 - `scripts/risk-training-node-local.sh`
 - `scripts/tests/risk-training-node-local.test.sh`
 
-Implementation commit: `f4263f3 feat(trainer): run persistent expert cloud jobs`.
+Commits:
+
+- `f4263f3 feat(trainer): run persistent expert cloud jobs`
+- `61d1b37 fix(trainer): recover expert runs safely`
+- `6cb9b66 fix(trainer): make cancellation and completion replay exact`
 
 ## Self-review
 
 - Confirmed existing DOMAIN_LLM training/scoring and expert dataset/training response contracts remain intact; the only existing error-path change removes raw local response bodies from legacy worker exceptions.
 - Confirmed cancellation never uses a caller-provided PID and only targets the registered `Popen` child process group for the exact safe run ID.
 - Confirmed completion response loss retains a private checkpoint and retries only the exact stored reference/hash/metrics, avoiding cloud progress regression.
+- Confirmed progress-95 completion replay does not require the already-uploaded local artifact to remain present.
+- Confirmed exactly one stop owner terminates an active child even when duplicate cancellation and the training thread converge.
+- Confirmed an exclusive advisory lock rejects a live owner but recovers a dead owner's lock and private staging directory after restart.
 - Confirmed cloud/network/5xx paths retain state, while exact 409 lease loss discards only the expert state file and prevents upload/completion.
 - Confirmed no new config key, credential, public listener, cloud resource, deployment, or real 27B/GPU run was introduced.
 
