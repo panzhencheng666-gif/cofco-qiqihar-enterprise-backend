@@ -15,6 +15,7 @@ sys.path.insert(0, str(REPOSITORY_ROOT))
 from scripts.weekly_imagery_sync import (  # noqa: E402
     Candidate,
     ReleaseValidationError,
+    _legacy_webp_band_args,
     _mgrs_grid_code,
     _xyz_webp_relative,
     complete_week,
@@ -53,6 +54,16 @@ class WeeklyImagerySyncTest(unittest.TestCase):
             Path("14/1234/10705.webp"),
             _xyz_webp_relative(Path("14/1234/5678.png")),
         )
+
+    def test_legacy_gray_alpha_png_is_expanded_to_rgba(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "tile.png"
+            source.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 17 + b"\x04")
+
+            self.assertEqual(
+                ["-b", "1", "-b", "1", "-b", "1", "-b", "2"],
+                _legacy_webp_band_args(source),
+            )
 
     def test_complete_week_uses_previous_monday_to_sunday(self):
         window = complete_week(datetime(2026, 9, 22, 2, tzinfo=timezone.utc))
