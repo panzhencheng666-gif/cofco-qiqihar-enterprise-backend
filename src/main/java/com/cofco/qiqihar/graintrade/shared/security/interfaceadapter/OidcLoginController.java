@@ -56,12 +56,11 @@ public class OidcLoginController {
     RedirectView login(
             @RequestParam(required = false) String returnTo,
             HttpServletRequest request) {
-        var session = request.getSession();
-        session.removeAttribute(LOGIN_RETURN_TO_ATTRIBUTE);
-        if (RISK_APPLICATION_PATH.equals(returnTo)) {
-            session.setAttribute(LOGIN_RETURN_TO_ATTRIBUTE, RISK_APPLICATION_PATH);
-        }
-        RedirectView redirect = new RedirectView("/oauth2/authorization/enterprise");
+        var session = request.getSession(false);
+        if (session != null) session.removeAttribute(LOGIN_RETURN_TO_ATTRIBUTE);
+        String[] targets = request.getParameterValues("returnTo");
+        boolean risk = targets != null && targets.length == 1 && RISK_APPLICATION_PATH.equals(returnTo);
+        RedirectView redirect = new RedirectView("/oauth2/authorization/enterprise" + (risk ? "?returnTo=/risk/" : ""));
         redirect.setExposeModelAttributes(false);
         return redirect;
     }

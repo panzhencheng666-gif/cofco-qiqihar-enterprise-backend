@@ -31,11 +31,24 @@ class OidcLoginControllerTest {
 
         mvc.perform(get("/api/v1/session/login").param("returnTo", "/risk/"))
                 .andExpect(status().isFound())
-                .andExpect(header().string("Location", "/oauth2/authorization/enterprise"))
-                .andExpect(request().sessionAttribute("COFCO_LOGIN_RETURN_TO", "/risk/"));
+                .andExpect(header().string("Location", "/oauth2/authorization/enterprise?returnTo=/risk/"))
+                .andExpect(request().sessionAttributeDoesNotExist("COFCO_LOGIN_RETURN_TO"));
 
         mvc.perform(get("/api/v1/session/login").param("returnTo", "https://evil.example/risk/"))
                 .andExpect(status().isFound())
+                .andExpect(header().string("Location", "/oauth2/authorization/enterprise"))
                 .andExpect(request().sessionAttributeDoesNotExist("COFCO_LOGIN_RETURN_TO"));
+    }
+
+    @Test
+    void normalLoginClearsLegacyTargetAndDoesNotBorrowAnotherTabsTarget() throws Exception {
+        var mvc = MockMvcBuilders.standaloneSetup(new OidcLoginController()).build();
+        var session = new org.springframework.mock.web.MockHttpSession();
+        session.setAttribute("COFCO_LOGIN_RETURN_TO", "/risk/");
+        mvc.perform(get("/api/v1/session/login").session(session))
+                .andExpect(header().string("Location", "/oauth2/authorization/enterprise"))
+                .andExpect(request().sessionAttributeDoesNotExist("COFCO_LOGIN_RETURN_TO"));
+        mvc.perform(get("/api/v1/session/login").param("returnTo", "/risk/", "https://evil.example"))
+                .andExpect(header().string("Location", "/oauth2/authorization/enterprise"));
     }
 }

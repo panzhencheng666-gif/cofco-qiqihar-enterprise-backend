@@ -184,8 +184,9 @@ public class ProductionSecurityConfiguration {
                 .oauth2Login(login -> login.loginPage("/api/v1/session/login")
                         .failureUrl("/login?error")
                         .successHandler(loginSuccess)
-                        .authorizationEndpoint(endpoint -> endpoint.authorizationRequestResolver(
-                                new EnterpriseAuthorizationRequestResolver(clientRegistrations))))
+                        .authorizationEndpoint(endpoint -> endpoint
+                                .authorizationRequestRepository(new ConcurrentAuthorizationRequestRepository())
+                                .authorizationRequestResolver(new EnterpriseAuthorizationRequestResolver(clientRegistrations))))
                 .oidcLogout(oidc -> oidc.backChannel(backChannel -> { }))
                 .logout(logout -> logout
                         .logoutUrl("/api/v1/session/logout")
@@ -384,7 +385,8 @@ public class ProductionSecurityConfiguration {
             var session=request.getSession();
             Authentication stableAuthentication=bindStableSubject(authentication,principal);
             audit.record(stableAuthentication.getName(),session.getId(),"LOGIN_SUCCESS","{}");
-            Object requestedReturnTo=session.getAttribute(OidcLoginController.LOGIN_RETURN_TO_ATTRIBUTE);
+            Object requestedReturnTo=request.getAttribute(ConcurrentAuthorizationRequestRepository.CALLBACK_RETURN_TO_ATTRIBUTE);
+            request.removeAttribute(ConcurrentAuthorizationRequestRepository.CALLBACK_RETURN_TO_ATTRIBUTE);
             session.removeAttribute(OidcLoginController.LOGIN_RETURN_TO_ATTRIBUTE);
             if ("/risk/".equals(requestedReturnTo)) {
                 response.sendRedirect(request.getContextPath()+"/risk/");

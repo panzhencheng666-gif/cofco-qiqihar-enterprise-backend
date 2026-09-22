@@ -92,6 +92,47 @@ class ProductionSecurityConfigurationTest {
     @Autowired
     OidcSessionRegistry oidcSessions;
 
+    @Autowired
+    org.springframework.security.web.SecurityFilterChain securityFilterChain;
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void authorizationAndCallbackFiltersShareTheBoundedRepository() throws Exception {
+        var redirectFilter = securityFilterChain.getFilters().stream()
+                .filter(org.springframework.security.oauth2.client.web.OAuth2AuthorizationRequestRedirectFilter.class::isInstance)
+                .findFirst().orElseThrow();
+        var callbackFilter = securityFilterChain.getFilters().stream()
+                .filter(org.springframework.security.oauth2.client.web.OAuth2LoginAuthenticationFilter.class::isInstance)
+                .findFirst().orElseThrow();
+        var repository = (org.springframework.security.oauth2.client.web.AuthorizationRequestRepository<
+                org.springframework.security.oauth2.core.endpoint.OAuth2AuthorizationRequest>)
+                org.springframework.test.util.ReflectionTestUtils.getField(redirectFilter, "authorizationRequestRepository");
+        org.assertj.core.api.Assertions.assertThat(repository.getClass().getSimpleName())
+                .isEqualTo("ConcurrentAuthorizationRequestRepository");
+        org.assertj.core.api.Assertions.assertThat(org.springframework.test.util.ReflectionTestUtils
+                .getField(callbackFilter, "authorizationRequestRepository")).isSameAs(repository);
+        var session = new MockHttpSession();
+        var risk = mockMvc.perform(get("/oauth2/authorization/enterprise").session(session)
+                .param("returnTo", "/risk/")).andExpect(status().isFound()).andReturn();
+        var normal = mockMvc.perform(get("/oauth2/authorization/enterprise").session(session))
+                .andExpect(status().isFound()).andReturn();
+        String riskState = org.springframework.web.util.UriComponentsBuilder.fromUriString(
+                risk.getResponse().getRedirectedUrl()).build().getQueryParams().getFirst("state");
+        String normalState = org.springframework.web.util.UriComponentsBuilder.fromUriString(
+                normal.getResponse().getRedirectedUrl()).build().getQueryParams().getFirst("state");
+        var riskCallback = ConcurrentAuthorizationRequestRepositoryTest.request(session,
+                org.springframework.web.util.UriUtils.decode(riskState, java.nio.charset.StandardCharsets.UTF_8));
+        var normalCallback = ConcurrentAuthorizationRequestRepositoryTest.request(session,
+                org.springframework.web.util.UriUtils.decode(normalState, java.nio.charset.StandardCharsets.UTF_8));
+        org.assertj.core.api.Assertions.assertThat(repository.removeAuthorizationRequest(
+                riskCallback, new org.springframework.mock.web.MockHttpServletResponse())).isNotNull();
+        org.assertj.core.api.Assertions.assertThat(riskCallback.getAttribute("COFCO_OIDC_CALLBACK_RETURN_TO"))
+                .isEqualTo("/risk/");
+        org.assertj.core.api.Assertions.assertThat(repository.removeAuthorizationRequest(
+                normalCallback, new org.springframework.mock.web.MockHttpServletResponse())).isNotNull();
+        org.assertj.core.api.Assertions.assertThat(normalCallback.getAttribute("COFCO_OIDC_CALLBACK_RETURN_TO")).isNull();
+    }
+
     @BeforeEach
     void authorizeKnownEnterpriseSubjects() {
         when(principals.findEnabled(any())).thenAnswer(invocation -> Optional.of(principal(

@@ -43,11 +43,30 @@ class LoginLandingTest {
         assertEquals("/workbench/", login(new MockHttpServletRequest()).getRedirectedUrl());
     }
 
+    @Test void freshAdministratorLoginKeepsTheApplicationCenterLanding() throws Exception {
+        var admin = new SecurityPrincipal("admin", "Administrator", "TEST", "Test", "ACTIVE", "ACTIVE",
+                Set.of("SYSTEM_ADMIN"), List.of(), Set.of(), Set.of());
+        assertEquals("/", login(new MockHttpServletRequest(), admin).getRedirectedUrl());
+    }
+
     @Test void requestedRiskLoginReturnsToIndependentRiskApplication() throws Exception {
         var request = new MockHttpServletRequest();
-        request.getSession().setAttribute("COFCO_LOGIN_RETURN_TO", "/risk/");
+        request.setAttribute("COFCO_OIDC_CALLBACK_RETURN_TO", "/risk/");
         assertEquals("/risk/", login(request).getRedirectedUrl());
         assertNull(request.getSession().getAttribute("COFCO_LOGIN_RETURN_TO"));
+    }
+
+    @Test void legacySessionTargetCannotOverrideANormalCallback() throws Exception {
+        var request = new MockHttpServletRequest();
+        request.getSession().setAttribute("COFCO_LOGIN_RETURN_TO", "/risk/");
+        assertEquals("/workbench/", login(request).getRedirectedUrl());
+        assertNull(request.getSession().getAttribute("COFCO_LOGIN_RETURN_TO"));
+    }
+
+    @Test void arbitraryCallbackTargetCannotRedirectOutsideTheApplication() throws Exception {
+        var request = new MockHttpServletRequest();
+        request.setAttribute("COFCO_OIDC_CALLBACK_RETURN_TO", "https://evil.example");
+        assertEquals("/workbench/", login(request).getRedirectedUrl());
     }
 
     @Test void browserDocumentRedirectsButApiClientsKeepJson() throws Exception {
@@ -62,8 +81,12 @@ class LoginLandingTest {
     }
 
     private MockHttpServletResponse login(MockHttpServletRequest request) throws Exception {
+        return login(request, reporter);
+    }
+
+    private MockHttpServletResponse login(MockHttpServletRequest request, SecurityPrincipal principal) throws Exception {
         var principals = mock(SecurityPrincipalRepository.class);
-        when(principals.findEnabledByOidcIdentity("https://issuer.example.test", "oidc-reporter")).thenReturn(Optional.of(reporter));
+        when(principals.findEnabledByOidcIdentity("https://issuer.example.test", "oidc-reporter")).thenReturn(Optional.of(principal));
         var type = Class.forName(ProductionSecurityConfiguration.class.getName()+"$EnterpriseAuthenticationSuccessHandler");
         var constructor = type.getDeclaredConstructor(SecurityPrincipalRepository.class, SecuritySessionAuditRecorder.class,
                 Set.class, Set.class, RegistrationDraftCompletion.class);
