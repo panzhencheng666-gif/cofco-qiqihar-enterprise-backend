@@ -20,6 +20,7 @@ from scripts.weekly_imagery_sync import (  # noqa: E402
     ReleaseValidationError,
     _legacy_webp_band_args,
     _mgrs_grid_code,
+    _PLANETARY_TOKEN_CACHE,
     _read_json_response,
     _scene_worker_count,
     _vsicurl,
@@ -106,23 +107,30 @@ class WeeklyImagerySyncTest(unittest.TestCase):
         )
 
     @patch("scripts.weekly_imagery_sync._read_json_response")
-    def test_planetary_computer_assets_are_anonymously_signed(self, read_json):
+    def test_planetary_computer_assets_share_one_anonymous_container_token(self, read_json):
         unsigned = (
             "https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/"
             "52/U/CV/product/visual.tif"
         )
-        signed = unsigned + "?se=temporary&sig=read-only"
-        read_json.return_value = {"href": signed}
+        sibling = unsigned.replace("visual.tif", "SCL.tif")
+        token = "se=temporary&sig=read-only"
+        read_json.return_value = {"token": token}
 
-        result = _vsicurl(unsigned, ("sentinel2l2a01.blob.core.windows.net",), 45)
+        with patch.dict(_PLANETARY_TOKEN_CACHE, {}, clear=True):
+            result = _vsicurl(unsigned, ("sentinel2l2a01.blob.core.windows.net",), 45)
+            sibling_result = _vsicurl(
+                sibling, ("sentinel2l2a01.blob.core.windows.net",), 45
+            )
 
-        self.assertEqual("/vsicurl/" + signed, result)
+        self.assertEqual("/vsicurl/" + unsigned + "?" + token, result)
+        self.assertEqual("/vsicurl/" + sibling + "?" + token, sibling_result)
+        self.assertEqual(1, read_json.call_count)
         request, timeout = read_json.call_args.args
         self.assertEqual(45, timeout)
-        self.assertTrue(
-            request.full_url.startswith(
-                "https://planetarycomputer.microsoft.com/api/sas/v1/sign?href="
-            )
+        self.assertEqual(
+            "https://planetarycomputer.microsoft.com/api/sas/v1/token/"
+            "sentinel2l2a01/sentinel2-l2",
+            request.full_url,
         )
 
     def test_complete_week_uses_previous_monday_to_sunday(self):
