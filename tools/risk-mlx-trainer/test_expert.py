@@ -152,6 +152,69 @@ class ExpertContractTest(unittest.TestCase):
         self.assertEqual(first, expert.retrieve(question))
         self.assertEqual(len(first), 3)
 
+    def test_prompt_separates_verified_summary_from_editorial_notes(self):
+        sources = expert.load_knowledge()['sources']
+        messages = expert.grounded_messages('说明证据与分析的区别', sources[:3])
+        records = json.loads(messages[-1]['content'])['sources']
+        for original, record in zip(sources, records):
+            with self.subTest(source=original['id']):
+                self.assertIn('verifiedSource', record)
+                self.assertIn('editorialNotes', record)
+                self.assertEqual(record['verifiedSource'], {
+                    'provenance': 'VERIFIED_SOURCE_SUMMARY',
+                    'coverage': 'PARTIAL_NOT_FULL_TEXT',
+                    'summary': original['summary'],
+                })
+                self.assertEqual(record['editorialNotes'], {
+                    'provenance': 'SYSTEM_EDITORIAL_NOTE',
+                    'applicability': original['applicability'],
+                    'limitations': original['limitations'],
+                })
+                self.assertNotIn('limitations', record['verifiedSource'])
+                self.assertNotIn('summary', record)
+                self.assertEqual(record['url'], original['url'])
+
+    def test_prompt_forbids_editorial_attribution_and_full_text_inference(self):
+        system = expert.grounded_messages('概括资料', expert.retrieve('兰西'))[0]['content']
+        for rule in ['VERIFIED_SOURCE_SUMMARY', 'SYSTEM_EDITORIAL_NOTE',
+                     '不得将editorialNotes归因于原始标准或报告',
+                     '系统分析认为', '不是全文', '未收录不等于原文没有']:
+            with self.subTest(rule=rule):
+                self.assertIn(rule, system)
+
+    def test_knowledge_provenance_and_partial_coverage_survive_citation(self):
+        expected = {'summary': 'VERIFIED_SOURCE_SUMMARY',
+                    'applicability': 'SYSTEM_EDITORIAL_NOTE',
+                    'limitations': 'SYSTEM_EDITORIAL_NOTE'}
+        for source in expert.load_knowledge()['sources']:
+            with self.subTest(source=source['id']):
+                self.assertEqual(source.get('provenance'), expected)
+                self.assertEqual(source.get('coverage'), 'PARTIAL_NOT_FULL_TEXT')
+        result = expert.answer_question(QUESTION, generator=lambda *args: generated())
+        self.assertEqual(result['citations'][0].get('provenance'), expected)
+        self.assertTrue(any(note.startswith('系统分析说明（非原文）：')
+                            for note in result['limitations']))
+
+    def test_source_summary_does_not_claim_excerpt_is_the_whole_standard(self):
+        sources = {s['id']: s for s in expert.load_knowledge()['sources']}
+        corn = sources['GB1353-2018']['summary']
+        self.assertIn('第5.2条', corn)
+        self.assertIn('食品安全', corn)
+        self.assertNotIn('仅规定', corn)
+        self.assertNotIn('两版正文均未取得', sources['GBT29890-VERSIONS']['summary'])
+        self.assertIn('两版正文均未取得', sources['GBT29890-VERSIONS']['limitations'])
+        for source in sources.values():
+            self.assertNotIn('本系统', source['summary'])
+
+    def test_provenance_prompt_still_fits_top_three_with_max_question(self):
+        question = '玉米 水分 检验报告 价格 兰西 29890 '
+        question += '问' * (2000 - len(question))
+        messages = expert.grounded_messages(question, expert.retrieve(question))
+        self.assertLessEqual(sum(len(m['content']) for m in messages), 8000)
+        for record in json.loads(messages[-1]['content'])['sources']:
+            self.assertIn('editorialNotes', record)
+            self.assertTrue(record['editorialNotes']['limitations'])
+
     def test_knowledge_is_small_original_retrieval_only_with_boundaries(self):
         knowledge = json.loads(Path(expert.__file__).with_name('expert_knowledge.json').read_text())
         self.assertLessEqual(len(knowledge['sources']), 5)

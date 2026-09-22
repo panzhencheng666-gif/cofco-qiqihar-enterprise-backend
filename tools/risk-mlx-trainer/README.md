@@ -43,6 +43,14 @@ status 仅为 `ANSWERED` 或 `INSUFFICIENT_EVIDENCE`；mode 始终为 `FOUNDATIO
 URL只采用原始记录，模型输出的链接会被拒绝。答案应作为纯文本显示，不能按HTML执行。
 来源的适用范围及限制随引用返回；无置信概率字段。
 
+知识版本 `2026-09-22.task1.v2` 增加字段级来源归属：`summary` 标记
+`VERIFIED_SOURCE_SUMMARY`，`applicability` 与 `limitations` 标记
+`SYSTEM_EDITORIAL_NOTE`，`coverage=PARTIAL_NOT_FULL_TEXT` 表示仅收录部分转述。
+模型上下文分为 `verifiedSource` 与 `editorialNotes`；提示词明确禁止把系统分析
+归为标准/通报的明确条文，或把摘要缺项推断为原文没有规定。返回引用保留这些标记，
+顶层来源限制也注明“系统分析说明（非原文）”。这属于归属缺陷的提示与资料修复，
+不证明模型必然遵守；父任务须重跑原冻结问题作回归，不得称为新留出评估。
+
 引用校验只验证来源身份，不自动证明每句话有充分依据；提示词隔离不能保证消除提示注入。
 关键词检索不是语义检索质量认证，来源核验日期不等于持续现行性确认。上线使用前须人工
 检查依据和范围。真实27B推理、延迟及冻结问题验收由父任务另行执行，本轮只验证确定性边界。
