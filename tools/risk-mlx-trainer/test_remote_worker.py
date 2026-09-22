@@ -284,6 +284,21 @@ class RemoteWorkerContractTest(unittest.TestCase):
                     worker.process_expert(state)
             self.assertEqual(remote_worker.load_state(worker.expert_state), state)
 
+    def test_local_workload_busy_is_retryable_and_does_not_mark_cloud_failed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            worker = self.expert_worker(Path(temporary))
+            state = {key: self.expert_claim()[key] for key in ("taskId", "runId", "dataset", "config")}
+            remote_worker.save_state(worker.expert_state, state)
+            responses = [(200, b'{"cancelRequested":false,"leaseUntil":"later"}'),
+                         (204, b""), (204, b""),
+                         (503, b'{"error":"WORKLOAD_BUSY"}'),
+                         (200, b'{"cancelRequested":false,"leaseUntil":"later"}')]
+            with patch.object(remote_worker, "request", side_effect=responses) as call:
+                with self.assertRaisesRegex(RuntimeError, "本地专家训练服务繁忙"):
+                    worker.process_expert(state)
+            self.assertFalse(any(item.args[1].endswith("/failure") for item in call.call_args_list))
+            self.assertTrue(worker.expert_state.exists())
+
     def test_permanent_local_failure_is_redacted_and_deletes_only_after_ack(self):
         with tempfile.TemporaryDirectory() as temporary:
             worker = self.expert_worker(Path(temporary))
@@ -291,7 +306,8 @@ class RemoteWorkerContractTest(unittest.TestCase):
             remote_worker.save_state(worker.expert_state, state)
             responses = [(200, b'{"cancelRequested":false,"leaseUntil":"later"}'),
                          (204, b""), (204, b""),
-                         (503, b'raw stderr credential secret'),
+                         (503, b'{"error":"EXPERT_TRAINING_UNAVAILABLE",'
+                               b'"message":"raw stderr credential secret"}'),
                          (200, b'{"cancelRequested":false,"leaseUntil":"later"}'),
                          (204, b"")]
             with patch.object(remote_worker, "request", side_effect=responses) as call:
@@ -299,6 +315,21 @@ class RemoteWorkerContractTest(unittest.TestCase):
             failure = json.loads(call.call_args_list[-1].args[3])
             self.assertEqual(failure, {"code": "LOCAL_TRAINING_FAILED",
                                        "message": "本地专家训练失败，未生成候选工件。"})
+            self.assertFalse(worker.expert_state.exists())
+
+    def test_malformed_local_success_is_acknowledged_as_redacted_permanent_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            worker = self.expert_worker(Path(temporary))
+            state = {key: self.expert_claim()[key] for key in ("taskId", "runId", "dataset", "config")}
+            remote_worker.save_state(worker.expert_state, state)
+            responses = [(200, b'{"cancelRequested":false,"leaseUntil":"later"}'),
+                         (204, b""), (204, b""), (200, b'raw malformed success'),
+                         (200, b'{"cancelRequested":false,"leaseUntil":"later"}'),
+                         (204, b"")]
+            with patch.object(remote_worker, "request", side_effect=responses) as call:
+                worker.process_expert(state)
+            self.assertEqual(json.loads(call.call_args_list[-1].args[3]), {
+                "code": "LOCAL_TRAINING_FAILED", "message": "本地专家训练失败，未生成候选工件。"})
             self.assertFalse(worker.expert_state.exists())
 
     def test_strict_artifact_validation_rejects_outside_root_and_unbounded_metrics(self):

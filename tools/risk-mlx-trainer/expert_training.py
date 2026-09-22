@@ -1,10 +1,12 @@
 """Bounded expert SFT candidate production, called only under server WORKLOAD_GATE."""
+import fcntl
 import hashlib
 import json
 import math
 import os
 import re
 import shutil
+import stat
 import tempfile
 import time
 from pathlib import Path
@@ -86,6 +88,15 @@ def _worker_dataset_error(path, counts):
                                         code=error.reason_code, message=SEQUENCE_MESSAGES[error.reason_code])])
 
 
+def _clean_stale_stages(base, run_id):
+    for path in base.glob('.' + run_id + '-*'):
+        info = path.lstat()
+        if (path.is_symlink() or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o700):
+            raise ValueError('Unsafe stale training stage')
+        shutil.rmtree(path)
+
+
 def _verified_result(directory, identity, request, deadline):
     if directory.is_symlink():
         raise ValueError('Symlink target')
@@ -118,10 +129,22 @@ def train_expert(payload: dict) -> dict:
             raise ValueError('Symlink target')
         lock = base / (request['runId'] + '.lock')
         try:
-            lock_fd = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        except FileExistsError:
+            lock_fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            lock_identity = os.fstat(lock_fd)
+            if (not stat.S_ISREG(lock_identity.st_mode) or lock_identity.st_uid != os.getuid()
+                    or stat.S_IMODE(lock_identity.st_mode) != 0o600 or lock_identity.st_nlink != 1):
+                raise ValueError('Unsafe training lock')
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(lock_fd)
+            lock_fd = None
             raise ExpertTrainingConflict('EXPERT_TRAINING_BUSY') from None
-        lock_identity = os.fstat(lock_fd)
+        except Exception:
+            if lock_fd is not None:
+                os.close(lock_fd)
+                lock_fd = None
+            raise
+        _clean_stale_stages(base, request['runId'])
         owned = register_run(request['runId'])
         model = expert.configured_model()
         identity = dict(runId=request['runId'], datasetSha256=request['dataset']['datasetSha256'],
@@ -192,7 +215,6 @@ def train_expert(payload: dict) -> dict:
                 cleanup_failed = True
         if lock_fd is not None:
             try:
-                os.close(lock_fd)
                 current = lock.lstat()
                 if (current.st_dev, current.st_ino) == (lock_identity.st_dev, lock_identity.st_ino):
                     lock.unlink()
@@ -200,5 +222,7 @@ def train_expert(payload: dict) -> dict:
                 pass
             except OSError:
                 cleanup_failed = True
+            finally:
+                os.close(lock_fd)
         if cleanup_failed:
             raise ExpertTrainingUnavailable('EXPERT_TRAINING_FAILED') from None

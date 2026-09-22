@@ -99,12 +99,12 @@ def run_bounded(command, directory: Path, deadline: float, owned: OwnedRun | Non
             child = subprocess.Popen(command, stdin=subprocess.DEVNULL,
                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                      env=child_environment(), start_new_session=True)
-            if owned is not None:
-                with owned.lock:
-                    owned.child = child
-                if owned.cancelled.is_set():
-                    raise WorkerFailure('EXPERT_TRAINING_CANCELLED')
             try:
+                if owned is not None:
+                    with owned.lock:
+                        owned.child = child
+                    if owned.cancelled.is_set():
+                        raise WorkerFailure('EXPERT_TRAINING_CANCELLED')
                 with selectors.DefaultSelector() as selector:
                     for pipe, spool in ((child.stdout, out), (child.stderr, err)):
                         os.set_blocking(pipe.fileno(), False)

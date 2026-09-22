@@ -1,8 +1,10 @@
 """Contract tests only; temporary fixtures never constitute a training dataset."""
 import copy
+import fcntl
 import importlib.util
 import json
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -297,10 +299,28 @@ class EngineTest(unittest.TestCase):
                 self.assertNotIn('credential-secret', str(caught.exception))
             self.assertEqual(list((self.artifacts / 'expert-sft').iterdir()), [])
         base = self.artifacts / 'expert-sft'
-        (base / 'unit-1.lock').write_text('owned elsewhere')
-        with self.assertRaises(engine.ExpertTrainingConflict):
-            self.train()
-        self.assertEqual((base / 'unit-1.lock').read_text(), 'owned elsewhere')
+        lock = base / 'unit-1.lock'
+        lock.write_text('owned elsewhere')
+        lock.chmod(0o600)
+        with lock.open('r+') as held:
+            fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaises(engine.ExpertTrainingConflict):
+                self.train()
+            self.assertEqual(lock.read_text(), 'owned elsewhere')
+
+    def test_stale_lock_from_dead_parent_is_recovered(self):
+        base = self.artifacts / 'expert-sft'
+        base.mkdir(parents=True, mode=0o700)
+        lock = base / 'unit-1.lock'
+        lock.write_text('dead owner')
+        lock.chmod(0o600)
+        stale = base / '.unit-1-interrupted'
+        stale.mkdir(mode=0o700)
+        (stale / '.worker_request.json').write_text('private interrupted state')
+        result, _ = self.train()
+        self.assertEqual(result['runId'], 'unit-1')
+        self.assertFalse(lock.exists())
+        self.assertFalse(stale.exists())
 
     def test_owned_cancellation_cleans_stage_and_lock_without_candidate(self):
         with patch.object(engine, 'run_worker', side_effect=process.WorkerFailure(
@@ -515,6 +535,28 @@ class ProcessTest(unittest.TestCase):
                 process.run_bounded([sys.executable, '-c', 'raise SystemExit'], Path(directory),
                                     time.monotonic() + 2, owned)
             spawn.assert_not_called()
+
+    def test_cancel_in_spawn_attach_window_still_reaps_owned_child(self):
+        owned = process.register_run('cancel-spawn-window')
+        self.addCleanup(process.unregister_run, 'cancel-spawn-window', owned)
+        real_popen = process.subprocess.Popen
+        children = []
+        def spawn(*args, **kwargs):
+            child = real_popen(*args, **kwargs)
+            children.append(child)
+            self.assertTrue(process.cancel_run('cancel-spawn-window'))
+            return child
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+                process.subprocess, 'Popen', side_effect=spawn):
+            try:
+                with self.assertRaisesRegex(process.WorkerFailure, 'EXPERT_TRAINING_CANCELLED'):
+                    process.run_bounded([sys.executable, '-c', 'import time; time.sleep(30)'],
+                                        Path(directory), time.monotonic() + 5, owned)
+                self.assertIsNotNone(children[0].poll(), 'spawned child leaked past cancellation')
+            finally:
+                if children and children[0].poll() is None:
+                    os.killpg(children[0].pid, signal.SIGKILL)
+                    children[0].wait(timeout=2)
 
     def test_during_run_cancel_terminates_only_owned_process_group(self):
         owned = process.register_run('cancel-during-run')

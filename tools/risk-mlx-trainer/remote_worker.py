@@ -387,18 +387,24 @@ class Worker:
                     self.acknowledge_expert_cancel(state)
                     return
                 if status != 200:
-                    self.report_expert_failure(
-                        state, "DATASET_PREPARATION_FAILED" if status == 422 else "LOCAL_TRAINING_FAILED")
-                    return
-                trained = json_object(body)
-            else:
-                trained = state["result"]
+                    try:
+                        local_error = json_object(body).get("error")
+                    except (ValueError, TypeError, RecursionError):
+                        local_error = None
+                    if status in (400, 422):
+                        self.report_expert_failure(state, "DATASET_PREPARATION_FAILED")
+                        return
+                    if status == 503 and local_error == "EXPERT_TRAINING_UNAVAILABLE":
+                        self.report_expert_failure(state, "LOCAL_TRAINING_FAILED")
+                        return
+                    raise RuntimeError("本地专家训练服务繁忙或暂不可用")
             try:
+                trained = state["result"] if "result" in state else json_object(body)
                 if trained.get("runId") != state["runId"]:
                     raise ValueError("本地专家训练 runId 不匹配")
                 artifact, content_hash, metrics = self.validate_expert_result(
                     trained, state["runId"])
-            except (OSError, ValueError, TypeError, KeyError):
+            except (OSError, ValueError, TypeError, KeyError, RecursionError):
                 self.report_expert_failure(state, "LOCAL_TRAINING_FAILED")
                 return
             if "result" not in state:
