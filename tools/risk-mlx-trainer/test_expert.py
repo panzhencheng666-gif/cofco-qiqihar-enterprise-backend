@@ -126,6 +126,47 @@ class ExpertContractTest(unittest.TestCase):
         self.assertEqual(result["status"], "INSUFFICIENT_EVIDENCE")
         self.assertEqual(result["citations"], [])
 
+    def test_insufficient_evidence_never_exposes_model_factual_claims(self):
+        safe_answer = '当前收录证据不足，不能据此作出所问结论，需补充核验资料。'
+        for claim in ['应按未检索的GB 2761判断。',
+                      '该标准全文没有其他规定，通报未包含任何预测记录。',
+                      '任意模型自由生成的事实断言']:
+            with self.subTest(claim=claim):
+                result = expert.answer_question(QUESTION, generator=lambda *args: generated(
+                    status='INSUFFICIENT_EVIDENCE', answer=claim))
+                self.assertEqual(result['answer'], safe_answer)
+                self.assertNotIn(claim, json.dumps(result, ensure_ascii=False))
+                self.assertEqual(result['mode'], 'FOUNDATION_RAG')
+                self.assertEqual(result['status'], 'INSUFFICIENT_EVIDENCE')
+                self.assertEqual(result['citations'][0]['id'], SOURCE)
+                self.assertEqual(result['citations'][0]['url'], URL)
+                self.assertTrue(result['limitations'])
+                self.assertTrue(result['knowledgeVersion'])
+
+    def test_insufficient_evidence_without_citations_uses_same_server_answer(self):
+        result = expert.answer_question(QUESTION, generator=lambda *args: generated(
+            status='INSUFFICIENT_EVIDENCE', citations=[], answer='该标准只有两个条款。'))
+        no_match = expert.answer_question({'question': '未收录的诊疗处方'},
+                                          generator=forbidden_generator)
+        self.assertEqual(result['answer'],
+                         '当前收录证据不足，不能据此作出所问结论，需补充核验资料。')
+        self.assertEqual(result['answer'], no_match['answer'])
+        self.assertEqual(result['citations'], [])
+
+    def test_insufficient_evidence_still_rejects_invalid_model_output(self):
+        for raw in [generated(status='INSUFFICIENT_EVIDENCE', citations=['unknown']),
+                    generated(status='INSUFFICIENT_EVIDENCE', citations=['LANXI-2014']),
+                    generated(status='INSUFFICIENT_EVIDENCE', answer='https://evil.invalid'),
+                    '{"status":"INSUFFICIENT_EVIDENCE"}']:
+            with self.subTest(raw=raw), self.assertRaises(expert.ExpertUnavailable):
+                expert.answer_question(QUESTION, generator=lambda *args: raw)
+
+    def test_answered_retains_valid_model_answer(self):
+        result = expert.answer_question(QUESTION, generator=lambda *args: generated(
+            answer='表1的水分含量指标为≤14.0%。'))
+        self.assertEqual(result['answer'], '表1的水分含量指标为≤14.0%。')
+        self.assertEqual(result['status'], 'ANSWERED')
+
     def test_model_errors_are_sanitized(self):
         def fail(*args):
             raise RuntimeError("private-model-diagnostic")

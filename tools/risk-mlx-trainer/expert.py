@@ -12,6 +12,7 @@ from typing import Any, Callable
 KNOWLEDGE_PATH = Path(__file__).with_name("expert_knowledge.json")
 MAX_CONTEXT = 8000
 MAX_TOKENS = 768
+INSUFFICIENT_ANSWER = "当前收录证据不足，不能据此作出所问结论，需补充核验资料。"
 LIMITATIONS = [
     "FOUNDATION_RAG：基础模型结合有限来源摘要检索，不是领域训练或专家资格证明。",
     "关键词匹配仅为检索基线；引用ID有效不证明回答全部受证据支持，须人工复核适用范围。",
@@ -169,7 +170,9 @@ def validate_answer(raw: str, sources: list[dict[str, Any]]) -> dict[str, Any]:
             or len(ids) != len(set(ids)) or any(item not in available for item in ids)
             or (status == "ANSWERED" and not ids)):
         raise ExpertUnavailable("模型引用不属于本次检索证据")
-    return {"status": status, "answer": answer.strip(),
+    # Validate first, then discard free-form claims when the model abstains.
+    return {"status": status,
+            "answer": INSUFFICIENT_ANSWER if status == "INSUFFICIENT_EVIDENCE" else answer.strip(),
             "citations": [available[item] for item in ids]}
 
 
@@ -183,7 +186,7 @@ def answer_question(payload: Any, *, generator: Callable | None = None) -> dict[
         result = {
             "status": "INSUFFICIENT_EVIDENCE", "mode": "FOUNDATION_RAG",
             "modelReference": str(model_path), "knowledgeVersion": knowledge["version"],
-            "answer": "已收录资料不足以支持该问题，请补充适用业务事实或核验所需权威来源。",
+            "answer": INSUFFICIENT_ANSWER,
             "citations": [], "limitations": list(LIMITATIONS),
         }
         if not sources:
