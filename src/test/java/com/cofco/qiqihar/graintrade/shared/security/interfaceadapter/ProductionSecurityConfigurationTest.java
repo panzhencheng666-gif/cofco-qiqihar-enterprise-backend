@@ -107,6 +107,23 @@ class ProductionSecurityConfigurationTest {
     }
 
     @Test
+    void failedLoginShowsChineseRecoveryWithoutAutomaticRedirect() throws Exception {
+        mockMvc.perform(get("/login").param("error", ""))
+                .andExpect(status().isOk())
+                .andExpect(header().doesNotExist("Location"))
+                .andExpect(content().string(org.hamcrest.Matchers.containsString("登录未完成")))
+                .andExpect(content().string(org.hamcrest.Matchers.not(
+                        org.hamcrest.Matchers.containsString("Login with OAuth 2.0"))));
+    }
+
+    @Test
+    void plainLoginEntersTheExistingChineseIdentityProvider() throws Exception {
+        mockMvc.perform(get("/login"))
+                .andExpect(status().isFound())
+                .andExpect(header().string("Location", "/api/v1/session/login"));
+    }
+
+    @Test
     void internalPrometheusEndpointIsAnonymousAtTheApplicationLayer() throws Exception {
         mockMvc.perform(get("/actuator/prometheus"))
                 .andExpect(status().isOk());
