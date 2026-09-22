@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -9,14 +10,18 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+
+import expert
 
 ROOT = Path(os.environ.get("RISK_LLM_ARTIFACT_ROOT", "var/risk-llm-adapters")).resolve()
 TOKEN = os.environ.get("RISK_LLM_BEARER_TOKEN", "")
 ITERATIONS = int(os.environ.get("RISK_LLM_TRAIN_ITERS", "80"))
 MAX_BODY = 8 * 1024 * 1024
+WORKLOAD_GATE = threading.Lock()
 SAFE = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
 MODEL_IDENTITY = "齐粮智研模型 QL-Risk-27B"
 DOMAIN_INSTRUCTION = (
@@ -249,24 +254,46 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(404, {"error": "NOT_FOUND"})
 
     def do_POST(self) -> None:
-        if TOKEN and self.headers.get("Authorization") != f"Bearer {TOKEN}":
+        is_expert = self.path == "/v1/expert-answer"
+        if is_expert and not TOKEN.strip():
+            self.reply(403, {"error": "EXPERT_AUTH_NOT_CONFIGURED"})
+            return
+        if TOKEN and not hmac.compare_digest(
+                self.headers.get("Authorization", "").encode(), f"Bearer {TOKEN}".encode()):
             self.reply(401, {"error": "UNAUTHORIZED"})
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            if length <= 0 or length > MAX_BODY:
+            if length <= 0 or length > (16384 if is_expert else MAX_BODY):
                 raise ValueError("请求体大小不合法")
-            payload = json.loads(self.rfile.read(length))
-            if self.path == "/v1/train":
-                self.reply(200, train(payload))
-            elif self.path == "/v1/score":
-                self.reply(200, score(payload))
-            else:
+            body = self.rfile.read(length)
+            payload = (json.loads(body, object_pairs_hook=expert.unique_json_object)
+                       if is_expert else json.loads(body))
+            operations = {"/v1/train": train, "/v1/score": score,
+                          "/v1/expert-answer": expert.answer_question}
+            operation = operations.get(self.path)
+            if operation is None:
                 self.reply(404, {"error": "NOT_FOUND"})
+                return
+            if is_expert:
+                expert.validate_question(payload)
+            if not WORKLOAD_GATE.acquire(blocking=False):
+                self.reply(503, {"error": "WORKLOAD_BUSY"})
+                return
+            try:
+                result = operation(payload)
+            finally:
+                WORKLOAD_GATE.release()
+            self.reply(200, result)
+        except expert.ExpertUnavailable:
+            self.reply(503, {"error": "EXPERT_UNAVAILABLE"})
         except (KeyError, TypeError, ValueError) as error:
             self.reply(400, {"error": "INVALID_REQUEST", "message": str(error)})
         except Exception as error:
-            self.reply(500, {"error": "TRAINER_FAILURE", "message": str(error)[:2000]})
+            if is_expert:
+                self.reply(503, {"error": "EXPERT_UNAVAILABLE"})
+            else:
+                self.reply(500, {"error": "TRAINER_FAILURE", "message": str(error)[:2000]})
 
     def log_message(self, message: str, *args: Any) -> None:
         sys.stderr.write("risk-mlx-trainer: " + message % args + "\n")
