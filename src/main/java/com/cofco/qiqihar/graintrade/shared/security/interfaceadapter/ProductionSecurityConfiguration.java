@@ -382,6 +382,12 @@ public class ProductionSecurityConfiguration {
             var session=request.getSession();
             Authentication stableAuthentication=bindStableSubject(authentication,principal);
             audit.record(stableAuthentication.getName(),session.getId(),"LOGIN_SUCCESS","{}");
+            Object requestedReturnTo=session.getAttribute(OidcLoginController.LOGIN_RETURN_TO_ATTRIBUTE);
+            session.removeAttribute(OidcLoginController.LOGIN_RETURN_TO_ATTRIBUTE);
+            if ("/risk/".equals(requestedReturnTo)) {
+                response.sendRedirect(request.getContextPath()+"/risk/");
+                return;
+            }
             if(principal.isRootAdministrator()) {
                 response.sendRedirect(request.getContextPath()+"/");
                 return;

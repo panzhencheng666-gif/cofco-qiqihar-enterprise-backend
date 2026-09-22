@@ -43,6 +43,13 @@ class LoginLandingTest {
         assertEquals("/workbench/", login(new MockHttpServletRequest()).getRedirectedUrl());
     }
 
+    @Test void requestedRiskLoginReturnsToIndependentRiskApplication() throws Exception {
+        var request = new MockHttpServletRequest();
+        request.getSession().setAttribute("COFCO_LOGIN_RETURN_TO", "/risk/");
+        assertEquals("/risk/", login(request).getRedirectedUrl());
+        assertNull(request.getSession().getAttribute("COFCO_LOGIN_RETURN_TO"));
+    }
+
     @Test void browserDocumentRedirectsButApiClientsKeepJson() throws Exception {
         var access = mock(AccessControl.class);
         when(access.requireAuthenticated()).thenReturn(reporter);
