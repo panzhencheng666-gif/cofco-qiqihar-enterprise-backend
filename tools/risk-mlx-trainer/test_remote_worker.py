@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -399,6 +400,7 @@ class RemoteWorkerContractTest(unittest.TestCase):
                 with self.assertRaises(OSError):
                     worker.process_expert(state)
             retained = remote_worker.load_state(worker.expert_state)
+            shutil.rmtree(artifact)
             replay_calls = []
             def replay(method, url, headers, body, timeout):
                 replay_calls.append((url, body))

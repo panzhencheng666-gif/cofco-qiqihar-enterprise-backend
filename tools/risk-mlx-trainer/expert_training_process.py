@@ -23,6 +23,8 @@ class OwnedRun:
     lock: threading.Lock = field(default_factory=threading.Lock)
     child: subprocess.Popen | None = None
     finished: bool = False
+    stop_started: bool = False
+    stop_done: threading.Event = field(default_factory=threading.Event)
 
 
 _RUNS_LOCK = threading.Lock()
@@ -55,7 +57,7 @@ def cancel_run(run_id):
         owned.cancelled.set()
         child = owned.child
     if child is not None:
-        _stop(child)
+        _stop_owned(owned, child)
     return True
 
 
@@ -71,6 +73,9 @@ def child_environment():
 
 def _stop(child):
     # The session belongs solely to this child; never signal the HTTP group.
+    if child.poll() is not None:
+        child.wait()
+        return
     try:
         os.killpg(child.pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -83,6 +88,22 @@ def _stop(child):
         except ProcessLookupError:
             pass
         child.wait(timeout=2)
+
+
+def _stop_owned(owned, child):
+    with owned.lock:
+        if owned.stop_started:
+            first = False
+        else:
+            owned.stop_started = True
+            first = True
+    if not first:
+        owned.stop_done.wait()
+        return
+    try:
+        _stop(child)
+    finally:
+        owned.stop_done.set()
 
 
 def run_bounded(command, directory: Path, deadline: float, owned: OwnedRun | None = None):
@@ -131,7 +152,10 @@ def run_bounded(command, directory: Path, deadline: float, owned: OwnedRun | Non
                     if return_code != 0:
                         raise WorkerFailure('EXPERT_TRAINING_WORKER_FAILED')
             finally:
-                _stop(child)
+                if owned is None:
+                    _stop(child)
+                else:
+                    _stop_owned(owned, child)
                 if owned is not None:
                     with owned.lock:
                         if owned.child is child:

@@ -562,7 +562,8 @@ class ProcessTest(unittest.TestCase):
         owned = process.register_run('cancel-during-run')
         self.addCleanup(process.unregister_run, 'cancel-during-run', owned)
         outcome = []
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+                process, '_stop', wraps=process._stop) as stop:
             thread = threading.Thread(target=lambda: self._capture_failure(
                 outcome, [sys.executable, '-c', 'import time; time.sleep(30)'],
                 Path(directory), owned))
@@ -571,9 +572,15 @@ class ProcessTest(unittest.TestCase):
             while owned.child is None and time.monotonic() < deadline:
                 time.sleep(.01)
             self.assertIsNotNone(owned.child)
-            self.assertTrue(process.cancel_run('cancel-during-run'))
+            cancellations = []
+            cancellers = [threading.Thread(target=lambda: cancellations.append(
+                process.cancel_run('cancel-during-run'))) for _ in range(2)]
+            for canceller in cancellers: canceller.start()
+            for canceller in cancellers: canceller.join(3)
             thread.join(3)
             self.assertFalse(thread.is_alive())
+            self.assertEqual(cancellations, [True, True])
+            self.assertEqual(stop.call_count, 1)
         self.assertEqual(outcome, ['EXPERT_TRAINING_CANCELLED'])
 
     def _capture_failure(self, outcome, command, directory, owned):

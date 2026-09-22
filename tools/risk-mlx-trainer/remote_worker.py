@@ -326,30 +326,66 @@ class Worker:
             raise ValueError("本地专家训练工件不在受控目录")
         if artifact.stat().st_uid != os.getuid() or expert_artifact_hash(artifact) != content_hash:
             raise ValueError("本地专家训练工件校验失败")
-        metrics = value.get("metrics")
+        metrics = self.validate_expert_metrics(value.get("metrics"))
+        return artifact, content_hash, metrics
+
+    def validate_expert_metrics(self, metrics: Any) -> dict[str, Any]:
         if type(metrics) is not dict:
             raise ValueError("本地专家训练指标不合法")
         encoded_metrics = json.dumps(metrics, ensure_ascii=False, separators=(",", ":"),
                                      allow_nan=False).encode()
         if len(encoded_metrics) > 4096:
             raise ValueError("本地专家训练指标超限")
-        return artifact, content_hash, metrics
+        return metrics
 
-    def validate_stored_expert(self, stored: dict[str, Any], bundle_hash: str,
-                               content_hash: str, size: int) -> dict[str, Any]:
+    def validate_stored_checkpoint(self, stored: dict[str, Any]) -> dict[str, Any]:
         if (type(stored) is not dict
                 or set(stored) != {"artifactReference", "bundleSha256", "contentSha256", "sizeBytes"}
                 or type(stored["artifactReference"]) is not str or not stored["artifactReference"]
-                or stored["bundleSha256"] != bundle_hash
+                or type(stored["bundleSha256"]) is not str
+                or not re.fullmatch(r"[0-9a-f]{64}", stored["bundleSha256"])
+                or type(stored["contentSha256"]) is not str
+                or not re.fullmatch(r"[0-9a-f]{64}", stored["contentSha256"])
+                or type(stored["sizeBytes"]) is not int or stored["sizeBytes"] <= 0):
+            raise RuntimeError("云端专家训练工件检查点不合法")
+        return stored
+
+    def validate_stored_expert(self, stored: dict[str, Any], bundle_hash: str,
+                               content_hash: str, size: int) -> dict[str, Any]:
+        stored = self.validate_stored_checkpoint(stored)
+        if (stored["bundleSha256"] != bundle_hash
                 or stored["contentSha256"] != content_hash
-                or type(stored["sizeBytes"]) is not int or stored["sizeBytes"] != size):
+                or stored["sizeBytes"] != size):
             raise RuntimeError("云端专家训练工件回执不合法")
         return stored
+
+    def complete_expert(self, state: dict[str, Any], stored: dict[str, Any],
+                        metrics: dict[str, Any]) -> None:
+        completion = json.dumps({"artifactReference": stored["artifactReference"],
+                                 "artifactSha256": stored["bundleSha256"],
+                                 "metrics": metrics}, ensure_ascii=False,
+                                separators=(",", ":"), allow_nan=False).encode()
+        status, _ = request("POST", self._expert_url(state, "completion"),
+                            self.cloud_headers() | {"Content-Type": "application/json"},
+                            completion, 60)
+        if status == 409:
+            raise ClaimExpired("专家训练完成登记时租约已失效")
+        if status != 204:
+            raise RuntimeError("云端专家训练完成登记未确认")
+        self.expert_state.unlink(missing_ok=True)
 
     def process_expert(self, state: dict[str, Any]) -> None:
         state = self._saved_expert_state(state)
         try:
             completion_replay = "stored" in state and state["progress"] == 95
+            if completion_replay:
+                stored = self.validate_stored_checkpoint(state["stored"])
+                result = state.get("result")
+                if type(result) is not dict:
+                    raise RuntimeError("专家训练完成检查点不合法")
+                metrics = self.validate_expert_metrics(result.get("metrics"))
+                self.complete_expert(state, stored, metrics)
+                return
             if not completion_replay:
                 if self.expert_heartbeat(state):
                     self.acknowledge_expert_cancel(state)
@@ -440,18 +476,7 @@ class Worker:
                 state["stored"] = stored
                 save_state(self.expert_state, state)
             self.advance_expert_progress(state, *EXPERT_PROGRESS[4])
-            completion = json.dumps({"artifactReference": stored["artifactReference"],
-                                     "artifactSha256": stored["bundleSha256"],
-                                     "metrics": metrics}, ensure_ascii=False,
-                                    separators=(",", ":"), allow_nan=False).encode()
-            status, _ = request("POST", self._expert_url(state, "completion"),
-                                self.cloud_headers() | {"Content-Type": "application/json"},
-                                completion, 60)
-            if status == 409:
-                raise ClaimExpired("专家训练完成登记时租约已失效")
-            if status != 204:
-                raise RuntimeError("云端专家训练完成登记未确认")
-            self.expert_state.unlink(missing_ok=True)
+            self.complete_expert(state, stored, metrics)
         except ClaimExpired:
             self.expert_state.unlink(missing_ok=True)
             raise
