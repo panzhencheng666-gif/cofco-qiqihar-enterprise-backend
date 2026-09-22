@@ -80,7 +80,8 @@ assert_contains "$unit" '/var/lib/cofco/risk-intelligence/runtime-tls:/var/lib/c
 assert_not_contains "$unit" ':/run:ro'
 assert_not_contains "$unit" '--privileged'
 assert_not_contains "$unit" '0.0.0.0:19384'
-assert_contains "$deploy_script" 'RISK_BUSINESS_SESSION_URL=http://127.0.0.1:19090/api/v1/session/me'
+assert_contains "$deploy_script" 'RISK_BUSINESS_SESSION_URL=http://127.0.0.1:19091/api/v1/session/me'
+assert_not_contains "$deploy_script" 'http://127.0.0.1:19090/api/v1/session/me'
 
 bash -n "${backend_root}/${deploy_script}"
 

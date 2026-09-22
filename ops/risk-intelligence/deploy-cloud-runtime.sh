@@ -69,7 +69,7 @@ write_runtime_env() {
     awk -v base="$risk_llm_base_model" '
       BEGIN { session=0; model=0; remote=0 }
       /^RISK_BUSINESS_SESSION_URL=/ {
-        print "RISK_BUSINESS_SESSION_URL=http://127.0.0.1:19090/api/v1/session/me";
+        print "RISK_BUSINESS_SESSION_URL=http://127.0.0.1:19091/api/v1/session/me";
         session=1; next
       }
       /^RISK_LLM_BASE_MODEL=/ { print "RISK_LLM_BASE_MODEL=" base; model=1; next }
@@ -78,7 +78,7 @@ write_runtime_env() {
       }
       { print }
       END {
-        if (!session) print "RISK_BUSINESS_SESSION_URL=http://127.0.0.1:19090/api/v1/session/me";
+        if (!session) print "RISK_BUSINESS_SESSION_URL=http://127.0.0.1:19091/api/v1/session/me";
         if (!model) print "RISK_LLM_BASE_MODEL=" base;
         if (!remote) print "RISK_TRAINING_REMOTE_NODE_ENABLED=true"
       }
@@ -102,7 +102,7 @@ write_runtime_env() {
     printf 'RISK_DB_PASSWORD=%s\n' "$password"
     printf 'RISK_EXPECTED_DATABASE=%s\n' "$database_name"
     printf 'RISK_INGESTION_KEY=%s\n' "$ingestion_key"
-    printf 'RISK_BUSINESS_SESSION_URL=http://127.0.0.1:19090/api/v1/session/me\n'
+    printf 'RISK_BUSINESS_SESSION_URL=http://127.0.0.1:19091/api/v1/session/me\n'
     printf 'RISK_SERVER_PORT=63184\n'
     printf 'RISK_TRAINING_ENABLED=true\n'
     printf 'RISK_TRAINING_REMOTE_NODE_ENABLED=true\n'
