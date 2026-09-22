@@ -49,19 +49,154 @@ write_config() {
 
 install_release() {
   local temporary final timestamp
-  timestamp="$(date -u '+%Y%m%dT%H%M%SZ')"
-  temporary="$(mktemp -d "${releases_dir}/.install.XXXXXX")"
+  require_release_sources || return 1
+  timestamp="$(date -u '+%Y%m%dT%H%M%SZ')" || return 1
+  temporary="$(mktemp -d "${releases_dir}/.install.XXXXXX")" || return 1
   final="${releases_dir}/${timestamp}-$$"
-  install -m 500 "${backend_root}/scripts/run-risk-training-node-launch-agent.sh" "$temporary/"
-  install -m 400 "${backend_root}/scripts/local-process-ownership.sh" "$temporary/"
-  install -m 400 "${backend_root}/tools/risk-mlx-trainer/server.py" "$temporary/risk-mlx-trainer.py"
-  install -m 400 "${backend_root}/tools/risk-mlx-trainer/remote_worker.py" "$temporary/remote_worker.py"
-  mv "$temporary" "$final"
-  ln -sfn "$final" "${current_release}.new"; mv -fh "${current_release}.new" "$current_release"
+  install -m 500 "${backend_root}/scripts/run-risk-training-node-launch-agent.sh" "$temporary/" || return 1
+  install -m 400 "${backend_root}/scripts/local-process-ownership.sh" "$temporary/" || return 1
+  install -m 400 "${backend_root}/tools/risk-mlx-trainer/server.py" "$temporary/risk-mlx-trainer.py" || return 1
+  install -m 400 "${backend_root}/tools/risk-mlx-trainer/remote_worker.py" \
+    "${backend_root}/tools/risk-mlx-trainer/expert.py" \
+    "${backend_root}/tools/risk-mlx-trainer/expert_knowledge.json" "$temporary/" || return 1
+  mv "$temporary" "$final" || return 1
+  activate_release "$final"
+}
+
+activate_release() {
+  ln -sfn "$1" "${current_release}.new" && mv -fh "${current_release}.new" "$current_release"
+}
+
+require_release_sources() {
+  local file
+  for file in scripts/run-risk-training-node-launch-agent.sh scripts/local-process-ownership.sh \
+    tools/risk-mlx-trainer/server.py tools/risk-mlx-trainer/remote_worker.py \
+    tools/risk-mlx-trainer/expert.py tools/risk-mlx-trainer/expert_knowledge.json \
+    scripts/healthcheck-risk-training-node-local.sh; do
+    [[ -f "${backend_root}/${file}" && -r "${backend_root}/${file}" ]] || {
+      echo "Required release source is missing or unreadable: $file" >&2; return 1; }
+  done
+}
+
+preflight_upgrade() {
+  require_release_sources || return 1
+  python3 - "$runtime_home" "$config_file" "$current_release" "$releases_dir" <<'PY'
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+
+def reject(reason):
+    sys.exit(reason)
+
+try:
+    runtime, config, current, releases = map(Path, sys.argv[1:])
+    marker = runtime / ".risk-training-node-runtime"
+    if (runtime.is_symlink() or not marker.is_file() or marker.is_symlink()
+            or releases.is_symlink() or not current.is_symlink()
+            or not current.resolve().is_dir()
+            or current.resolve().parent != releases.resolve()):
+        reject("Refusing to replace an unrecognized runtime directory/release")
+    if config.is_symlink() or stat.S_IMODE(config.stat().st_mode) & 0o077:
+        reject("Training node config permissions are unsafe")
+    values = {}
+    for line in config.read_text().splitlines():
+        if line and not line.startswith("#"):
+            key, sep, value = line.partition("=")
+            if not sep:
+                reject("Invalid training node config line")
+            values[key] = value
+    state = Path(values.get("RISK_TRAINING_NODE_STATE_ROOT", str(runtime / "state")))
+    if not state.is_absolute():
+        reject("Training node state root must be absolute")
+    for claim in (runtime / "state/active-claim.json", state / "active-claim.json"):
+        if os.path.lexists(claim):
+            reject("Refusing upgrade: active claim exists; wait for legitimate idle status")
+    if "RISK_EXPERT_MODEL_PATH" in os.environ:
+        value = os.environ["RISK_EXPERT_MODEL_PATH"]
+        model = Path(value)
+        if (not value or value != value.strip() or "\n" in value or "\r" in value
+                or not model.is_absolute() or not model.is_dir()):
+            reject("Expert model must be an existing absolute local snapshot directory")
+        for name in ("config.json", "tokenizer_config.json"):
+            metadata = json.loads((model / name).read_text())
+            if not isinstance(metadata, dict):
+                reject("Expert model metadata must be JSON objects")
+        if not any(p.is_file() and p.stat().st_size > 0 for p in model.glob("*.safetensors")):
+            reject("Expert model weights are missing")
+    # ps does not quote paths containing spaces. Match the complete known script
+    # argument with whitespace boundaries rather than splitting its command line.
+    known = {str(current / "risk-mlx-trainer.py"), str(current.resolve() / "risk-mlx-trainer.py")}
+    rows = []
+    result = subprocess.run(["ps", "-axo", "pid=,ppid=,command="],
+                            capture_output=True, text=True, check=True, timeout=5)
+    for row in result.stdout.splitlines():
+        parts = row.strip().split(None, 2)
+        if len(parts) == 3:
+            rows.append((parts[0], parts[1], parts[2]))
+    trainers = {pid for pid, _, command in rows
+                if any(f" {path} " in f" {command} " for path in known)}
+    if any(parent in trainers for _, parent, _ in rows):
+        reject("Refusing upgrade: known trainer has a live worker child")
+except (OSError, ValueError, subprocess.SubprocessError):
+    reject("Upgrade preflight failed: model metadata, config or process state could not be verified")
+PY
+}
+
+stage_expert_config() {
+  python3 - "$config_file" "$1" <<'PY'
+import os
+from pathlib import Path
+import sys
+
+source, target = map(Path, sys.argv[1:])
+data = source.read_bytes()
+if "RISK_EXPERT_MODEL_PATH" in os.environ:
+    replacement = b"RISK_EXPERT_MODEL_PATH=" + os.fsencode(os.environ["RISK_EXPERT_MODEL_PATH"])
+    lines = data.splitlines(keepends=True)
+    found = False
+    for index, line in enumerate(lines):
+        if line.startswith(b"RISK_EXPERT_MODEL_PATH="):
+            ending = b"\r\n" if line.endswith(b"\r\n") else b"\n" if line.endswith(b"\n") else b""
+            lines[index] = replacement + ending
+            found = True
+    data = b"".join(lines)
+    if not found:
+        data += (b"\n" if data and not data.endswith(b"\n") else b"") + replacement + b"\n"
+target.write_bytes(data)
+target.chmod(source.stat().st_mode & 0o777)
+PY
+}
+
+wait_until_healthy() {
+  # Include the healthcheck execution time in the deadline (curl itself can
+  # take four seconds). Suppress all boundary output, including error payloads.
+  python3 - "${backend_root}/scripts/healthcheck-risk-training-node-local.sh" "${1:-30}" <<'PY'
+import subprocess
+import sys
+import time
+
+budget = min(30.0, float(sys.argv[2]))
+deadline = time.monotonic() + budget
+while time.monotonic() < deadline:
+    try:
+        result = subprocess.run(["bash", sys.argv[1]], stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                timeout=max(0.001, deadline - time.monotonic()))
+        if result.returncode == 0:
+            sys.exit(0)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    time.sleep(min(0.5, max(0, deadline - time.monotonic()), budget / 4))
+sys.exit(1)
+PY
 }
 
 install_node() {
   require_install_environment
+  require_release_sources
   [[ -z "$(listener)" ]] || { echo "Refusing to replace an unowned listener on port $trainer_port" >&2; return 1; }
   [[ ! -d "$runtime_home" || -f "$marker" || -z "$(find "$runtime_home" -mindepth 1 -maxdepth 1 -print -quit)" ]] || {
     echo "Refusing to replace an unrecognized runtime directory" >&2; return 1; }
@@ -83,22 +218,41 @@ install_node() {
 upgrade_node() {
   [[ -f "$installed_plist" && -f "$config_file" && -L "$current_release" ]] || {
     echo "Training node is not installed" >&2; return 1; }
-  local previous
-  previous="$(readlink "$current_release")"
-  stop_node
-  install_release
-  if ! start_node || ! status_node; then
-    stop_node
-    ln -sfn "$previous" "${current_release}.new"; mv -fh "${current_release}.new" "$current_release"
-    start_node || true
-    echo "Training node upgrade failed; previous release restored" >&2
+  local previous backup rollback_healthy=no
+  preflight_upgrade || return 1
+  previous="$(cd "$current_release" && pwd -P)" || return 1
+  # A single retained checkpoint binds the original config bytes/mode to its
+  # release. Credentials never go to stdout or through shell evaluation.
+  umask 077
+  backup="$(mktemp -d "${runtime_home}/upgrade.XXXXXX")" || return 1
+  cp -p "$config_file" "$backup/training-node.env" || return 1
+  ln -s "$previous" "$backup/release" || return 1
+  stage_expert_config "$backup/next.env" || return 1
+  if ! stop_node; then
+    echo "Training node could not be stopped; upgrade not applied" >&2
     return 1
   fi
-  echo "RISK_TRAINING_NODE_UPGRADE_OK release=$(readlink "$current_release")"
+  if install_release && mv "$backup/next.env" "$config_file" && start_node && wait_until_healthy; then
+    echo "RISK_TRAINING_NODE_UPGRADE_OK release=$(readlink "$current_release")"
+    return 0
+  fi
+  if stop_node && activate_release "$previous" &&
+      cp -p "$backup/training-node.env" "${config_file}.new" &&
+      mv "${config_file}.new" "$config_file"; then
+    if start_node && wait_until_healthy; then rollback_healthy=yes; fi
+    echo "Training node upgrade failed; previous release/config restored; rollback healthy=$rollback_healthy" >&2
+  else
+    echo "Training node upgrade failed; rollback restore failed; rollback healthy=no; checkpoint=$backup" >&2
+  fi
+  return 1
 }
 
-start_node() { loaded && launchctl kickstart "$service_target" || launchctl bootstrap "$domain" "$installed_plist"; }
-stop_node() { loaded && launchctl bootout "$service_target" || true; }
+start_node() {
+  if loaded; then launchctl kickstart "$service_target"; else launchctl bootstrap "$domain" "$installed_plist"; fi
+}
+stop_node() {
+  if loaded; then launchctl bootout "$service_target"; fi
+}
 status_node() {
   code="$(curl -sS --max-time 3 -o /dev/null -w '%{http_code}' "http://127.0.0.1:${trainer_port}/health" 2>/dev/null || true)"
   echo "training-node installed=$([[ -f "$installed_plist" ]] && echo yes || echo no) loaded=$(loaded && echo yes || echo no) trainer-http=${code:-000}"
