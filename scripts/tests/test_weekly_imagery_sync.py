@@ -3,8 +3,10 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -17,7 +19,9 @@ from scripts.weekly_imagery_sync import (  # noqa: E402
     parse_candidates,
     publish_release,
     rank_candidates,
+    require_free_space,
     retain_releases,
+    select_grid_candidates,
     validate_release,
 )
 
@@ -50,6 +54,7 @@ class WeeklyImagerySyncTest(unittest.TestCase):
                     "properties": {
                         "datetime": "2026-09-20T02:00:00Z",
                         "eo:cloud_cover": 8.5,
+                        "grid:code": "MGRS-52UEU",
                     },
                     "assets": {
                         "red": {"href": "https://example.test/red.tif"},
@@ -72,6 +77,29 @@ class WeeklyImagerySyncTest(unittest.TestCase):
         parsed = parse_candidates(payload, ("example.test",))
 
         self.assertEqual(["S2-good"], [candidate.product_id for candidate in parsed])
+        self.assertEqual("MGRS-52UEU", parsed[0].grid_code)
+
+    def test_select_grid_candidates_keeps_best_ranked_scene_per_grid(self):
+        ranked = [
+            Candidate("new-a", "2026-09-20T02:00:00Z", 12.0, True, {}, "A"),
+            Candidate("old-a", "2026-09-18T02:00:00Z", 3.0, True, {}, "A"),
+            Candidate("grid-b", "2026-09-19T02:00:00Z", 5.0, True, {}, "B"),
+            Candidate("unknown", "2026-09-17T02:00:00Z", 4.0, True, {}),
+        ]
+
+        selected = select_grid_candidates(ranked)
+
+        self.assertEqual(
+            ["new-a", "grid-b", "unknown"],
+            [candidate.product_id for candidate in selected],
+        )
+
+    @patch("scripts.weekly_imagery_sync.shutil.disk_usage")
+    def test_require_free_space_rejects_release_before_gdal_when_disk_is_low(self, disk_usage):
+        disk_usage.return_value = SimpleNamespace(total=100, used=95, free=5)
+
+        with self.assertRaisesRegex(RuntimeError, "insufficient free disk space"):
+            require_free_space(Path("/tmp/imagery"), minimum_free_bytes=6)
 
     def test_publish_is_atomic_and_validation_failure_keeps_current(self):
         with tempfile.TemporaryDirectory() as temporary:
