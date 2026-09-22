@@ -166,6 +166,11 @@ def require_free_space(root: Path, minimum_free_bytes: int) -> None:
         )
 
 
+def _scene_worker_count(candidate_count: int) -> int:
+    configured = int(os.getenv("QIQIHAR_IMAGERY_SCENE_WORKERS", "1"))
+    return min(candidate_count, 4, max(1, configured))
+
+
 def _asset_href(assets: Mapping[str, Any], aliases: Sequence[str]) -> str | None:
     lowered = {str(key).lower(): value for key, value in assets.items()}
     for alias in aliases:
@@ -625,10 +630,19 @@ def build_release(
     try:
         work = staging / "work"
         work.mkdir()
-        scenes = []
-        for index, candidate in enumerate(reversed(candidates)):
+        indexed_candidates = list(enumerate(reversed(candidates)))
+
+        def build_scene(item: tuple[int, Candidate]) -> Path:
+            index, candidate = item
             require_free_space(config.root, config.minimum_free_bytes)
-            scenes.append(_build_scene(config, candidate, work, index))
+            return _build_scene(config, candidate, work, index)
+
+        worker_count = _scene_worker_count(len(indexed_candidates))
+        if worker_count == 1:
+            scenes = [build_scene(item) for item in indexed_candidates]
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+                scenes = list(executor.map(build_scene, indexed_candidates))
         require_free_space(config.root, config.minimum_free_bytes)
         mosaic_vrt = work / "mosaic.vrt"
         _run(
