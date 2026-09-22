@@ -12,7 +12,8 @@ from pathlib import Path
 import expert
 from expert_dataset import DatasetValidationError, validate_dataset, write_dataset
 import expert_training_artifacts as artifacts
-from expert_training_process import WorkerFailure, run_worker
+from expert_training_process import (WorkerFailure, cancel_run, register_run, run_worker,
+                                     unregister_run)
 from expert_training_worker import SEQUENCE_MESSAGES, SequenceValidationError, validate_metrics
 
 
@@ -24,11 +25,30 @@ class ExpertTrainingConflict(RuntimeError):
     pass
 
 
+class ExpertTrainingCancelled(RuntimeError):
+    pass
+
+
+def validate_run_id(value):
+    if type(value) is not str or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', value):
+        raise ValueError('Invalid runId')
+    return value
+
+
+def validate_cancel_request(payload):
+    if type(payload) is not dict or set(payload) != {'runId'}:
+        raise ValueError('Expected runId')
+    return validate_run_id(payload['runId'])
+
+
+def cancel_expert(run_id):
+    return cancel_run(validate_run_id(run_id))
+
+
 def validate_training_request(payload: dict) -> dict:
     if type(payload) is not dict or set(payload) != {'runId', 'dataset', 'config'}:
         raise ValueError('Expected runId, dataset and config')
-    if type(payload['runId']) is not str or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', payload['runId']):
-        raise ValueError('Invalid runId')
+    validate_run_id(payload['runId'])
     config = payload['config']
     ranges = {'iterations': (1, 1000), 'maxSeqLength': (256, 2048),
               'numLayers': (1, 8), 'seed': (0, 2147483647)}
@@ -90,7 +110,7 @@ def _verified_result(directory, identity, request, deadline):
 def train_expert(payload: dict) -> dict:
     deadline = time.monotonic() + 1800
     request = validate_training_request(payload)
-    stage, lock_fd, lock, lock_identity = None, None, None, None
+    stage, lock_fd, lock, lock_identity, owned = None, None, None, None, None
     try:
         base = artifacts.controlled_root()
         target = base / request['runId']
@@ -102,12 +122,18 @@ def train_expert(payload: dict) -> dict:
         except FileExistsError:
             raise ExpertTrainingConflict('EXPERT_TRAINING_BUSY') from None
         lock_identity = os.fstat(lock_fd)
+        owned = register_run(request['runId'])
         model = expert.configured_model()
         identity = dict(runId=request['runId'], datasetSha256=request['dataset']['datasetSha256'],
                         config=request['config'], model=artifacts.model_identity(model, deadline),
                         sourceSha256=artifacts.source_identity(deadline), engine='mlx-lm0.31.3')
         if target.exists():
-            return _verified_result(target, identity, request, deadline)
+            result = _verified_result(target, identity, request, deadline)
+            with owned.lock:
+                if owned.cancelled.is_set():
+                    raise ExpertTrainingCancelled('EXPERT_TRAINING_CANCELLED')
+                owned.finished = True
+            return result
         stage = Path(tempfile.mkdtemp(prefix='.' + request['runId'] + '-', dir=base))
         os.chmod(stage, 0o700)
         write_dataset(stage / 'dataset', request['dataset'])
@@ -116,8 +142,10 @@ def train_expert(payload: dict) -> dict:
         artifacts.private_json(request_path, dict(modelPath=str(model), dataPath=str(stage / 'dataset'),
                                                  adapterPath=str(stage), config=request['config']))
         try:
-            run_worker(request_path, deadline)
+            run_worker(request_path, deadline, owned)
         except WorkerFailure as failure:
+            if str(failure) == 'EXPERT_TRAINING_CANCELLED':
+                raise ExpertTrainingCancelled('EXPERT_TRAINING_CANCELLED') from None
             if str(failure) == 'EXPERT_TRAINING_WORKER_FAILED':
                 raise _worker_dataset_error(stage / '.worker_error.json', request['dataset']['counts'])
             raise
@@ -137,17 +165,25 @@ def train_expert(payload: dict) -> dict:
             os.chmod(stage / name, 0o600, follow_symlinks=False)
         artifacts.private_json(stage / 'model_manifest.json', _manifest(identity, hashes))
         result = _verified_result(stage, identity, request, deadline)
+        if owned.cancelled.is_set():
+            raise ExpertTrainingCancelled('EXPERT_TRAINING_CANCELLED')
         artifacts.check_deadline(deadline)
-        artifacts.atomic_publish(stage, target)
+        with owned.lock:
+            if owned.cancelled.is_set():
+                raise ExpertTrainingCancelled('EXPERT_TRAINING_CANCELLED')
+            artifacts.atomic_publish(stage, target)
+            owned.finished = True
         stage = None
         result['artifactPath'] = str(target)
         return result
-    except (ExpertTrainingConflict, DatasetValidationError):
+    except (ExpertTrainingConflict, ExpertTrainingCancelled, DatasetValidationError):
         raise
     except Exception:
         raise ExpertTrainingUnavailable('EXPERT_TRAINING_FAILED') from None
     finally:
         cleanup_failed = False
+        if owned is not None:
+            unregister_run(request['runId'], owned)
         if stage is not None:
             # Only the private mkdtemp owned by this invocation, never an existing target.
             try:

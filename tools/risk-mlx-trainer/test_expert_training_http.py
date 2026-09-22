@@ -71,9 +71,9 @@ class HTTPTest(unittest.TestCase):
         finally:
             connection.close()
 
-    def raw(self, headers, body=b'{}'):
+    def raw(self, headers, body=b'{}', path='/v1/expert-train'):
         with socket.create_connection(self.http.server_address, timeout=3) as sock:
-            sock.sendall(b'POST /v1/expert-train HTTP/1.0\r\nAuthorization: Bearer http-test-only-token\r\n'
+            sock.sendall(f'POST {path} HTTP/1.0\r\nAuthorization: Bearer http-test-only-token\r\n'.encode()
                          + headers + b'\r\n\r\n' + body)
             sock.shutdown(socket.SHUT_WR)
             response = http.client.HTTPResponse(sock)
@@ -101,12 +101,25 @@ class HTTPTest(unittest.TestCase):
         connection.close()
 
     def test_auth_for_both_routes(self):
-        for route in ('/v1/expert-datasets/validate', '/v1/expert-train'):
+        for route in ('/v1/expert-datasets/validate', '/v1/expert-train', '/v1/expert-train-cancel'):
             for token in (None, '', 'wrong'):
                 self.assertEqual(self.post(route, token=token), (401, {'error': 'UNAUTHORIZED'}))
             for configured in ('', '  '):
                 with patch.object(server, 'TOKEN', configured):
                     self.assertEqual(self.post(route), (403, {'error': 'EXPERT_AUTH_NOT_CONFIGURED'}))
+
+    def test_cancel_strict_body_bypasses_workload_gate_and_is_idempotent(self):
+        server.WORKLOAD_GATE.acquire()
+        try:
+            with patch.object(engine, 'cancel_expert', side_effect=[True, True, False]) as cancel:
+                for expected in ('CANCEL_REQUESTED', 'CANCEL_REQUESTED', 'NOT_FOUND'):
+                    self.assertEqual(self.post('/v1/expert-train-cancel', {'runId': 'http-test'}),
+                                     (200 if expected != 'NOT_FOUND' else 404, {'status': expected}))
+                self.assertEqual(cancel.call_args_list[0].args, ('http-test',))
+            for payload in ({}, {'runId': 'bad/slash'}, {'runId': 'http-test', 'path': '/tmp'}):
+                self.assertEqual(self.post('/v1/expert-train-cancel', payload)[0], 400)
+        finally:
+            server.WORKLOAD_GATE.release()
 
     def test_dataset_row_and_unknown_fields_safe(self):
         value = fixture()
@@ -127,17 +140,18 @@ class HTTPTest(unittest.TestCase):
         self.assertNotIn('raw-secret', json.dumps(result))
 
     def test_strict_json_and_framing(self):
-        for route in ('/v1/expert-datasets/validate', '/v1/expert-train'):
+        for route in ('/v1/expert-datasets/validate', '/v1/expert-train', '/v1/expert-train-cancel'):
             for body in (b'{', b'{"a":1,"a":2}', b'{"a":NaN}', b'{"a":Infinity}', b'\xff'):
                 with self.subTest(route=route, body=body):
                     self.assertEqual(self.post(route, body=body)[0], 400)
-        for headers in (b'Content-Length: -1', b'Content-Length: 8388609',
-                        b'Content-Length: xyz', b'Content-Length: 99999999999999999999999999',
-                        b'Content-Length: 2\r\nContent-Length: 2',
-                        b'Content-Length: 2\r\nTransfer-Encoding: chunked',
-                        b'Transfer-Encoding: chunked', b'Content-Length: 9'):
-            with self.subTest(headers=headers):
-                self.assertEqual(self.raw(headers)[0], 400)
+        for route in ('/v1/expert-train', '/v1/expert-train-cancel'):
+            for headers in (b'Content-Length: -1', b'Content-Length: 8388609',
+                            b'Content-Length: xyz', b'Content-Length: 99999999999999999999999999',
+                            b'Content-Length: 2\r\nContent-Length: 2',
+                            b'Content-Length: 2\r\nTransfer-Encoding: chunked',
+                            b'Transfer-Encoding: chunked', b'Content-Length: 9'):
+                with self.subTest(route=route, headers=headers):
+                    self.assertEqual(self.raw(headers, path=route)[0], 400)
 
     def test_busy_and_prevalidation(self):
         server.WORKLOAD_GATE.acquire()
@@ -165,7 +179,7 @@ class HTTPTest(unittest.TestCase):
         entered, resume, replied = threading.Event(), threading.Event(), threading.Event()
         original_reply = server.Handler.reply
         timeouts = []
-        def failing_worker(path, deadline):
+        def failing_worker(path, deadline, owned=None):
             entered.set()
             if not resume.wait(3):
                 raise AssertionError('Test did not resume worker')
@@ -191,7 +205,7 @@ class HTTPTest(unittest.TestCase):
         self.assertFalse(server.WORKLOAD_GATE.locked())
         self.assertEqual(list((self.root / 'artifacts' / 'expert-sft').iterdir()), [])
 
-    def fake_gpu(self, path, deadline):
+    def fake_gpu(self, path, deadline, owned=None):
         dest = path.parent
         (dest / 'adapters.safetensors').write_bytes(b'test-only')
         (dest / 'adapter_config.json').write_text('{}')
@@ -237,7 +251,7 @@ boundary.__globals__['preflight_datasets'] = namespace['preflight_datasets']
 namespace['main'].__globals__['execute'] = boundary
 sys.exit(namespace['main'](['--request', sys.argv[2]]))
 '''
-        def child(path, deadline):
+        def child(path, deadline, owned=None):
             process.run_bounded([sys.executable, '-c', script,
                                  str(Path(engine.__file__).with_name('expert_training_worker.py')), str(path)],
                                 path.parent, deadline)

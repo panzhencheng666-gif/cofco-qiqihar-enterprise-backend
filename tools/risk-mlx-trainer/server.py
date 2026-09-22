@@ -257,7 +257,8 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(404, {"error": "NOT_FOUND"})
 
     def do_POST(self) -> None:
-        if self.path in ('/v1/expert-datasets/validate', '/v1/expert-train'):
+        if self.path in ('/v1/expert-datasets/validate', '/v1/expert-train',
+                         '/v1/expert-train-cancel'):
             try:
                 status, result = self.expert_sft_response()
                 self.reply(status, result)
@@ -350,6 +351,11 @@ class Handler(BaseHTTPRequestHandler):
             return 401, {'error': 'UNAUTHORIZED'}
         try:
             payload = self.read_expert_sft_body()
+            if self.path == '/v1/expert-train-cancel':
+                run_id = expert_training.validate_cancel_request(payload)
+                if expert_training.cancel_expert(run_id):
+                    return 200, {'status': 'CANCEL_REQUESTED'}
+                return 404, {'status': 'NOT_FOUND'}
             if self.path == '/v1/expert-datasets/validate':
                 dataset = expert_dataset.validate_dataset(payload)
                 return 200, dict(datasetId=dataset['datasetId'], datasetSha256=dataset['datasetSha256'],
@@ -370,6 +376,8 @@ class Handler(BaseHTTPRequestHandler):
             return 422, {'error': 'INVALID_EXPERT_DATASET', 'errors': error.errors}
         except expert_training.ExpertTrainingConflict:
             return 409, {'error': 'EXPERT_TRAINING_CONFLICT'}
+        except expert_training.ExpertTrainingCancelled:
+            return 409, {'error': 'EXPERT_TRAINING_CANCELLED'}
         except Exception:
             return 503, {'error': 'EXPERT_TRAINING_UNAVAILABLE'}
         finally:

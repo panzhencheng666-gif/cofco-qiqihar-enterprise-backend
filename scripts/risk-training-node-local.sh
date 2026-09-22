@@ -119,7 +119,8 @@ try:
     state = Path(values.get("RISK_TRAINING_NODE_STATE_ROOT", str(runtime / "state")))
     if not state.is_absolute():
         reject("Training node state root must be absolute")
-    for claim in (runtime / "state/active-claim.json", state / "active-claim.json"):
+    for claim in (runtime / "state/active-claim.json", runtime / "state/active-expert-claim.json",
+                  state / "active-claim.json", state / "active-expert-claim.json"):
         if os.path.lexists(claim):
             reject("Refusing upgrade: active claim exists; wait for legitimate idle status")
     if "RISK_EXPERT_MODEL_PATH" in os.environ:

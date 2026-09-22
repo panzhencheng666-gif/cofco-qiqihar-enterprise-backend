@@ -179,10 +179,22 @@ upgrade_node
         (self.runtime / "state/active-claim.json").write_text("{}")
         self.assert_rejected_before_stop(self.run_upgrade(), "active claim")
 
+    def test_active_expert_claim_rejected_before_stop(self):
+        (self.runtime / "state/active-expert-claim.json").write_text("{}")
+        self.assert_rejected_before_stop(self.run_upgrade(), "active claim")
+
     def test_custom_state_claim_rejected_before_stop(self):
         state = self.root / "custom state"
         state.mkdir()
         (state / "active-claim.json").touch()
+        self.original += b"\nRISK_TRAINING_NODE_STATE_ROOT=" + str(state).encode() + b"\n"
+        self.config.write_bytes(self.original)
+        self.assert_rejected_before_stop(self.run_upgrade(), "active claim")
+
+    def test_custom_state_expert_claim_rejected_before_stop(self):
+        state = self.root / "custom expert state"
+        state.mkdir()
+        (state / "active-expert-claim.json").touch()
         self.original += b"\nRISK_TRAINING_NODE_STATE_ROOT=" + str(state).encode() + b"\n"
         self.config.write_bytes(self.original)
         self.assert_rejected_before_stop(self.run_upgrade(), "active claim")

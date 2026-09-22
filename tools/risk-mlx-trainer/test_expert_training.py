@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -49,7 +50,7 @@ class EngineTest(unittest.TestCase):
         self.env.start()
         self.addCleanup(self.env.stop)
 
-    def fake_gpu(self, request_path, deadline):
+    def fake_gpu(self, request_path, deadline, owned=None):
         request = json.loads(request_path.read_text())
         self.assertEqual(set(request), {'modelPath', 'dataPath', 'adapterPath', 'config'})
         dest = Path(request['adapterPath'])
@@ -111,8 +112,8 @@ class EngineTest(unittest.TestCase):
 
     def test_worker_missing_outputs_and_dataset_mutation_are_rejected(self):
         for name in ('adapters.safetensors', 'adapter_config.json', 'training_metrics.json', 'dataset/test.jsonl'):
-            def mutate(request_path, deadline):
-                self.fake_gpu(request_path, deadline)
+            def mutate(request_path, deadline, owned=None):
+                self.fake_gpu(request_path, deadline, owned)
                 root = Path(json.loads(request_path.read_text())['adapterPath'])
                 (root / name).write_bytes(b'')
             with patch.object(engine, 'run_worker', side_effect=mutate):
@@ -144,7 +145,7 @@ class EngineTest(unittest.TestCase):
                  'symlink', 'mode', 'success']
         for record in cases:
             with self.subTest(record=record):
-                def fail(path, deadline):
+                def fail(path, deadline, owned=None):
                     error_path = path.parent / '.worker_error.json'
                     if record == 'symlink':
                         error_path.symlink_to(path)
@@ -154,7 +155,7 @@ class EngineTest(unittest.TestCase):
                             error_path.write_bytes(record)
                         if record == 'mode': error_path.chmod(0o644)
                     if record == 'success':
-                        self.fake_gpu(path, deadline)
+                        self.fake_gpu(path, deadline, owned)
                         return
                     raise process.WorkerFailure('EXPERT_TRAINING_WORKER_FAILED')
                 with patch.object(engine, 'run_worker', side_effect=fail):
@@ -282,8 +283,8 @@ class EngineTest(unittest.TestCase):
             self.train()
 
     def test_failure_metrics_and_lock_cleanup(self):
-        def broken(request_path, deadline):
-            self.fake_gpu(request_path, deadline)
+        def broken(request_path, deadline, owned=None):
+            self.fake_gpu(request_path, deadline, owned)
             request = json.loads(request_path.read_text())
             file = Path(request['adapterPath']) / 'training_metrics.json'
             value = metrics()
@@ -300,6 +301,13 @@ class EngineTest(unittest.TestCase):
         with self.assertRaises(engine.ExpertTrainingConflict):
             self.train()
         self.assertEqual((base / 'unit-1.lock').read_text(), 'owned elsewhere')
+
+    def test_owned_cancellation_cleans_stage_and_lock_without_candidate(self):
+        with patch.object(engine, 'run_worker', side_effect=process.WorkerFailure(
+                'EXPERT_TRAINING_CANCELLED')):
+            with self.assertRaises(engine.ExpertTrainingCancelled):
+                engine.train_expert(payload())
+        self.assertEqual(list((self.artifacts / 'expert-sft').iterdir()), [])
 
 
 class WorkerBoundaryTest(unittest.TestCase):
@@ -495,6 +503,42 @@ class ProcessTest(unittest.TestCase):
                         with self.assertRaises(process.WorkerFailure):
                             process.run_bounded([sys.executable, '-c', script], Path(directory), time.monotonic() + seconds)
                     self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_pre_spawn_cancel_duplicate_and_wrong_run_are_safe(self):
+        owned = process.register_run('cancel-before-spawn')
+        self.addCleanup(process.unregister_run, 'cancel-before-spawn', owned)
+        self.assertFalse(process.cancel_run('wrong-run'))
+        self.assertTrue(process.cancel_run('cancel-before-spawn'))
+        self.assertTrue(process.cancel_run('cancel-before-spawn'))
+        with tempfile.TemporaryDirectory() as directory, patch.object(process.subprocess, 'Popen') as spawn:
+            with self.assertRaisesRegex(process.WorkerFailure, 'EXPERT_TRAINING_CANCELLED'):
+                process.run_bounded([sys.executable, '-c', 'raise SystemExit'], Path(directory),
+                                    time.monotonic() + 2, owned)
+            spawn.assert_not_called()
+
+    def test_during_run_cancel_terminates_only_owned_process_group(self):
+        owned = process.register_run('cancel-during-run')
+        self.addCleanup(process.unregister_run, 'cancel-during-run', owned)
+        outcome = []
+        with tempfile.TemporaryDirectory() as directory:
+            thread = threading.Thread(target=lambda: self._capture_failure(
+                outcome, [sys.executable, '-c', 'import time; time.sleep(30)'],
+                Path(directory), owned))
+            thread.start()
+            deadline = time.monotonic() + 3
+            while owned.child is None and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertIsNotNone(owned.child)
+            self.assertTrue(process.cancel_run('cancel-during-run'))
+            thread.join(3)
+            self.assertFalse(thread.is_alive())
+        self.assertEqual(outcome, ['EXPERT_TRAINING_CANCELLED'])
+
+    def _capture_failure(self, outcome, command, directory, owned):
+        try:
+            process.run_bounded(command, directory, time.monotonic() + 10, owned)
+        except process.WorkerFailure as error:
+            outcome.append(str(error))
 
 
 if __name__ == '__main__':

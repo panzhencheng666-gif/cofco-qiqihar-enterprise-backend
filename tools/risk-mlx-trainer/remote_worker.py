@@ -5,18 +5,35 @@ import hashlib
 import io
 import json
 import os
+import re
 import sys
 import tarfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any
+
+import expert_training_artifacts
 
 
 class ClaimExpired(RuntimeError):
     pass
+
+
+EXPERT_FAILURES = {
+    "DATASET_PREPARATION_FAILED": "专家训练数据准备失败，未生成候选工件。",
+    "MODEL_LOAD_FAILED": "本地专家模型加载失败，未生成候选工件。",
+    "LOCAL_TRAINING_FAILED": "本地专家训练失败，未生成候选工件。",
+    "OUT_OF_MEMORY": "本地专家训练内存不足，未生成候选工件。",
+    "PACKAGING_FAILED": "专家训练工件打包失败，未上传候选工件。",
+}
+EXPERT_PROGRESS = ((5, "PREPARING"), (10, "LOCAL_TRAINING"),
+                   (75, "PACKAGING"), (85, "UPLOADING"), (95, "COMPLETING"))
+SAFE_RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}")
 
 
 def trainer_payload(job: dict[str, Any]) -> dict[str, Any]:
@@ -68,6 +85,40 @@ def canonical_hash(directory: Path) -> str:
     return digest.hexdigest()
 
 
+def expert_artifact_hash(directory: Path) -> str:
+    return expert_training_artifacts.layout_hashes(
+        directory, time.monotonic() + 300, manifest=True)[1]
+
+
+def json_object(body: bytes) -> dict[str, Any]:
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("Duplicate JSON key")
+            result[key] = value
+        return result
+    value = json.loads(body, object_pairs_hook=unique,
+                       parse_constant=lambda _: (_ for _ in ()).throw(ValueError("Nonfinite JSON")))
+    if type(value) is not dict:
+        raise ValueError("Expected JSON object")
+    return value
+
+
+def local_expert_urls(trainer: str) -> tuple[str, str]:
+    parsed = urllib.parse.urlsplit(trainer)
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise RuntimeError("本地训练地址不合法") from error
+    if (parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "::1")
+            or port is None or parsed.username is not None or parsed.password is not None
+            or parsed.path != "/v1/train" or parsed.query or parsed.fragment):
+        raise RuntimeError("本地训练地址必须是固定回环端点")
+    return (urllib.parse.urlunsplit(parsed._replace(path="/v1/expert-train")),
+            urllib.parse.urlunsplit(parsed._replace(path="/v1/expert-train-cancel")))
+
+
 def save_state(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary = path.with_suffix(".new")
@@ -107,13 +158,18 @@ class Worker:
         self.node = required("RISK_TRAINING_NODE_ID")
         self.trainer = os.environ.get("RISK_LLM_TRAINER_URL",
                                       "http://127.0.0.1:63201/v1/train")
+        self.expert_trainer, self.expert_cancel = local_expert_urls(self.trainer)
         self.trainer_token = required("RISK_LLM_BEARER_TOKEN")
         state_root = Path(os.environ.get(
             "RISK_TRAINING_NODE_STATE_ROOT", "var/risk-training-node")).resolve()
         self.state = state_root / "active-claim.json"
+        self.expert_state = state_root / "active-expert-claim.json"
         self.artifact_index = state_root / "artifact-index.json"
-        self.artifact_root = Path(os.environ.get(
-            "RISK_LLM_ARTIFACT_ROOT", "var/risk-llm-adapters")).resolve()
+        configured_artifact_root = Path(os.environ.get(
+            "RISK_LLM_ARTIFACT_ROOT", "var/risk-llm-adapters")).absolute()
+        if configured_artifact_root.is_symlink():
+            raise RuntimeError("本地训练工件根目录不合法")
+        self.artifact_root = configured_artifact_root.resolve()
         self.poll_seconds = max(10, int(os.environ.get("RISK_TRAINING_NODE_POLL_SECONDS", "60")))
         self.heartbeat_seconds = max(
             30, int(os.environ.get("RISK_TRAINING_NODE_HEARTBEAT_SECONDS", "300")))
@@ -132,6 +188,278 @@ class Worker:
             raise RuntimeError(f"云端训练任务领取失败 HTTP {status}")
         return json.loads(body)
 
+    def _expert_state_from_claim(self, claim: dict[str, Any]) -> dict[str, Any]:
+        task_id = str(uuid.UUID(str(claim["taskId"])))
+        run_id = claim["runId"]
+        if type(run_id) is not str or not SAFE_RUN_ID.fullmatch(run_id):
+            raise ValueError("专家训练 runId 不合法")
+        if type(claim["dataset"]) is not dict or type(claim["config"]) is not dict:
+            raise ValueError("专家训练任务数据不合法")
+        return {"taskId": task_id, "runId": run_id,
+                "dataset": claim["dataset"], "config": claim["config"], "progress": 0}
+
+    def _saved_expert_state(self, state: dict[str, Any]) -> dict[str, Any]:
+        required = {"taskId", "runId", "dataset", "config"}
+        allowed = required | {"progress", "result", "stored"}
+        if type(state) is not dict or not required.issubset(state) or not set(state).issubset(allowed):
+            raise ValueError("专家训练状态不合法")
+        clean = self._expert_state_from_claim(state)
+        progress = state.get("progress", 0)
+        if type(progress) is not int or progress not in {0, 5, 10, 75, 85, 95}:
+            raise ValueError("专家训练状态进度不合法")
+        clean["progress"] = progress
+        for key in ("result", "stored"):
+            if key in state:
+                if type(state[key]) is not dict:
+                    raise ValueError("专家训练状态检查点不合法")
+                clean[key] = state[key]
+        return clean
+
+    def expert_claim(self) -> dict[str, Any] | None:
+        status, body = request("POST", self.cloud + "/expert-claims",
+                               self.cloud_headers(), b"", 30)
+        if status == 204:
+            return None
+        if status != 200:
+            raise RuntimeError("云端专家训练任务领取失败")
+        return self._expert_state_from_claim(json_object(body))
+
+    def _expert_url(self, state: dict[str, Any], operation: str) -> str:
+        return self.cloud + f"/expert-tasks/{state['taskId']}/{operation}"
+
+    def expert_heartbeat(self, state: dict[str, Any]) -> bool:
+        status, body = request("POST", self._expert_url(state, "heartbeat"),
+                               self.cloud_headers(), b"", 30)
+        if status == 409:
+            raise ClaimExpired("专家训练租约已失效")
+        if status != 200:
+            raise RuntimeError("云端专家训练心跳失败")
+        value = json_object(body)
+        if type(value.get("cancelRequested")) is not bool:
+            raise RuntimeError("云端专家训练心跳响应不合法")
+        return value["cancelRequested"]
+
+    def expert_progress(self, state: dict[str, Any], percent: int, phase: str) -> None:
+        body = json.dumps({"percent": percent, "phase": phase},
+                          separators=(",", ":")).encode()
+        status, _ = request("POST", self._expert_url(state, "progress"),
+                            self.cloud_headers() | {"Content-Type": "application/json"}, body, 30)
+        if status == 409:
+            raise ClaimExpired("专家训练租约已失效")
+        if status != 204:
+            raise RuntimeError("云端专家训练进度登记失败")
+
+    def advance_expert_progress(self, state: dict[str, Any], percent: int, phase: str) -> None:
+        if state["progress"] >= percent:
+            return
+        self.expert_progress(state, percent, phase)
+        state["progress"] = percent
+        save_state(self.expert_state, state)
+
+    def acknowledge_expert_cancel(self, state: dict[str, Any]) -> None:
+        status, _ = request("POST", self._expert_url(state, "cancelled"),
+                            self.cloud_headers(), b"", 30)
+        if status == 204:
+            self.expert_state.unlink(missing_ok=True)
+            return
+        if status == 409:
+            self.expert_state.unlink(missing_ok=True)
+            raise ClaimExpired("专家训练取消确认时租约已失效")
+        raise RuntimeError("云端专家训练取消确认失败")
+
+    def report_expert_failure(self, state: dict[str, Any], code: str) -> None:
+        body = json.dumps({"code": code, "message": EXPERT_FAILURES[code]},
+                          ensure_ascii=False, separators=(",", ":")).encode()
+        status, _ = request("POST", self._expert_url(state, "failure"),
+                            self.cloud_headers() | {"Content-Type": "application/json"}, body, 30)
+        if status == 204:
+            self.expert_state.unlink(missing_ok=True)
+            return
+        if status == 409:
+            self.expert_state.unlink(missing_ok=True)
+            raise ClaimExpired("专家训练失败确认时租约已失效")
+        raise RuntimeError("云端专家训练失败确认未完成")
+
+    def _cancel_local_expert(self, state: dict[str, Any]) -> None:
+        body = json.dumps({"runId": state["runId"]}, separators=(",", ":")).encode()
+        try:
+            request("POST", self.expert_cancel, {
+                "Authorization": f"Bearer {self.trainer_token}",
+                "Content-Type": "application/json",
+            }, body, 30)
+        except Exception:
+            pass
+
+    def _expert_heartbeat_loop(self, state: dict[str, Any], stop: threading.Event,
+                               cancelled: threading.Event,
+                               lease_lost: threading.Event) -> None:
+        while not stop.wait(self.heartbeat_seconds):
+            try:
+                if self.expert_heartbeat(state):
+                    cancelled.set()
+                    self._cancel_local_expert(state)
+            except ClaimExpired:
+                lease_lost.set()
+                return
+            except Exception:
+                continue
+
+    def validate_expert_result(self, value: dict[str, Any],
+                               expected_run_id: str | None = None) -> tuple[Path, str, dict[str, Any]]:
+        if (type(value) is not dict or type(value.get("runId")) is not str
+                or (expected_run_id is not None and value.get("runId") != expected_run_id)):
+            raise ValueError("本地专家训练响应不合法")
+        if (value.get("kind") != "EXPERT_SFT_ADAPTER" or value.get("status") != "CANDIDATE"
+                or value.get("publicationStatus") != "NOT_EVALUATED"):
+            raise ValueError("本地专家训练候选状态不合法")
+        content_hash = value.get("artifactSha256")
+        if type(content_hash) is not str or not re.fullmatch(r"[0-9a-f]{64}", content_hash):
+            raise ValueError("本地专家训练工件哈希不合法")
+        if type(value.get("artifactPath")) is not str:
+            raise ValueError("本地专家训练工件路径不合法")
+        raw_artifact = Path(value["artifactPath"])
+        if raw_artifact.is_symlink():
+            raise ValueError("本地专家训练工件路径不合法")
+        artifact = raw_artifact.resolve(strict=True)
+        root = self.artifact_root.resolve(strict=True)
+        if artifact == root or root not in artifact.parents or not artifact.is_dir():
+            raise ValueError("本地专家训练工件不在受控目录")
+        if artifact.stat().st_uid != os.getuid() or expert_artifact_hash(artifact) != content_hash:
+            raise ValueError("本地专家训练工件校验失败")
+        metrics = value.get("metrics")
+        if type(metrics) is not dict:
+            raise ValueError("本地专家训练指标不合法")
+        encoded_metrics = json.dumps(metrics, ensure_ascii=False, separators=(",", ":"),
+                                     allow_nan=False).encode()
+        if len(encoded_metrics) > 4096:
+            raise ValueError("本地专家训练指标超限")
+        return artifact, content_hash, metrics
+
+    def validate_stored_expert(self, stored: dict[str, Any], bundle_hash: str,
+                               content_hash: str, size: int) -> dict[str, Any]:
+        if (type(stored) is not dict
+                or set(stored) != {"artifactReference", "bundleSha256", "contentSha256", "sizeBytes"}
+                or type(stored["artifactReference"]) is not str or not stored["artifactReference"]
+                or stored["bundleSha256"] != bundle_hash
+                or stored["contentSha256"] != content_hash
+                or type(stored["sizeBytes"]) is not int or stored["sizeBytes"] != size):
+            raise RuntimeError("云端专家训练工件回执不合法")
+        return stored
+
+    def process_expert(self, state: dict[str, Any]) -> None:
+        state = self._saved_expert_state(state)
+        try:
+            completion_replay = "stored" in state and state["progress"] == 95
+            if not completion_replay:
+                if self.expert_heartbeat(state):
+                    self.acknowledge_expert_cancel(state)
+                    return
+            if "result" not in state:
+                self.advance_expert_progress(state, *EXPERT_PROGRESS[0])
+                self.advance_expert_progress(state, *EXPERT_PROGRESS[1])
+                stopped = threading.Event()
+                cancelled = threading.Event()
+                lease_lost = threading.Event()
+                heartbeat = threading.Thread(target=self._expert_heartbeat_loop,
+                                             args=(state, stopped, cancelled, lease_lost), daemon=True)
+                heartbeat.start()
+                payload = json.dumps({"runId": state["runId"], "dataset": state["dataset"],
+                                      "config": state["config"]},
+                                     ensure_ascii=False, separators=(",", ":")).encode()
+                try:
+                    status, body = request("POST", self.expert_trainer, {
+                        "Authorization": f"Bearer {self.trainer_token}",
+                        "Content-Type": "application/json",
+                    }, payload, 1900)
+                finally:
+                    stopped.set()
+                    # request() bounds each heartbeat to 30 seconds. Wait for an
+                    # in-flight response so a witnessed cancellation cannot lose
+                    # a race with packaging/upload.
+                    heartbeat.join()
+                if lease_lost.is_set():
+                    raise ClaimExpired("专家训练期间租约已失效")
+                if cancelled.is_set():
+                    self.acknowledge_expert_cancel(state)
+                    return
+                if self.expert_heartbeat(state):
+                    self._cancel_local_expert(state)
+                    self.acknowledge_expert_cancel(state)
+                    return
+                if status != 200:
+                    self.report_expert_failure(
+                        state, "DATASET_PREPARATION_FAILED" if status == 422 else "LOCAL_TRAINING_FAILED")
+                    return
+                trained = json_object(body)
+            else:
+                trained = state["result"]
+            try:
+                if trained.get("runId") != state["runId"]:
+                    raise ValueError("本地专家训练 runId 不匹配")
+                artifact, content_hash, metrics = self.validate_expert_result(
+                    trained, state["runId"])
+            except (OSError, ValueError, TypeError, KeyError):
+                self.report_expert_failure(state, "LOCAL_TRAINING_FAILED")
+                return
+            if "result" not in state:
+                state["result"] = {key: trained[key] for key in (
+                    "runId", "kind", "status", "publicationStatus", "artifactSha256",
+                    "artifactPath", "metrics")}
+                save_state(self.expert_state, state)
+            self.advance_expert_progress(state, *EXPERT_PROGRESS[2])
+            try:
+                bundle = bundle_artifact(artifact)
+                bundle_hash = hashlib.sha256(bundle).hexdigest()
+            except Exception:
+                self.report_expert_failure(state, "PACKAGING_FAILED")
+                return
+            self.advance_expert_progress(state, *EXPERT_PROGRESS[3])
+            if "stored" in state:
+                stored = self.validate_stored_expert(
+                    state["stored"], bundle_hash, content_hash, len(bundle))
+            else:
+                upload_headers = self.cloud_headers() | {
+                    "Content-Type": "application/octet-stream",
+                    "X-Risk-Artifact-Sha256": bundle_hash,
+                    "X-Risk-Artifact-Content-Sha256": content_hash,
+                }
+                status, upload_body = request("POST", self._expert_url(state, "artifacts"),
+                                              upload_headers, bundle, 300)
+                if status == 409:
+                    raise ClaimExpired("专家训练上传时租约已失效")
+                if status != 201:
+                    raise RuntimeError("云端专家训练工件上传未完成")
+                stored = self.validate_stored_expert(
+                    json_object(upload_body), bundle_hash, content_hash, len(bundle))
+                state["stored"] = stored
+                save_state(self.expert_state, state)
+            self.advance_expert_progress(state, *EXPERT_PROGRESS[4])
+            completion = json.dumps({"artifactReference": stored["artifactReference"],
+                                     "artifactSha256": stored["bundleSha256"],
+                                     "metrics": metrics}, ensure_ascii=False,
+                                    separators=(",", ":"), allow_nan=False).encode()
+            status, _ = request("POST", self._expert_url(state, "completion"),
+                                self.cloud_headers() | {"Content-Type": "application/json"},
+                                completion, 60)
+            if status == 409:
+                raise ClaimExpired("专家训练完成登记时租约已失效")
+            if status != 204:
+                raise RuntimeError("云端专家训练完成登记未确认")
+            self.expert_state.unlink(missing_ok=True)
+        except ClaimExpired:
+            self.expert_state.unlink(missing_ok=True)
+            raise
+
+    def expert_once(self) -> bool:
+        saved = load_state(self.expert_state)
+        state = self._saved_expert_state(saved) if saved is not None else self.expert_claim()
+        if state is None:
+            return False
+        if saved is None:
+            save_state(self.expert_state, state)
+        self.process_expert(state)
+        return True
+
     def process(self, job: dict[str, Any]) -> None:
         save_state(self.state, job)
         stop = threading.Event()
@@ -147,7 +475,7 @@ class Worker:
                 "Content-Type": "application/json",
             }, payload, 1900)
             if status != 200:
-                raise RuntimeError(f"本地 MLX 训练失败 HTTP {status}: {body[-1000:].decode(errors='replace')}")
+                raise RuntimeError(f"本地 MLX 训练失败 HTTP {status}")
             trained = json.loads(body)
             artifact = Path(trained["artifactReference"])
             content_hash = str(trained["artifactSha256"])
@@ -289,6 +617,7 @@ class Worker:
     def run_forever(self) -> None:
         while True:
             try:
+                self.expert_once()
                 self.run_once()
             except Exception as error:
                 print(f"risk-training-node: {str(error)[:2000]}", file=sys.stderr, flush=True)
