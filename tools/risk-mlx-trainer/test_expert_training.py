@@ -314,13 +314,77 @@ class EngineTest(unittest.TestCase):
         lock = base / 'unit-1.lock'
         lock.write_text('dead owner')
         lock.chmod(0o600)
-        stale = base / '.unit-1-interrupted'
+        stale = base / '.expert-stage-unit-1'
         stale.mkdir(mode=0o700)
         (stale / '.worker_request.json').write_text('private interrupted state')
         result, _ = self.train()
         self.assertEqual(result['runId'], 'unit-1')
         self.assertFalse(lock.exists())
         self.assertFalse(stale.exists())
+
+    def test_stale_cleanup_never_removes_overlapping_live_run_stage(self):
+        base = self.artifacts / 'expert-sft'
+        base.mkdir(parents=True, mode=0o700)
+        other_stage = base / '.expert-stage-unit-1-child'
+        other_stage.mkdir(mode=0o700)
+        (other_stage / 'private').write_text('live')
+        other_lock = base / 'unit-1-child.lock'
+        other_lock.touch(mode=0o600)
+        with other_lock.open('r+') as held:
+            fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result, _ = self.train()
+            self.assertEqual(result['runId'], 'unit-1')
+            self.assertEqual((other_stage / 'private').read_text(), 'live')
+
+    def test_lock_open_then_flock_race_never_creates_two_owners(self):
+        base = self.artifacts / 'expert-sft'
+        base.mkdir(parents=True, mode=0o700)
+        lock = base / 'unit-1.lock'
+        owner_fd, _ = engine._acquire_run_lock(lock)
+        contender_opened = threading.Event()
+        allow_contender = threading.Event()
+        outcome = []
+        real_flock = fcntl.flock
+
+        def delayed_flock(fd, operation):
+            if threading.current_thread().name == 'delayed-lock-contender':
+                contender_opened.set()
+                self.assertTrue(allow_contender.wait(3))
+            return real_flock(fd, operation)
+
+        def contend():
+            try:
+                acquired_fd, _ = engine._acquire_run_lock(lock)
+                outcome.append(('acquired', acquired_fd))
+            except Exception as error:
+                outcome.append(('error', error))
+
+        replacement_fd = None
+        try:
+            with patch.object(engine.fcntl, 'flock', side_effect=delayed_flock):
+                thread = threading.Thread(target=contend, name='delayed-lock-contender')
+                thread.start()
+                self.assertTrue(contender_opened.wait(3))
+                lock.unlink()
+                os.close(owner_fd)
+                owner_fd = None
+                replacement_fd, _ = engine._acquire_run_lock(lock)
+                allow_contender.set()
+                thread.join(3)
+                self.assertFalse(thread.is_alive())
+            self.assertEqual(len(outcome), 1)
+            self.assertEqual(outcome[0][0], 'error')
+            self.assertIsInstance(outcome[0][1], engine.ExpertTrainingConflict)
+        finally:
+            allow_contender.set()
+            if owner_fd is not None:
+                os.close(owner_fd)
+            if replacement_fd is not None:
+                os.close(replacement_fd)
+            try:
+                lock.unlink()
+            except FileNotFoundError:
+                pass
 
     def test_owned_cancellation_cleans_stage_and_lock_without_candidate(self):
         with patch.object(engine, 'run_worker', side_effect=process.WorkerFailure(

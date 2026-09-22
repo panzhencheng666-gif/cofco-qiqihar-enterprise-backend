@@ -7,7 +7,6 @@ import os
 import re
 import shutil
 import stat
-import tempfile
 import time
 from pathlib import Path
 
@@ -88,13 +87,61 @@ def _worker_dataset_error(path, counts):
                                         code=error.reason_code, message=SEQUENCE_MESSAGES[error.reason_code])])
 
 
-def _clean_stale_stages(base, run_id):
-    for path in base.glob('.' + run_id + '-*'):
+def _stage_path(base, run_id):
+    return base / ('.expert-stage-' + run_id)
+
+
+def _clean_stale_stage(base, run_id):
+    path = _stage_path(base, run_id)
+    try:
         info = path.lstat()
-        if (path.is_symlink() or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-                or stat.S_IMODE(info.st_mode) != 0o700):
-            raise ValueError('Unsafe stale training stage')
-        shutil.rmtree(path)
+    except FileNotFoundError:
+        return
+    if (path.is_symlink() or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o700):
+        raise ValueError('Unsafe stale training stage')
+    shutil.rmtree(path)
+
+
+def _valid_lock_identity(info):
+    return (stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+            and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1)
+
+
+def _lock_path_matches(lock, identity):
+    try:
+        current = lock.lstat()
+    except FileNotFoundError:
+        return False
+    return (_valid_lock_identity(current)
+            and (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino))
+
+
+def _acquire_run_lock(lock):
+    # An opener can retain an unlinked inode while the pathname is recreated. Revalidate
+    # after flock so only the owner of the current pathname can enter the critical section.
+    for _ in range(32):
+        lock_fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            identity = os.fstat(lock_fd)
+            if not _valid_lock_identity(identity):
+                raise ValueError('Unsafe training lock')
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                if _lock_path_matches(lock, identity):
+                    raise ExpertTrainingConflict('EXPERT_TRAINING_BUSY') from None
+                continue
+            identity = os.fstat(lock_fd)
+            if not _valid_lock_identity(identity) or not _lock_path_matches(lock, identity):
+                continue
+            acquired_fd = lock_fd
+            lock_fd = None
+            return acquired_fd, identity
+        finally:
+            if lock_fd is not None:
+                os.close(lock_fd)
+    raise ValueError('Unstable training lock')
 
 
 def _verified_result(directory, identity, request, deadline):
@@ -128,23 +175,8 @@ def train_expert(payload: dict) -> dict:
         if target.is_symlink():
             raise ValueError('Symlink target')
         lock = base / (request['runId'] + '.lock')
-        try:
-            lock_fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-            lock_identity = os.fstat(lock_fd)
-            if (not stat.S_ISREG(lock_identity.st_mode) or lock_identity.st_uid != os.getuid()
-                    or stat.S_IMODE(lock_identity.st_mode) != 0o600 or lock_identity.st_nlink != 1):
-                raise ValueError('Unsafe training lock')
-            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            os.close(lock_fd)
-            lock_fd = None
-            raise ExpertTrainingConflict('EXPERT_TRAINING_BUSY') from None
-        except Exception:
-            if lock_fd is not None:
-                os.close(lock_fd)
-                lock_fd = None
-            raise
-        _clean_stale_stages(base, request['runId'])
+        lock_fd, lock_identity = _acquire_run_lock(lock)
+        _clean_stale_stage(base, request['runId'])
         owned = register_run(request['runId'])
         model = expert.configured_model()
         identity = dict(runId=request['runId'], datasetSha256=request['dataset']['datasetSha256'],
@@ -157,8 +189,8 @@ def train_expert(payload: dict) -> dict:
                     raise ExpertTrainingCancelled('EXPERT_TRAINING_CANCELLED')
                 owned.finished = True
             return result
-        stage = Path(tempfile.mkdtemp(prefix='.' + request['runId'] + '-', dir=base))
-        os.chmod(stage, 0o700)
+        stage = _stage_path(base, request['runId'])
+        stage.mkdir(mode=0o700)
         write_dataset(stage / 'dataset', request['dataset'])
         original_data = {name: artifacts.file_hash(stage / name, deadline) for name in artifacts.DATA_FILES}
         request_path = stage / '.worker_request.json'
