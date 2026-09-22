@@ -93,6 +93,12 @@ jobs:
             git diff --check HEAD^ HEAD
           fi
 
+      - name: Verify weekly imagery worker
+        run: |
+          python3 -m unittest scripts/tests/test_weekly_imagery_sync.py -v
+          bash scripts/tests/weekly-imagery-worker-install.test.sh
+          bash scripts/tests/verify-weekly-imagery-release.test.sh
+
       - name: Verify Backend
         # The legacy all-in-one suite shares mutable database fixtures and is
         # retained as an explicit diagnostic run until those fixtures are

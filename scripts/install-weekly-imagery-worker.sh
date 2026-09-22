@@ -47,6 +47,9 @@ install -d -m 750 -o cofco-imagery -g cofco-imagery /var/lib/cofco/imagery
 install -m 755 -o root -g root \
   "${backend_root}/scripts/weekly_imagery_sync.py" \
   /usr/local/lib/cofco-imagery/weekly_imagery_sync.py
+install -m 755 -o root -g root \
+  "${backend_root}/scripts/verify-weekly-imagery-release.sh" \
+  /usr/local/bin/verify-weekly-imagery-release
 install -m 644 -o root -g root \
   "${backend_root}/ops/imagery/qiqihar-aoi.geojson" \
   /usr/local/lib/cofco-imagery/qiqihar-aoi.geojson
