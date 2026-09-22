@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -247,22 +248,27 @@ def parse_candidates(payload: Mapping[str, Any], allowed_hosts: Sequence[str]) -
 
 
 def _read_json_response(request: urllib.request.Request, timeout: int) -> Mapping[str, Any]:
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            if response.status < 200 or response.status >= 300:
-                raise RuntimeError(f"STAC returned HTTP {response.status}")
-            content_type = response.headers.get_content_type()
-            if content_type not in ("application/json", "application/geo+json"):
-                raise RuntimeError(f"STAC returned unsupported content type {content_type}")
-            body = response.read(32 * 1024 * 1024 + 1)
-            if len(body) > 32 * 1024 * 1024:
-                raise RuntimeError("STAC response exceeds 32 MiB")
-            decoded = json.loads(body)
-            if not isinstance(decoded, Mapping):
-                raise RuntimeError("STAC response is not an object")
-            return decoded
-    except urllib.error.URLError as failure:
-        raise RuntimeError("STAC request failed") from failure
+    last_failure: urllib.error.URLError | None = None
+    for attempt in range(4):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                if response.status < 200 or response.status >= 300:
+                    raise RuntimeError(f"STAC returned HTTP {response.status}")
+                content_type = response.headers.get_content_type()
+                if content_type not in ("application/json", "application/geo+json"):
+                    raise RuntimeError(f"STAC returned unsupported content type {content_type}")
+                body = response.read(32 * 1024 * 1024 + 1)
+                if len(body) > 32 * 1024 * 1024:
+                    raise RuntimeError("STAC response exceeds 32 MiB")
+                decoded = json.loads(body)
+                if not isinstance(decoded, Mapping):
+                    raise RuntimeError("STAC response is not an object")
+                return decoded
+        except urllib.error.URLError as failure:
+            last_failure = failure
+            if attempt < 3:
+                time.sleep(2**attempt)
+    raise RuntimeError("STAC request failed after retries") from last_failure
 
 
 def _coordinates(value: Any) -> Iterable[tuple[float, float]]:

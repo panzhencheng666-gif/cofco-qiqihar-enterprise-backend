@@ -5,6 +5,8 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +20,7 @@ from scripts.weekly_imagery_sync import (  # noqa: E402
     ReleaseValidationError,
     _legacy_webp_band_args,
     _mgrs_grid_code,
+    _read_json_response,
     _scene_worker_count,
     _vsicurl,
     _xyz_webp_relative,
@@ -33,6 +36,17 @@ from scripts.weekly_imagery_sync import (  # noqa: E402
 
 
 class WeeklyImagerySyncTest(unittest.TestCase):
+    @patch("scripts.weekly_imagery_sync.time.sleep")
+    @patch("scripts.weekly_imagery_sync.urllib.request.urlopen")
+    def test_json_request_retries_transient_network_failures(self, urlopen, sleep):
+        urlopen.side_effect = urllib.error.URLError("temporary")
+
+        with self.assertRaisesRegex(RuntimeError, "after retries"):
+            _read_json_response(urllib.request.Request("https://example.test"), 5)
+
+        self.assertEqual(4, urlopen.call_count)
+        self.assertEqual(3, sleep.call_count)
+
     def test_scene_workers_are_bounded_for_production_capacity(self):
         with patch.dict(os.environ, {"QIQIHAR_IMAGERY_SCENE_WORKERS": "8"}):
             self.assertEqual(4, _scene_worker_count(19))
