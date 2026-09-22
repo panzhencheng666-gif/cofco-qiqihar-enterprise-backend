@@ -11,11 +11,14 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
 import expert
+import expert_dataset
+import expert_training
 
 ROOT = Path(os.environ.get("RISK_LLM_ARTIFACT_ROOT", "var/risk-llm-adapters")).resolve()
 TOKEN = os.environ.get("RISK_LLM_BEARER_TOKEN", "")
@@ -254,6 +257,14 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(404, {"error": "NOT_FOUND"})
 
     def do_POST(self) -> None:
+        if self.path in ('/v1/expert-datasets/validate', '/v1/expert-train'):
+            try:
+                status, result = self.expert_sft_response()
+                self.reply(status, result)
+            except OSError:
+                # A disconnected client cannot retain the workload gate or leak details.
+                self.close_connection = True
+            return
         is_expert = self.path == "/v1/expert-answer"
         if is_expert and not TOKEN.strip():
             self.reply(403, {"error": "EXPERT_AUTH_NOT_CONFIGURED"})
@@ -294,6 +305,75 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(503, {"error": "EXPERT_UNAVAILABLE"})
             else:
                 self.reply(500, {"error": "TRAINER_FAILURE", "message": str(error)[:2000]})
+
+    def read_expert_sft_body(self) -> Any:
+        lengths = self.headers.get_all('Content-Length', [])
+        if (len(lengths) != 1 or self.headers.get_all('Transfer-Encoding')
+                or not re.fullmatch(r'[0-9]{1,10}', lengths[0])):
+            raise ValueError('Invalid body framing')
+        length = int(lengths[0])
+        if not 0 < length <= MAX_BODY:
+            raise ValueError('Invalid body size')
+        previous_timeout = self.connection.gettimeout()
+        deadline = time.monotonic() + 10
+        complete = False
+        try:
+            body = bytearray()
+            while len(body) < length:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('Body deadline')
+                self.connection.settimeout(remaining)
+                chunk = self.rfile.read1(min(65536, length - len(body)))
+                if not chunk:
+                    raise ValueError('Truncated body')
+                body.extend(chunk)
+            complete = True
+        finally:
+            if complete:
+                self.connection.settimeout(previous_timeout)
+            else:
+                self.close_connection = True
+        def reject_constant(value):
+            raise ValueError('Nonfinite JSON')
+        return json.loads(body, object_pairs_hook=expert.unique_json_object,
+                          parse_constant=reject_constant)
+
+    def expert_sft_response(self) -> tuple[int, dict]:
+        # Do not reuse a connection whose rejected body might be unread.
+        self.close_connection = True
+        if not TOKEN.strip():
+            return 403, {'error': 'EXPERT_AUTH_NOT_CONFIGURED'}
+        authorization = self.headers.get_all('Authorization', [])
+        if (len(authorization) != 1 or not hmac.compare_digest(
+                authorization[0].encode(), f'Bearer {TOKEN}'.encode())):
+            return 401, {'error': 'UNAUTHORIZED'}
+        try:
+            payload = self.read_expert_sft_body()
+            if self.path == '/v1/expert-datasets/validate':
+                dataset = expert_dataset.validate_dataset(payload)
+                return 200, dict(datasetId=dataset['datasetId'], datasetSha256=dataset['datasetSha256'],
+                                 counts=dataset['counts'], trainingKind='EXPERT_SFT_ADAPTER',
+                                 qualityStatus='NOT_EVALUATED', provenanceStatus='CALLER_DECLARED')
+            expert_training.validate_training_request(payload)
+        except expert_dataset.DatasetValidationError as error:
+            return 422, {'error': 'INVALID_EXPERT_DATASET', 'errors': error.errors}
+        except (ValueError, TypeError, KeyError, RecursionError, OSError):
+            return 400, {'error': 'INVALID_REQUEST', 'message': 'Invalid request body or fields.'}
+        except Exception:
+            return 503, {'error': 'EXPERT_TRAINING_UNAVAILABLE'}
+        if not WORKLOAD_GATE.acquire(blocking=False):
+            return 503, {'error': 'WORKLOAD_BUSY'}
+        try:
+            return 200, expert_training.train_expert(payload)
+        except expert_dataset.DatasetValidationError as error:
+            return 422, {'error': 'INVALID_EXPERT_DATASET', 'errors': error.errors}
+        except expert_training.ExpertTrainingConflict:
+            return 409, {'error': 'EXPERT_TRAINING_CONFLICT'}
+        except Exception:
+            return 503, {'error': 'EXPERT_TRAINING_UNAVAILABLE'}
+        finally:
+            WORKLOAD_GATE.release()
 
     def log_message(self, message: str, *args: Any) -> None:
         sys.stderr.write("risk-mlx-trainer: " + message % args + "\n")

@@ -58,6 +58,11 @@ install_release() {
   install -m 400 "${backend_root}/tools/risk-mlx-trainer/server.py" "$temporary/risk-mlx-trainer.py" || return 1
   install -m 400 "${backend_root}/tools/risk-mlx-trainer/remote_worker.py" \
     "${backend_root}/tools/risk-mlx-trainer/expert.py" \
+    "${backend_root}/tools/risk-mlx-trainer/expert_dataset.py" \
+    "${backend_root}/tools/risk-mlx-trainer/expert_training.py" \
+    "${backend_root}/tools/risk-mlx-trainer/expert_training_worker.py" \
+    "${backend_root}/tools/risk-mlx-trainer/expert_training_artifacts.py" \
+    "${backend_root}/tools/risk-mlx-trainer/expert_training_process.py" \
     "${backend_root}/tools/risk-mlx-trainer/expert_knowledge.json" "$temporary/" || return 1
   mv "$temporary" "$final" || return 1
   activate_release "$final"
@@ -72,6 +77,9 @@ require_release_sources() {
   for file in scripts/run-risk-training-node-launch-agent.sh scripts/local-process-ownership.sh \
     tools/risk-mlx-trainer/server.py tools/risk-mlx-trainer/remote_worker.py \
     tools/risk-mlx-trainer/expert.py tools/risk-mlx-trainer/expert_knowledge.json \
+    tools/risk-mlx-trainer/expert_dataset.py tools/risk-mlx-trainer/expert_training.py \
+    tools/risk-mlx-trainer/expert_training_worker.py tools/risk-mlx-trainer/expert_training_artifacts.py \
+    tools/risk-mlx-trainer/expert_training_process.py \
     scripts/healthcheck-risk-training-node-local.sh; do
     [[ -f "${backend_root}/${file}" && -r "${backend_root}/${file}" ]] || {
       echo "Required release source is missing or unreadable: $file" >&2; return 1; }

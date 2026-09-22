@@ -136,6 +136,32 @@ class EngineTest(unittest.TestCase):
                 engine.train_expert(p)
             run.assert_not_called()
 
+    def test_failure_protocol_rejects_forged_records_and_success_with_error(self):
+        good = dict(reasonCode='TOKEN_LIMIT', split='train', row=1)
+        cases = [dict(good, secret='raw-secret'), dict(good, reasonCode='raw-secret'),
+                 dict(good, split='raw-secret'), dict(good, row=True), dict(good, row=2),
+                 dict(good, row=0), {}, b'{"row":1,"row":1}', b'x' * 513,
+                 'symlink', 'mode', 'success']
+        for record in cases:
+            with self.subTest(record=record):
+                def fail(path, deadline):
+                    error_path = path.parent / '.worker_error.json'
+                    if record == 'symlink':
+                        error_path.symlink_to(path)
+                    else:
+                        engine.artifacts.private_json(error_path, good if isinstance(record, (str, bytes)) else record)
+                        if isinstance(record, bytes):
+                            error_path.write_bytes(record)
+                        if record == 'mode': error_path.chmod(0o644)
+                    if record == 'success':
+                        self.fake_gpu(path, deadline)
+                        return
+                    raise process.WorkerFailure('EXPERT_TRAINING_WORKER_FAILED')
+                with patch.object(engine, 'run_worker', side_effect=fail):
+                    with self.assertRaises(engine.ExpertTrainingUnavailable):
+                        engine.train_expert(payload())
+                self.assertEqual(list((self.artifacts / 'expert-sft').iterdir()), [])
+
     def test_model_missing_and_metadata_invalid(self):
         for name in ('config.json', 'tokenizer_config.json', 'tokenizer.json'):
             file = self.model / name
@@ -279,6 +305,36 @@ class EngineTest(unittest.TestCase):
 class WorkerBoundaryTest(unittest.TestCase):
     def setUp(self):
         self.assertIsNotNone(worker, 'Task2 private worker must exist')
+
+    def test_typed_sequence_errors_and_exclusive_private_protocol(self):
+        self.assertTrue(hasattr(worker, 'SequenceValidationError'))
+        class Dataset:
+            def __init__(self, row): self.row = row
+            def __len__(self): return 1
+            def __getitem__(self, index): return self.row
+            def process(self, row): return row
+        good = Dataset(([1, 2, 3, 4], 2))
+        for row, code in ((([1] * 257, 2), 'TOKEN_LIMIT'), (([1, 2], 1), 'INVALID_ANSWER_MASK')):
+            with self.assertRaises(worker.SequenceValidationError) as caught:
+                worker.preflight_datasets((good, good, Dataset(row)), 256)
+            error = caught.exception
+            self.assertEqual((error.reason_code, error.split, error.row), (code, 'test', 1))
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / '.worker_error.json'
+                worker.write_sequence_error(path, error)
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+                self.assertLessEqual(path.stat().st_size, 512)
+                self.assertEqual(json.loads(path.read_text()), dict(reasonCode=code, split='test', row=1))
+                with self.assertRaises(FileExistsError):
+                    worker.write_sequence_error(path, error)
+        class Misaligned(Dataset):
+            tokenizer = SimpleNamespace(apply_chat_template=lambda *a, **k: [9, 9])
+            chat_key = 'messages'
+            def __getitem__(self, index): return {'messages': [{}, {}]}
+            def process(self, row): return ([1, 2, 3, 4], 2)
+        with self.assertRaises(worker.SequenceValidationError) as caught:
+            worker.preflight_datasets((good, Misaligned(None), good), 256)
+        self.assertEqual(caught.exception.reason_code, 'PROMPT_ALIGNMENT')
 
     def test_tokenizer_forces_false_on_full_and_prompt(self):
         class Tokenizer:

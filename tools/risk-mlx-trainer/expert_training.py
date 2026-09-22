@@ -1,5 +1,6 @@
 """Bounded expert SFT candidate production, called only under server WORKLOAD_GATE."""
 import hashlib
+import json
 import math
 import os
 import re
@@ -11,8 +12,8 @@ from pathlib import Path
 import expert
 from expert_dataset import DatasetValidationError, validate_dataset, write_dataset
 import expert_training_artifacts as artifacts
-from expert_training_process import run_worker
-from expert_training_worker import validate_metrics
+from expert_training_process import WorkerFailure, run_worker
+from expert_training_worker import SEQUENCE_MESSAGES, SequenceValidationError, validate_metrics
 
 
 class ExpertTrainingUnavailable(RuntimeError):
@@ -47,6 +48,22 @@ def _manifest(identity, hashes):
     return dict(kind='EXPERT_SFT_ADAPTER', status='CANDIDATE', publicationStatus='NOT_EVALUATED',
                 identity=identity, requestSha256=hashlib.sha256(artifacts.canonical(identity)).hexdigest(),
                 files=hashes)
+
+
+def _worker_dataset_error(path, counts):
+    # Never trust arbitrary worker output, links, broad modes, unknown keys or rows.
+    with artifacts.open_regular(path, 512, private=True) as stream:
+        data = stream.read(513)
+    if len(data) > 512:
+        raise ValueError('Invalid worker diagnostic')
+    record = json.loads(data, object_pairs_hook=expert.unique_json_object)
+    if type(record) is not dict or set(record) != {'reasonCode', 'split', 'row'}:
+        raise ValueError('Invalid worker diagnostic')
+    error = SequenceValidationError(record['reasonCode'], record['split'], record['row'])
+    if error.row > counts[error.split]:
+        raise ValueError('Invalid worker diagnostic row')
+    return DatasetValidationError([dict(row=error.row, field=error.split + '.messages',
+                                        code=error.reason_code, message=SEQUENCE_MESSAGES[error.reason_code])])
 
 
 def _verified_result(directory, identity, request, deadline):
@@ -98,7 +115,14 @@ def train_expert(payload: dict) -> dict:
         request_path = stage / '.worker_request.json'
         artifacts.private_json(request_path, dict(modelPath=str(model), dataPath=str(stage / 'dataset'),
                                                  adapterPath=str(stage), config=request['config']))
-        run_worker(request_path, deadline)
+        try:
+            run_worker(request_path, deadline)
+        except WorkerFailure as failure:
+            if str(failure) == 'EXPERT_TRAINING_WORKER_FAILED':
+                raise _worker_dataset_error(stage / '.worker_error.json', request['dataset']['counts'])
+            raise
+        if os.path.lexists(stage / '.worker_error.json'):
+            raise ValueError('Worker succeeded with error record')
         request_path.unlink()
         hashes, _ = artifacts.layout_hashes(stage, deadline)
         if any(hashes[name] != digest for name, digest in original_data.items()):
@@ -118,7 +142,7 @@ def train_expert(payload: dict) -> dict:
         stage = None
         result['artifactPath'] = str(target)
         return result
-    except ExpertTrainingConflict:
+    except (ExpertTrainingConflict, DatasetValidationError):
         raise
     except Exception:
         raise ExpertTrainingUnavailable('EXPERT_TRAINING_FAILED') from None

@@ -60,7 +60,7 @@ URL只采用原始记录，模型输出的链接会被拒绝。答案应作为�
 关键词检索不是语义检索质量认证，来源核验日期不等于持续现行性确认。上线使用前须人工
 检查依据和范围。真实27B推理、延迟及冻结问题验收由父任务另行执行，本轮只验证确定性边界。
 
-三条工作接口共用进程内非阻塞资源锁，繁忙返回503 `WORKLOAD_BUSY`，异常后释放。
+训练、评分、专家回答及专家训练接口共用进程内非阻塞资源锁，繁忙返回503 `WORKLOAD_BUSY`，异常后释放。
 训练和评分的成功输出契约及原有鉴权策略保持兼容。该锁只覆盖同一服务进程的HTTP请求，
 不协调多个服务进程或服务外GPU任务；本阶段不修改部署、业务数据、权限或云端运行环境。
 
@@ -147,9 +147,9 @@ origin/verification 和完整来源保存在 records 与 manifest，不伪装成
 
 ## 有界专家 SFT 候选执行器（Expert SFT Task2）
 
-`expert_training.train_expert(payload) -> dict` 是给 Task3 在已有 `WORKLOAD_GATE`
-内调用的 Python 接口，没有公开训练 CLI。本任务不增加 HTTP 路由、不修改原有训练、
-评分、RAG 或鉴权。`validate_training_request(payload)` 可用于 HTTP 预校验；
+`expert_training.train_expert(payload) -> dict` 由 Task3 在已有 `WORKLOAD_GATE`
+内调用，没有公开训练 CLI。HTTP 路由见下节；原有训练、评分和 RAG 行为保持兼容。
+`validate_training_request(payload)` 用于 HTTP 预校验；
 不合法请求抛出固定消息的 `ValueError` 或保留字段级诊断的 `DatasetValidationError`。
 
 请求精确包含 `runId,dataset,config`。runId 使用上述安全 ID 规则；dataset 使用 Task1
@@ -208,11 +208,51 @@ getppid 改变时执行 `_exit(70)`，独立 session 不会让它正常继续训
 独占锁，后续不会擅自删除这些旧路径，也不会把它们视为成功。运维须确认无自有 worker
 运行后另行处理遗留锁/暂存；本任务不实现云租约或崩溃自动回收。
 
-Task3 安装包必须加入 `expert_training.py`、`expert_training_worker.py`、
+Task3 安装包已加入 `expert_training.py`、`expert_training_worker.py`、
 `expert_training_artifacts.py`、`expert_training_process.py`，并携带依赖
-`expert_dataset.py` 和现有 `expert.py`。服务接线、打包、真实运行验收留给父任务。
+`expert_dataset.py` 和现有 `expert.py`。所有模块以0400安装，并在停止服务或切换配置前
+检查必需源码齐全。真实运行验收和部署留给父任务。
 测试只在临时目录使用契约夹具和替代 GPU 边界，不能据此声称真实训练完成；
 本任务未运行 GPU、线上 runtime 或部署，也未产生可用生产数据集。
+
+## 认证专家数据集与训练 HTTP（Expert SFT Task3）
+
+两个新路由复用现有服务的非空 Bearer 令牌；调用方须通过私有渠道取得并传入
+`Authorization: Bearer <existing-private-token>`，勿在日志或共享命令中暴露真实令牌。
+未配置或仅空白令牌返回403 `EXPERT_AUTH_NOT_CONFIGURED`；缺失或错误令牌返回401
+`UNAUTHORIZED`。不新增端口、配置密钥或客户端模型/文件路径。
+
+`POST /v1/expert-datasets/validate` 的请求体直接为上述 Task1 数据集对象：
+`{schemaVersion,datasetId,sources,examples}`。成功200返回
+`{datasetId,datasetSha256,counts,trainingKind,qualityStatus,provenanceStatus}`，其中
+trainingKind=`EXPERT_SFT_ADAPTER`、qualityStatus=`NOT_EVALUATED`、
+provenanceStatus=`CALLER_DECLARED`。校验不写文件、不加载模型、不占工作锁、不访问来源 URL。
+它只检查调用方声明和结构，不能以密码学方式证明许可、权属或答案准确性。
+
+`POST /v1/expert-train` 精确接收 `{runId,dataset,config}`；dataset 为同一原始对象。
+config 五个字段全部显式必填，例如
+`{"iterations":1,"learningRate":0.00001,"maxSeqLength":256,"numLayers":1,"seed":0}`；
+不存在隐式训练配置默认值，此例也不构成质量建议。请求先校验，再非阻塞获取同一工作锁，
+训练与专家回答不能同时运行。成功200返回上一节的候选产物字段，仍为 `CANDIDATE` /
+`NOT_EVALUATED`；新适配器尚不用于回答，须后续晋升和推理集成。失败不替换 FOUNDATION_RAG。
+
+请求体最大8 MiB，读取总期限10秒；拒绝重复 JSON 键、NaN/Infinity、非法或重复
+Content-Length、任何 Transfer-Encoding、截断请求体。一般格式/配置错误为400
+`INVALID_REQUEST`，固定消息不回显输入。内容或许可声明错误为422
+`INVALID_EXPERT_DATASET`，`errors` 每项包含安全的 `{row,field,code,message}`。
+Task1 行号是原始 sources/examples 数组的1基行号，field 如 `examples[2].answer`。
+worker 的 token 超限、答案掩码或前缀对齐错误通过私有暂存区独占0600文件
+`.worker_error.json` 返回；父进程检查512字节上限、文件类型/权限/所有者及精确字段白名单。
+对应422的 field 为 `train.messages` / `valid.messages` / `test.messages`，row 是按
+exampleId 排序后该 split JSONL 的1基行号，code 为 `TOKEN_LIMIT` /
+`INVALID_ANSWER_MASK` / `PROMPT_ALIGNMENT`，消息由服务端固定，不含原始问答。
+错误记录不合法或无法可信读取时只返回503；退出成功但存在错误文件也拒绝发布候选。
+
+已有 runId 冲突返回409 `EXPERT_TRAINING_CONFLICT`，锁忙返回503 `WORKLOAD_BUSY`，
+执行不可用或未知故障返回503 `EXPERT_TRAINING_UNAVAILABLE`，不回显异常文本。
+失败和客户端断连后的请求收尾都会释放工作锁，暂存清理由原引擎负责。
+这只是有界、同步的本地节点原语，HTTP 客户端断连不承诺立即取消训练。
+云端租约队列、UI、崩溃恢复可靠性和生产部署属于后续独立阶段；`/health` 内容保持原样。
 
 确定性验证（测试夹具只在测试进程和临时目录使用，不提供生产训练数据）：
 

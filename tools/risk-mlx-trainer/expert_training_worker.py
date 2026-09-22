@@ -12,6 +12,27 @@ from types import SimpleNamespace
 
 from expert_training_artifacts import private_json
 
+SEQUENCE_MESSAGES = {
+    'TOKEN_LIMIT': 'Sequence exceeds the configured token limit.',
+    'INVALID_ANSWER_MASK': 'Sequence has an invalid answer mask.',
+    'PROMPT_ALIGNMENT': 'Prompt tokens do not align with the full sequence.',
+}
+
+
+class SequenceValidationError(ValueError):
+    def __init__(self, reason_code, split, row):
+        if (reason_code not in SEQUENCE_MESSAGES or split not in ('train', 'valid', 'test')
+                or type(row) is not int or not 1 <= row <= 10000):
+            raise ValueError('Invalid sequence diagnostic')
+        self.reason_code, self.split, self.row = reason_code, split, row
+        super().__init__(SEQUENCE_MESSAGES[reason_code])
+
+
+def write_sequence_error(path, error):
+    # Revalidate before exclusive creation; exactly three small allowlisted fields.
+    checked = SequenceValidationError(error.reason_code, error.split, error.row)
+    private_json(path, dict(reasonCode=checked.reason_code, split=checked.split, row=checked.row))
+
 
 class NonThinkingTokenizer:
     def __init__(self, tokenizer):
@@ -49,9 +70,11 @@ def preflight_datasets(datasets, max_length):
         for index in range(len(dataset)):
             try:
                 tokens, offset = dataset.process(dataset[index])
-                if not (2 <= len(tokens) <= max_length and type(offset) is int
+                if len(tokens) > max_length:
+                    raise SequenceValidationError('TOKEN_LIMIT', split, index + 1)
+                if not (2 <= len(tokens) and type(offset) is int
                         and 0 <= offset < len(tokens) - 1):
-                    raise ValueError()
+                    raise SequenceValidationError('INVALID_ANSWER_MASK', split, index + 1)
                 # ChatDataset computes only a length; also prove prefix alignment.
                 if hasattr(dataset, 'tokenizer') and hasattr(dataset, 'chat_key'):
                     messages = dataset[index][dataset.chat_key]
@@ -59,7 +82,9 @@ def preflight_datasets(datasets, max_length):
                         messages[:-1], tools=dataset[index].get('tools'),
                         add_generation_prompt=True, return_dict=False)
                     if list(tokens[:offset]) != list(prefix):
-                        raise ValueError()
+                        raise SequenceValidationError('PROMPT_ALIGNMENT', split, index + 1)
+            except SequenceValidationError:
+                raise
             except Exception:
                 raise ValueError(f'{split} row {index + 1}: invalid token length or answer mask') from None
 
@@ -183,15 +208,25 @@ def execute(request):
     private_json(Path(args.adapter_path) / 'training_metrics.json', result)
 
 
-if __name__ == '__main__':
+def main(argv):
     try:
         os.umask(0o077)
-        if len(sys.argv) != 3 or sys.argv[1] != '--request':
-            sys.exit(2)
+        if len(argv) != 2 or argv[0] != '--request':
+            return 2
         # Start before MLX imports/model load, including an immediate orphan check.
         start_parent_watchdog()
         os.environ.update(HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1', HF_HUB_DISABLE_TELEMETRY='1')
         from expert_training_artifacts import read_object
-        execute(read_object(Path(sys.argv[2]), 16384))
+        request_path = Path(argv[1])
+        try:
+            execute(read_object(request_path, 16384))
+        except SequenceValidationError as error:
+            write_sequence_error(request_path.parent / '.worker_error.json', error)
+            return 1
+        return 0
     except Exception:
-        sys.exit(1)  # Never emit source data, credentials or raw MLX exceptions.
+        return 1  # Never emit source data, credentials or raw MLX exceptions.
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

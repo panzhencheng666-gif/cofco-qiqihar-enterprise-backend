@@ -10,6 +10,8 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[2]
 LABEL = "com.cofco.qiqihar.risk-training-node.local"
+SFT_MODULES = ('expert_dataset.py', 'expert_training.py', 'expert_training_worker.py',
+               'expert_training_artifacts.py', 'expert_training_process.py')
 
 
 class NodeDeploymentTest(unittest.TestCase):
@@ -22,7 +24,7 @@ class NodeDeploymentTest(unittest.TestCase):
             (self.source / directory).mkdir(parents=True)
         for name in ("run-risk-training-node-launch-agent.sh", "local-process-ownership.sh"):
             shutil.copyfile(REPO / "scripts" / name, self.source / "scripts" / name)
-        for name in ("server.py", "remote_worker.py", "expert.py", "expert_knowledge.json"):
+        for name in ("server.py", "remote_worker.py", "expert.py", "expert_knowledge.json") + SFT_MODULES:
             shutil.copyfile(REPO / "tools/risk-mlx-trainer" / name,
                             self.source / "tools/risk-mlx-trainer" / name)
         self.runtime = self.root / "runtime"
@@ -130,7 +132,7 @@ upgrade_node
         result = self.run_upgrade()
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertNotEqual(self.previous, self.current.resolve())
-        for name in ("expert.py", "expert_knowledge.json"):
+        for name in ("expert.py", "expert_knowledge.json") + SFT_MODULES:
             self.assertTrue((self.current / name).is_file(), f"Missing packaged {name}")
             self.assertEqual((self.source / "tools/risk-mlx-trainer" / name).read_bytes(),
                              (self.current / name).read_bytes())
@@ -150,7 +152,7 @@ upgrade_node
                                   f"kickstart {target}", f"bootstrap gui/{os.getuid()} {self.plist}"])
 
     def test_missing_sources_rejected_before_stop(self):
-        for name in ("expert.py", "expert_knowledge.json", "server.py", "remote_worker.py"):
+        for name in ("expert.py", "expert_knowledge.json", "server.py", "remote_worker.py") + SFT_MODULES:
             with self.subTest(name=name):
                 path = self.source / "tools/risk-mlx-trainer" / name
                 saved = path.read_bytes()
