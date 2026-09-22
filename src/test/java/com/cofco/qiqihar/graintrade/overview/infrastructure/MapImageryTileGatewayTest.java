@@ -23,12 +23,13 @@ class MapImageryTileGatewayTest {
     }
 
     @Test
-    void resolvesMonthlyProviderTemplateWithoutExposingTheCredentialAndCachesTiles() throws Exception {
+    void resolvesWeeklyProviderTemplateWithoutExposingTheCredentialAndCachesTiles() throws Exception {
         var requests = new AtomicInteger();
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/tiles/global_monthly_2026_08_mosaic/7/99/42.png", exchange -> {
+        server.createContext("/tiles/2026-W38/7/99/42.png", exchange -> {
             requests.incrementAndGet();
-            assertThat(exchange.getRequestURI().getRawQuery()).isEqualTo("api_key=paid+secret");
+            assertThat(exchange.getRequestURI().getRawQuery())
+                    .isEqualTo("time=2026-09-14%2F2026-09-20&api_key=paid+secret");
             var bytes = "tile".getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "image/png");
             exchange.sendResponseHeaders(200, bytes.length);
@@ -38,12 +39,12 @@ class MapImageryTileGatewayTest {
         server.start();
         var gateway = new MapImageryTileGateway(
                 "http://127.0.0.1:" + server.getAddress().getPort()
-                        + "/tiles/global_monthly_{year}_{month}_mosaic/{z}/{x}/{y}.png"
-                        + "?api_key={apiKey}",
+                        + "/tiles/{period}/{z}/{x}/{y}.png"
+                        + "?time={periodStartEncoded}%2F{periodEndEncoded}&api_key={apiKey}",
                 "paid secret",
-                "Planet monthly mosaic",
-                "Planet",
-                1,
+                "Governed weekly mosaic",
+                "Licensed provider",
+                0,
                 8_388_608,
                 HttpClient.newHttpClient(),
                 Clock.fixed(Instant.parse("2026-09-21T00:00:00Z"), ZoneOffset.UTC));
@@ -53,13 +54,17 @@ class MapImageryTileGatewayTest {
 
         assertThat(first.bytes()).containsExactly("tile".getBytes(StandardCharsets.UTF_8));
         assertThat(first.contentType()).isEqualTo("image/png");
-        assertThat(first.period()).isEqualTo("2026-08");
+        assertThat(first.period()).isEqualTo("2026-W38");
         assertThat(first.etag()).startsWith("\"").endsWith("\"");
         assertThat(second.bytes()).isEqualTo(first.bytes());
         assertThat(requests).hasValue(1);
         assertThat(gateway.metadata().toString()).doesNotContain("paid secret");
         assertThat(gateway.metadata().commercialConfigured()).isTrue();
-        assertThat(gateway.metadata().updateCadence()).isEqualTo("MONTHLY");
+        assertThat(gateway.metadata().updateCadence()).isEqualTo("WEEKLY");
+        assertThat(gateway.metadata().imageryPeriod()).isEqualTo("2026-W38");
+        assertThat(gateway.metadata().acquisitionFrom()).isEqualTo("2026-09-14");
+        assertThat(gateway.metadata().acquisitionTo()).isEqualTo("2026-09-20");
+        assertThat(gateway.metadata().automaticWeeklyPeriod()).isTrue();
     }
 
     @Test
@@ -83,18 +88,100 @@ class MapImageryTileGatewayTest {
     }
 
     @Test
-    void keepsThePreviousPublishedMosaicDuringTheProvidersPublicationWindow() {
+    void doesNotDescribeAnUnversionedFallbackAsWeeklyImagery() {
         var gateway = new MapImageryTileGateway(
-                "https://example.invalid/global_monthly_{year}_{month}/{z}/{x}/{y}.png",
-                "paid",
-                "Monthly imagery",
+                "https://example.invalid/{z}/{x}/{y}.png",
+                "",
+                "Historical fallback",
                 "Example",
-                1,
+                0,
                 8_388_608,
                 HttpClient.newHttpClient(),
-                Clock.fixed(Instant.parse("2026-10-05T00:00:00Z"), ZoneOffset.UTC));
+                Clock.fixed(Instant.parse("2026-09-22T00:00:00Z"), ZoneOffset.UTC));
 
-        assertThat(gateway.metadata().imageryPeriod()).isEqualTo("2026-08");
-        assertThat(gateway.metadata().automaticMonthlyPeriod()).isTrue();
+        assertThat(gateway.metadata().updateCadence()).isEqualTo("UNVERSIONED_FALLBACK");
+        assertThat(gateway.metadata().imageryPeriod()).isEqualTo("UNVERSIONED");
+        assertThat(gateway.metadata().acquisitionFrom()).isNull();
+        assertThat(gateway.metadata().acquisitionTo()).isNull();
+        assertThat(gateway.metadata().automaticWeeklyPeriod()).isFalse();
+    }
+
+    @Test
+    void usesTheMostRecentCompleteUtcWeek() {
+        var gateway = new MapImageryTileGateway(
+                "https://example.invalid/{periodStart}/{periodEnd}/{z}/{x}/{y}.png",
+                "paid",
+                "Weekly imagery",
+                "Example",
+                0,
+                8_388_608,
+                HttpClient.newHttpClient(),
+                Clock.fixed(Instant.parse("2026-09-22T00:00:00Z"), ZoneOffset.UTC));
+
+        assertThat(gateway.metadata().imageryPeriod()).isEqualTo("2026-W38");
+        assertThat(gateway.metadata().acquisitionFrom()).isEqualTo("2026-09-14");
+        assertThat(gateway.metadata().acquisitionTo()).isEqualTo("2026-09-20");
+        assertThat(gateway.metadata().automaticWeeklyPeriod()).isTrue();
+    }
+
+    @Test
+    void fallsBackToThePreviousSuccessfulWeekWhenTheNewWeekIsUnavailable() throws Exception {
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/tiles/2026-W38/7/99/42.png", exchange -> {
+            var bytes = "previous-week".getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "image/png");
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+        server.createContext("/tiles/2026-W39/7/99/42.png", exchange -> {
+            exchange.sendResponseHeaders(503, -1);
+            exchange.close();
+        });
+        server.start();
+        var clock = new MutableClock(Instant.parse("2026-09-22T00:00:00Z"));
+        var gateway = new MapImageryTileGateway(
+                "http://127.0.0.1:" + server.getAddress().getPort()
+                        + "/tiles/{period}/{z}/{x}/{y}.png",
+                "paid",
+                "Weekly imagery",
+                "Example",
+                0,
+                8_388_608,
+                HttpClient.newHttpClient(),
+                clock);
+
+        assertThat(gateway.tile(7, 99, 42).period()).isEqualTo("2026-W38");
+        clock.instant = Instant.parse("2026-09-29T00:00:00Z");
+
+        var fallback = gateway.tile(7, 99, 42);
+
+        assertThat(fallback.period()).isEqualTo("2026-W38");
+        assertThat(fallback.stale()).isTrue();
+        assertThat(fallback.bytes())
+                .containsExactly("previous-week".getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static final class MutableClock extends Clock {
+        private Instant instant;
+
+        private MutableClock(Instant instant) {
+            this.instant = instant;
+        }
+
+        @Override
+        public ZoneOffset getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(java.time.ZoneId zone) {
+            return this;
+        }
+
+        @Override
+        public Instant instant() {
+            return instant;
+        }
     }
 }

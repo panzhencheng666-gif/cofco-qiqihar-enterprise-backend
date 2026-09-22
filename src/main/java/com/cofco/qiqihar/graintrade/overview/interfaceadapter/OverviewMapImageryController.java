@@ -17,7 +17,7 @@ import org.springframework.web.server.ResponseStatusException;
 @RestController
 public class OverviewMapImageryController {
     private static final String CACHE_CONTROL =
-            "public, max-age=86400, stale-if-error=604800";
+            "public, max-age=86400, stale-if-error=1209600";
 
     private final AccessControl access;
     private final MapImageryTileGateway imagery;

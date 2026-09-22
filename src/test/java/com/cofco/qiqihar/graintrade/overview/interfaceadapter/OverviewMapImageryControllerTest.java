@@ -20,7 +20,7 @@ class OverviewMapImageryControllerTest {
                 "image".getBytes(StandardCharsets.UTF_8),
                 "image/webp",
                 "\"digest\"",
-                "2026-08",
+                "2026-W38",
                 false);
         when(gateway.tile(8, 201, 93)).thenReturn(tile);
         var controller = new OverviewMapImageryController(access, gateway);
@@ -30,9 +30,10 @@ class OverviewMapImageryControllerTest {
         verify(access).requireOverviewReadScope();
         assertThat(response.getStatusCode().value()).isEqualTo(200);
         assertThat(response.getHeaders().getCacheControl())
-                .isEqualTo("public, max-age=86400, stale-if-error=604800");
+                .isEqualTo("public, max-age=86400, stale-if-error=1209600");
         assertThat(response.getHeaders().getETag()).isEqualTo("\"digest\"");
-        assertThat(response.getHeaders().getFirst("X-Imagery-Period")).isEqualTo("2026-08");
+        assertThat(response.getHeaders().getFirst("X-Imagery-Period"))
+                .isEqualTo("2026-W38");
         assertThat(response.getBody()).containsExactly("image".getBytes(StandardCharsets.UTF_8));
 
         var notModified = controller.tile(8, 201, 93, "\"digest\"");

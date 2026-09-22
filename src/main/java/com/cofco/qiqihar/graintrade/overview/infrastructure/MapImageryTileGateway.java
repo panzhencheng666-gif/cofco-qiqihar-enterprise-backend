@@ -10,11 +10,13 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
+import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.YearMonth;
 import java.time.ZoneOffset;
+import java.time.temporal.IsoFields;
+import java.time.temporal.TemporalAdjusters;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -25,15 +27,14 @@ import org.springframework.stereotype.Component;
 /**
  * Same-origin gateway for governed satellite tiles. The provider URL and
  * credential stay on the server, while browser and reverse-proxy caches reuse
- * the returned immutable tile for the current monthly imagery period.
+ * the returned immutable tile for the current weekly imagery period.
  */
 @Component
 public class MapImageryTileGateway {
     private static final Duration FRESH_FOR = Duration.ofDays(7);
-    private static final Duration STALE_FOR = Duration.ofDays(35);
+    private static final Duration STALE_FOR = Duration.ofDays(56);
     private static final int MAXIMUM_ZOOM = 18;
     private static final int MAXIMUM_TILE_BYTES = 5 * 1024 * 1024;
-    private static final int MONTHLY_PUBLICATION_BUFFER_DAYS = 7;
     private static final String DEFAULT_TILE_URL_TEMPLATE =
             "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/"
                     + "MapServer/tile/{z}/{y}/{x}";
@@ -42,7 +43,7 @@ public class MapImageryTileGateway {
     private final String apiKey;
     private final String provider;
     private final String attribution;
-    private final int periodLagMonths;
+    private final int periodLagWeeks;
     private final long maximumCacheBytes;
     private final HttpClient http;
     private final Clock clock;
@@ -55,14 +56,14 @@ public class MapImageryTileGateway {
             @Value("${qiqihar.map-imagery.api-key:}") String apiKey,
             @Value("${qiqihar.map-imagery.provider:Enterprise imagery}") String provider,
             @Value("${qiqihar.map-imagery.attribution:Enterprise imagery service}") String attribution,
-            @Value("${qiqihar.map-imagery.period-lag-months:1}") int periodLagMonths,
+            @Value("${qiqihar.map-imagery.period-lag-weeks:0}") int periodLagWeeks,
             @Value("${qiqihar.map-imagery.maximum-cache-bytes:67108864}") long maximumCacheBytes) {
         this(
                 tileUrlTemplate,
                 apiKey,
                 provider,
                 attribution,
-                periodLagMonths,
+                periodLagWeeks,
                 maximumCacheBytes,
                 HttpClient.newBuilder()
                         .connectTimeout(Duration.ofSeconds(3))
@@ -76,7 +77,7 @@ public class MapImageryTileGateway {
             String apiKey,
             String provider,
             String attribution,
-            int periodLagMonths,
+            int periodLagWeeks,
             long maximumCacheBytes,
             HttpClient http,
             Clock clock) {
@@ -88,8 +89,8 @@ public class MapImageryTileGateway {
                 || !tileUrlTemplate.contains("{y}")) {
             throw new IllegalArgumentException("Imagery URL template must contain {z}, {x}, and {y}");
         }
-        if (periodLagMonths < 0 || periodLagMonths > 12) {
-            throw new IllegalArgumentException("Imagery period lag must be between 0 and 12 months");
+        if (periodLagWeeks < 0 || periodLagWeeks > 52) {
+            throw new IllegalArgumentException("Imagery period lag must be between 0 and 52 weeks");
         }
         if (maximumCacheBytes < MAXIMUM_TILE_BYTES) {
             throw new IllegalArgumentException("Imagery cache must allow at least one maximum tile");
@@ -98,7 +99,7 @@ public class MapImageryTileGateway {
         this.apiKey = apiKey;
         this.provider = provider;
         this.attribution = attribution;
-        this.periodLagMonths = periodLagMonths;
+        this.periodLagWeeks = periodLagWeeks;
         this.maximumCacheBytes = maximumCacheBytes;
         this.http = http;
         this.clock = clock;
@@ -106,8 +107,8 @@ public class MapImageryTileGateway {
 
     public Tile tile(int zoom, int x, int y) throws IOException, InterruptedException {
         validateCoordinate(zoom, x, y);
-        String period = imageryPeriod();
-        var key = new TileKey(period, zoom, x, y);
+        ImageryPeriod period = imageryPeriod();
+        var key = new TileKey(period.id(), zoom, x, y);
         var cached = cached(key);
         if (cached != null && cached.age(clock.instant()).compareTo(FRESH_FOR) <= 0) {
             return cached.tile(false);
@@ -120,31 +121,45 @@ public class MapImageryTileGateway {
             if (cached != null && cached.age(clock.instant()).compareTo(STALE_FOR) <= 0) {
                 return cached.tile(true);
             }
+            var previous = cachedPrevious(key);
+            if (previous != null) return previous.tile(true);
             throw failure;
         }
     }
 
     public Metadata metadata() {
+        var period = imageryPeriod();
+        boolean automaticWeeklyPeriod = automaticWeeklyPeriod();
+        boolean weeklyConfigured = automaticWeeklyPeriod
+                && (!tileUrlTemplate.contains("{apiKey}") || !apiKey.isBlank());
         return new Metadata(
                 provider,
                 attribution,
-                "MONTHLY",
-                imageryPeriod(),
-                !apiKey.isBlank(),
-                tileUrlTemplate.contains("{period}")
-                        || tileUrlTemplate.contains("{year}")
-                        || tileUrlTemplate.contains("{month}"));
+                weeklyConfigured ? "WEEKLY" : "UNVERSIONED_FALLBACK",
+                period.id(),
+                weeklyConfigured ? period.start().toString() : null,
+                weeklyConfigured ? period.end().toString() : null,
+                weeklyConfigured && !apiKey.isBlank(),
+                automaticWeeklyPeriod);
     }
 
-    private CacheEntry fetch(String period, int zoom, int x, int y)
+    private CacheEntry fetch(ImageryPeriod period, int zoom, int x, int y)
             throws IOException, InterruptedException {
         if (tileUrlTemplate.contains("{apiKey}") && apiKey.isBlank()) {
             throw new IOException("Commercial imagery credential is not configured");
         }
         String url = tileUrlTemplate
-                .replace("{period}", period)
-                .replace("{year}", period.substring(0, 4))
-                .replace("{month}", period.substring(5, 7))
+                .replace("{period}", period.id())
+                .replace("{year}", Integer.toString(period.weekBasedYear()))
+                .replace("{week}", "%02d".formatted(period.week()))
+                .replace("{periodStart}", period.start().toString())
+                .replace("{periodEnd}", period.end().toString())
+                .replace(
+                        "{periodStartEncoded}",
+                        URLEncoder.encode(period.start().toString(), StandardCharsets.UTF_8))
+                .replace(
+                        "{periodEndEncoded}",
+                        URLEncoder.encode(period.end().toString(), StandardCharsets.UTF_8))
                 .replace("{z}", Integer.toString(zoom))
                 .replace("{x}", Integer.toString(x))
                 .replace("{y}", Integer.toString(y))
@@ -172,11 +187,33 @@ public class MapImageryTileGateway {
                 && !contentType.equals("image/avif")) {
             throw new IOException("Imagery provider returned an unsupported media type");
         }
-        return new CacheEntry(bytes.clone(), contentType, etag(bytes), period, clock.instant());
+        return new CacheEntry(
+                bytes.clone(), contentType, etag(bytes), period.id(), clock.instant());
     }
 
     private synchronized CacheEntry cached(TileKey key) {
         return cache.get(key);
+    }
+
+    private synchronized CacheEntry cachedPrevious(TileKey current) {
+        CacheEntry candidate = null;
+        String candidatePeriod = "";
+        Instant now = clock.instant();
+        for (var entry : cache.entrySet()) {
+            var key = entry.getKey();
+            var value = entry.getValue();
+            if (key.zoom() != current.zoom()
+                    || key.x() != current.x()
+                    || key.y() != current.y()
+                    || key.period().equals(current.period())
+                    || key.period().compareTo(current.period()) > 0
+                    || value.age(now).compareTo(STALE_FOR) > 0) continue;
+            if (key.period().compareTo(candidatePeriod) > 0) {
+                candidate = value;
+                candidatePeriod = key.period();
+            }
+        }
+        return candidate;
     }
 
     private synchronized void retain(TileKey key, CacheEntry entry) {
@@ -191,13 +228,30 @@ public class MapImageryTileGateway {
         }
     }
 
-    private String imageryPeriod() {
+    private ImageryPeriod imageryPeriod() {
         LocalDate today = LocalDate.now(clock.withZone(ZoneOffset.UTC));
-        YearMonth period = YearMonth.from(today).minusMonths(periodLagMonths);
-        if (today.getDayOfMonth() <= MONTHLY_PUBLICATION_BUFFER_DAYS) {
-            period = period.minusMonths(1);
-        }
-        return period.toString();
+        LocalDate currentWeekStart = today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
+        LocalDate end = currentWeekStart.minusDays(1).minusWeeks(periodLagWeeks);
+        LocalDate start = end.minusDays(6);
+        int weekBasedYear = start.get(IsoFields.WEEK_BASED_YEAR);
+        int week = start.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR);
+        return new ImageryPeriod(
+                automaticWeeklyPeriod()
+                        ? "%d-W%02d".formatted(weekBasedYear, week)
+                        : "UNVERSIONED",
+                start,
+                end,
+                weekBasedYear,
+                week);
+    }
+
+    private boolean automaticWeeklyPeriod() {
+        return tileUrlTemplate.contains("{period}")
+                || tileUrlTemplate.contains("{week}")
+                || tileUrlTemplate.contains("{periodStart}")
+                || tileUrlTemplate.contains("{periodEnd}")
+                || tileUrlTemplate.contains("{periodStartEncoded}")
+                || tileUrlTemplate.contains("{periodEndEncoded}");
     }
 
     private static void validateCoordinate(int zoom, int x, int y) {
@@ -236,8 +290,13 @@ public class MapImageryTileGateway {
             String attribution,
             String updateCadence,
             String imageryPeriod,
+            String acquisitionFrom,
+            String acquisitionTo,
             boolean commercialConfigured,
-            boolean automaticMonthlyPeriod) {}
+            boolean automaticWeeklyPeriod) {}
+
+    private record ImageryPeriod(
+            String id, LocalDate start, LocalDate end, int weekBasedYear, int week) {}
 
     private record TileKey(String period, int zoom, int x, int y) {}
 

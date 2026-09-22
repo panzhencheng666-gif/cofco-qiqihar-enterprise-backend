@@ -90,20 +90,29 @@ cd "/Users/federal/Library/Application Support/COFCO Qiqihar Enterprise/runtime/
 - `VITE_BUSINESS_PLATFORM_HOST / VITE_BUSINESS_PLATFORM_PORT`
 - `VITE_OVERVIEW_MAP_HOST / VITE_OVERVIEW_MAP_PORT`
 
-## 8. 商业月更卫星影像
+## 8. 周更近期卫星影像
 
-公开态势地图只访问本系统的同源瓦片接口，商业供应商密钥保留在后端。采购
-Planet Global Monthly Mosaics 权限后，在受保护的运行环境中配置：
+公开态势地图只访问本系统的同源瓦片接口，供应商实例标识或密钥保留在后端。
+供应源必须支持按时间区间生成瓦片；不能通过缩短 Esri 缓存时间冒充影像更新。
+
+以下是 Copernicus Data Space Sentinel Hub 自定义 WMTS 实例的周窗口示例。实例中需预先
+建立 `TRUE-COLOR` Sentinel-2 L2A 图层，并核对 `PopularWebMercator256` 矩阵集：
 
 ```bash
-export QIQIHAR_MAP_IMAGERY_TILE_URL_TEMPLATE='https://tiles.planet.com/basemaps/v1/planet-tiles/global_monthly_{year}_{month}_mosaic/gmap/{z}/{x}/{y}.png?api_key={apiKey}'
-export QIQIHAR_MAP_IMAGERY_API_KEY='由密钥管理服务注入，不写入仓库或前端'
-export QIQIHAR_MAP_IMAGERY_PROVIDER='Planet Global Monthly'
-export QIQIHAR_MAP_IMAGERY_ATTRIBUTION='Planet Labs PBC'
-export QIQIHAR_MAP_IMAGERY_PERIOD_LAG_MONTHS=1
+export QIQIHAR_MAP_IMAGERY_TILE_URL_TEMPLATE='https://sh.dataspace.copernicus.eu/ogc/wmts/{apiKey}?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=TRUE-COLOR&STYLE=default&FORMAT=image/jpeg&TILEMATRIXSET=PopularWebMercator256&TILEMATRIX={z}&TILECOL={x}&TILEROW={y}&TIME={periodStart}%2F{periodEnd}&PRIORITY=leastCC&MAXCC=30'
+export QIQIHAR_MAP_IMAGERY_API_KEY='由受保护配置注入的 Sentinel Hub 实例标识'
+export QIQIHAR_MAP_IMAGERY_PROVIDER='Copernicus Sentinel-2 L2A weekly'
+export QIQIHAR_MAP_IMAGERY_ATTRIBUTION='European Union, Copernicus Sentinel-2 imagery'
+export QIQIHAR_MAP_IMAGERY_PERIOD_LAG_WEEKS=0
 ```
 
 重启后端后，`/api/v1/overview/map-imagery/metadata` 应显示
-`commercialConfigured=true`、`updateCadence=MONTHLY`。网关在每月自动切换年月；
-考虑供应商发布窗口，每月前 7 天继续使用上一个已发布周期。未配置商业密钥时，
-系统使用 Esri World Imagery 兼容回退，不能将其表述为“已启用商业月更影像”。
+`commercialConfigured=true`、`updateCadence=WEEKLY`、`automaticWeeklyPeriod=true`，
+并给出最近完整 UTC 自然周的 `acquisitionFrom` 与 `acquisitionTo`。每周一切换到
+上一完整周；若新周瓦片暂不可用，网关继续返回缓存中的上一成功周版并标记 stale。
+
+Sentinel-2 可提供约 5 天重访、10 米级真彩色数据，不等同于建筑级实时高清影像。
+若采购更高分辨率商业源，仍使用 `{period}`、`{periodStart}`、`{periodEnd}`、
+`{year}`、`{week}` 和 `{apiKey}` 占位符接入。页面必须展示实际采集周，不得写成
+“实时卫星”。未配置版本化供应源时系统使用 Esri World Imagery 兼容回退，不能将其
+表述为“已启用周更影像”。
