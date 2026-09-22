@@ -36,10 +36,17 @@ Review-remediation RED evidence:
 
 All six review regressions passed after the corresponding minimal fixes.
 
+Final quality-review remediation RED evidence:
+
+- Overlapping run IDs: `test_stale_cleanup_never_removes_overlapping_live_run_stage` errored with `FileNotFoundError` because recovery for `unit-1` deleted the live private stage for `unit-1-child`.
+- Lock pathname replacement: `test_lock_open_then_flock_race_never_creates_two_owners` initially errored because no lock acquisition boundary existed to revalidate the opened inode after `flock`.
+
+The stage now has one exact validated-run path, with no prefix scan. Lock acquisition revalidates the descriptor link count and the pathname device/inode after `flock`, closing and retrying a replaced or unlinked inode. Both deterministic regressions pass.
+
 Final GREEN:
 
-- `python3 -m unittest test_remote_worker.py test_expert_training.py test_expert_training_http.py test_node_deployment.py` -> `Ran 82 tests in 43.062s`, `OK`.
-- `python3 -m unittest discover -s tools/risk-mlx-trainer -p 'test_*.py'` -> `Ran 130 tests in 42.896s`, `OK`.
+- `python3 -m unittest test_remote_worker.py test_expert_training.py test_expert_training_http.py test_node_deployment.py` -> `Ran 84 tests in 40.870s`, `OK`.
+- `python3 -m unittest discover -s tools/risk-mlx-trainer -p 'test_*.py'` -> `Ran 132 tests in 44.136s`, `OK`.
 - `bash scripts/tests/risk-training-node-local.test.sh` -> `RISK_TRAINING_NODE_LOCAL_CONTRACT_OK`.
 - `python3 -m py_compile tools/risk-mlx-trainer/remote_worker.py tools/risk-mlx-trainer/expert_training_process.py tools/risk-mlx-trainer/expert_training.py tools/risk-mlx-trainer/server.py` -> exit 0.
 - `git diff --check` -> exit 0.
@@ -64,6 +71,7 @@ Commits:
 - `f4263f3 feat(trainer): run persistent expert cloud jobs`
 - `61d1b37 fix(trainer): recover expert runs safely`
 - `6cb9b66 fix(trainer): make cancellation and completion replay exact`
+- `2db9239 fix(trainer): preserve exact run ownership`
 
 ## Self-review
 
@@ -73,6 +81,8 @@ Commits:
 - Confirmed progress-95 completion replay does not require the already-uploaded local artifact to remain present.
 - Confirmed exactly one stop owner terminates an active child even when duplicate cancellation and the training thread converge.
 - Confirmed an exclusive advisory lock rejects a live owner but recovers a dead owner's lock and private staging directory after restart.
+- Confirmed stale-stage recovery uses an exact per-run path, so run IDs with shared prefixes cannot delete each other's private state.
+- Confirmed an opener paused before `flock` cannot own an unlinked old inode concurrently with the owner of a recreated lock pathname.
 - Confirmed cloud/network/5xx paths retain state, while exact 409 lease loss discards only the expert state file and prevents upload/completion.
 - Confirmed no new config key, credential, public listener, cloud resource, deployment, or real 27B/GPU run was introduced.
 
