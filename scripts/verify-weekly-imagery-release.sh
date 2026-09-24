@@ -2,7 +2,7 @@
 set -euo pipefail
 
 release_root="/var/lib/cofco/imagery"
-maximum_age_hours="192"
+maximum_age_hours="840"
 verification_now=""
 verify_systemd=true
 python_command="python3"
@@ -80,7 +80,7 @@ try:
     releases = (root / "releases").resolve(strict=True)
 except OSError:
     fail("current release target is unavailable")
-if current.parent != releases or not re.fullmatch(r"\d{4}-W\d{2}", current.name):
+if current.parent != releases or not re.fullmatch(r"\d{4}-(?:W\d{2}|\d{2})", current.name):
     fail("current release escapes the governed releases directory")
 
 metadata_path = current / "metadata.json"

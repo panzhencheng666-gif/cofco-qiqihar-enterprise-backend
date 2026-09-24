@@ -22,7 +22,8 @@ assert_file ops/systemd/cofco-weekly-imagery.service
 assert_file ops/systemd/cofco-weekly-imagery.timer
 assert_file scripts/install-weekly-imagery-worker.sh
 
-assert_contains ops/systemd/cofco-weekly-imagery.timer 'OnCalendar=Mon *-*-* 03:10:00 Asia/Shanghai'
+assert_contains ops/systemd/cofco-weekly-imagery.timer 'OnCalendar=*-*-01 01:00:00 Asia/Shanghai'
+assert_contains ops/systemd/cofco-weekly-imagery.timer 'RandomizedDelaySec=0'
 assert_contains ops/systemd/cofco-weekly-imagery.timer 'Persistent=true'
 assert_contains ops/systemd/cofco-weekly-imagery.service 'ProtectSystem=strict'
 assert_contains ops/systemd/cofco-weekly-imagery.service 'ReadWritePaths=/var/lib/cofco/imagery'

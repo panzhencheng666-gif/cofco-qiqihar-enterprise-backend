@@ -30,9 +30,11 @@ from scripts.weekly_imagery_sync import (  # noqa: E402
     _vsicurl,
     _xyz_webp_relative,
     complete_week,
+    complete_month,
     parse_candidates,
     publish_release,
     rank_candidates,
+    search_candidates,
     require_free_space,
     retain_releases,
     select_grid_candidates,
@@ -42,6 +44,17 @@ from scripts import weekly_imagery_sync as worker  # noqa: E402
 
 
 class WeeklyImagerySyncTest(unittest.TestCase):
+    def test_scene_rgb_is_zeroed_where_cloud_mask_is_transparent(self):
+        self.assertEqual(
+            [
+                "A*((D!=0)*(D!=1)*(D!=3)*(D!=8)*(D!=9)*(D!=10)*(D!=11))",
+                "B*((D!=0)*(D!=1)*(D!=3)*(D!=8)*(D!=9)*(D!=10)*(D!=11))",
+                "C*((D!=0)*(D!=1)*(D!=3)*(D!=8)*(D!=9)*(D!=10)*(D!=11))",
+                "255*((D!=0)*(D!=1)*(D!=3)*(D!=8)*(D!=9)*(D!=10)*(D!=11))",
+            ],
+            worker._scene_band_expressions(),
+        )
+
     def test_rejects_sparse_release_instead_of_publishing_blank_weekly_map(self):
         with tempfile.TemporaryDirectory() as temporary:
             tiles = Path(temporary)
@@ -125,13 +138,14 @@ class WeeklyImagerySyncTest(unittest.TestCase):
             build_tiles.side_effect = tiles_side_effect
             staging = build_release(
                 config,
-                WeekWindow("2026-W38", datetime(2026, 9, 14).date(), datetime(2026, 9, 20).date()),
+                WeekWindow("2026-09", datetime(2026, 8, 24).date(), datetime(2026, 9, 22).date()),
                 [candidate],
                 datetime(2026, 9, 21, tzinfo=timezone.utc),
             )
 
             self.assertFalse((staging / "work").exists())
             self.assertNotIn("work/", (staging / "manifest.sha256").read_text())
+            self.assertEqual("MONTHLY", json.loads((staging / "metadata.json").read_text())["updateCadence"])
             coverage.assert_called_once()
             validate_release(staging)
 
@@ -238,6 +252,47 @@ class WeeklyImagerySyncTest(unittest.TestCase):
         self.assertEqual("2026-09-14", window.start.isoformat())
         self.assertEqual("2026-09-20", window.end.isoformat())
 
+    def test_monthly_run_searches_latest_thirty_complete_days(self):
+        window = complete_month(datetime(2026, 9, 23, 2, tzinfo=timezone.utc))
+
+        self.assertEqual("2026-09", window.identifier)
+        self.assertEqual("2026-08-24", window.start.isoformat())
+        self.assertEqual("2026-09-22", window.end.isoformat())
+
+    def test_monthly_timer_uses_china_calendar_month_at_utc_day_boundary(self):
+        window = complete_month(datetime(2026, 9, 30, 19, 10, tzinfo=timezone.utc))
+        self.assertEqual("2026-10", window.identifier)
+        self.assertEqual("2026-09-30", window.end.isoformat())
+
+    @patch("scripts.weekly_imagery_sync.aoi_bounds", return_value=(123, 47, 124, 48))
+    @patch("scripts.weekly_imagery_sync._read_json_response")
+    def test_monthly_catalog_search_follows_post_pagination(self, read_json, bounds):
+        def feature(identifier):
+            return {
+                "id": identifier,
+                "properties": {"datetime": "2026-09-20T00:00:00Z", "eo:cloud_cover": 1},
+                "assets": {
+                    "visual": {"href": "https://example.test/visual.tif"},
+                    "scl": {"href": "https://example.test/scl.tif"},
+                },
+            }
+
+        read_json.side_effect = [
+            {"features": [feature("first")], "links": [{
+                "rel": "next", "href": "https://example.test/search?collections=collection", "method": "POST",
+                "body": {"token": "page-2"}, "merge": True,
+            }]},
+            {"features": [feature("second")], "links": []},
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = SyncConfig(root, root / "aoi.geojson", "https://example.test/search", "collection", ("example.test",), 30, 5, 14, 5, 60, "", 0, 2)
+            found = search_candidates(config, datetime(2026, 9, 1).date(), datetime(2026, 9, 22).date())
+
+        self.assertEqual(["first", "second"], [item.product_id for item in found])
+        self.assertEqual("page-2", json.loads(read_json.call_args.args[0].data)["token"])
+        self.assertEqual("collection", json.loads(read_json.call_args.args[0].data)["collections"][0])
+
     def test_rank_prefers_authorized_clear_and_recent_products(self):
         candidates = [
             Candidate("old-clear", "2026-09-18T02:00:00Z", 3.0, True, {}),
@@ -285,20 +340,28 @@ class WeeklyImagerySyncTest(unittest.TestCase):
         self.assertEqual("MGRS-52UEU", parsed[0].grid_code)
         self.assertEqual((123.0, 46.0, 124.0, 47.0), parsed[0].bounds)
 
-    def test_select_grid_candidates_keeps_best_ranked_scene_per_grid(self):
+    def test_select_grid_candidates_retains_newest_full_footprint_and_clear_alternate(self):
         ranked = [
-            Candidate("new-a", "2026-09-20T02:00:00Z", 12.0, True, {}, "A"),
-            Candidate("old-a", "2026-09-18T02:00:00Z", 3.0, True, {}, "A"),
-            Candidate("grid-b", "2026-09-19T02:00:00Z", 5.0, True, {}, "B"),
+            Candidate("new-partial", "2026-09-20T02:00:00Z", 12.0, True, {}, "A", (123, 47, 123.4, 48)),
+            Candidate("full", "2026-09-18T02:00:00Z", 8.0, True, {}, "A", (123, 47, 124.5, 48)),
+            Candidate("clear", "2026-09-17T02:00:00Z", 0.1, True, {}, "A", (123, 47, 124.4, 48)),
+            Candidate("grid-b", "2026-09-19T02:00:00Z", 5.0, True, {}, "B", (124, 47, 125, 48)),
             Candidate("unknown", "2026-09-17T02:00:00Z", 4.0, True, {}),
         ]
 
         selected = select_grid_candidates(ranked)
 
         self.assertEqual(
-            ["new-a", "grid-b", "unknown"],
+            ["new-partial", "full", "clear", "grid-b", "unknown"],
             [candidate.product_id for candidate in selected],
         )
+
+    def test_select_grid_candidates_caps_redundant_scene_count(self):
+        ranked = [
+            Candidate(f"scene-{day}", f"2026-09-{day:02d}T02:00:00Z", float(day), True, {}, "A", (123, 47, 124, 48))
+            for day in range(20, 15, -1)
+        ]
+        self.assertEqual(3, len(select_grid_candidates(ranked)))
 
     @patch("scripts.weekly_imagery_sync.shutil.disk_usage")
     def test_require_free_space_rejects_release_before_gdal_when_disk_is_low(self, disk_usage):

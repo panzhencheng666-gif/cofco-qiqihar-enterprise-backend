@@ -177,6 +177,17 @@ public class MapImageryTileGateway {
             var local = localReleases.currentMetadata();
             if (local.isPresent()) {
                 var metadata = local.orElseThrow();
+                var status = metadata.status();
+                try {
+                    var age = Duration.between(Instant.parse(metadata.syncedAt()), clock.instant());
+                    var maximumAge = "MONTHLY".equals(metadata.updateCadence())
+                            ? Duration.ofDays(35) : Duration.ofDays(8);
+                    if (age.compareTo(maximumAge) > 0 || age.compareTo(Duration.ofHours(-1)) < 0) {
+                        status = "STALE";
+                    }
+                } catch (RuntimeException invalidTimestamp) {
+                    status = "STALE";
+                }
                 return new Metadata(
                         metadata.provider(),
                         metadata.attribution(),
@@ -185,11 +196,11 @@ public class MapImageryTileGateway {
                         metadata.acquisitionFrom(),
                         metadata.acquisitionTo(),
                         false,
-                        true,
+                        "WEEKLY".equals(metadata.updateCadence()),
                         metadata.syncedAt(),
                         metadata.spatialResolutionMeters(),
                         metadata.cloudCoveragePercent(),
-                        metadata.status(),
+                        status,
                         metadata.sourceProductIds(),
                         metadata.truthStatement());
             }
