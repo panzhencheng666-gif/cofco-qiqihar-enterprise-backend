@@ -4,7 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -280,6 +280,24 @@ class WeeklyImagerySyncTest(unittest.TestCase):
             self.assertEqual(
                 ["2026-W35", "2026-W36", "2026-W37", "2026-W38"],
                 sorted(path.name for path in releases.iterdir()),
+            )
+
+    @patch("scripts.weekly_imagery_sync._run")
+    def test_publish_grants_backend_read_acl_before_switching_current(self, run):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            staging = self._release(root / ".staging-2026-W38", "2026-W38")
+
+            published = publish_release(root, staging, backend_reader_uid=10001)
+
+            self.assertEqual("2026-W38", (root / "current").resolve().name)
+            self.assertEqual(
+                [
+                    ["setfacl", "-m", "u:10001:rx", str(root)],
+                    ["setfacl", "-m", "u:10001:rx", str(root / "releases")],
+                    ["setfacl", "-R", "-m", "u:10001:rX", str(published)],
+                ],
+                [call.args[0] for call in run.call_args_list],
             )
 
     def _release(self, path: Path, version: str) -> Path:
