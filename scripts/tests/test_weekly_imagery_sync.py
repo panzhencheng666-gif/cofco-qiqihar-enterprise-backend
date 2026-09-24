@@ -21,6 +21,7 @@ from scripts.weekly_imagery_sync import (  # noqa: E402
     SyncConfig,
     WeekWindow,
     build_release,
+    _build_web_tiles,
     _legacy_webp_band_args,
     _mgrs_grid_code,
     _PLANETARY_TOKEN_CACHE,
@@ -37,20 +38,77 @@ from scripts.weekly_imagery_sync import (  # noqa: E402
     select_grid_candidates,
     validate_release,
 )
+from scripts import weekly_imagery_sync as worker  # noqa: E402
 
 
 class WeeklyImagerySyncTest(unittest.TestCase):
+    def test_rejects_sparse_release_instead_of_publishing_blank_weekly_map(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tiles = Path(temporary)
+            present = tiles / "5" / "26" / "11.webp"
+            present.parent.mkdir(parents=True)
+            present.write_bytes(b"RIFF-weekly-imagery-WEBP")
+            bounds = (112.6, 32.1, 134.9, 48.0)
+
+            with self.assertRaisesRegex(ReleaseValidationError, "coverage"):
+                worker._require_nonempty_tile_coverage(tiles, bounds, 5)
+
+            for x, y in ((26, 12), (27, 11), (27, 12)):
+                tile = tiles / "5" / str(x) / f"{y}.webp"
+                tile.parent.mkdir(parents=True, exist_ok=True)
+                tile.write_bytes(b"RIFF-weekly-imagery-WEBP")
+
+            worker._require_nonempty_tile_coverage(tiles, bounds, 5)
+
+    @patch("scripts.weekly_imagery_sync._run")
+    @patch("scripts.weekly_imagery_sync.subprocess.run")
+    def test_modern_tile_build_excludes_fully_transparent_tiles(self, subprocess_run, run):
+        subprocess_run.return_value = SimpleNamespace(stdout="--xyz --tiledriver --exclude")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = SyncConfig(
+                root, root / "aoi.geojson", "https://example.test", "sentinel-2-l2a",
+                ("example.test",), 30.0, 5, 14, 5, 60, "", 0, 4,
+            )
+            _build_web_tiles(root / "mosaic.tif", root / "tiles", config)
+
+        self.assertIn("--exclude", run.call_args.args[0])
+
+    @patch("scripts.weekly_imagery_sync._run")
+    @patch("scripts.weekly_imagery_sync.subprocess.run")
+    def test_legacy_tile_build_excludes_fully_transparent_tiles(self, subprocess_run, run):
+        subprocess_run.return_value = SimpleNamespace(stdout="--exclude")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = SyncConfig(
+                root, root / "aoi.geojson", "https://example.test", "sentinel-2-l2a",
+                ("example.test",), 30.0, 5, 14, 5, 60, "", 0, 4,
+            )
+
+            def run_side_effect(command, timeout):
+                if command[0] == "gdal2tiles.py":
+                    tile = root / ".tiles-tms" / "5" / "26" / "11.png"
+                    tile.parent.mkdir(parents=True)
+                    tile.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 18)
+
+            run.side_effect = run_side_effect
+            _build_web_tiles(root / "mosaic.tif", root / "tiles", config)
+
+        self.assertIn("--exclude", run.call_args_list[0].args[0])
+
     @patch("scripts.weekly_imagery_sync.require_free_space")
+    @patch("scripts.weekly_imagery_sync._require_nonempty_tile_coverage")
     @patch("scripts.weekly_imagery_sync._build_web_tiles")
     @patch("scripts.weekly_imagery_sync._run")
     @patch("scripts.weekly_imagery_sync._build_scene")
     @patch("scripts.weekly_imagery_sync._check_gdal")
     def test_build_release_manifest_excludes_removed_work_files(
-        self, check_gdal, build_scene, run, build_tiles, free_space
+        self, check_gdal, build_scene, run, build_tiles, coverage, free_space
     ):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config = SyncConfig(root, root / "aoi.geojson", "https://example.test", "sentinel-2-l2a", ("example.test",), 30.0, 5, 5, 5, 60, "", 0, 4)
+            config.aoi.write_text(json.dumps({"type": "Polygon", "coordinates": [[[113, 47], [114, 47], [114, 48], [113, 48], [113, 47]]]}))
             candidate = Candidate("S2-test", "2026-09-20T02:00:00Z", 5.0, True, {})
 
             def scene_side_effect(config, candidate, work, index):
@@ -74,6 +132,7 @@ class WeeklyImagerySyncTest(unittest.TestCase):
 
             self.assertFalse((staging / "work").exists())
             self.assertNotIn("work/", (staging / "manifest.sha256").read_text())
+            coverage.assert_called_once()
             validate_release(staging)
 
     @patch("scripts.weekly_imagery_sync.time.sleep")
