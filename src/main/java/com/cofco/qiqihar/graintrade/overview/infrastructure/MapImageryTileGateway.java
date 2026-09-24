@@ -14,6 +14,9 @@ import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.YearMonth;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.temporal.IsoFields;
 import java.time.temporal.TemporalAdjusters;
@@ -208,6 +211,17 @@ public class MapImageryTileGateway {
                             ? Duration.ofDays(35) : Duration.ofDays(8);
                     if (age.compareTo(maximumAge) > 0 || age.compareTo(Duration.ofHours(-1)) < 0) {
                         status = "STALE";
+                    }
+                    if ("MONTHLY".equals(metadata.updateCadence())) {
+                        var chinaNow = clock.instant().atZone(ZoneId.of("Asia/Shanghai"));
+                        var scheduledMonth = YearMonth.from(chinaNow).toString();
+                        var scheduledRunStarted = chinaNow.getDayOfMonth() > 1
+                                || !chinaNow.toLocalTime().isBefore(LocalTime.of(1, 0));
+                        if (scheduledRunStarted
+                                && !metadata.version().equals(scheduledMonth)
+                                && !metadata.version().startsWith(scheduledMonth + "-r")) {
+                            status = "STALE";
+                        }
                     }
                 } catch (RuntimeException invalidTimestamp) {
                     status = "STALE";

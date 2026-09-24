@@ -210,6 +210,20 @@ class MapImageryTileGatewayTest {
         assertThat(gateway.metadata().cloudCoveragePercent()).isEqualTo(8.5);
         assertThat(gateway.metadata().status()).isEqualTo("CURRENT");
 
+        var beforeOctoberRun = new MapImageryTileGateway(
+                "https://example.invalid/{z}/{x}/{y}.png", "", "Historical fallback", "Example",
+                0, 8_388_608, HttpClient.newHttpClient(),
+                Clock.fixed(Instant.parse("2026-09-30T16:59:00Z"), ZoneOffset.UTC),
+                new LocalImageryReleaseStore(temporary.toString(), new ObjectMapper()));
+        assertThat(beforeOctoberRun.metadata().status()).isEqualTo("CURRENT");
+
+        var afterOctoberRun = new MapImageryTileGateway(
+                "https://example.invalid/{z}/{x}/{y}.png", "", "Historical fallback", "Example",
+                0, 8_388_608, HttpClient.newHttpClient(),
+                Clock.fixed(Instant.parse("2026-09-30T17:00:00Z"), ZoneOffset.UTC),
+                new LocalImageryReleaseStore(temporary.toString(), new ObjectMapper()));
+        assertThat(afterOctoberRun.metadata().status()).isEqualTo("STALE");
+
         var expiredGateway = new MapImageryTileGateway(
                 "https://example.invalid/{z}/{x}/{y}.png", "", "Historical fallback", "Example",
                 0, 8_388_608, HttpClient.newHttpClient(),
