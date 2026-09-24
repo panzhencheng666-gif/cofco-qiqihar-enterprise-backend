@@ -7,6 +7,7 @@ import argparse
 import concurrent.futures
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -311,6 +312,37 @@ def aoi_bounds(path: Path) -> tuple[float, float, float, float]:
     if not (-180 <= bounds[0] < bounds[2] <= 180 and -90 <= bounds[1] < bounds[3] <= 90):
         raise ValueError("AOI bounds are invalid")
     return bounds
+
+
+def _require_nonempty_tile_coverage(
+    tiles: Path, bounds: tuple[float, float, float, float], zoom: int,
+    minimum_ratio: float = 0.8,
+) -> None:
+    """Reject a sparse release before it can replace the published imagery."""
+    west, south, east, north = bounds
+    scale = 1 << zoom
+
+    def tile_x(longitude: float) -> int:
+        return min(scale - 1, max(0, math.floor((longitude + 180) / 360 * scale)))
+
+    def tile_y(latitude: float) -> int:
+        latitude = min(85.05112878, max(-85.05112878, latitude))
+        radians = math.radians(latitude)
+        mercator = math.log(math.tan(radians) + 1 / math.cos(radians))
+        return min(scale - 1, max(0, math.floor((1 - mercator / math.pi) / 2 * scale)))
+
+    x_range = range(tile_x(west), tile_x(east) + 1)
+    y_range = range(tile_y(north), tile_y(south) + 1)
+    expected = len(x_range) * len(y_range)
+    present = sum(
+        (tiles / str(zoom) / str(x) / f"{y}.webp").is_file()
+        for x in x_range for y in y_range
+    )
+    if present / expected < minimum_ratio:
+        raise ReleaseValidationError(
+            f"imagery tile coverage {present}/{expected} ({present / expected:.1%}) "
+            f"at zoom {zoom} is below the {minimum_ratio:.0%} publication threshold"
+        )
 
 
 def search_candidates(config: SyncConfig, start: date, end: date) -> list[Candidate]:
@@ -698,6 +730,7 @@ def build_release(
         _build_web_tiles(mosaic, tiles, config)
         if not any(tiles.rglob("*.webp")):
             raise ReleaseValidationError("GDAL produced no imagery tiles")
+        _require_nonempty_tile_coverage(tiles, aoi_bounds(config.aoi), config.maximum_zoom)
         observed = sorted(candidate.observed_at for candidate in candidates)
         metadata = {
             "version": window.identifier,
