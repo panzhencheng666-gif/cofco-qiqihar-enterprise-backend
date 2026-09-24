@@ -715,8 +715,8 @@ def build_release(
         (staging / "metadata.json").write_text(
             json.dumps(metadata, ensure_ascii=False, sort_keys=True) + "\n"
         )
-        _write_manifest(staging)
         shutil.rmtree(work)
+        _write_manifest(staging)
         validate_release(staging)
         return staging
     except BaseException:

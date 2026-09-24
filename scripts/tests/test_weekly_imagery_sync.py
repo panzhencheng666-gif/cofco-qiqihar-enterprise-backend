@@ -18,6 +18,9 @@ sys.path.insert(0, str(REPOSITORY_ROOT))
 from scripts.weekly_imagery_sync import (  # noqa: E402
     Candidate,
     ReleaseValidationError,
+    SyncConfig,
+    WeekWindow,
+    build_release,
     _legacy_webp_band_args,
     _mgrs_grid_code,
     _PLANETARY_TOKEN_CACHE,
@@ -37,6 +40,42 @@ from scripts.weekly_imagery_sync import (  # noqa: E402
 
 
 class WeeklyImagerySyncTest(unittest.TestCase):
+    @patch("scripts.weekly_imagery_sync.require_free_space")
+    @patch("scripts.weekly_imagery_sync._build_web_tiles")
+    @patch("scripts.weekly_imagery_sync._run")
+    @patch("scripts.weekly_imagery_sync._build_scene")
+    @patch("scripts.weekly_imagery_sync._check_gdal")
+    def test_build_release_manifest_excludes_removed_work_files(
+        self, check_gdal, build_scene, run, build_tiles, free_space
+    ):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = SyncConfig(root, root / "aoi.geojson", "https://example.test", "sentinel-2-l2a", ("example.test",), 30.0, 5, 5, 5, 60, "", 0, 4)
+            candidate = Candidate("S2-test", "2026-09-20T02:00:00Z", 5.0, True, {})
+
+            def scene_side_effect(config, candidate, work, index):
+                scene = work / "scene.tif"
+                scene.write_bytes(b"temporary")
+                return scene
+
+            def tiles_side_effect(mosaic, tiles, config):
+                tile = tiles / "5" / "26" / "11.webp"
+                tile.parent.mkdir(parents=True)
+                tile.write_bytes(b"RIFF-weekly-imagery-WEBP")
+
+            build_scene.side_effect = scene_side_effect
+            build_tiles.side_effect = tiles_side_effect
+            staging = build_release(
+                config,
+                WeekWindow("2026-W38", datetime(2026, 9, 14).date(), datetime(2026, 9, 20).date()),
+                [candidate],
+                datetime(2026, 9, 21, tzinfo=timezone.utc),
+            )
+
+            self.assertFalse((staging / "work").exists())
+            self.assertNotIn("work/", (staging / "manifest.sha256").read_text())
+            validate_release(staging)
+
     @patch("scripts.weekly_imagery_sync.time.sleep")
     @patch("scripts.weekly_imagery_sync.urllib.request.urlopen")
     def test_json_request_retries_transient_network_failures(self, urlopen, sleep):
