@@ -41,6 +41,16 @@ class LocalImageryReleaseStoreTest {
     }
 
     @Test
+    void readsMonthlyReleaseWithoutDroppingLegacyWeeklyReleases() throws Exception {
+        var release = release("2026-09");
+        Files.createSymbolicLink(temporary.resolve("current"), release);
+        var store = new LocalImageryReleaseStore(temporary.toString(), new ObjectMapper());
+
+        assertThat(store.currentMetadata().orElseThrow().version()).isEqualTo("2026-09");
+        assertThat(store.tile("2026-09", 14, 13871, 5612).bytes()).isNotEmpty();
+    }
+
+    @Test
     void isDisabledWhenTheReleaseRootIsBlank() {
         var store = new LocalImageryReleaseStore("", new ObjectMapper());
 
@@ -56,7 +66,7 @@ class LocalImageryReleaseStoreTest {
                 release.resolve("metadata.json"),
                 """
                 {
-                  "version": "2026-W38",
+                  "version": "%s",
                   "provider": "Copernicus Sentinel-2 L2A",
                   "attribution": "European Union, Copernicus Sentinel-2 imagery",
                   "updateCadence": "WEEKLY",
@@ -69,7 +79,7 @@ class LocalImageryReleaseStoreTest {
                   "sourceProductIds": ["S2-test"],
                   "truthStatement": "Latest available observation; not live video."
                 }
-                """);
+                """.formatted(version));
         return release;
     }
 }

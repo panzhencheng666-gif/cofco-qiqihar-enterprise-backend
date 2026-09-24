@@ -171,16 +171,16 @@ class MapImageryTileGatewayTest {
 
     @Test
     void localReleasePrecedesTheRemoteProviderAndExposesTruthfulMetadata() throws Exception {
-        var release = temporary.resolve("releases/2026-W38");
+        var release = temporary.resolve("releases/2026-09");
         var tilePath = release.resolve("tiles/14/13871/5612.webp");
         Files.createDirectories(tilePath.getParent());
         Files.write(tilePath, "local-week".getBytes(StandardCharsets.UTF_8));
         Files.writeString(
                 release.resolve("metadata.json"),
                 """
-                {"version":"2026-W38","provider":"Copernicus Sentinel-2 L2A",
+                {"version":"2026-09","provider":"Copernicus Sentinel-2 L2A",
                  "attribution":"European Union, Copernicus Sentinel-2 imagery",
-                 "updateCadence":"WEEKLY","acquisitionFrom":"2026-09-18T02:00:00Z",
+                 "updateCadence":"MONTHLY","acquisitionFrom":"2026-09-18T02:00:00Z",
                  "acquisitionTo":"2026-09-20T02:00:00Z","syncedAt":"2026-09-21T03:10:00Z",
                  "spatialResolutionMeters":10,"cloudCoveragePercent":8.5,"status":"CURRENT",
                  "sourceProductIds":["S2-test"],
@@ -195,18 +195,27 @@ class MapImageryTileGatewayTest {
                 0,
                 8_388_608,
                 HttpClient.newHttpClient(),
-                Clock.systemUTC(),
+                Clock.fixed(Instant.parse("2026-09-23T00:00:00Z"), ZoneOffset.UTC),
                 new LocalImageryReleaseStore(temporary.toString(), new ObjectMapper()));
 
         var current = gateway.tile(14, 13871, 5612);
-        var immutable = gateway.tile("2026-W38", 14, 13871, 5612);
+        var immutable = gateway.tile("2026-09", 14, 13871, 5612);
 
         assertThat(current.bytes()).containsExactly("local-week".getBytes(StandardCharsets.UTF_8));
         assertThat(immutable.bytes()).isEqualTo(current.bytes());
-        assertThat(gateway.metadata().imageryPeriod()).isEqualTo("2026-W38");
+        assertThat(gateway.metadata().imageryPeriod()).isEqualTo("2026-09");
+        assertThat(gateway.metadata().updateCadence()).isEqualTo("MONTHLY");
+        assertThat(gateway.metadata().automaticWeeklyPeriod()).isFalse();
         assertThat(gateway.metadata().spatialResolutionMeters()).isEqualTo(10);
         assertThat(gateway.metadata().cloudCoveragePercent()).isEqualTo(8.5);
         assertThat(gateway.metadata().status()).isEqualTo("CURRENT");
+
+        var expiredGateway = new MapImageryTileGateway(
+                "https://example.invalid/{z}/{x}/{y}.png", "", "Historical fallback", "Example",
+                0, 8_388_608, HttpClient.newHttpClient(),
+                Clock.fixed(Instant.parse("2026-11-01T00:00:00Z"), ZoneOffset.UTC),
+                new LocalImageryReleaseStore(temporary.toString(), new ObjectMapper()));
+        assertThat(expiredGateway.metadata().status()).isEqualTo("STALE");
     }
 
     private static final class MutableClock extends Clock {

@@ -1,5 +1,5 @@
 [Unit]
-Description=COFCO Qiqihar weekly Sentinel-2 imagery synchronization
+Description=COFCO Qiqihar monthly Sentinel-2 imagery synchronization
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=1d

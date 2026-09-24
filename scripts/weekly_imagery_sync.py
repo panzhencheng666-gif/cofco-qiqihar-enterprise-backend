@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and atomically publish a weekly self-hosted Sentinel-2 tile release."""
+"""Build and atomically publish a monthly self-hosted Sentinel-2 tile release."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 
 DEFAULT_STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
@@ -116,6 +117,13 @@ def complete_week(now: datetime) -> WeekWindow:
     return WeekWindow(f"{iso_year}-W{iso_week:02d}", start, end)
 
 
+def complete_month(now: datetime) -> WeekWindow:
+    """Search the last 30 complete local days for each China-time publication."""
+    local = now.astimezone(ZoneInfo("Asia/Shanghai"))
+    end = local.date() - timedelta(days=1)
+    return WeekWindow(local.strftime("%Y-%m"), end - timedelta(days=29), end)
+
+
 def rank_candidates(
     candidates: Iterable[Candidate], maximum_cloud_percent: float
 ) -> list[Candidate]:
@@ -132,16 +140,37 @@ def rank_candidates(
 
 
 def select_grid_candidates(ranked: Iterable[Candidate]) -> list[Candidate]:
-    """Keep the highest-ranked observation for each Sentinel acquisition grid."""
-    selected: list[Candidate] = []
-    seen: set[str] = set()
-    for candidate in ranked:
+    """Keep recent, broad-footprint and clear observations for each grid.
+
+    A newer Sentinel scene can cover only a sliver of its MGRS grid. Retaining
+    only that scene created transparent rectangles even when a complete scene
+    from the same acquisition window was available.
+    """
+    ordered = list(ranked)
+    grids: dict[str, list[Candidate]] = {}
+    for candidate in ordered:
         grid_key = candidate.grid_code or f"product:{candidate.product_id}"
-        if grid_key in seen:
-            continue
-        seen.add(grid_key)
-        selected.append(candidate)
-    return selected
+        grids.setdefault(grid_key, []).append(candidate)
+
+    chosen_ids: set[str] = set()
+    for scenes in grids.values():
+        def footprint_area(scene: Candidate) -> float:
+            if scene.bounds is None:
+                return 0.0
+            west, south, east, north = scene.bounds
+            return max(0.0, east - west) * max(0.0, north - south)
+
+        choices = [
+            scenes[0],
+            max(scenes, key=footprint_area),
+            min(scenes, key=lambda scene: scene.cloud_percent),
+        ]
+        for scene in scenes:
+            if len({item.product_id for item in choices}) >= 3:
+                break
+            choices.append(scene)
+        chosen_ids.update(scene.product_id for scene in choices)
+    return [candidate for candidate in ordered if candidate.product_id in chosen_ids]
 
 
 def _mgrs_grid_code(properties: Mapping[str, Any], product_id: str) -> str | None:
@@ -167,7 +196,7 @@ def require_free_space(root: Path, minimum_free_bytes: int) -> None:
     free_bytes = shutil.disk_usage(root).free
     if free_bytes < minimum_free_bytes:
         raise RuntimeError(
-            "insufficient free disk space for weekly imagery build: "
+            "insufficient free disk space for monthly imagery build: "
             f"available={free_bytes}, required={minimum_free_bytes}"
         )
 
@@ -349,22 +378,56 @@ def search_candidates(config: SyncConfig, start: date, end: date) -> list[Candid
     if not _trusted_https(config.stac_url, config.allowed_hosts):
         raise ValueError("STAC URL is not an allowed HTTPS endpoint")
     bbox = aoi_bounds(config.aoi)
-    body = json.dumps(
-        {
-            "collections": [config.collection],
-            "bbox": list(bbox),
-            "datetime": f"{start.isoformat()}T00:00:00Z/{end.isoformat()}T23:59:59Z",
-            "limit": 100,
-            "sortby": [{"field": "properties.datetime", "direction": "desc"}],
-        }
-    ).encode()
+    search_body = {
+        "collections": [config.collection],
+        "bbox": list(bbox),
+        "datetime": f"{start.isoformat()}T00:00:00Z/{end.isoformat()}T23:59:59Z",
+        "limit": 100,
+        "sortby": [{"field": "properties.datetime", "direction": "desc"}],
+    }
     headers = {"Accept": "application/geo+json", "Content-Type": "application/json"}
     if config.bearer_token:
         headers["Authorization"] = f"Bearer {config.bearer_token}"
-    request = urllib.request.Request(config.stac_url, data=body, headers=headers, method="POST")
-    return parse_candidates(
-        _read_json_response(request, config.request_timeout_seconds), config.allowed_hosts
+    request = urllib.request.Request(
+        config.stac_url, data=json.dumps(search_body).encode(), headers=headers, method="POST"
     )
+    candidates: list[Candidate] = []
+    seen_requests: set[tuple[str, bytes | None]] = set()
+    for _ in range(20):
+        key = (request.full_url, request.data)
+        if key in seen_requests:
+            raise RuntimeError("STAC pagination repeated a request")
+        seen_requests.add(key)
+        payload = _read_json_response(request, config.request_timeout_seconds)
+        candidates.extend(parse_candidates(payload, config.allowed_hosts))
+        links = payload.get("links", [])
+        next_link = next(
+            (link for link in links if isinstance(link, Mapping) and link.get("rel") == "next"),
+            None,
+        ) if isinstance(links, list) else None
+        if next_link is None:
+            return candidates
+        href = next_link.get("href")
+        configured = urllib.parse.urlparse(config.stac_url)
+        next_endpoint = urllib.parse.urlparse(href) if isinstance(href, str) else None
+        if (
+            next_endpoint is None
+            or next_endpoint.scheme != "https"
+            or next_endpoint.netloc != configured.netloc
+            or next_endpoint.path != configured.path
+            or next_endpoint.fragment
+        ):
+            raise RuntimeError("STAC next page leaves the configured search endpoint")
+        if next_link.get("method") != "POST":
+            raise RuntimeError("STAC pagination requires an unsupported method")
+        next_body = next_link.get("body")
+        if not isinstance(next_body, Mapping):
+            raise RuntimeError("STAC next page has no POST body")
+        page_body = {**search_body, **next_body} if next_link.get("merge") else next_body
+        request = urllib.request.Request(
+            href, data=json.dumps(page_body).encode(), headers=headers, method="POST"
+        )
+    raise RuntimeError("STAC pagination exceeded 20 pages")
 
 
 def _run(command: Sequence[str], timeout: int, cwd: Path | None = None) -> None:
@@ -532,6 +595,11 @@ def _check_gdal() -> None:
         raise RuntimeError("missing GDAL commands: " + ", ".join(missing))
 
 
+def _scene_band_expressions() -> list[str]:
+    clear = "((D!=0)*(D!=1)*(D!=3)*(D!=8)*(D!=9)*(D!=10)*(D!=11))"
+    return [f"{band}*{clear}" for band in "ABC"] + [f"255*{clear}"]
+
+
 def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: int) -> Path:
     scene = work / f"scene-{index:03d}"
     scene.mkdir()
@@ -636,7 +704,6 @@ def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: in
         config.command_timeout_seconds,
     )
     masked = scene / "masked.tif"
-    clear_expression = "255*((D!=0)*(D!=1)*(D!=3)*(D!=8)*(D!=9)*(D!=10)*(D!=11))"
     _run(
         [
             "gdal_calc.py",
@@ -652,10 +719,7 @@ def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: in
             "-D",
             str(warped_scl),
             "--D_band=1",
-            "--calc=A",
-            "--calc=B",
-            "--calc=C",
-            f"--calc={clear_expression}",
+            *[f"--calc={expression}" for expression in _scene_band_expressions()],
             "--type=Byte",
             "--NoDataValue=0",
             "--co=TILED=YES",
@@ -736,7 +800,7 @@ def build_release(
             "version": window.identifier,
             "provider": "Copernicus Sentinel-2 L2A",
             "attribution": "European Union, Copernicus Sentinel-2 imagery",
-            "updateCadence": "WEEKLY",
+            "updateCadence": "MONTHLY",
             "acquisitionFrom": observed[0],
             "acquisitionTo": observed[-1],
             "syncedAt": now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
@@ -912,7 +976,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.now
         else datetime.now(timezone.utc)
     )
-    window = complete_week(now)
+    window = complete_month(now)
     if arguments.dry_run:
         print(
             json.dumps(
@@ -927,13 +991,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     current = config.root / "current"
     if current.exists() and current.resolve().name == window.identifier and not arguments.force:
         validate_release(current.resolve())
-        print(f"weekly imagery already published: {window.identifier}")
+        print(f"monthly imagery already published: {window.identifier}")
         return 0
     candidates = rank_candidates(
         search_candidates(config, window.start, window.end), config.maximum_cloud_percent
     )
     if not candidates:
-        expanded_start = window.start - timedelta(days=7)
+        expanded_start = window.start - timedelta(days=30)
         candidates = rank_candidates(
             search_candidates(config, expanded_start, window.end), config.maximum_cloud_percent
         )
@@ -944,7 +1008,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     staging = build_release(config, window, candidates, now)
     published = publish_release(config.root, staging, config.backend_reader_uid)
     retain_releases(config.root, keep=config.retention_count)
-    print(f"weekly imagery published: {published.name}")
+    print(f"monthly imagery published: {published.name}")
     return 0
 
 
@@ -952,5 +1016,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except (ReleaseValidationError, RuntimeError, ValueError) as failure:
-        print(f"weekly imagery sync failed: {failure}", file=sys.stderr)
+        print(f"monthly imagery sync failed: {failure}", file=sys.stderr)
         raise SystemExit(1)
