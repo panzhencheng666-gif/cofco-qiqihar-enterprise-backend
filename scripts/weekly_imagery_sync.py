@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -41,6 +42,8 @@ EARTH_SEARCH_REGIONAL_HOST = "e84-earth-search-sentinel-data.s3.us-west-2.amazon
 EARTH_SEARCH_GLOBAL_HOST = "e84-earth-search-sentinel-data.s3.amazonaws.com"
 PLANETARY_COMPUTER_HOST = "planetarycomputer.microsoft.com"
 PLANETARY_SENTINEL_HOST = "sentinel2l2a01.blob.core.windows.net"
+_PLANETARY_TOKEN_CACHE: dict[tuple[str, str], str] = {}
+_PLANETARY_TOKEN_LOCK = threading.Lock()
 REQUIRED_GDAL_COMMANDS = (
     "gdalbuildvrt",
     "gdalwarp",
@@ -462,22 +465,29 @@ def _vsicurl(url: str, allowed_hosts: Sequence[str], timeout: int = 60) -> str:
         parsed = parsed._replace(netloc=EARTH_SEARCH_GLOBAL_HOST)
         url = urllib.parse.urlunparse(parsed)
     elif parsed.hostname == PLANETARY_SENTINEL_HOST:
-        sign_url = (
-            f"https://{PLANETARY_COMPUTER_HOST}/api/sas/v1/sign?href="
-            + urllib.parse.quote(url, safe="")
-        )
-        signed_payload = _read_json_response(urllib.request.Request(sign_url), timeout)
-        signed_url = signed_payload.get("href")
-        if not isinstance(signed_url, str):
-            raise RuntimeError("Planetary Computer did not return a signed imagery URL")
-        signed = urllib.parse.urlparse(signed_url)
-        if (
-            signed.scheme != "https"
-            or signed.hostname != parsed.hostname
-            or signed.path != parsed.path
-        ):
-            raise RuntimeError("Planetary Computer returned an invalid signed imagery URL")
-        url = signed_url
+        path_parts = parsed.path.lstrip("/").split("/", 1)
+        if len(path_parts) != 2 or not path_parts[0]:
+            raise RuntimeError("Planetary Computer asset URL has no container")
+        account = parsed.hostname.split(".", 1)[0]
+        container = path_parts[0]
+        cache_key = (account, container)
+        with _PLANETARY_TOKEN_LOCK:
+            token = _PLANETARY_TOKEN_CACHE.get(cache_key)
+            if token is None:
+                token_url = (
+                    f"https://{PLANETARY_COMPUTER_HOST}/api/sas/v1/token/"
+                    f"{urllib.parse.quote(account, safe='')}/"
+                    f"{urllib.parse.quote(container, safe='')}"
+                )
+                token_payload = _read_json_response(
+                    urllib.request.Request(token_url), timeout
+                )
+                token_value = token_payload.get("token")
+                if not isinstance(token_value, str) or not token_value:
+                    raise RuntimeError("Planetary Computer token response has no token")
+                token = token_value.lstrip("?")
+                _PLANETARY_TOKEN_CACHE[cache_key] = token
+        url = f"{url}{'&' if parsed.query else '?'}{token}"
     return "/vsicurl/" + url
 
 
