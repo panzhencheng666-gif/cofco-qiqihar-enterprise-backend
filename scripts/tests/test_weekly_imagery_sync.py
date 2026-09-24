@@ -234,7 +234,8 @@ class WeeklyImagerySyncTest(unittest.TestCase):
             self.assertNotIn("work/", (staging / "manifest.sha256").read_text())
             self.assertEqual("MONTHLY", json.loads((staging / "metadata.json").read_text())["updateCadence"])
             self.assertEqual(2, coverage.call_count)
-            self.assertEqual(3, log_alpha.call_count)
+            self.assertEqual(1, log_alpha.call_count)
+            self.assertEqual("scene grid=unknown", log_alpha.call_args.args[0])
             validate_release(staging)
 
     @patch("scripts.weekly_imagery_sync.time.sleep")

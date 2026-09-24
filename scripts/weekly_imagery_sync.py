@@ -894,7 +894,9 @@ def build_release(
             ],
             config.command_timeout_seconds,
         )
-        _log_alpha_coverage("mosaic-vrt", mosaic_vrt, 256)
+        # A broad random sample across the VRT reopens hundreds of large source
+        # rasters and can exceed the diagnostic's fixed timeout. Publication is
+        # gated below by actual tile coverage and by release validation.
         mosaic = work / "mosaic.tif"
         _run(
             [
@@ -912,7 +914,6 @@ def build_release(
             ],
             config.command_timeout_seconds,
         )
-        _log_alpha_coverage("mosaic-tiff", mosaic, 256)
         require_free_space(config.root, config.minimum_free_bytes)
         tiles = staging / "tiles"
         _build_web_tiles(mosaic, tiles, config)
