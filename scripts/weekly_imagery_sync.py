@@ -456,6 +456,7 @@ def _run(command: Sequence[str], timeout: int, cwd: Path | None = None) -> None:
         raise RuntimeError(f"command timed out: {command[0]}") from failure
     except subprocess.CalledProcessError as failure:
         message = (failure.stderr or failure.stdout or "")[-4000:]
+        message = re.sub(r"(?:/vsicurl/)?https://[^\s'\"<>]+", "[remote asset]", message)
         raise RuntimeError(f"command failed: {command[0]}: {message}") from failure
 
 
@@ -603,6 +604,44 @@ def _vsicurl(url: str, allowed_hosts: Sequence[str], timeout: int = 60) -> str:
     return "/vsicurl/" + url
 
 
+def _invalidate_planetary_token(url: str) -> None:
+    parsed = urllib.parse.urlparse(url)
+    if parsed.hostname != PLANETARY_SENTINEL_HOST:
+        return
+    container = parsed.path.lstrip("/").split("/", 1)[0]
+    if not container:
+        return
+    account = parsed.hostname.split(".", 1)[0]
+    with _PLANETARY_TOKEN_LOCK:
+        _PLANETARY_TOKEN_CACHE.pop((account, container), None)
+
+
+def _run_remote_warp(
+    config: SyncConfig,
+    url: str,
+    warp_common: Sequence[str],
+    resampling: str,
+    destination: Path,
+) -> None:
+    """Retry a transient remote GDAL read with a newly signed source URL."""
+    for attempt in range(3):
+        try:
+            source = _vsicurl(url, config.allowed_hosts, config.request_timeout_seconds)
+            _run(
+                ["gdalwarp", *warp_common, "-r", resampling, source, str(destination)],
+                config.command_timeout_seconds,
+            )
+            return
+        except RuntimeError as failure:
+            destination.unlink(missing_ok=True)
+            if attempt == 2:
+                raise RuntimeError(
+                    f"remote imagery warp failed after 3 attempts: {destination.name}"
+                ) from failure
+            _invalidate_planetary_token(url)
+            time.sleep(2**attempt)
+
+
 def _check_gdal() -> None:
     missing = [command for command in REQUIRED_GDAL_COMMANDS if shutil.which(command) is None]
     if missing:
@@ -620,13 +659,12 @@ def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: in
     scene = work / f"scene-{index:03d}"
     scene.mkdir()
     rgb = scene / "rgb.tif"
-    if "visual" in candidate.assets:
+    visual_url = candidate.assets.get("visual")
+    if visual_url is not None:
         # Warp the cloud-optimized remote asset directly. Copying every complete
         # 100 km Sentinel scene first exhausts the small production volume before
         # the AOI crop is applied.
-        rgb_source = _vsicurl(
-            candidate.assets["visual"], config.allowed_hosts, config.request_timeout_seconds
-        )
+        rgb_source = None
     else:
         vrt = scene / "rgb.vrt"
         _run(
@@ -702,23 +740,14 @@ def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: in
         "-co",
         "BIGTIFF=IF_SAFER",
     ]
-    _run(
-        ["gdalwarp", *warp_common, "-r", "cubic", rgb_source, str(warped_rgb)],
-        config.command_timeout_seconds,
-    )
-    _run(
-        [
-            "gdalwarp",
-            *warp_common,
-            "-r",
-            "near",
-            _vsicurl(
-                candidate.assets["scl"], config.allowed_hosts, config.request_timeout_seconds
-            ),
-            str(warped_scl),
-        ],
-        config.command_timeout_seconds,
-    )
+    if visual_url is not None:
+        _run_remote_warp(config, visual_url, warp_common, "cubic", warped_rgb)
+    else:
+        _run(
+            ["gdalwarp", *warp_common, "-r", "cubic", rgb_source, str(warped_rgb)],
+            config.command_timeout_seconds,
+        )
+    _run_remote_warp(config, candidate.assets["scl"], warp_common, "near", warped_scl)
     masked = scene / "masked.tif"
     _run(
         [
