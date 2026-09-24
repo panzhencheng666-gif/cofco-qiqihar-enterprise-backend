@@ -25,7 +25,9 @@ public class SessionPoolConfiguration {
                 .type(HikariDataSource.class).build();
         dataSource.setPoolName("business");
         dataSource.setMaximumPoolSize(10);
+        dataSource.setMinimumIdle(2);
         dataSource.setConnectionTimeout(3_000);
+        boundConnections(dataSource);
         dataSource.addDataSourceProperty("prepareThreshold", prepareThreshold);
         return dataSource;
     }
@@ -38,7 +40,22 @@ public class SessionPoolConfiguration {
         dataSource.setMaximumPoolSize(2);
         dataSource.setMinimumIdle(1);
         dataSource.setConnectionTimeout(1_000);
+        boundConnections(dataSource);
         return dataSource;
+    }
+
+    private static void boundConnections(HikariDataSource dataSource) {
+        // maxLifetime only retires returned connections. Socket timeouts are
+        // required to release a connection stuck in driver I/O while borrowed.
+        dataSource.setValidationTimeout(1_000);
+        dataSource.setIdleTimeout(300_000);
+        dataSource.setMaxLifetime(900_000);
+        dataSource.setKeepaliveTime(120_000);
+        dataSource.setLeakDetectionThreshold(60_000);
+        dataSource.addDataSourceProperty("connectTimeout", "3");
+        dataSource.addDataSourceProperty("socketTimeout", "30");
+        dataSource.addDataSourceProperty("cancelSignalTimeout", "3");
+        dataSource.addDataSourceProperty("tcpKeepAlive", "true");
     }
 
     @Bean

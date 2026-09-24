@@ -37,7 +37,13 @@ public class RegionalHierarchyRefresh {
 
     void refreshRegions(List<String> regions, Instant now) {
         int year=now.atZone(ZoneId.of("Asia/Shanghai")).getYear();
-        var completed=new HashMap<String,RegionalAgricultureProfile>();
+        // Reuse nearby ancestors without retaining every region's full public-data payload.
+        // Evicted profiles can be recomputed; every region is still persisted below.
+        var completed=new LinkedHashMap<String,RegionalAgricultureProfile>(32,0.75f,true) {
+            @Override protected boolean removeEldestEntry(Map.Entry<String,RegionalAgricultureProfile> eldest) {
+                return size()>32;
+            }
+        };
         int success=0, failures=0;
         for (String code:regions) {
             if (Thread.currentThread().isInterrupted()) break;
