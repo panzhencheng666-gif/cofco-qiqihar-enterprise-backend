@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -44,6 +45,40 @@ from scripts import weekly_imagery_sync as worker  # noqa: E402
 
 
 class WeeklyImagerySyncTest(unittest.TestCase):
+    @patch("scripts.weekly_imagery_sync.time.sleep")
+    @patch("scripts.weekly_imagery_sync._invalidate_planetary_token")
+    @patch("scripts.weekly_imagery_sync._vsicurl", side_effect=["/vsicurl/first", "/vsicurl/refreshed"])
+    @patch("scripts.weekly_imagery_sync._run", side_effect=[RuntimeError("remote read failed"), None])
+    def test_remote_warp_retries_with_refreshed_token_and_removes_partial_output(
+        self, run, vsicurl, invalidate, sleep
+    ):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            output = root / "scl.tif"
+            output.write_bytes(b"partial")
+            config = SyncConfig(root, root / "aoi.geojson", "https://example.test", "sentinel-2-l2a", ("example.test",), 30.0, 5, 14, 5, 60, "", 0, 4)
+
+            worker._run_remote_warp(config, "https://example.test/scl.tif", ["-t_srs", "EPSG:3857"], "near", output)
+
+            self.assertEqual(2, run.call_count)
+            self.assertIn("/vsicurl/first", run.call_args_list[0].args[0])
+            self.assertIn("/vsicurl/refreshed", run.call_args_list[1].args[0])
+            self.assertFalse(output.exists())
+            invalidate.assert_called_once()
+            sleep.assert_called_once()
+
+    @patch("scripts.weekly_imagery_sync.subprocess.run")
+    def test_gdal_error_does_not_log_signed_asset_url(self, run):
+        run.side_effect = subprocess.CalledProcessError(
+            1, ["gdalwarp"], stderr="ERROR 4: /vsicurl/https://example.test/scl.tif?sig=SECRET not recognized"
+        )
+
+        with self.assertRaises(RuntimeError) as failure:
+            worker._run(["gdalwarp", "asset", "out"], 5)
+
+        self.assertIn("[remote asset]", str(failure.exception))
+        self.assertNotIn("SECRET", str(failure.exception))
+
     def test_scene_rgb_is_zeroed_where_cloud_mask_is_transparent(self):
         clear = "((D==2)|(D==4)|(D==5)|(D==6)|(D==7))"
         self.assertEqual(
