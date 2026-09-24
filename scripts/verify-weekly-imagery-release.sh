@@ -80,7 +80,9 @@ try:
     releases = (root / "releases").resolve(strict=True)
 except OSError:
     fail("current release target is unavailable")
-if current.parent != releases or not re.fullmatch(r"\d{4}-(?:W\d{2}|\d{2})", current.name):
+if current.parent != releases or not re.fullmatch(
+    r"\d{4}-(?:W\d{2}|\d{2})(?:-r(?:[2-9]|[1-9]\d))?", current.name
+):
     fail("current release escapes the governed releases directory")
 
 metadata_path = current / "metadata.json"
