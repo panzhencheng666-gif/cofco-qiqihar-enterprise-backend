@@ -83,7 +83,7 @@ class WeeklyImagerySyncTest(unittest.TestCase):
         clear = "((D==2)|(D==4)|(D==5)|(D==6)|(D==7))"
         self.assertEqual(
             [
-                f"A*{clear}", f"B*{clear}", f"C*{clear}", f"255*{clear}",
+                f"A*{clear}", f"A*{clear}", f"A*{clear}", f"255*{clear}",
             ],
             worker._scene_band_expressions(),
         )

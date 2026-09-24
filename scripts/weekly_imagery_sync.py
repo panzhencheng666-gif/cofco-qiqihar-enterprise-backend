@@ -19,6 +19,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -674,7 +675,46 @@ def _scene_band_expressions() -> list[str]:
     # Sentinel SCL uses 255 for pixels outside a scene. An exclusion list
     # accidentally treated 255 as clear and published opaque white tiles.
     clear = "((D==2)|(D==4)|(D==5)|(D==6)|(D==7))"
-    return [f"{band}*{clear}" for band in "ABC"] + [f"255*{clear}"]
+    return [f"A*{clear}"] * 3 + [f"255*{clear}"]
+
+
+def _build_masked_scene(
+    warped_rgb: Path, warped_scl: Path, scene: Path, timeout: int
+) -> Path:
+    """Create RGBA with single-expression calls supported by GDAL 3.0."""
+    masked = scene / "masked.tif"
+    bands: list[Path] = []
+    for index, expression in enumerate(_scene_band_expressions(), start=1):
+        output = scene / f"masked-band-{index}.tif"
+        command = [
+            "gdal_calc.py", "-A", str(warped_rgb if index < 4 else warped_scl),
+            "--A_band=" + str(index if index < 4 else 1),
+            "-D", str(warped_scl), "--D_band=1",
+            f"--calc={expression}", "--type=Byte", "--NoDataValue=0",
+            "--co=TILED=YES", "--co=COMPRESS=DEFLATE", f"--outfile={output}",
+        ]
+        _run(command, timeout)
+        bands.append(output)
+    vrt = scene / "masked.vrt"
+    _run(["gdalbuildvrt", "-separate", str(vrt), *(str(band) for band in bands)], timeout)
+    tree = ET.parse(vrt)
+    vrt_bands = tree.findall("./VRTRasterBand")
+    if len(vrt_bands) != 4:
+        raise ReleaseValidationError(f"masked scene VRT has {len(vrt_bands)} bands instead of 4")
+    for band, color in zip(vrt_bands, ("Red", "Green", "Blue", "Alpha")):
+        interpretation = band.find("ColorInterp")
+        if interpretation is None:
+            interpretation = ET.SubElement(band, "ColorInterp")
+        interpretation.text = color
+    tree.write(vrt, encoding="utf-8", xml_declaration=True)
+    _run(
+        ["gdal_translate", "-of", "GTiff", "-co", "TILED=YES", "-co", "COMPRESS=DEFLATE",
+         "-co", "BIGTIFF=IF_SAFER", str(vrt), str(masked)],
+        timeout,
+    )
+    for temporary in (*bands, vrt):
+        temporary.unlink()
+    return masked
 
 
 def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: int) -> Path:
@@ -770,32 +810,7 @@ def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: in
             config.command_timeout_seconds,
         )
     _run_remote_warp(config, candidate.assets["scl"], warp_common, "near", warped_scl)
-    masked = scene / "masked.tif"
-    _run(
-        [
-            "gdal_calc.py",
-            "-A",
-            str(warped_rgb),
-            "--A_band=1",
-            "-B",
-            str(warped_rgb),
-            "--B_band=2",
-            "-C",
-            str(warped_rgb),
-            "--C_band=3",
-            "-D",
-            str(warped_scl),
-            "--D_band=1",
-            *[f"--calc={expression}" for expression in _scene_band_expressions()],
-            "--type=Byte",
-            "--NoDataValue=0",
-            "--co=TILED=YES",
-            "--co=COMPRESS=DEFLATE",
-            "--co=BIGTIFF=IF_SAFER",
-            f"--outfile={masked}",
-        ],
-        config.command_timeout_seconds,
-    )
+    masked = _build_masked_scene(warped_rgb, warped_scl, scene, config.command_timeout_seconds)
     warped_rgb.unlink()
     warped_scl.unlink()
     if rgb.exists():
@@ -817,7 +832,9 @@ def build_release(
         def build_scene(item: tuple[int, Candidate]) -> Path:
             index, candidate = item
             require_free_space(config.root, config.minimum_free_bytes)
-            return _build_scene(config, candidate, work, index)
+            scene = _build_scene(config, candidate, work, index)
+            _log_alpha_coverage(f"scene grid={candidate.grid_code or 'unknown'}", scene)
+            return scene
 
         worker_count = _scene_worker_count(len(indexed_candidates))
         if worker_count == 1:
@@ -825,8 +842,6 @@ def build_release(
         else:
             with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
                 scenes = list(executor.map(build_scene, indexed_candidates))
-        for (_, candidate), scene in zip(indexed_candidates, scenes):
-            _log_alpha_coverage(f"scene grid={candidate.grid_code or 'unknown'}", scene)
         require_free_space(config.root, config.minimum_free_bytes)
         mosaic_vrt = work / "mosaic.vrt"
         _run(
