@@ -137,8 +137,12 @@ public class MapImageryTileGateway {
         if (localReleases != null && localReleases.currentMetadata().isPresent()) {
             try {
                 var tile = localReleases.currentTile(zoom, x, y);
+                var bytes = tile.bytes();
+                if (isTinyBlankWebp(bytes)) {
+                    throw new IOException("Local imagery tile is blank");
+                }
                 return new Tile(
-                        tile.bytes(), tile.contentType(), tile.etag(), tile.version(), false);
+                        bytes, tile.contentType(), tile.etag(), tile.version(), false);
             } catch (IOException outsideLocalCoverage) {
                 // The public overview includes context outside Qiqihar. Keep the
                 // historical fallback there instead of turning the whole raster
@@ -163,6 +167,19 @@ public class MapImageryTileGateway {
             if (previous != null) return previous.tile(true);
             throw failure;
         }
+    }
+
+    private static boolean isTinyBlankWebp(byte[] bytes) {
+        return bytes.length >= 12
+                && bytes.length <= 300
+                && bytes[0] == 'R'
+                && bytes[1] == 'I'
+                && bytes[2] == 'F'
+                && bytes[3] == 'F'
+                && bytes[8] == 'W'
+                && bytes[9] == 'E'
+                && bytes[10] == 'B'
+                && bytes[11] == 'P';
     }
 
     public Tile tile(String version, int zoom, int x, int y) throws IOException {

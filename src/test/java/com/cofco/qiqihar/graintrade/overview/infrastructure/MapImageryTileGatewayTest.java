@@ -218,6 +218,49 @@ class MapImageryTileGatewayTest {
         assertThat(expiredGateway.metadata().status()).isEqualTo("STALE");
     }
 
+    @Test
+    void ignoresTinyBlankLocalWebpAndLoadsTheHistoricalTileInstead() throws Exception {
+        var release = temporary.resolve("releases/2026-09");
+        var tilePath = release.resolve("tiles/14/13871/5613.webp");
+        Files.createDirectories(tilePath.getParent());
+        var blankWebp = new byte[178];
+        System.arraycopy("RIFF".getBytes(StandardCharsets.US_ASCII), 0, blankWebp, 0, 4);
+        System.arraycopy("WEBP".getBytes(StandardCharsets.US_ASCII), 0, blankWebp, 8, 4);
+        Files.write(tilePath, blankWebp);
+        Files.writeString(release.resolve("metadata.json"), """
+                {"version":"2026-09","provider":"Copernicus Sentinel-2 L2A",
+                 "attribution":"European Union, Copernicus Sentinel-2 imagery",
+                 "updateCadence":"MONTHLY","acquisitionFrom":"2026-09-04T00:00:00Z",
+                 "acquisitionTo":"2026-09-22T00:00:00Z","syncedAt":"2026-09-24T00:00:00Z",
+                 "spatialResolutionMeters":10,"cloudCoveragePercent":5,"status":"CURRENT",
+                 "sourceProductIds":["S2-test"],"truthStatement":"Not live video."}
+                """);
+        Files.createSymbolicLink(temporary.resolve("current"), release);
+        var requests = new AtomicInteger();
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/tiles/14/13871/5613.png", exchange -> {
+            requests.incrementAndGet();
+            var bytes = "historical-tile".getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "image/png");
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+        server.start();
+        var gateway = new MapImageryTileGateway(
+                "http://127.0.0.1:" + server.getAddress().getPort() + "/tiles/{z}/{x}/{y}.png",
+                "", "Historical fallback", "Example", 0, 8_388_608,
+                HttpClient.newHttpClient(),
+                Clock.fixed(Instant.parse("2026-09-24T00:00:00Z"), ZoneOffset.UTC),
+                new LocalImageryReleaseStore(temporary.toString(), new ObjectMapper()));
+
+        var tile = gateway.tile(14, 13871, 5613);
+
+        assertThat(tile.bytes()).containsExactly("historical-tile".getBytes(StandardCharsets.UTF_8));
+        assertThat(tile.contentType()).isEqualTo("image/png");
+        assertThat(requests).hasValue(1);
+    }
+
     private static final class MutableClock extends Clock {
         private Instant instant;
 

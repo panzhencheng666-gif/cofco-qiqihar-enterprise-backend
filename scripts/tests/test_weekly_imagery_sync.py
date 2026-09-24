@@ -45,22 +45,30 @@ from scripts import weekly_imagery_sync as worker  # noqa: E402
 
 class WeeklyImagerySyncTest(unittest.TestCase):
     def test_scene_rgb_is_zeroed_where_cloud_mask_is_transparent(self):
+        clear = "((D==2)|(D==4)|(D==5)|(D==6)|(D==7))"
         self.assertEqual(
             [
-                "A*((D!=0)*(D!=1)*(D!=3)*(D!=8)*(D!=9)*(D!=10)*(D!=11))",
-                "B*((D!=0)*(D!=1)*(D!=3)*(D!=8)*(D!=9)*(D!=10)*(D!=11))",
-                "C*((D!=0)*(D!=1)*(D!=3)*(D!=8)*(D!=9)*(D!=10)*(D!=11))",
-                "255*((D!=0)*(D!=1)*(D!=3)*(D!=8)*(D!=9)*(D!=10)*(D!=11))",
+                f"A*{clear}", f"B*{clear}", f"C*{clear}", f"255*{clear}",
             ],
             worker._scene_band_expressions(),
         )
+        for scl in (0, 1, 3, 8, 9, 10, 11, 255):
+            self.assertEqual(
+                0,
+                eval(worker._scene_band_expressions()[3], {"__builtins__": {}}, {"D": scl}),
+            )
+        for scl in (2, 4, 5, 6, 7):
+            self.assertEqual(
+                255,
+                eval(worker._scene_band_expressions()[3], {"__builtins__": {}}, {"D": scl}),
+            )
 
     def test_rejects_sparse_release_instead_of_publishing_blank_weekly_map(self):
         with tempfile.TemporaryDirectory() as temporary:
             tiles = Path(temporary)
             present = tiles / "5" / "26" / "11.webp"
             present.parent.mkdir(parents=True)
-            present.write_bytes(b"RIFF-weekly-imagery-WEBP")
+            present.write_bytes(b"R" * 400)
             bounds = (112.6, 32.1, 134.9, 48.0)
 
             with self.assertRaisesRegex(ReleaseValidationError, "coverage"):
@@ -69,9 +77,28 @@ class WeeklyImagerySyncTest(unittest.TestCase):
             for x, y in ((26, 12), (27, 11), (27, 12)):
                 tile = tiles / "5" / str(x) / f"{y}.webp"
                 tile.parent.mkdir(parents=True, exist_ok=True)
-                tile.write_bytes(b"RIFF-weekly-imagery-WEBP")
+                tile.write_bytes(b"R" * 178)
+
+            with self.assertRaisesRegex(ReleaseValidationError, "coverage"):
+                worker._require_nonempty_tile_coverage(tiles, bounds, 5)
+
+            for x, y in ((26, 12), (27, 11), (27, 12)):
+                (tiles / "5" / str(x) / f"{y}.webp").write_bytes(b"R" * 400)
 
             worker._require_nonempty_tile_coverage(tiles, bounds, 5)
+
+    def test_discards_tiny_white_webp_tiles_before_publication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            tiles = Path(temporary)
+            blank = tiles / "14/13949/5764.webp"
+            valid = tiles / "14/13949/5765.webp"
+            blank.parent.mkdir(parents=True)
+            blank.write_bytes(b"RIFF" + b"\0" * 4 + b"WEBP" + b"\0" * 166)
+            valid.write_bytes(b"RIFF" + b"\0" * 4 + b"WEBP" + b"X" * 388)
+
+            self.assertEqual(1, worker._discard_tiny_webp_tiles(tiles))
+            self.assertFalse(blank.exists())
+            self.assertTrue(valid.exists())
 
     @patch("scripts.weekly_imagery_sync._run")
     @patch("scripts.weekly_imagery_sync.subprocess.run")

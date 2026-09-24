@@ -364,8 +364,9 @@ def _require_nonempty_tile_coverage(
     y_range = range(tile_y(north), tile_y(south) + 1)
     expected = len(x_range) * len(y_range)
     present = sum(
-        (tiles / str(zoom) / str(x) / f"{y}.webp").is_file()
+        tile.is_file() and tile.stat().st_size > 300
         for x in x_range for y in y_range
+        for tile in (tiles / str(zoom) / str(x) / f"{y}.webp",)
     )
     if present / expected < minimum_ratio:
         raise ReleaseValidationError(
@@ -483,6 +484,19 @@ def _legacy_webp_band_args(source: Path) -> list[str]:
     return []
 
 
+def _discard_tiny_webp_tiles(tiles: Path) -> int:
+    """Remove GDAL's tiny opaque white no-data tiles before publication."""
+    removed = 0
+    for tile in tiles.rglob("*.webp"):
+        if tile.stat().st_size > 300:
+            continue
+        data = tile.read_bytes()
+        if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+            tile.unlink()
+            removed += 1
+    return removed
+
+
 def _build_web_tiles(mosaic: Path, tiles: Path, config: SyncConfig) -> None:
     try:
         help_result = subprocess.run(
@@ -596,7 +610,9 @@ def _check_gdal() -> None:
 
 
 def _scene_band_expressions() -> list[str]:
-    clear = "((D!=0)*(D!=1)*(D!=3)*(D!=8)*(D!=9)*(D!=10)*(D!=11))"
+    # Sentinel SCL uses 255 for pixels outside a scene. An exclusion list
+    # accidentally treated 255 as clear and published opaque white tiles.
+    clear = "((D==2)|(D==4)|(D==5)|(D==6)|(D==7))"
     return [f"{band}*{clear}" for band in "ABC"] + [f"255*{clear}"]
 
 
@@ -792,6 +808,7 @@ def build_release(
         require_free_space(config.root, config.minimum_free_bytes)
         tiles = staging / "tiles"
         _build_web_tiles(mosaic, tiles, config)
+        _discard_tiny_webp_tiles(tiles)
         if not any(tiles.rglob("*.webp")):
             raise ReleaseValidationError("GDAL produced no imagery tiles")
         _require_nonempty_tile_coverage(tiles, aoi_bounds(config.aoi), config.maximum_zoom)
