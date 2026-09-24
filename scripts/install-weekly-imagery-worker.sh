@@ -68,6 +68,13 @@ set -a
 # shellcheck disable=SC1091
 source /etc/cofco/weekly-imagery.env
 set +a
+if [[ -n "${QIQIHAR_IMAGERY_BACKEND_READER_UID:-}" ]]; then
+  [[ "$QIQIHAR_IMAGERY_BACKEND_READER_UID" =~ ^[1-9][0-9]*$ ]] || {
+    echo "invalid imagery backend reader UID" >&2
+    exit 1
+  }
+  setfacl -m "u:${QIQIHAR_IMAGERY_BACKEND_READER_UID}:--x" /var/lib/cofco
+fi
 runuser -u cofco-imagery -- \
   /usr/bin/python3.11 /usr/local/lib/cofco-imagery/weekly_imagery_sync.py \
   --root /var/lib/cofco/imagery --aoi /usr/local/lib/cofco-imagery/qiqihar-aoi.geojson \

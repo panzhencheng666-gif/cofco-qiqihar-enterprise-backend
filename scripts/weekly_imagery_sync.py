@@ -90,6 +90,7 @@ class SyncConfig:
     bearer_token: str
     minimum_free_bytes: int
     retention_count: int
+    backend_reader_uid: int | None = None
 
 
 @dataclass(frozen=True)
@@ -782,7 +783,9 @@ def validate_release(path: Path) -> ReleaseMetadata:
     return metadata
 
 
-def publish_release(root: Path, staging: Path) -> Path:
+def publish_release(
+    root: Path, staging: Path, backend_reader_uid: int | None = None
+) -> Path:
     metadata = validate_release(staging)
     releases = root / "releases"
     releases.mkdir(parents=True, exist_ok=True)
@@ -794,6 +797,12 @@ def publish_release(root: Path, staging: Path) -> Path:
         shutil.rmtree(staging)
     else:
         staging.rename(destination)
+    if backend_reader_uid is not None:
+        if backend_reader_uid <= 0:
+            raise ValueError("imagery backend reader UID must be positive")
+        _run(["setfacl", "-m", f"u:{backend_reader_uid}:rx", str(root)], 120)
+        _run(["setfacl", "-m", f"u:{backend_reader_uid}:rx", str(releases)], 120)
+        _run(["setfacl", "-R", "-m", f"u:{backend_reader_uid}:rX", str(destination)], 120)
     temporary_link = root / ".current.new"
     temporary_link.unlink(missing_ok=True)
     temporary_link.symlink_to(destination)
@@ -830,6 +839,7 @@ def _config(arguments: argparse.Namespace) -> SyncConfig:
         for host in os.getenv("QIQIHAR_IMAGERY_ALLOWED_HOSTS", ",".join(DEFAULT_ALLOWED_HOSTS)).split(",")
         if host.strip()
     )
+    reader_uid_text = os.getenv("QIQIHAR_IMAGERY_BACKEND_READER_UID", "")
     return SyncConfig(
         root=arguments.root.resolve(),
         aoi=arguments.aoi.resolve(),
@@ -846,6 +856,7 @@ def _config(arguments: argparse.Namespace) -> SyncConfig:
             os.getenv("QIQIHAR_IMAGERY_MINIMUM_FREE_BYTES", str(6 * 1024**3))
         ),
         retention_count=int(os.getenv("QIQIHAR_IMAGERY_RETENTION_COUNT", "2")),
+        backend_reader_uid=int(reader_uid_text) if reader_uid_text else None,
     )
 
 
@@ -896,7 +907,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     candidates = select_grid_candidates(candidates)
     require_free_space(config.root, config.minimum_free_bytes)
     staging = build_release(config, window, candidates, now)
-    published = publish_release(config.root, staging)
+    published = publish_release(config.root, staging, config.backend_reader_uid)
     retain_releases(config.root, keep=config.retention_count)
     print(f"weekly imagery published: {published.name}")
     return 0
