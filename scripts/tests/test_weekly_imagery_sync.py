@@ -171,6 +171,7 @@ class WeeklyImagerySyncTest(unittest.TestCase):
 
         self.assertIn("--exclude", run.call_args_list[0].args[0])
 
+    @patch("scripts.weekly_imagery_sync._log_alpha_coverage")
     @patch("scripts.weekly_imagery_sync.require_free_space")
     @patch("scripts.weekly_imagery_sync._require_nonempty_tile_coverage")
     @patch("scripts.weekly_imagery_sync._build_web_tiles")
@@ -178,7 +179,7 @@ class WeeklyImagerySyncTest(unittest.TestCase):
     @patch("scripts.weekly_imagery_sync._build_scene")
     @patch("scripts.weekly_imagery_sync._check_gdal")
     def test_build_release_manifest_excludes_removed_work_files(
-        self, check_gdal, build_scene, run, build_tiles, coverage, free_space
+        self, check_gdal, build_scene, run, build_tiles, coverage, free_space, log_alpha
     ):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -209,6 +210,7 @@ class WeeklyImagerySyncTest(unittest.TestCase):
             self.assertNotIn("work/", (staging / "manifest.sha256").read_text())
             self.assertEqual("MONTHLY", json.loads((staging / "metadata.json").read_text())["updateCadence"])
             coverage.assert_called_once()
+            self.assertEqual(3, log_alpha.call_count)
             validate_release(staging)
 
     @patch("scripts.weekly_imagery_sync.time.sleep")

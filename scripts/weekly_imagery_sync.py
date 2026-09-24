@@ -498,6 +498,28 @@ def _discard_tiny_webp_tiles(tiles: Path) -> int:
     return removed
 
 
+def _sample_alpha_coverage(raster: Path, size: int = 64) -> tuple[int, int]:
+    """Sample band four without creating another large raster on the worker disk."""
+    result = subprocess.run(
+        ["gdal_translate", "-q", "-of", "XYZ", "-b", "4", "-outsize",
+         str(size), str(size), str(raster), "/vsistdout/"],
+        check=True,
+        timeout=120,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    values = [line.rsplit(" ", 1)[-1] for line in result.stdout.splitlines()]
+    if len(values) != size * size:
+        raise ReleaseValidationError(f"alpha diagnostic returned {len(values)} samples for {raster.name}")
+    return sum(float(value) > 0 for value in values), len(values)
+
+
+def _log_alpha_coverage(stage: str, raster: Path, size: int = 64) -> None:
+    valid, total = _sample_alpha_coverage(raster, size)
+    print(f"imagery diagnostic {stage}: alpha {valid}/{total} ({valid / total:.1%})", file=sys.stderr, flush=True)
+
+
 def _build_web_tiles(mosaic: Path, tiles: Path, config: SyncConfig) -> None:
     try:
         help_result = subprocess.run(
@@ -803,6 +825,8 @@ def build_release(
         else:
             with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
                 scenes = list(executor.map(build_scene, indexed_candidates))
+        for (_, candidate), scene in zip(indexed_candidates, scenes):
+            _log_alpha_coverage(f"scene grid={candidate.grid_code or 'unknown'}", scene)
         require_free_space(config.root, config.minimum_free_bytes)
         mosaic_vrt = work / "mosaic.vrt"
         _run(
@@ -817,6 +841,7 @@ def build_release(
             ],
             config.command_timeout_seconds,
         )
+        _log_alpha_coverage("mosaic-vrt", mosaic_vrt, 256)
         mosaic = work / "mosaic.tif"
         _run(
             [
@@ -834,10 +859,17 @@ def build_release(
             ],
             config.command_timeout_seconds,
         )
+        _log_alpha_coverage("mosaic-tiff", mosaic, 256)
         require_free_space(config.root, config.minimum_free_bytes)
         tiles = staging / "tiles"
         _build_web_tiles(mosaic, tiles, config)
-        _discard_tiny_webp_tiles(tiles)
+        tile_count = sum(1 for _ in tiles.rglob("*.webp"))
+        removed = _discard_tiny_webp_tiles(tiles)
+        print(
+            f"imagery diagnostic webp tiles: generated={tile_count} "
+            f"tiny_removed={removed} retained={tile_count - removed}",
+            file=sys.stderr, flush=True,
+        )
         if not any(tiles.rglob("*.webp")):
             raise ReleaseValidationError("GDAL produced no imagery tiles")
         _require_nonempty_tile_coverage(tiles, aoi_bounds(config.aoi), config.maximum_zoom)
