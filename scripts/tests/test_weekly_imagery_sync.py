@@ -21,6 +21,7 @@ from scripts.weekly_imagery_sync import (  # noqa: E402
     SyncConfig,
     WeekWindow,
     build_release,
+    _build_web_tiles,
     _legacy_webp_band_args,
     _mgrs_grid_code,
     _PLANETARY_TOKEN_CACHE,
@@ -40,6 +41,42 @@ from scripts.weekly_imagery_sync import (  # noqa: E402
 
 
 class WeeklyImagerySyncTest(unittest.TestCase):
+    @patch("scripts.weekly_imagery_sync._run")
+    @patch("scripts.weekly_imagery_sync.subprocess.run")
+    def test_modern_tile_build_excludes_fully_transparent_tiles(self, subprocess_run, run):
+        subprocess_run.return_value = SimpleNamespace(stdout="--xyz --tiledriver --exclude")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = SyncConfig(
+                root, root / "aoi.geojson", "https://example.test", "sentinel-2-l2a",
+                ("example.test",), 30.0, 5, 14, 5, 60, "", 0, 4,
+            )
+            _build_web_tiles(root / "mosaic.tif", root / "tiles", config)
+
+        self.assertIn("--exclude", run.call_args.args[0])
+
+    @patch("scripts.weekly_imagery_sync._run")
+    @patch("scripts.weekly_imagery_sync.subprocess.run")
+    def test_legacy_tile_build_excludes_fully_transparent_tiles(self, subprocess_run, run):
+        subprocess_run.return_value = SimpleNamespace(stdout="--exclude")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = SyncConfig(
+                root, root / "aoi.geojson", "https://example.test", "sentinel-2-l2a",
+                ("example.test",), 30.0, 5, 14, 5, 60, "", 0, 4,
+            )
+
+            def run_side_effect(command, timeout):
+                if command[0] == "gdal2tiles.py":
+                    tile = root / ".tiles-tms" / "5" / "26" / "11.png"
+                    tile.parent.mkdir(parents=True)
+                    tile.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\0" * 18)
+
+            run.side_effect = run_side_effect
+            _build_web_tiles(root / "mosaic.tif", root / "tiles", config)
+
+        self.assertIn("--exclude", run.call_args_list[0].args[0])
+
     @patch("scripts.weekly_imagery_sync.require_free_space")
     @patch("scripts.weekly_imagery_sync._build_web_tiles")
     @patch("scripts.weekly_imagery_sync._run")

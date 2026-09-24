@@ -406,6 +406,7 @@ def _build_web_tiles(mosaic: Path, tiles: Path, config: SyncConfig) -> None:
             [
                 "gdal2tiles.py",
                 "--xyz",
+                "--exclude",
                 "--webviewer=none",
                 "--tiledriver=WEBP",
                 "--webp-quality=82",
@@ -423,6 +424,7 @@ def _build_web_tiles(mosaic: Path, tiles: Path, config: SyncConfig) -> None:
     _run(
         [
             "gdal2tiles.py",
+            "--exclude",
             "--webviewer=none",
             zoom,
             "--processes=2",
