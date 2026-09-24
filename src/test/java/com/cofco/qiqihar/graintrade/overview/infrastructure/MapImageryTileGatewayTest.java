@@ -261,6 +261,30 @@ class MapImageryTileGatewayTest {
         assertThat(requests).hasValue(1);
     }
 
+    @Test
+    void fourRegionReleaseNeverSubstitutesHistoricalImageryForAMissingTile() throws Exception {
+        var release = temporary.resolve("releases/2026-09-r2");
+        Files.createDirectories(release);
+        Files.writeString(release.resolve("metadata.json"), """
+                {"version":"2026-09-r2","provider":"Copernicus Sentinel-2 L2A",
+                 "attribution":"European Union, Copernicus Sentinel-2 imagery",
+                 "updateCadence":"MONTHLY","acquisitionFrom":"2026-09-04T00:00:00Z",
+                 "acquisitionTo":"2026-09-22T00:00:00Z","syncedAt":"2026-09-24T00:00:00Z",
+                 "spatialResolutionMeters":10,"cloudCoveragePercent":5,"status":"CURRENT",
+                 "coverageRegionCodes":["230200","150700","231100","232700"],
+                 "sourceProductIds":["S2-test"],"truthStatement":"Not live video."}
+                """);
+        Files.createSymbolicLink(temporary.resolve("current"), release);
+        var gateway = new MapImageryTileGateway(
+                "https://example.invalid/{z}/{x}/{y}.png", "", "Historical fallback", "Example",
+                0, 8_388_608, HttpClient.newHttpClient(), Clock.systemUTC(),
+                new LocalImageryReleaseStore(temporary.toString(), new ObjectMapper()));
+
+        assertThatThrownBy(() -> gateway.tile(14, 13871, 5612))
+                .isInstanceOf(java.io.IOException.class)
+                .hasMessageContaining("Local imagery tile is unavailable");
+    }
+
     private static final class MutableClock extends Clock {
         private Instant instant;
 

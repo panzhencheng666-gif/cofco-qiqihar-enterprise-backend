@@ -134,7 +134,10 @@ public class MapImageryTileGateway {
 
     public Tile tile(int zoom, int x, int y) throws IOException, InterruptedException {
         validateCoordinate(zoom, x, y);
-        if (localReleases != null && localReleases.currentMetadata().isPresent()) {
+        var currentRelease = localReleases == null
+                ? java.util.Optional.<LocalImageryReleaseStore.ReleaseMetadata>empty()
+                : localReleases.currentMetadata();
+        if (currentRelease.isPresent()) {
             try {
                 var tile = localReleases.currentTile(zoom, x, y);
                 var bytes = tile.bytes();
@@ -144,9 +147,13 @@ public class MapImageryTileGateway {
                 return new Tile(
                         bytes, tile.contentType(), tile.etag(), tile.version(), false);
             } catch (IOException outsideLocalCoverage) {
-                // The public overview includes context outside Qiqihar. Keep the
-                // historical fallback there instead of turning the whole raster
-                // source into a partially missing layer.
+                // A four-region release must never quietly mix old provider
+                // imagery into a map advertised as recent Sentinel-2.
+                if (currentRelease.orElseThrow().coverageRegionCodes().size() >= 4) {
+                    throw outsideLocalCoverage;
+                }
+                // Legacy single-region releases still need their historical
+                // surrounding context until the four-region cutover.
             }
         }
         ImageryPeriod period = imageryPeriod();
@@ -218,6 +225,7 @@ public class MapImageryTileGateway {
                         metadata.spatialResolutionMeters(),
                         metadata.cloudCoveragePercent(),
                         status,
+                        metadata.coverageRegionCodes(),
                         metadata.sourceProductIds(),
                         metadata.truthStatement());
             }
@@ -239,6 +247,7 @@ public class MapImageryTileGateway {
                 null,
                 null,
                 weeklyConfigured ? "CURRENT" : "FALLBACK",
+                List.of(),
                 List.of(),
                 weeklyConfigured
                         ? "Latest available governed weekly observation; not live video."
@@ -400,9 +409,11 @@ public class MapImageryTileGateway {
             Integer spatialResolutionMeters,
             Double cloudCoveragePercent,
             String status,
+            List<String> coverageRegionCodes,
             List<String> sourceProductIds,
             String truthStatement) {
         public Metadata {
+            coverageRegionCodes = List.copyOf(coverageRegionCodes);
             sourceProductIds = List.copyOf(sourceProductIds);
         }
     }

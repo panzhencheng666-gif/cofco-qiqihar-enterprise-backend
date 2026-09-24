@@ -344,6 +344,25 @@ def aoi_bounds(path: Path) -> tuple[float, float, float, float]:
     return bounds
 
 
+def aoi_feature_bounds(path: Path) -> list[tuple[float, float, float, float]]:
+    """Search each governed region separately so catalog pagination stays bounded."""
+    payload = json.loads(path.read_text())
+    if payload.get("type") != "FeatureCollection":
+        return [aoi_bounds(path)]
+    bounds: list[tuple[float, float, float, float]] = []
+    for feature in payload.get("features", []):
+        if not isinstance(feature, Mapping) or not isinstance(feature.get("geometry"), Mapping):
+            raise ValueError("AOI has an invalid feature")
+        points = list(_coordinates(feature["geometry"].get("coordinates")))
+        if not points:
+            raise ValueError("AOI feature has no coordinates")
+        bounds.append((min(x for x, _ in points), min(y for _, y in points),
+                       max(x for x, _ in points), max(y for _, y in points)))
+    if not bounds:
+        raise ValueError("AOI has no features")
+    return bounds
+
+
 def _require_nonempty_tile_coverage(
     tiles: Path, bounds: tuple[float, float, float, float], zoom: int,
     minimum_ratio: float = 0.8,
@@ -379,7 +398,17 @@ def _require_nonempty_tile_coverage(
 def search_candidates(config: SyncConfig, start: date, end: date) -> list[Candidate]:
     if not _trusted_https(config.stac_url, config.allowed_hosts):
         raise ValueError("STAC URL is not an allowed HTTPS endpoint")
-    bbox = aoi_bounds(config.aoi)
+    found: dict[str, Candidate] = {}
+    for bbox in aoi_feature_bounds(config.aoi):
+        for candidate in _search_candidates_bbox(config, start, end, bbox):
+            found[candidate.product_id] = candidate
+    return list(found.values())
+
+
+def _search_candidates_bbox(
+    config: SyncConfig, start: date, end: date,
+    bbox: tuple[float, float, float, float],
+) -> list[Candidate]:
     search_body = {
         "collections": [config.collection],
         "bbox": list(bbox),
@@ -902,6 +931,13 @@ def build_release(
                 sum(candidate.cloud_percent for candidate in candidates) / len(candidates), 2
             ),
             "status": "CURRENT",
+            "coverageRegionCodes": [
+                feature["properties"]["regionCode"]
+                for feature in json.loads(config.aoi.read_text()).get("features", [])
+                if isinstance(feature, Mapping)
+                and isinstance(feature.get("properties"), Mapping)
+                and isinstance(feature["properties"].get("regionCode"), str)
+            ],
             "sourceProductIds": [candidate.product_id for candidate in candidates],
             "truthStatement": "Latest available cloud-filtered observation; not live video.",
         }
@@ -1063,6 +1099,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--now", help="UTC ISO instant used for deterministic operation")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--revision", type=int, help="positive same-month republication number")
+    parser.add_argument("--build-only", action="store_true", help="validate staging without changing current")
     arguments = parser.parse_args(argv)
     now = (
         datetime.fromisoformat(arguments.now.replace("Z", "+00:00"))
@@ -1070,6 +1108,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         else datetime.now(timezone.utc)
     )
     window = complete_month(now)
+    if arguments.revision is not None:
+        if arguments.revision < 2 or arguments.revision > 99:
+            raise ValueError("revision must be between 2 and 99")
+        window = WeekWindow(f"{window.identifier}-r{arguments.revision}", window.start, window.end)
     if arguments.dry_run:
         print(
             json.dumps(
@@ -1090,15 +1132,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         search_candidates(config, window.start, window.end), config.maximum_cloud_percent
     )
     if not candidates:
-        expanded_start = window.start - timedelta(days=30)
-        candidates = rank_candidates(
-            search_candidates(config, expanded_start, window.end), config.maximum_cloud_percent
-        )
-    if not candidates:
-        raise RuntimeError("no authorized cloud-qualified Sentinel-2 product is available")
+        raise RuntimeError("no cloud-qualified Sentinel-2 product exists in the last 30 complete days")
     candidates = select_grid_candidates(candidates)
     require_free_space(config.root, config.minimum_free_bytes)
     staging = build_release(config, window, candidates, now)
+    if arguments.build_only:
+        print(f"monthly imagery staged and validated: {staging}")
+        return 0
     published = publish_release(config.root, staging, config.backend_reader_uid)
     retain_releases(config.root, keep=config.retention_count)
     print(f"monthly imagery published: {published.name}")
