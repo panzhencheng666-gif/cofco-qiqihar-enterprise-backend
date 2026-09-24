@@ -122,6 +122,30 @@ class WeeklyImagerySyncTest(unittest.TestCase):
 
             worker._require_nonempty_tile_coverage(tiles, bounds, 5)
 
+    def test_region_gate_rejects_a_visible_missing_tile(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            aoi = root / "aoi.geojson"
+            aoi.write_text(json.dumps({
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [[
+                    [112.6, 32.1], [134.9, 32.1], [134.9, 48.0],
+                    [112.6, 48.0], [112.6, 32.1],
+                ]]},
+            }))
+            tiles = root / "tiles"
+            for x, y in ((26, 11), (26, 12), (27, 11)):
+                tile = tiles / "5" / str(x) / f"{y}.webp"
+                tile.parent.mkdir(parents=True, exist_ok=True)
+                tile.write_bytes(b"R" * 400)
+
+            with self.assertRaisesRegex(ReleaseValidationError, "AOI region 1"):
+                worker._require_region_tile_coverage(tiles, aoi, 5)
+
+            missing = tiles / "5/27/12.webp"
+            missing.write_bytes(b"R" * 400)
+            worker._require_region_tile_coverage(tiles, aoi, 5)
+
     def test_discards_tiny_white_webp_tiles_before_publication(self):
         with tempfile.TemporaryDirectory() as temporary:
             tiles = Path(temporary)
@@ -209,7 +233,7 @@ class WeeklyImagerySyncTest(unittest.TestCase):
             self.assertFalse((staging / "work").exists())
             self.assertNotIn("work/", (staging / "manifest.sha256").read_text())
             self.assertEqual("MONTHLY", json.loads((staging / "metadata.json").read_text())["updateCadence"])
-            coverage.assert_called_once()
+            self.assertEqual(2, coverage.call_count)
             self.assertEqual(3, log_alpha.call_count)
             validate_release(staging)
 

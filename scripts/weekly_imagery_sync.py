@@ -395,6 +395,15 @@ def _require_nonempty_tile_coverage(
         )
 
 
+def _require_region_tile_coverage(tiles: Path, aoi: Path, zoom: int) -> None:
+    """A recent four-region label requires dense tiles in every governed region."""
+    for index, bounds in enumerate(aoi_feature_bounds(aoi)):
+        try:
+            _require_nonempty_tile_coverage(tiles, bounds, zoom, minimum_ratio=0.99)
+        except ReleaseValidationError as failure:
+            raise ReleaseValidationError(f"AOI region {index + 1}: {failure}") from failure
+
+
 def search_candidates(config: SyncConfig, start: date, end: date) -> list[Candidate]:
     if not _trusted_https(config.stac_url, config.allowed_hosts):
         raise ValueError("STAC URL is not an allowed HTTPS endpoint")
@@ -917,6 +926,7 @@ def build_release(
         if not any(tiles.rglob("*.webp")):
             raise ReleaseValidationError("GDAL produced no imagery tiles")
         _require_nonempty_tile_coverage(tiles, aoi_bounds(config.aoi), config.maximum_zoom)
+        _require_region_tile_coverage(tiles, config.aoi, config.maximum_zoom)
         observed = sorted(candidate.observed_at for candidate in candidates)
         metadata = {
             "version": window.identifier,
