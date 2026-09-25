@@ -154,14 +154,21 @@ public class MarketQuoteGateway {
                     if (provider.isBlank()) continue;
                     BigDecimal previous = row.path("previousClose").isNumber()
                             ? row.path("previousClose").decimalValue() : null;
-                    accepted.put(id, new Quote(id, price, previous, sourceAt, provider, ""));
+                    var quote = new Quote(id, price, previous, sourceAt, provider, "");
+                    accepted.merge(id, quote, (earlier, later) ->
+                            later.sourceAt().isAfter(earlier.sourceAt()) ? later : earlier);
                 } catch (RuntimeException ignored) {
                     // One malformed instrument must not discard other valid supplier observations.
                 }
             }
             // Empty or invalid supplier responses must not masquerade as a successful refresh.
             if (accepted.isEmpty()) throw new IllegalArgumentException("QUOTE_FEED_NO_VALID_QUOTES");
-            latest = Map.copyOf(accepted);
+            // Supplier batches may contain only changed instruments. Retain the last
+            // attributed tick for omitted IDs, and never let delayed ticks rewind a series.
+            var merged = new HashMap<>(latest);
+            accepted.forEach((id, incoming) -> merged.merge(id, incoming, (previous, next) ->
+                    next.sourceAt().isAfter(previous.sourceAt()) ? next : previous));
+            latest = Map.copyOf(merged);
             lastSuccessAt = Instant.now();
             lastError = null;
         } catch (Exception ex) {
