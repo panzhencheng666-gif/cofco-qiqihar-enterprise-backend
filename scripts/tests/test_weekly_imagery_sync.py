@@ -1,4 +1,5 @@
 import hashlib
+import io
 import json
 import os
 import subprocess
@@ -46,6 +47,45 @@ from scripts import weekly_imagery_sync as worker  # noqa: E402
 
 
 class WeeklyImagerySyncTest(unittest.TestCase):
+    def test_mixed_source_rejects_cross_product_asset_and_false_date(self):
+        product = "S2B_MSIL2A_20260914T023529_N0512_R089_T51TXM_20260914T044641.SAFE"
+        root = "https://storage.googleapis.com/gcp-public-data-sentinel-2/L2/tiles/51/T/XM/"
+        feature = {
+            "id": "S2B_51TXM_20260914_0_L2A",
+            "properties": {"datetime": "2026-09-14T02:35:29Z", "s2:product_uri": product,
+                           "source:provider": "google-public-sentinel-2-l2a"},
+            "assets": {
+                "visual": {"href": root + product + "/T51TXM_TCI_10m.jp2", "gsd": 10, "bytes": 135_000_000},
+                "scl": {"href": root + product + "/T51TXM_SCL_20m.jp2", "gsd": 20, "bytes": 2_000_000},
+            },
+        }
+        counts = {"planetary-computer": 0, "google-public-sentinel-2-l2a": 0}
+        worker._validate_mixed_source_feature(feature, counts)
+        self.assertEqual(1, counts["google-public-sentinel-2-l2a"])
+        feature["assets"]["scl"]["href"] = feature["assets"]["scl"]["href"].replace(product, "different.SAFE")
+        with self.assertRaisesRegex(ReleaseValidationError, "product mismatch"):
+            worker._validate_mixed_source_feature(feature, counts)
+        feature["assets"]["scl"]["href"] = root + product + "/T51TXM_SCL_20m.jp2"
+        feature["properties"]["datetime"] = "2026-09-13T02:35:29Z"
+        with self.assertRaisesRegex(ReleaseValidationError, "date mismatch"):
+            worker._validate_mixed_source_feature(feature, counts)
+
+    @patch("scripts.weekly_imagery_sync.urllib.request.urlopen")
+    def test_google_download_rejects_short_response_and_removes_partial_file(self, urlopen):
+        class ShortResponse(io.BytesIO):
+            headers = {"Content-Length": "200000"}
+        urlopen.side_effect = lambda *_args, **_kwargs: ShortResponse(b"x" * 100001)
+        with tempfile.TemporaryDirectory() as temporary, patch("scripts.weekly_imagery_sync.time.sleep"):
+            root = Path(temporary)
+            config = SyncConfig(root, root / "aoi.geojson", "https://example.test", "sentinel-2-l2a",
+                                ("storage.googleapis.com",), 30, 5, 14, 5, 60, "", 0, 2)
+            destination = root / "visual.jp2"
+            with self.assertRaisesRegex(RuntimeError, "after 3 attempts"):
+                worker._download_google_asset(config,
+                    "https://storage.googleapis.com/gcp-public-data-sentinel-2/L2/tiles/test.jp2", destination)
+            self.assertFalse(destination.exists())
+            self.assertFalse(destination.with_suffix(".jp2.part").exists())
+
     def test_historical_source_plan_keeps_recent_pixels_newer_and_rejects_false_resolution(self):
         def feature(identifier, observed):
             return {

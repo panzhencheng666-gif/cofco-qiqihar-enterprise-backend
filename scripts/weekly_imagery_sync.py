@@ -40,11 +40,13 @@ DEFAULT_ALLOWED_HOSTS = (
     "e84-earth-search-sentinel-data.s3.amazonaws.com",
     "planetarycomputer.microsoft.com",
     "sentinel2l2a01.blob.core.windows.net",
+    "storage.googleapis.com",
 )
 EARTH_SEARCH_REGIONAL_HOST = "e84-earth-search-sentinel-data.s3.us-west-2.amazonaws.com"
 EARTH_SEARCH_GLOBAL_HOST = "e84-earth-search-sentinel-data.s3.amazonaws.com"
 PLANETARY_COMPUTER_HOST = "planetarycomputer.microsoft.com"
 PLANETARY_SENTINEL_HOST = "sentinel2l2a01.blob.core.windows.net"
+R4E_SOURCE_AUDIT_SHA256 = "3af5e4dca99f635fc329b9c7e532553c216bb881c8f91bffb3f4788b76d05d97"
 _PLANETARY_TOKEN_CACHE: dict[tuple[str, str], str] = {}
 _PLANETARY_TOKEN_LOCK = threading.Lock()
 REQUIRED_GDAL_COMMANDS = (
@@ -190,17 +192,31 @@ def load_historical_source_plan(config: SyncConfig, path: Path, version: str) ->
     features = payload.get("features")
     if not isinstance(features, list) or not features:
         raise ReleaseValidationError("historical source plan has no products")
+    mixed_sources = "sourceAuditSha256" in payload
+    if mixed_sources and (
+        len(features) != 189
+        or payload["sourceAuditSha256"] != R4E_SOURCE_AUDIT_SHA256
+    ):
+        raise ReleaseValidationError("mixed source plan audit or product count mismatch")
+    source_counts = {"planetary-computer": 0, "google-public-sentinel-2-l2a": 0}
     for feature in features:
         if not isinstance(feature, dict):
             raise ReleaseValidationError("historical source plan has an invalid product")
         assets = feature.get("assets")
-        if not isinstance(assets, dict) or any(
+        if mixed_sources:
+            _validate_mixed_source_feature(feature, source_counts)
+        elif not isinstance(assets, dict) or any(
             not isinstance(assets.get(band), dict) or assets[band].get("gsd") != gsd
             or not isinstance(assets[band].get("href"), str)
             or not _trusted_https(assets[band].get("href", ""), ("sentinel-cogs.s3.us-west-2.amazonaws.com",))
             for band, gsd in (("visual", 10), ("red", 10), ("green", 10), ("blue", 10), ("scl", 20))
         ) or not assets["visual"]["href"].endswith("/TCI.tif"):
             raise ReleaseValidationError("historical source plan asset resolution mismatch")
+    if mixed_sources and source_counts != {
+        "planetary-computer": 180,
+        "google-public-sentinel-2-l2a": 9,
+    }:
+        raise ReleaseValidationError("mixed source plan provider count mismatch")
     parsed = parse_candidates({"features": features}, config.allowed_hosts)
     if len(parsed) != len(features) or len({item.product_id for item in parsed}) != len(parsed):
         raise ReleaseValidationError("historical source plan contains unauthorized or duplicate assets")
@@ -215,6 +231,47 @@ def load_historical_source_plan(config: SyncConfig, path: Path, version: str) ->
     ):
         raise ReleaseValidationError("historical source plan must contain both recent and dated fill")
     return ranked, payload
+
+
+def _validate_mixed_source_feature(feature: Mapping[str, Any], counts: dict[str, int]) -> None:
+    """Keep the audited one-off source switch narrow and product-identical."""
+    identifier = feature.get("id")
+    properties = feature.get("properties")
+    assets = feature.get("assets")
+    if not isinstance(identifier, str) or not isinstance(properties, Mapping) or not isinstance(assets, Mapping):
+        raise ReleaseValidationError("mixed source plan has an invalid product")
+    match = re.fullmatch(r"(S2[ABC])_(\d{2}[A-Z]{3})_(\d{8})_\d+_L2A", identifier)
+    product = properties.get("s2:product_uri")
+    provider = properties.get("source:provider")
+    if not match or not isinstance(product, str) or not product.startswith(match[1] + "_MSIL2A_") \
+            or f"_T{match[2]}_" not in product or match[3] not in product \
+            or not product.endswith(".SAFE") or provider not in counts:
+        raise ReleaseValidationError("mixed source plan product identity mismatch")
+    observed = properties.get("datetime")
+    if not isinstance(observed, str) or observed[:10] != f"{match[3][:4]}-{match[3][4:6]}-{match[3][6:]}":
+        raise ReleaseValidationError("mixed source plan acquisition date mismatch")
+    expected = (
+        ("sentinel2l2a01.blob.core.windows.net", "_TCI_10m.tif", "_SCL_20m.tif")
+        if provider == "planetary-computer" else
+        ("storage.googleapis.com", "_TCI_10m.jp2", "_SCL_20m.jp2")
+    )
+    for band, resolution, suffix in (("visual", 10, expected[1]), ("scl", 20, expected[2])):
+        asset = assets.get(band)
+        if not isinstance(asset, Mapping) or asset.get("gsd") != resolution:
+            raise ReleaseValidationError("mixed source plan asset resolution mismatch")
+        href = asset.get("href")
+        parsed = urllib.parse.urlparse(href) if isinstance(href, str) else None
+        if parsed is None or parsed.scheme != "https" or parsed.hostname != expected[0] \
+                or product not in parsed.path.split("/") or not parsed.path.endswith(suffix) \
+                or parsed.query or parsed.fragment:
+            raise ReleaseValidationError("mixed source plan asset product mismatch")
+        if provider == "google-public-sentinel-2-l2a" and (
+            not parsed.path.startswith("/gcp-public-data-sentinel-2/L2/tiles/")
+            or not isinstance(asset.get("bytes"), int)
+            or not 100_000 < asset["bytes"] < 300_000_000
+        ):
+            raise ReleaseValidationError("mixed source plan Google object metadata mismatch")
+    counts[provider] += 1
 
 
 def _mgrs_grid_code(properties: Mapping[str, Any], product_id: str) -> str | None:
@@ -727,6 +784,39 @@ def _invalidate_planetary_token(url: str) -> None:
         _PLANETARY_TOKEN_CACHE.pop((account, container), None)
 
 
+def _download_google_asset(config: SyncConfig, url: str, destination: Path) -> None:
+    """Sequentially fetch JP2 before GDAL opens it; remote random reads stalled on ECS."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname != "storage.googleapis.com" \
+            or not parsed.path.startswith("/gcp-public-data-sentinel-2/L2/tiles/") \
+            or not parsed.path.endswith(".jp2") or parsed.query or parsed.fragment \
+            or not _trusted_https(url, config.allowed_hosts):
+        raise ValueError("Google imagery asset is not an approved public Sentinel-2 JP2")
+    partial = destination.with_suffix(destination.suffix + ".part")
+    for attempt in range(3):
+        partial.unlink(missing_ok=True)
+        try:
+            with urllib.request.urlopen(url, timeout=config.request_timeout_seconds) as response:
+                length = response.headers.get("Content-Length")
+                expected = int(length) if length is not None else None
+                if expected is not None and not 100_000 < expected < 300_000_000:
+                    raise RuntimeError("Google imagery asset size is out of range")
+                received = 0
+                with partial.open("wb") as output:
+                    while block := response.read(1024 * 1024):
+                        output.write(block)
+                        received += len(block)
+                if received <= 100_000 or (expected is not None and received != expected):
+                    raise RuntimeError("Google imagery asset download is incomplete")
+            partial.replace(destination)
+            return
+        except (OSError, RuntimeError, urllib.error.URLError) as failure:
+            partial.unlink(missing_ok=True)
+            if attempt == 2:
+                raise RuntimeError("Google imagery asset download failed after 3 attempts") from failure
+            time.sleep(2**attempt)
+
+
 def _run_remote_warp(
     config: SyncConfig,
     url: str,
@@ -810,6 +900,12 @@ def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: in
     scene.mkdir()
     rgb = scene / "rgb.tif"
     visual_url = candidate.assets.get("visual")
+    google_source = visual_url is not None and urllib.parse.urlparse(visual_url).hostname == "storage.googleapis.com"
+    local_visual = scene / "visual.jp2" if google_source else None
+    local_scl = scene / "scl.jp2" if google_source else None
+    if google_source:
+        _download_google_asset(config, visual_url, local_visual)
+        _download_google_asset(config, candidate.assets["scl"], local_scl)
     if visual_url is not None:
         # Warp the cloud-optimized remote asset directly. Copying every complete
         # 100 km Sentinel scene first exhausts the small production volume before
@@ -890,14 +986,27 @@ def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: in
         "-co",
         "BIGTIFF=IF_SAFER",
     ]
-    if visual_url is not None:
+    if google_source:
+        _run(
+            ["gdalwarp", *warp_common, "-r", "cubic", str(local_visual), str(warped_rgb)],
+            config.command_timeout_seconds,
+        )
+    elif visual_url is not None:
         _run_remote_warp(config, visual_url, warp_common, "cubic", warped_rgb)
     else:
         _run(
             ["gdalwarp", *warp_common, "-r", "cubic", rgb_source, str(warped_rgb)],
             config.command_timeout_seconds,
         )
-    _run_remote_warp(config, candidate.assets["scl"], warp_common, "near", warped_scl)
+    if google_source:
+        _run(
+            ["gdalwarp", *warp_common, "-r", "near", str(local_scl), str(warped_scl)],
+            config.command_timeout_seconds,
+        )
+        local_visual.unlink()
+        local_scl.unlink()
+    else:
+        _run_remote_warp(config, candidate.assets["scl"], warp_common, "near", warped_scl)
     masked = _build_masked_scene(warped_rgb, warped_scl, scene, config.command_timeout_seconds)
     warped_rgb.unlink()
     warped_scl.unlink()
