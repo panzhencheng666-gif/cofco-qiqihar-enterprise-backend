@@ -287,6 +287,7 @@ start_agent() {
     launchctl bootstrap "$domain" "$installed_plist"
   fi
   wait_for_stack 90
+  verify_running_snapshot
   status_agent
 }
 
@@ -306,6 +307,7 @@ restart_agent() {
     return
   fi
   wait_for_stack 90
+  verify_running_snapshot
   status_agent
 }
 
@@ -369,6 +371,7 @@ status_agent() {
     "http://127.0.0.1:${business_port}/" || ok=0
   print_service_status "overview" "${runtime_root}/pids/overview.pid" "$overview_port" \
     "http://127.0.0.1:${overview_port}/" || ok=0
+  verify_running_snapshot || ok=0
   echo "Logs: ${runtime_root}/logs and ${launchd_log_dir}"
 
   [[ "$installed" == "yes" && "$loaded" == "yes" && "$enabled" == "yes" && "$ok" -eq 1 ]]
