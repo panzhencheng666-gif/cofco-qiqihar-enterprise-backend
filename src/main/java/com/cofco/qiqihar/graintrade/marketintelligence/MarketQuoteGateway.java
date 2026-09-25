@@ -179,10 +179,6 @@ public class MarketQuoteGateway {
 
     @GetMapping("/api/v1/market-intelligence/quotes/overview")
     public ApiResponse<Board> overview() {
-        String gatewayState = !distributionAuthorized ? "PENDING_AUTHORIZATION"
-                : feedUrl.isBlank() ? "PENDING_CONFIGURATION"
-                : lastError != null ? "SOURCE_ERROR"
-                : lastSuccessAt == null ? "WAITING_FIRST_TICK" : "CONNECTED";
         Instant now = Instant.now();
         var quotes = new ArrayList<Quote>();
         for (Instrument instrument : INSTRUMENTS) {
@@ -192,6 +188,12 @@ public class MarketQuoteGateway {
                     quote.provider(), quote.sourceAt().isBefore(now.minus(maximumAge(instrument.cadence())))
                             ? "STALE" : "CURRENT"));
         }
+        String gatewayState = !distributionAuthorized ? "PENDING_AUTHORIZATION"
+                : feedUrl.isBlank() ? "PENDING_CONFIGURATION"
+                : lastError != null ? "SOURCE_ERROR"
+                : lastSuccessAt == null ? "WAITING_FIRST_TICK"
+                : quotes.stream().noneMatch(quote -> "CURRENT".equals(quote.state()))
+                        ? "STALE_DATA" : "CONNECTED";
         return new ApiResponse<>(new Board(INSTRUMENTS, quotes, gatewayState,
                 lastAttemptAt, lastSuccessAt, lastError));
     }

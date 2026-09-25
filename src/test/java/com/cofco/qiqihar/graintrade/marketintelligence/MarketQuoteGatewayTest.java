@@ -46,7 +46,7 @@ class MarketQuoteGatewayTest {
                     "http://127.0.0.1:" + server.getAddress().getPort() + "/quotes", "", true);
             gateway.refresh();
             var board = gateway.overview().data();
-            assertEquals("CONNECTED", board.gatewayState());
+            assertEquals("STALE_DATA", board.gatewayState());
             assertEquals(1, board.quotes().size());
             assertEquals("cbot-corn", board.quotes().getFirst().id());
             assertEquals("STALE", board.quotes().getFirst().state());
@@ -83,7 +83,9 @@ class MarketQuoteGatewayTest {
                     {"quotes":[{"id":"cbot-corn","last":80,"sourceAt":"%s","provider":"licensed-test"}]}
                     """).formatted(older));
             gateway.refresh();
-            var quotes = gateway.overview().data().quotes();
+            var board = gateway.overview().data();
+            assertEquals("CONNECTED", board.gatewayState());
+            var quotes = board.quotes();
             assertEquals(2, quotes.size());
             assertEquals(100, quotes.stream().filter(quote -> quote.id().equals("cbot-corn"))
                     .findFirst().orElseThrow().last().intValueExact());
