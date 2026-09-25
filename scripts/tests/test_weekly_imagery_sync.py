@@ -305,8 +305,9 @@ class WeeklyImagerySyncTest(unittest.TestCase):
     @patch("scripts.weekly_imagery_sync._run")
     @patch("scripts.weekly_imagery_sync._build_scene")
     @patch("scripts.weekly_imagery_sync._check_gdal")
+    @patch("scripts.weekly_imagery_sync._dissolve_historical_cutline")
     def test_build_release_manifest_excludes_removed_work_files(
-        self, check_gdal, build_scene, run, build_tiles, coverage, free_space, log_alpha
+        self, dissolve, check_gdal, build_scene, run, build_tiles, coverage, free_space, log_alpha
     ):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -326,6 +327,7 @@ class WeeklyImagerySyncTest(unittest.TestCase):
 
             build_scene.side_effect = scene_side_effect
             build_tiles.side_effect = tiles_side_effect
+            dissolve.side_effect = lambda config, destination: destination
             staging = build_release(
                 config,
                 WeekWindow("2026-09", datetime(2026, 8, 24).date(), datetime(2026, 9, 22).date()),
@@ -342,6 +344,7 @@ class WeeklyImagerySyncTest(unittest.TestCase):
             self.assertEqual(2, coverage.call_count)
             self.assertEqual(1, log_alpha.call_count)
             self.assertEqual("scene grid=unknown", log_alpha.call_args.args[0])
+            self.assertEqual("cutline-union.geojson", build_scene.call_args.args[0].aoi.name)
             validate_release(staging)
 
     @patch("scripts.weekly_imagery_sync.time.sleep")

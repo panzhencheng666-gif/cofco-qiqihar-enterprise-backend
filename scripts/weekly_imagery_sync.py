@@ -20,7 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -1014,6 +1014,30 @@ def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: in
     return masked
 
 
+def _dissolve_historical_cutline(config: SyncConfig, destination: Path) -> Path:
+    """Avoid cancelling pixels where the four coverage envelopes overlap."""
+    if shutil.which("ogr2ogr") is None:
+        raise ReleaseValidationError("ogr2ogr is required for historical imagery cutline")
+    payload = json.loads(config.aoi.read_text())
+    layer = payload.get("name") if isinstance(payload, dict) else None
+    if not isinstance(layer, str) or re.fullmatch(r"[A-Za-z0-9_-]+", layer) is None:
+        raise ReleaseValidationError("historical imagery AOI has no valid layer name")
+    _run(
+        ["ogr2ogr", "-f", "GeoJSON", str(destination), str(config.aoi),
+         "-dialect", "SQLite",
+         "-sql", f'SELECT ST_Union(geometry) AS geometry FROM "{layer}"'],
+        config.command_timeout_seconds,
+    )
+    dissolved = json.loads(destination.read_text())
+    features = dissolved.get("features") if isinstance(dissolved, dict) else None
+    geometry = features[0].get("geometry") if isinstance(features, list) \
+        and len(features) == 1 and isinstance(features[0], dict) else None
+    if not isinstance(geometry, dict) or geometry.get("type") not in ("Polygon", "MultiPolygon") \
+            or not geometry.get("coordinates"):
+        raise ReleaseValidationError("historical imagery cutline is not a single union geometry")
+    return destination
+
+
 def build_release(
     config: SyncConfig, window: WeekWindow, candidates: Sequence[Candidate], now: datetime,
     source_plan: Mapping[str, Any] | None = None,
@@ -1024,12 +1048,16 @@ def build_release(
     try:
         work = staging / "work"
         work.mkdir()
+        scene_config = config
+        if source_plan is not None:
+            cutline = _dissolve_historical_cutline(config, work / "cutline-union.geojson")
+            scene_config = replace(config, aoi=cutline)
         indexed_candidates = list(enumerate(reversed(candidates)))
 
         def build_scene(item: tuple[int, Candidate]) -> Path:
             index, candidate = item
             require_free_space(config.root, config.minimum_free_bytes)
-            scene = _build_scene(config, candidate, work, index)
+            scene = _build_scene(scene_config, candidate, work, index)
             _log_alpha_coverage(f"scene grid={candidate.grid_code or 'unknown'}", scene)
             return scene
 
