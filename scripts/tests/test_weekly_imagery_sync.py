@@ -146,6 +146,34 @@ class WeeklyImagerySyncTest(unittest.TestCase):
             missing.write_bytes(b"R" * 400)
             worker._require_region_tile_coverage(tiles, aoi, 5)
 
+    def test_disjoint_regions_do_not_count_intervening_empty_tiles(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            aoi = root / "aoi.geojson"
+            aoi.write_text(json.dumps({
+                "type": "FeatureCollection",
+                "features": [{
+                    "type": "Feature",
+                    "geometry": {"type": "Polygon", "coordinates": [[
+                        [west, 0.5], [east, 0.5], [east, 1.0],
+                        [west, 1.0], [west, 0.5],
+                    ]]},
+                } for west, east in ((-168, -166), (166, 168))],
+            }))
+            tiles = root / "tiles"
+            for x in (1, 30):
+                tile = tiles / "5" / str(x) / "15.webp"
+                tile.parent.mkdir(parents=True)
+                tile.write_bytes(b"R" * 400)
+
+            with self.assertRaisesRegex(ReleaseValidationError, "80%"):
+                worker._require_nonempty_tile_coverage(tiles, worker.aoi_bounds(aoi), 5)
+            worker._require_release_tile_coverage(tiles, aoi, 5)
+
+            (tiles / "5/30/15.webp").unlink()
+            with self.assertRaisesRegex(ReleaseValidationError, "AOI region 2"):
+                worker._require_release_tile_coverage(tiles, aoi, 5)
+
     def test_discards_tiny_white_webp_tiles_before_publication(self):
         with tempfile.TemporaryDirectory() as temporary:
             tiles = Path(temporary)
