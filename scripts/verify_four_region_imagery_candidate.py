@@ -81,9 +81,13 @@ def verify(release: Path, aoi: Path) -> dict:
     if "历史10米RGB" not in metadata.get("truthStatement", ""):
         raise ValueError("mixed-date disclosure absent")
     for item in features:
-        for band, expected in (("red", 10), ("green", 10), ("blue", 10), ("scl", 20)):
-            if item["assets"][band]["gsd"] != expected:
+        for band, expected in (("visual", 10), ("red", 10), ("green", 10), ("blue", 10), ("scl", 20)):
+            asset = item["assets"][band]
+            if asset["gsd"] != expected:
                 raise ValueError(f"{item['id']} {band} resolution mismatch")
+            if (not asset["href"].startswith("https://sentinel-cogs.s3.us-west-2.amazonaws.com/")
+                    or not asset["href"].endswith("/TCI.tif" if band == "visual" else ".tif")):
+                raise ValueError(f"{item['id']} {band} source mismatch")
     aoi_features = json.loads(aoi.read_text())["features"]
     codes = {feature["properties"]["regionCode"] for feature in aoi_features}
     if codes != {"230200", "150700", "231100", "232700"} or codes != set(metadata.get("coverageRegionCodes", [])):
