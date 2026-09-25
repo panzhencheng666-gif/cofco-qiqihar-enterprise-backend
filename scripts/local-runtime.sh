@@ -170,6 +170,7 @@ install_agent() {
   local previous_plist=""
   local had_loaded_agent=0
   local failed_workspace=""
+  python3 "${backend_root}/scripts/verify-local-install-source.py"
   [[ -f "$source_plist" ]] || {
     echo "LaunchAgent source plist not found: $source_plist" >&2
     return 1
