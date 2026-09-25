@@ -40,7 +40,6 @@ DEFAULT_ALLOWED_HOSTS = (
     "e84-earth-search-sentinel-data.s3.amazonaws.com",
     "planetarycomputer.microsoft.com",
     "sentinel2l2a01.blob.core.windows.net",
-    "storage.googleapis.com",
 )
 EARTH_SEARCH_REGIONAL_HOST = "e84-earth-search-sentinel-data.s3.us-west-2.amazonaws.com"
 EARTH_SEARCH_GLOBAL_HOST = "e84-earth-search-sentinel-data.s3.amazonaws.com"
@@ -217,7 +216,8 @@ def load_historical_source_plan(config: SyncConfig, path: Path, version: str) ->
         "google-public-sentinel-2-l2a": 9,
     }:
         raise ReleaseValidationError("mixed source plan provider count mismatch")
-    parsed = parse_candidates({"features": features}, config.allowed_hosts)
+    plan_hosts = config.allowed_hosts + (("storage.googleapis.com",) if mixed_sources else ())
+    parsed = parse_candidates({"features": features}, plan_hosts)
     if len(parsed) != len(features) or len({item.product_id for item in parsed}) != len(parsed):
         raise ReleaseValidationError("historical source plan contains unauthorized or duplicate assets")
     ranked = rank_candidates(parsed, config.maximum_cloud_percent)
@@ -789,8 +789,7 @@ def _download_google_asset(config: SyncConfig, url: str, destination: Path) -> N
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != "https" or parsed.hostname != "storage.googleapis.com" \
             or not parsed.path.startswith("/gcp-public-data-sentinel-2/L2/tiles/") \
-            or not parsed.path.endswith(".jp2") or parsed.query or parsed.fragment \
-            or not _trusted_https(url, config.allowed_hosts):
+            or not parsed.path.endswith(".jp2") or parsed.query or parsed.fragment:
         raise ValueError("Google imagery asset is not an approved public Sentinel-2 JP2")
     partial = destination.with_suffix(destination.suffix + ".part")
     for attempt in range(3):
