@@ -174,6 +174,49 @@ def select_grid_candidates(ranked: Iterable[Candidate]) -> list[Candidate]:
     return [candidate for candidate in ordered if candidate.product_id in chosen_ids]
 
 
+def load_historical_source_plan(config: SyncConfig, path: Path, version: str) -> tuple[list[Candidate], dict[str, Any]]:
+    """Load a one-off audited Sentinel-2 plan without widening the monthly timer."""
+    if path.stat().st_size > 2 * 1024 * 1024:
+        raise ReleaseValidationError("historical source plan is too large")
+    payload = json.loads(path.read_text())
+    if not isinstance(payload, dict) or payload.get("version") != version:
+        raise ReleaseValidationError("historical source plan version mismatch")
+    recent = payload.get("recentPeriod")
+    historical = payload.get("historicalFillPeriod")
+    if recent != ["2026-09-14", "2026-09-20"] or historical != ["2026-08-01", "2026-09-13"]:
+        raise ReleaseValidationError("historical source plan has unexpected dates")
+    if payload.get("rgbResolutionMeters") != 10 or payload.get("sclResolutionMeters") != 20:
+        raise ReleaseValidationError("historical source plan resolution mismatch")
+    features = payload.get("features")
+    if not isinstance(features, list) or not features:
+        raise ReleaseValidationError("historical source plan has no products")
+    for feature in features:
+        if not isinstance(feature, dict):
+            raise ReleaseValidationError("historical source plan has an invalid product")
+        assets = feature.get("assets")
+        if not isinstance(assets, dict) or "visual" in assets or any(
+            not isinstance(assets.get(band), dict) or assets[band].get("gsd") != gsd
+            or not isinstance(assets[band].get("href"), str)
+            or not _trusted_https(assets[band].get("href", ""), ("sentinel-cogs.s3.us-west-2.amazonaws.com",))
+            for band, gsd in (("red", 10), ("green", 10), ("blue", 10), ("scl", 20))
+        ):
+            raise ReleaseValidationError("historical source plan asset resolution mismatch")
+    parsed = parse_candidates({"features": features}, config.allowed_hosts)
+    if len(parsed) != len(features) or len({item.product_id for item in parsed}) != len(parsed):
+        raise ReleaseValidationError("historical source plan contains unauthorized or duplicate assets")
+    ranked = rank_candidates(parsed, config.maximum_cloud_percent)
+    if len(ranked) != len(parsed):
+        raise ReleaseValidationError("historical source plan cloud threshold mismatch")
+    dates = [item.observed_at[:10] for item in ranked]
+    if any(day < historical[0] or day > recent[1] for day in dates):
+        raise ReleaseValidationError("historical source plan product outside approved dates")
+    if not any(recent[0] <= day <= recent[1] for day in dates) or not any(
+        historical[0] <= day <= historical[1] for day in dates
+    ):
+        raise ReleaseValidationError("historical source plan must contain both recent and dated fill")
+    return ranked, payload
+
+
 def _mgrs_grid_code(properties: Mapping[str, Any], product_id: str) -> str | None:
     direct = properties.get("grid:code") or properties.get("s2:mgrs_tile")
     if isinstance(direct, str) and direct.strip():
@@ -864,7 +907,8 @@ def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: in
 
 
 def build_release(
-    config: SyncConfig, window: WeekWindow, candidates: Sequence[Candidate], now: datetime
+    config: SyncConfig, window: WeekWindow, candidates: Sequence[Candidate], now: datetime,
+    source_plan: Mapping[str, Any] | None = None,
 ) -> Path:
     _check_gdal()
     config.root.mkdir(parents=True, exist_ok=True)
@@ -956,11 +1000,21 @@ def build_release(
                 and isinstance(feature["properties"].get("regionCode"), str)
             ],
             "sourceProductIds": [candidate.product_id for candidate in candidates],
-            "truthStatement": "Latest available cloud-filtered observation; not live video.",
+            "truthStatement": (
+                "优先使用2026-09-14至2026-09-20采集的Sentinel-2 L2A 10米RGB；"
+                "缺口使用2026-08-01至2026-09-13的历史10米RGB；"
+                "云分类SCL为20米；采集日期因位置而异，非实时影像。"
+                if source_plan is not None else
+                "Latest available cloud-filtered observation; not live video."
+            ),
         }
         (staging / "metadata.json").write_text(
             json.dumps(metadata, ensure_ascii=False, sort_keys=True) + "\n"
         )
+        if source_plan is not None:
+            (staging / "source-plan.json").write_text(
+                json.dumps(source_plan, ensure_ascii=False, sort_keys=True) + "\n"
+            )
         shutil.rmtree(work)
         _write_manifest(staging)
         validate_release(staging)
@@ -1118,6 +1172,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--revision", type=int, help="positive same-month republication number")
     parser.add_argument("--build-only", action="store_true", help="validate staging without changing current")
+    parser.add_argument("--historical-source-plan", type=Path,
+                        help="audited one-off September 2026 Sentinel-2 source plan")
     arguments = parser.parse_args(argv)
     now = (
         datetime.fromisoformat(arguments.now.replace("Z", "+00:00"))
@@ -1145,14 +1201,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         validate_release(current.resolve())
         print(f"monthly imagery already published: {window.identifier}")
         return 0
-    candidates = rank_candidates(
-        search_candidates(config, window.start, window.end), config.maximum_cloud_percent
-    )
-    if not candidates:
-        raise RuntimeError("no cloud-qualified Sentinel-2 product exists in the last 30 complete days")
-    candidates = select_grid_candidates(candidates)
+    source_plan = None
+    if arguments.historical_source_plan is not None:
+        if window.identifier != "2026-09-r4" or not arguments.build_only:
+            raise ValueError("the September historical plan requires --revision 4 --build-only")
+        candidates, source_plan = load_historical_source_plan(
+            config, arguments.historical_source_plan, window.identifier
+        )
+    else:
+        candidates = rank_candidates(
+            search_candidates(config, window.start, window.end), config.maximum_cloud_percent
+        )
+        if not candidates:
+            raise RuntimeError("no cloud-qualified Sentinel-2 product exists in the last 30 complete days")
+        candidates = select_grid_candidates(candidates)
     require_free_space(config.root, config.minimum_free_bytes)
-    staging = build_release(config, window, candidates, now)
+    staging = build_release(config, window, candidates, now, source_plan=source_plan)
     if arguments.build_only:
         print(f"monthly imagery staged and validated: {staging}")
         return 0

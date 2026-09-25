@@ -24,6 +24,7 @@ from scripts.weekly_imagery_sync import (  # noqa: E402
     build_release,
     _build_web_tiles,
     _legacy_webp_band_args,
+    load_historical_source_plan,
     _mgrs_grid_code,
     _PLANETARY_TOKEN_CACHE,
     _read_json_response,
@@ -45,6 +46,38 @@ from scripts import weekly_imagery_sync as worker  # noqa: E402
 
 
 class WeeklyImagerySyncTest(unittest.TestCase):
+    def test_historical_source_plan_keeps_recent_pixels_newer_and_rejects_false_resolution(self):
+        def feature(identifier, observed):
+            return {
+                "id": identifier, "bbox": [123, 47, 124, 48],
+                "properties": {"datetime": observed, "eo:cloud_cover": 5},
+                "assets": {band: {"href": f"https://sentinel-cogs.s3.us-west-2.amazonaws.com/{identifier}/{band}.tif", "gsd": gsd}
+                           for band, gsd in (("red", 10), ("green", 10), ("blue", 10), ("scl", 20))},
+            }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            plan = root / "plan.json"
+            payload = {
+                "version": "2026-09-r4", "recentPeriod": ["2026-09-14", "2026-09-20"],
+                "historicalFillPeriod": ["2026-08-01", "2026-09-13"],
+                "rgbResolutionMeters": 10, "sclResolutionMeters": 20,
+                "features": [feature("S2A_recent", "2026-09-18T00:00:00Z"),
+                             feature("S2A_history", "2026-08-18T00:00:00Z")],
+            }
+            plan.write_text(json.dumps(payload))
+            config = SyncConfig(root, root / "aoi.geojson", "https://example.test", "sentinel-2-l2a",
+                                ("sentinel-cogs.s3.us-west-2.amazonaws.com",), 30, 5, 14, 5, 60, "", 0, 2)
+
+            ranked, loaded = load_historical_source_plan(config, plan, "2026-09-r4")
+            self.assertEqual(["S2A_recent", "S2A_history"], [scene.product_id for scene in ranked])
+            self.assertEqual("2026-09-r4", loaded["version"])
+
+            payload["features"][1]["assets"]["red"]["gsd"] = 30
+            plan.write_text(json.dumps(payload))
+            with self.assertRaisesRegex(ReleaseValidationError, "resolution"):
+                load_historical_source_plan(config, plan, "2026-09-r4")
+
     @patch("scripts.weekly_imagery_sync.time.sleep")
     @patch("scripts.weekly_imagery_sync._invalidate_planetary_token")
     @patch("scripts.weekly_imagery_sync._vsicurl", side_effect=["/vsicurl/first", "/vsicurl/refreshed"])
@@ -256,11 +289,14 @@ class WeeklyImagerySyncTest(unittest.TestCase):
                 WeekWindow("2026-09", datetime(2026, 8, 24).date(), datetime(2026, 9, 22).date()),
                 [candidate],
                 datetime(2026, 9, 21, tzinfo=timezone.utc),
+                source_plan={"version": "2026-09-r4", "recentPeriod": ["2026-09-14", "2026-09-20"]},
             )
 
             self.assertFalse((staging / "work").exists())
             self.assertNotIn("work/", (staging / "manifest.sha256").read_text())
             self.assertEqual("MONTHLY", json.loads((staging / "metadata.json").read_text())["updateCadence"])
+            self.assertIn("历史10米RGB", json.loads((staging / "metadata.json").read_text())["truthStatement"])
+            self.assertIn("source-plan.json", (staging / "manifest.sha256").read_text())
             self.assertEqual(2, coverage.call_count)
             self.assertEqual(1, log_alpha.call_count)
             self.assertEqual("scene grid=unknown", log_alpha.call_args.args[0])
