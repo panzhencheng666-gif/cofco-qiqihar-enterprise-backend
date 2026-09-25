@@ -97,6 +97,12 @@ refresh_runtime_snapshot() {
     fi
   done
 
+  if ! python3 "${backend_root}/scripts/verify-local-install-source.py" "$temporary_workspace"; then
+    remove_runtime_cache "$temporary_root"
+    echo "Staged runtime source did not match the approved release manifest." >&2
+    return 1
+  fi
+
   if [[ -d "$snapshot_workspace" ]]; then
     previous_workspace="${runtime_home}/runtime.previous.$$"
     if ! /bin/mv "$snapshot_workspace" "$previous_workspace"; then
@@ -170,7 +176,7 @@ install_agent() {
   local previous_plist=""
   local had_loaded_agent=0
   local failed_workspace=""
-  python3 "${backend_root}/scripts/verify-local-install-source.py"
+  python3 "${backend_root}/scripts/verify-local-install-source.py" "$source_workspace_root"
   [[ -f "$source_plist" ]] || {
     echo "LaunchAgent source plist not found: $source_plist" >&2
     return 1

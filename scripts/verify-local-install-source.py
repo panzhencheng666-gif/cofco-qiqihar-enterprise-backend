@@ -2,6 +2,7 @@
 """Reject an unbound three-repository install before stopping the local stack."""
 
 import json
+import hashlib
 import os
 import re
 import subprocess
@@ -17,19 +18,19 @@ ORIGINS = {
 SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
-def command(*args, cwd=None):
+def command(*args, cwd=None, timeout=20):
     result = subprocess.run(
         args,
         cwd=cwd,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        timeout=20,
+        timeout=timeout,
         check=False,
     )
     if result.returncode:
         raise ValueError(f"Command failed before install: {args[0]} {args[1]}")
-    return result.stdout.strip()
+    return (result.stdout or result.stderr).strip()
 
 
 def verify(manifest_path, workspace):
@@ -38,6 +39,7 @@ def verify(manifest_path, workspace):
     manifest = Path(manifest_path)
     if manifest.is_symlink() or not manifest.is_file():
         raise ValueError("Release manifest must be an existing regular file")
+    manifest_digest = hashlib.sha256(manifest.read_bytes()).digest()
     web = workspace / "cofco-qiqihar-enterprise-web"
     cli = web / "scripts/release-manifest-cli.mjs"
     command("node", str(cli), "validate", "--manifest", str(manifest))
@@ -67,11 +69,35 @@ def verify(manifest_path, workspace):
         if head != binding["commitSha"] or head != remote_parts[0]:
             raise ValueError(f"{name} source commit differs from official main or manifest")
 
+    backend = workspace / "cofco-qiqihar-enterprise-backend"
+    jdk_home = command(
+        "bash", "-c", 'source "$1"; printf "%s" "$JAVA_HOME"',
+        "bash", str(backend / "scripts/jdk21-env.sh"),
+    )
+    jdk_version = command(str(Path(jdk_home) / "bin/java"), "-version")
+    version = re.search(r'version "([^"]+)"', jdk_version)
+    if version is None:
+        raise ValueError("JDK version could not be read")
+    command(
+        "node", str(cli), "verify", "--manifest", str(manifest),
+        "--backend-root", str(backend),
+        "--frontend-root", str(workspace / "cofco-qiqihar-enterprise-frontend"),
+        "--web-root", str(web),
+        "--node-version", command("node", "--version"),
+        "--npm-version", command("npm", "--version"),
+        "--jdk-version", version.group(1),
+        timeout=120,
+    )
+    if hashlib.sha256(manifest.read_bytes()).digest() != manifest_digest:
+        raise ValueError("Release manifest changed during verification")
+
 
 if __name__ == "__main__":
     try:
-        backend = Path(__file__).resolve().parent.parent
-        verify(os.environ.get("COFCO_ENTERPRISE_RELEASE_MANIFEST_PATH"), backend.parent)
+        if len(sys.argv) != 2:
+            raise ValueError("One source workspace path is required")
+        workspace = Path(sys.argv[1])
+        verify(os.environ.get("COFCO_ENTERPRISE_RELEASE_MANIFEST_PATH"), workspace)
     except (KeyError, OSError, ValueError, subprocess.TimeoutExpired, json.JSONDecodeError) as error:
         print(f"Release source preflight failed: {error}", file=sys.stderr)
         sys.exit(1)

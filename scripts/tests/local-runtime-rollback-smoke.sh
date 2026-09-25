@@ -46,7 +46,13 @@ launchctl() {
 plutil() { return 0; }
 curl() { [[ "$(cat "${COFCO_TEST_RUNTIME}/cofco-qiqihar-enterprise-backend/version")" == old ]]; }
 sleep() { return 0; }
-export -f launchctl plutil curl sleep
+# This isolated rollback fixture has no official release identity. Keep its
+# preflight stub scoped to the child shell; production install remains guarded.
+python3() {
+  if [[ "${1:-}" == */verify-local-install-source.py ]]; then return 0; fi
+  command python3 "$@"
+}
+export -f launchctl plutil curl sleep python3
 
 if bash "${source_backend}/scripts/local-runtime.sh" install >"${test_root}/install.log" 2>&1; then
   cat "${test_root}/install.log" >&2
