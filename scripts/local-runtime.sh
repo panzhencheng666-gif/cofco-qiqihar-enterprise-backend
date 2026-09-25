@@ -3,20 +3,22 @@ set -euo pipefail
 
 backend_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_workspace_root="$(cd "${backend_root}/.." && pwd)"
-runtime_home="${HOME}/Library/Application Support/COFCO Qiqihar Enterprise"
+runtime_home="${COFCO_ENTERPRISE_RUNTIME_HOME:-${HOME}/Library/Application Support/COFCO Qiqihar Enterprise}"
 snapshot_workspace="${runtime_home}/runtime"
 runtime_root="${runtime_home}/state"
 label="com.cofco.qiqihar.enterprise.local-stack"
 domain="gui/$(id -u)"
 service_target="${domain}/${label}"
 source_plist="${backend_root}/ops/launchd/${label}.plist"
-installed_plist="${HOME}/Library/LaunchAgents/${label}.plist"
-launchd_log_dir="${HOME}/Library/Logs/COFCO Qiqihar Enterprise"
+launch_agents_dir="${COFCO_ENTERPRISE_LAUNCH_AGENTS_DIR:-${HOME}/Library/LaunchAgents}"
+installed_plist="${launch_agents_dir}/${label}.plist"
+launchd_log_dir="${COFCO_ENTERPRISE_LOG_DIR:-${HOME}/Library/Logs/COFCO Qiqihar Enterprise}"
 source "${backend_root}/scripts/local-process-ownership.sh"
 
 backend_port="${COFCO_ENTERPRISE_BACKEND_PORT:-8090}"
 business_port="${COFCO_ENTERPRISE_BUSINESS_PORT:-63182}"
 overview_port="${COFCO_ENTERPRISE_OVERVIEW_PORT:-63200}"
+rollback_workspace=""
 
 usage() {
   echo "Usage: $0 {install|uninstall|start|stop|restart|status}"
@@ -88,18 +90,29 @@ refresh_runtime_snapshot() {
       echo "Required source repository is missing: $source_repository" >&2
       return 1
     fi
-    /bin/cp -cR "$source_repository" "${temporary_workspace}/${repository}"
+    if ! /bin/cp -cR "$source_repository" "${temporary_workspace}/${repository}"; then
+      remove_runtime_cache "$temporary_root"
+      echo "Failed to stage source repository: $source_repository" >&2
+      return 1
+    fi
   done
 
   if [[ -d "$snapshot_workspace" ]]; then
     previous_workspace="${runtime_home}/runtime.previous.$$"
-    /bin/mv "$snapshot_workspace" "$previous_workspace"
+    if ! /bin/mv "$snapshot_workspace" "$previous_workspace"; then
+      remove_runtime_cache "$temporary_root"
+      return 1
+    fi
   fi
-  /bin/mv "$temporary_workspace" "$snapshot_workspace"
+  if ! /bin/mv "$temporary_workspace" "$snapshot_workspace"; then
+    if [[ -n "$previous_workspace" ]]; then
+      /bin/mv "$previous_workspace" "$snapshot_workspace"
+    fi
+    remove_runtime_cache "$temporary_root"
+    return 1
+  fi
+  rollback_workspace="$previous_workspace"
   /bin/rmdir "$temporary_root"
-  if [[ -n "$previous_workspace" ]]; then
-    remove_runtime_cache "$previous_workspace"
-  fi
   echo "Refreshed launchd-readable runtime snapshot: $snapshot_workspace"
 }
 
@@ -154,25 +167,65 @@ wait_for_ports_released() {
 }
 
 install_agent() {
+  local previous_plist=""
+  local had_loaded_agent=0
+  local failed_workspace=""
   [[ -f "$source_plist" ]] || {
     echo "LaunchAgent source plist not found: $source_plist" >&2
     return 1
   }
   plutil -lint "$source_plist" >/dev/null
   assert_source_git_metadata_is_safe
-  mkdir -p "${HOME}/Library/LaunchAgents" "$launchd_log_dir" "${runtime_root}/logs" "${runtime_root}/pids"
+  mkdir -p "$launch_agents_dir" "$launchd_log_dir" "${runtime_root}/logs" "${runtime_root}/pids"
   chmod 700 "$launchd_log_dir" "${runtime_root}/logs" "${runtime_root}/pids"
+  if [[ -f "$installed_plist" ]]; then
+    previous_plist="$(mktemp "${runtime_home}/.runtime-install.plist.XXXXXX")"
+    /bin/cp -p "$installed_plist" "$previous_plist"
+  fi
 
   if agent_is_loaded; then
+    had_loaded_agent=1
     launchctl bootout "$service_target"
     wait_for_ports_released
   fi
-  refresh_runtime_snapshot
-  install -m 600 "$source_plist" "$installed_plist"
-
-  launchctl enable "$service_target"
-  launchctl bootstrap "$domain" "$installed_plist"
-  wait_for_stack 90
+  if ! refresh_runtime_snapshot; then
+    [[ -z "$previous_plist" ]] || /bin/rm -f "$previous_plist"
+    if ((had_loaded_agent)); then
+      launchctl bootstrap "$domain" "$installed_plist"
+      wait_for_stack 90
+    fi
+    return 1
+  fi
+  if ! {
+    install -m 600 "$source_plist" "$installed_plist" &&
+      launchctl enable "$service_target" &&
+      launchctl bootstrap "$domain" "$installed_plist" &&
+      wait_for_stack 90
+  }; then
+    echo "New runtime failed health verification; restoring the previous snapshot." >&2
+    if agent_is_loaded; then
+      launchctl bootout "$service_target" || true
+      wait_for_ports_released || true
+    fi
+    if [[ -n "$rollback_workspace" ]]; then
+      failed_workspace="${runtime_home}/.runtime-install.failed.$$"
+      /bin/mv "$snapshot_workspace" "$failed_workspace"
+      /bin/mv "$rollback_workspace" "$snapshot_workspace"
+      remove_runtime_cache "$failed_workspace"
+    fi
+    if [[ -n "$previous_plist" ]]; then
+      /bin/mv "$previous_plist" "$installed_plist"
+    else
+      /bin/rm -f "$installed_plist"
+    fi
+    if ((had_loaded_agent)); then
+      launchctl bootstrap "$domain" "$installed_plist"
+      wait_for_stack 90
+    fi
+    return 1
+  fi
+  [[ -z "$rollback_workspace" ]] || remove_runtime_cache "$rollback_workspace"
+  [[ -z "$previous_plist" ]] || /bin/rm -f "$previous_plist"
   status_agent
 }
 
