@@ -194,12 +194,12 @@ def load_historical_source_plan(config: SyncConfig, path: Path, version: str) ->
         if not isinstance(feature, dict):
             raise ReleaseValidationError("historical source plan has an invalid product")
         assets = feature.get("assets")
-        if not isinstance(assets, dict) or "visual" in assets or any(
+        if not isinstance(assets, dict) or any(
             not isinstance(assets.get(band), dict) or assets[band].get("gsd") != gsd
             or not isinstance(assets[band].get("href"), str)
             or not _trusted_https(assets[band].get("href", ""), ("sentinel-cogs.s3.us-west-2.amazonaws.com",))
-            for band, gsd in (("red", 10), ("green", 10), ("blue", 10), ("scl", 20))
-        ):
+            for band, gsd in (("visual", 10), ("red", 10), ("green", 10), ("blue", 10), ("scl", 20))
+        ) or not assets["visual"]["href"].endswith("/TCI.tif"):
             raise ReleaseValidationError("historical source plan asset resolution mismatch")
     parsed = parse_candidates({"features": features}, config.allowed_hosts)
     if len(parsed) != len(features) or len({item.product_id for item in parsed}) != len(parsed):

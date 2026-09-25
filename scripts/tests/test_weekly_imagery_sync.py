@@ -51,8 +51,9 @@ class WeeklyImagerySyncTest(unittest.TestCase):
             return {
                 "id": identifier, "bbox": [123, 47, 124, 48],
                 "properties": {"datetime": observed, "eo:cloud_cover": 5},
-                "assets": {band: {"href": f"https://sentinel-cogs.s3.us-west-2.amazonaws.com/{identifier}/{band}.tif", "gsd": gsd}
-                           for band, gsd in (("red", 10), ("green", 10), ("blue", 10), ("scl", 20))},
+                "assets": {band: {"href": f"https://sentinel-cogs.s3.us-west-2.amazonaws.com/{identifier}/"
+                                 f"{'TCI' if band == 'visual' else band}.tif", "gsd": gsd}
+                           for band, gsd in (("visual", 10), ("red", 10), ("green", 10), ("blue", 10), ("scl", 20))},
             }
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -71,6 +72,7 @@ class WeeklyImagerySyncTest(unittest.TestCase):
 
             ranked, loaded = load_historical_source_plan(config, plan, "2026-09-r4")
             self.assertEqual(["S2A_recent", "S2A_history"], [scene.product_id for scene in ranked])
+            self.assertTrue(all(scene.assets["visual"].endswith("/TCI.tif") for scene in ranked))
             self.assertEqual("2026-09-r4", loaded["version"])
 
             payload["features"][1]["assets"]["red"]["gsd"] = 30
