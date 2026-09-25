@@ -137,6 +137,39 @@ owned_listener_matches_port_and_service() {
       process_matches_identity "$COFCO_OWNED_LISTENER_PID" "$COFCO_OWNED_LISTENER_IDENTITY"
 }
 
+process_cwd_matches_directory() {
+  local pid=$1
+  local expected_directory=$2
+  local cwd_record
+  local cwd_path
+  local cwd_inode
+  local expected_path
+  local expected_inode
+
+  [[ "$pid" =~ ^[0-9]+$ && -d "$expected_directory" ]] || return 1
+  cwd_record="$(lsof -a -p "$pid" -d cwd -Fni 2>/dev/null)" || return 1
+  cwd_path="$(sed -n 's/^n//p' <<< "$cwd_record" | head -n 1)"
+  cwd_inode="$(sed -n 's/^i//p' <<< "$cwd_record" | head -n 1)"
+  expected_path="$(cd "$expected_directory" && pwd -P)" || return 1
+  expected_inode="$(stat -f '%i' "$expected_directory" 2>/dev/null)" || return 1
+  [[ -n "$cwd_path" && -n "$cwd_inode" &&
+      "$cwd_path" == "$expected_path" && "$cwd_inode" == "$expected_inode" ]]
+}
+
+owned_listener_runs_from_directory() {
+  local pid_file=$1
+  local listener_pid=$2
+  local port=$3
+  local service=$4
+  local expected_directory=$5
+
+  owned_listener_matches_port_and_service "$pid_file" "$listener_pid" "$port" "$service" &&
+    process_matches_identity "$COFCO_OWNED_ROOT_PID" "$COFCO_OWNED_ROOT_IDENTITY" &&
+    process_is_same_or_descendant "$COFCO_OWNED_ROOT_PID" "$listener_pid" &&
+    process_cwd_matches_directory "$COFCO_OWNED_ROOT_PID" "$expected_directory" &&
+    process_cwd_matches_directory "$listener_pid" "$expected_directory"
+}
+
 reconcile_stale_owned_process() {
   local pid_file=$1
   local name=$2

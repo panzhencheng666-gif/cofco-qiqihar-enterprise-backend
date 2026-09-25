@@ -158,6 +158,43 @@ owned_service_is_ready() {
     curl -fsS --max-time 2 "$url" >/dev/null 2>&1
 }
 
+verify_running_snapshot() {
+  local service
+  local pid_file
+  local port
+  local repository
+  local listener_pid
+
+  for service in backend 'business frontend' 'overview frontend'; do
+    case "$service" in
+      backend)
+        pid_file="${runtime_root}/pids/backend.pid"
+        port=$backend_port
+        repository=cofco-qiqihar-enterprise-backend
+        ;;
+      'business frontend')
+        pid_file="${runtime_root}/pids/business.pid"
+        port=$business_port
+        repository=cofco-qiqihar-enterprise-web
+        ;;
+      'overview frontend')
+        pid_file="${runtime_root}/pids/overview.pid"
+        port=$overview_port
+        repository=cofco-qiqihar-enterprise-frontend
+        ;;
+    esac
+    listener_pid="$(pid_listening_on_port "$port" || true)"
+    if [[ -z "$listener_pid" ]] ||
+        ! owned_listener_runs_from_directory \
+          "$pid_file" "$listener_pid" "$port" "$service" \
+          "${snapshot_workspace}/${repository}"; then
+      echo "$service is not running from the installed runtime snapshot." >&2
+      return 1
+    fi
+  done
+  echo "Verified all owned listeners and root processes use the installed runtime snapshot."
+}
+
 wait_for_ports_released() {
   local attempt
   for ((attempt=1; attempt<=40; attempt++)); do
@@ -207,7 +244,8 @@ install_agent() {
     install -m 600 "$source_plist" "$installed_plist" &&
       launchctl enable "$service_target" &&
       launchctl bootstrap "$domain" "$installed_plist" &&
-      wait_for_stack 90
+      wait_for_stack 90 &&
+      verify_running_snapshot
   }; then
     echo "New runtime failed health verification; restoring the previous snapshot." >&2
     if agent_is_loaded; then
