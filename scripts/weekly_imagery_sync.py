@@ -48,6 +48,7 @@ PLANETARY_SENTINEL_HOST = "sentinel2l2a01.blob.core.windows.net"
 R4E_SOURCE_AUDIT_SHA256 = "3af5e4dca99f635fc329b9c7e532553c216bb881c8f91bffb3f4788b76d05d97"
 R4J_BASE_PLAN_SHA256 = "87b70edd5eaf850ab66a7f87edfd08c241cd5e138f17c911fbbfae7e139b70d9"
 R4J_SOURCE_DELTA_SHA256 = "7f725ea837b38771b2ded5e698d8094e076b3ea8aa26da5a6e3af43c2da4c078"
+R4I_BASE_STAGE_NAME = ".staging-2026-09-r4-bxf12k9l"
 _PLANETARY_TOKEN_CACHE: dict[tuple[str, str], str] = {}
 _PLANETARY_TOKEN_LOCK = threading.Lock()
 REQUIRED_GDAL_COMMANDS = (
@@ -1687,6 +1688,43 @@ def validate_release(path: Path) -> ReleaseMetadata:
         raise ReleaseValidationError("release metadata violates the imagery contract")
     if not metadata.source_product_ids:
         raise ReleaseValidationError("release metadata has no source products")
+    return metadata
+
+
+def validate_r4i_repair_baseline(
+    staging: Path, expected_manifest_sha256: str, base_plan_path: Path, delta_path: Path,
+) -> ReleaseMetadata:
+    """Read-only guard for a future isolated repair candidate; never copies or publishes."""
+    if staging.is_symlink() or staging.name != R4I_BASE_STAGE_NAME or not staging.is_dir():
+        raise ReleaseValidationError("r4i repair baseline directory mismatch")
+    if re.fullmatch(r"[0-9a-f]{64}", expected_manifest_sha256) is None:
+        raise ReleaseValidationError("r4i manifest SHA is invalid")
+    manifest = staging / "manifest.sha256"
+    if not manifest.is_file() or _file_sha256(manifest) != expected_manifest_sha256:
+        raise ReleaseValidationError("r4i manifest SHA mismatch")
+    validate_r4j_source_delta(base_plan_path, delta_path)
+    if (staging / "work").exists() or (staging / "FAILED").exists():
+        raise ReleaseValidationError("r4i baseline contains unfinished work")
+    actual: set[str] = set()
+    for path in staging.rglob("*"):
+        if path.is_symlink():
+            raise ReleaseValidationError("r4i baseline contains a symlink")
+        if path.is_file() and path.name != "manifest.sha256":
+            if path.name == "complete.json":
+                raise ReleaseValidationError("r4i baseline contains scene completion state")
+            actual.add(path.relative_to(staging).as_posix())
+    listed = [line.split("  ", 1)[-1] for line in manifest.read_text().splitlines()]
+    if len(listed) != len(set(listed)) or set(listed) != actual:
+        raise ReleaseValidationError("r4i baseline file inventory differs from manifest")
+    metadata = validate_release(staging)
+    if metadata.version != "2026-09-r4":
+        raise ReleaseValidationError("r4i baseline version mismatch")
+    source_plan = json.loads((staging / "source-plan.json").read_text())
+    if _json_sha256(source_plan) != _json_sha256(json.loads(base_plan_path.read_text())):
+        raise ReleaseValidationError("r4i baseline source plan mismatch")
+    product_ids = {feature["id"] for feature in source_plan["features"]}
+    if set(metadata.source_product_ids) != product_ids or len(metadata.source_product_ids) != 189:
+        raise ReleaseValidationError("r4i baseline product list mismatch")
     return metadata
 
 

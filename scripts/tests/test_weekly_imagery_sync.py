@@ -48,6 +48,39 @@ from scripts import weekly_imagery_sync as worker  # noqa: E402
 
 
 class WeeklyImagerySyncTest(unittest.TestCase):
+    def test_r4i_repair_baseline_requires_exact_inventory_and_identity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            staging = root / worker.R4I_BASE_STAGE_NAME
+            staging.mkdir()
+            (staging / "tiles").mkdir()
+            (staging / "tiles" / "tile.webp").write_bytes(b"webp fixture")
+            products = [f"scene-{i}" for i in range(189)]
+            source = {"features": [{"id": item} for item in products]}
+            base = root / "base.json"
+            base.write_text(json.dumps(source))
+            (staging / "source-plan.json").write_text(json.dumps(source))
+            (staging / "metadata.json").write_text(json.dumps({
+                "version": "2026-09-r4", "provider": "Sentinel-2", "acquisitionFrom": "2026-09-09",
+                "acquisitionTo": "2026-09-20", "syncedAt": "2026-09-26T00:00:00Z",
+                "spatialResolutionMeters": 10, "cloudCoveragePercent": 1, "status": "CURRENT",
+                "sourceProductIds": products,
+            }))
+            worker._write_manifest(staging)
+            manifest_sha = worker._file_sha256(staging / "manifest.sha256")
+            with patch.object(worker, "validate_r4j_source_delta") as delta_guard:
+                worker.validate_r4i_repair_baseline(staging, manifest_sha, base, root / "delta.json")
+                delta_guard.assert_called_once()
+                (staging / "unlisted.txt").write_text("unexpected")
+                with self.assertRaisesRegex(ReleaseValidationError, "inventory"):
+                    worker.validate_r4i_repair_baseline(staging, manifest_sha, base, root / "delta.json")
+                (staging / "unlisted.txt").unlink()
+                (staging / "link").symlink_to(staging / "metadata.json")
+                with self.assertRaisesRegex(ReleaseValidationError, "symlink"):
+                    worker.validate_r4i_repair_baseline(staging, manifest_sha, base, root / "delta.json")
+                with self.assertRaisesRegex(ReleaseValidationError, "manifest SHA mismatch"):
+                    worker.validate_r4i_repair_baseline(staging, "0" * 64, base, root / "delta.json")
+
     def test_tiling_uses_writable_sibling_temp_without_global_environment_change(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
