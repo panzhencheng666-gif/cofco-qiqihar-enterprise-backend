@@ -1065,9 +1065,212 @@ def _dissolve_historical_cutline(config: SyncConfig, destination: Path) -> Path:
     return destination
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _json_sha256(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _atomic_json(path: Path, value: Any) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("x") as stream:
+        json.dump(value, stream, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.replace(path)
+
+
+def _gdal_version() -> str:
+    try:
+        return subprocess.check_output(["gdalinfo", "--version"], text=True, timeout=30).strip()
+    except (OSError, subprocess.SubprocessError) as failure:
+        raise ReleaseValidationError("cannot identify GDAL runtime for recovery") from failure
+
+
+def _scene_resume_context(
+    config: SyncConfig, window: WeekWindow, candidates: Sequence[Candidate],
+    source_plan: Mapping[str, Any], *, original_aoi: Path | None = None,
+) -> dict[str, Any]:
+    west, south, east, north = aoi_bounds(config.aoi)
+    scenes = []
+    for index, candidate in enumerate(reversed(candidates)):
+        if candidate.bounds is None:
+            raise ReleaseValidationError("recovery requires explicit scene bounds")
+        left, bottom, right, top = candidate.bounds
+        left, bottom, right, top = max(left, west), max(bottom, south), min(right, east), min(top, north)
+        if left >= right or bottom >= top or not -85 < bottom < top < 85:
+            raise ReleaseValidationError("recovery scene bounds are invalid")
+        def mercator_y(latitude: float) -> float:
+            return 6378137.0 * math.log(math.tan(math.pi / 4 + math.radians(latitude) / 2))
+        xmin = math.floor(6378137.0 * math.radians(left) / 10) * 10
+        xmax = math.ceil(6378137.0 * math.radians(right) / 10) * 10
+        ymin = math.floor(mercator_y(bottom) / 10 + 1e-9) * 10
+        ymax = math.ceil(mercator_y(top) / 10 - 1e-9) * 10
+        scenes.append({
+            "index": index, "productId": candidate.product_id, "observedAt": candidate.observed_at,
+            "candidateSha256": _json_sha256({"assets": dict(candidate.assets), "bounds": candidate.bounds,
+                                             "gridCode": candidate.grid_code, "authorized": candidate.authorized}),
+            "grid": {"size": [(xmax - xmin) // 10, (ymax - ymin) // 10],
+                     "transform": [xmin, 10, 0, ymax, 0, -10]},
+        })
+    return {
+        "schema": 1, "version": window.identifier, "gdalVersion": _gdal_version(),
+        "workerSha256": _file_sha256(Path(__file__).resolve()),
+        "sourcePlanSha256": _json_sha256(source_plan),
+        "aoiSha256": _file_sha256(original_aoi or config.aoi),
+        "cutlineSha256": _file_sha256(config.aoi),
+        "processing": {"epsg": 3857, "pixelMeters": 10, "rgbResampling": "cubic", "sclResampling": "near",
+                       "maskExpressions": _scene_band_expressions(), "candidateSingleRange": True},
+        "scenes": scenes,
+    }
+
+
+def _write_scene_completion(raster: Path, context: Mapping[str, Any], index: int) -> None:
+    _atomic_json(raster.parent / "complete.json", {
+        "contextSha256": _json_sha256(context), "scene": context["scenes"][index],
+        "sha256": _file_sha256(raster), "bytes": raster.stat().st_size,
+    })
+
+
+# Executed by the GDAL Python interpreter; production GDAL 3.0 uses Python 3.6.
+# Keep this script compatible and independent of the worker's Python runtime.
+_RESUME_RASTER_CHECK = r'''
+import json, sys
+import numpy as np
+from osgeo import gdal, osr
+gdal.UseExceptions()
+request = json.load(sys.stdin)
+ds = gdal.Open(request['path'], gdal.GA_ReadOnly)
+if ds is None or ds.GetDriver().ShortName != 'GTiff' or ds.RasterCount != 4:
+    raise ValueError('expected four-band GeoTIFF')
+if [ds.RasterXSize, ds.RasterYSize] != request['grid']['size']:
+    raise ValueError('scene size mismatch')
+if any(abs(a-b) > 1e-6 for a,b in zip(ds.GetGeoTransform(), request['grid']['transform'])):
+    raise ValueError('scene grid mismatch')
+actual = osr.SpatialReference(); actual.ImportFromWkt(ds.GetProjection())
+expected = osr.SpatialReference(); expected.ImportFromEPSG(3857)
+if not actual.IsSame(expected):
+    raise ValueError('scene CRS mismatch')
+if ds.GetFileList() != [request['path']]:
+    raise ValueError('scene depends on sidecar files')
+for i, color in enumerate([gdal.GCI_RedBand,gdal.GCI_GreenBand,gdal.GCI_BlueBand,gdal.GCI_AlphaBand], 1):
+    band = ds.GetRasterBand(i)
+    if band.DataType != gdal.GDT_Byte or band.GetColorInterpretation() != color:
+        raise ValueError('scene band type or interpretation mismatch')
+valid = 0
+blocks = 0
+for y in range(0, ds.RasterYSize, 512):
+    for x in range(0, ds.RasterXSize, 512):
+        w, h = min(512, ds.RasterXSize-x), min(512, ds.RasterYSize-y)
+        pixels = ds.ReadAsArray(x,y,w,h)
+        if pixels is None or pixels.shape != (4,h,w):
+            raise ValueError('incomplete raster block')
+        alpha = pixels[3]
+        if np.any((alpha != 0) & (alpha != 255)):
+            raise ValueError('non-binary alpha')
+        if np.any(pixels[:3, alpha == 0] != 0):
+            raise ValueError('nonzero transparent RGB')
+        valid += int(np.count_nonzero(alpha == 255))
+        blocks += 1
+if valid == 0:
+    raise ValueError('scene has no valid pixels')
+print(json.dumps({'validPixels': valid, 'pixels': ds.RasterXSize*ds.RasterYSize, 'blocks': blocks, 'gdalVersion': gdal.VersionInfo('--version')}))
+'''
+
+
+def _validate_resume_raster(raster: Path, grid: Mapping[str, Any], timeout: int) -> dict[str, Any]:
+    environment = os.environ.copy()
+    environment["GDAL_PAM_ENABLED"] = "NO"
+    try:
+        result = subprocess.run(
+            [os.getenv("QIQIHAR_IMAGERY_GDAL_PYTHON", "python3"), "-c", _RESUME_RASTER_CHECK],
+            input=json.dumps({"path": str(raster), "grid": grid}), env=environment,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout, check=True,
+        )
+        return json.loads(result.stdout)
+    except (subprocess.SubprocessError, OSError, ValueError) as failure:
+        detail = (failure.stderr or "")[-1000:] if isinstance(failure, subprocess.CalledProcessError) else type(failure).__name__
+        detail = re.sub(r"(?:/vsicurl/)?https://[^\s\'\"<>]+", "[remote asset]", detail)
+        raise ReleaseValidationError(f"recovery full-pixel validation failed: {raster.parent.name}: {detail}") from failure
+
+
+def _recovery_regular(path: Path, base: Path) -> Path:
+    if path.is_symlink() or any(parent.is_symlink() for parent in path.parents if parent != base and base in parent.parents):
+        raise ReleaseValidationError("recovery refuses symlink paths")
+    if not path.is_file() or not path.resolve().is_relative_to(base.resolve()):
+        raise ReleaseValidationError("recovery requires contained regular files")
+    return path
+
+
+def _restore_scenes(
+    config: SyncConfig, failed: Path, work: Path, context: Mapping[str, Any],
+) -> dict[int, Path]:
+    failed = failed.absolute()
+    if failed.is_symlink() or failed.parent.resolve() != config.root.resolve() or not failed.name.startswith(".failed-"):
+        raise ReleaseValidationError("recovery requires an explicit quarantined directory under imagery root")
+    _recovery_regular(failed / "FAILED", failed)
+    context_path = failed / "build-context.json"
+    if not context_path.exists():
+        raise ReleaseValidationError("recovery build context missing; legacy artifacts need independent provenance evidence")
+    try:
+        previous = json.loads(_recovery_regular(context_path, failed).read_text())
+        if previous != context:
+            raise ReleaseValidationError("recovery build context mismatch")
+        plan = json.loads(_recovery_regular(failed / "source-plan.json", failed).read_text())
+        if _json_sha256(plan) != context["sourcePlanSha256"]:
+            raise ReleaseValidationError("recovery source plan mismatch")
+        cutline = _recovery_regular(failed / "work" / "cutline-union.geojson", failed)
+        if _file_sha256(cutline) != context["cutlineSha256"]:
+            raise ReleaseValidationError("recovery cutline mismatch")
+        restored = {}
+        audit = {"schema": 1, "source": failed.name, "contextSha256": _json_sha256(context), "scenes": []}
+        for identity in context["scenes"]:
+            index = identity["index"]
+            source = failed / "work" / f"scene-{index:03d}" / "masked.tif"
+            completion = source.parent / "complete.json"
+            if not completion.exists():
+                continue  # Incomplete output is never reused.
+            record = json.loads(_recovery_regular(completion, failed).read_text())
+            source = _recovery_regular(source, failed)
+            if record.get("contextSha256") != audit["contextSha256"] or record.get("scene") != identity:
+                raise ReleaseValidationError("recovery scene identity mismatch")
+            digest = _file_sha256(source)
+            if record.get("sha256") != digest or record.get("bytes") != source.stat().st_size:
+                raise ReleaseValidationError("recovery scene digest mismatch")
+            print(f"imagery recovery validating scene-{index:03d} product={identity['productId']}", file=sys.stderr, flush=True)
+            checked = _validate_resume_raster(source, identity["grid"], config.command_timeout_seconds)
+            if checked.get("gdalVersion") != context["gdalVersion"]:
+                raise ReleaseValidationError("recovery Python GDAL runtime mismatch")
+            require_free_space(config.root, config.minimum_free_bytes + source.stat().st_size)
+            destination = work / source.parent.name / "masked.tif"
+            destination.parent.mkdir()
+            partial = destination.with_suffix(".part")
+            shutil.copyfile(source, partial)  # Never hard-link a quarantined artifact.
+            if _file_sha256(partial) != digest or _file_sha256(source) != digest:
+                raise ReleaseValidationError("recovery digest changed during validation/copy")
+            partial.replace(destination)
+            _write_scene_completion(destination, context, index)
+            restored[index] = destination
+            audit["scenes"].append({"index": index, "productId": identity["productId"], "sha256": digest, **checked})
+        if not restored:
+            raise ReleaseValidationError("recovery has no verified scenes; refusing blind full rebuild")
+        _atomic_json(work.parent / "resume-audit.json", audit)
+        return restored
+    except (OSError, ValueError, KeyError, TypeError) as failure:
+        raise ReleaseValidationError("recovery evidence is invalid or unreadable") from failure
+
+
 def build_release(
     config: SyncConfig, window: WeekWindow, candidates: Sequence[Candidate], now: datetime,
     source_plan: Mapping[str, Any] | None = None,
+    resume_failed: Path | None = None,
 ) -> Path:
     _check_gdal()
     config.root.mkdir(parents=True, exist_ok=True)
@@ -1076,14 +1279,25 @@ def build_release(
         work = staging / "work"
         work.mkdir()
         scene_config = config
+        context = None
+        restored: dict[int, Path] = {}
+        if resume_failed is not None and source_plan is None:
+            raise ReleaseValidationError("recovery requires a historical candidate")
         if source_plan is not None:
             _prepare_tiling_temp(work)
             cutline = _dissolve_historical_cutline(config, work / "cutline-union.geojson")
             scene_config = replace(config, aoi=cutline, candidate_single_range=True)
+            context = _scene_resume_context(scene_config, window, candidates, source_plan, original_aoi=config.aoi)
+            _atomic_json(staging / "build-context.json", context)
+            _atomic_json(staging / "source-plan.json", source_plan)
+            if resume_failed is not None:
+                restored = _restore_scenes(config, resume_failed, work, context)
         indexed_candidates = list(enumerate(reversed(candidates)))
 
         def build_scene(item: tuple[int, Candidate]) -> Path:
             index, candidate = item
+            if index in restored:
+                return restored[index]
             require_free_space(config.root, config.minimum_free_bytes)
             try:
                 scene = _build_scene(scene_config, candidate, work, index)
@@ -1091,6 +1305,8 @@ def build_release(
                 raise RuntimeError(
                     f"scene-{index:03d} product={candidate.product_id}: {failure}"
                 ) from failure
+            if context is not None:
+                _write_scene_completion(scene, context, index)
             _log_alpha_coverage(f"scene grid={candidate.grid_code or 'unknown'}", scene)
             return scene
 
@@ -1353,7 +1569,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--build-only", action="store_true", help="validate staging without changing current")
     parser.add_argument("--historical-source-plan", type=Path,
                         help="audited one-off September 2026 Sentinel-2 source plan")
+    parser.add_argument("--resume-failed", type=Path, help="strictly validate and copy completed candidate scenes from quarantine")
     arguments = parser.parse_args(argv)
+    if arguments.resume_failed is not None and (arguments.historical_source_plan is None or not arguments.build_only):
+        raise ValueError("recovery requires historical source plan and --build-only")
     now = (
         datetime.fromisoformat(arguments.now.replace("Z", "+00:00"))
         if arguments.now
@@ -1395,7 +1614,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise RuntimeError("no cloud-qualified Sentinel-2 product exists in the last 30 complete days")
         candidates = select_grid_candidates(candidates)
     require_free_space(config.root, config.minimum_free_bytes)
-    staging = build_release(config, window, candidates, now, source_plan=source_plan)
+    staging = build_release(config, window, candidates, now, source_plan=source_plan, resume_failed=arguments.resume_failed)
     if arguments.build_only:
         print(f"monthly imagery staged and validated: {staging}")
         return 0

@@ -353,6 +353,7 @@ class WeeklyImagerySyncTest(unittest.TestCase):
 
         self.assertIn("--exclude", run.call_args_list[0].args[0])
 
+    @patch("scripts.weekly_imagery_sync._gdal_version", return_value="GDAL test-runtime")
     @patch("scripts.weekly_imagery_sync._log_alpha_coverage")
     @patch("scripts.weekly_imagery_sync.require_free_space")
     @patch("scripts.weekly_imagery_sync._require_nonempty_tile_coverage")
@@ -362,13 +363,13 @@ class WeeklyImagerySyncTest(unittest.TestCase):
     @patch("scripts.weekly_imagery_sync._check_gdal")
     @patch("scripts.weekly_imagery_sync._dissolve_historical_cutline")
     def test_build_release_manifest_excludes_removed_work_files(
-        self, dissolve, check_gdal, build_scene, run, build_tiles, coverage, free_space, log_alpha
+        self, dissolve, check_gdal, build_scene, run, build_tiles, coverage, free_space, log_alpha, gdal_version
     ):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             config = SyncConfig(root, root / "aoi.geojson", "https://example.test", "sentinel-2-l2a", ("example.test",), 30.0, 5, 5, 5, 60, "", 0, 4)
             config.aoi.write_text(json.dumps({"type": "Polygon", "coordinates": [[[113, 47], [114, 47], [114, 48], [113, 48], [113, 47]]]}))
-            candidate = Candidate("S2-test", "2026-09-20T02:00:00Z", 5.0, True, {})
+            candidate = Candidate("S2-test", "2026-09-20T02:00:00Z", 5.0, True, {}, bounds=(113, 47, 114, 48))
 
             def scene_side_effect(config, candidate, work, index):
                 scene = work / "scene.tif"
@@ -382,7 +383,11 @@ class WeeklyImagerySyncTest(unittest.TestCase):
 
             build_scene.side_effect = scene_side_effect
             build_tiles.side_effect = tiles_side_effect
-            dissolve.side_effect = lambda config, destination: destination
+            def dissolve_side_effect(config, destination):
+                destination.write_bytes(config.aoi.read_bytes())
+                return destination
+
+            dissolve.side_effect = dissolve_side_effect
             staging = build_release(
                 config,
                 WeekWindow("2026-09", datetime(2026, 8, 24).date(), datetime(2026, 9, 22).date()),
