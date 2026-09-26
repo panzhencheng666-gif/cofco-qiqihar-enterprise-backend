@@ -1,0 +1,42 @@
+{
+  "type": "FeatureCollection",
+  "name": "four-region-monthly-imagery-coverage-envelopes",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "regionCode": "230200",
+        "source": "Envelope of the 16 pinned Qiqihar county geometries in V160",
+        "officialSurvey": false
+      },
+      "geometry": {"type": "Polygon", "coordinates": [[[122.38880269958497, 46.21903989997145], [126.6584927996031, 46.21903989997145], [126.6584927996031, 48.919872500415636], [122.38880269958497, 48.919872500415636], [122.38880269958497, 46.21903989997145]]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "regionCode": "150700",
+        "source": "Envelope of the governed Hulunbuir boundary in overview.administrative_boundary, inspected 2026-09-24",
+        "officialSurvey": false
+      },
+      "geometry": {"type": "Polygon", "coordinates": [[[120.4870131180159, 47.09362824170922], [125.3309753950386, 47.09362824170922], [125.3309753950386, 51.48119852041324], [120.4870131180159, 51.48119852041324], [120.4870131180159, 47.09362824170922]]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "regionCode": "231100",
+        "source": "Envelope of the governed Heihe boundary in overview.administrative_boundary, inspected 2026-09-24",
+        "officialSurvey": false
+      },
+      "geometry": {"type": "Polygon", "coordinates": [[[124.741496230767, 47.5842086847453], [129.646518479871, 47.5842086847453], [129.646518479871, 51.0017005801949], [124.741496230767, 51.0017005801949], [124.741496230767, 47.5842086847453]]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "regionCode": "232700",
+        "source": "Envelope of the governed Daxinganling root geometry in V137",
+        "officialSurvey": false
+      },
+      "geometry": {"type": "Polygon", "coordinates": [[[121.1841468, 50.1170476], [127.0243343, 50.1170476], [127.0243343, 53.5608154], [121.1841468, 53.5608154], [121.1841468, 50.1170476]]]}
+    }
+  ]
+}

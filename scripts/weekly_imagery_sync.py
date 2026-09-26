@@ -19,6 +19,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -343,6 +344,25 @@ def aoi_bounds(path: Path) -> tuple[float, float, float, float]:
     return bounds
 
 
+def aoi_feature_bounds(path: Path) -> list[tuple[float, float, float, float]]:
+    """Search each governed region separately so catalog pagination stays bounded."""
+    payload = json.loads(path.read_text())
+    if payload.get("type") != "FeatureCollection":
+        return [aoi_bounds(path)]
+    bounds: list[tuple[float, float, float, float]] = []
+    for feature in payload.get("features", []):
+        if not isinstance(feature, Mapping) or not isinstance(feature.get("geometry"), Mapping):
+            raise ValueError("AOI has an invalid feature")
+        points = list(_coordinates(feature["geometry"].get("coordinates")))
+        if not points:
+            raise ValueError("AOI feature has no coordinates")
+        bounds.append((min(x for x, _ in points), min(y for _, y in points),
+                       max(x for x, _ in points), max(y for _, y in points)))
+    if not bounds:
+        raise ValueError("AOI has no features")
+    return bounds
+
+
 def _require_nonempty_tile_coverage(
     tiles: Path, bounds: tuple[float, float, float, float], zoom: int,
     minimum_ratio: float = 0.8,
@@ -375,10 +395,29 @@ def _require_nonempty_tile_coverage(
         )
 
 
+def _require_region_tile_coverage(tiles: Path, aoi: Path, zoom: int) -> None:
+    """A recent four-region label requires dense tiles in every governed region."""
+    for index, bounds in enumerate(aoi_feature_bounds(aoi)):
+        try:
+            _require_nonempty_tile_coverage(tiles, bounds, zoom, minimum_ratio=0.99)
+        except ReleaseValidationError as failure:
+            raise ReleaseValidationError(f"AOI region {index + 1}: {failure}") from failure
+
+
 def search_candidates(config: SyncConfig, start: date, end: date) -> list[Candidate]:
     if not _trusted_https(config.stac_url, config.allowed_hosts):
         raise ValueError("STAC URL is not an allowed HTTPS endpoint")
-    bbox = aoi_bounds(config.aoi)
+    found: dict[str, Candidate] = {}
+    for bbox in aoi_feature_bounds(config.aoi):
+        for candidate in _search_candidates_bbox(config, start, end, bbox):
+            found[candidate.product_id] = candidate
+    return list(found.values())
+
+
+def _search_candidates_bbox(
+    config: SyncConfig, start: date, end: date,
+    bbox: tuple[float, float, float, float],
+) -> list[Candidate]:
     search_body = {
         "collections": [config.collection],
         "bbox": list(bbox),
@@ -496,6 +535,28 @@ def _discard_tiny_webp_tiles(tiles: Path) -> int:
             tile.unlink()
             removed += 1
     return removed
+
+
+def _sample_alpha_coverage(raster: Path, size: int = 64) -> tuple[int, int]:
+    """Sample band four without creating another large raster on the worker disk."""
+    result = subprocess.run(
+        ["gdal_translate", "-q", "-of", "XYZ", "-b", "4", "-outsize",
+         str(size), str(size), str(raster), "/vsistdout/"],
+        check=True,
+        timeout=120,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    values = [line.rsplit(" ", 1)[-1] for line in result.stdout.splitlines()]
+    if len(values) != size * size:
+        raise ReleaseValidationError(f"alpha diagnostic returned {len(values)} samples for {raster.name}")
+    return sum(float(value) > 0 for value in values), len(values)
+
+
+def _log_alpha_coverage(stage: str, raster: Path, size: int = 64) -> None:
+    valid, total = _sample_alpha_coverage(raster, size)
+    print(f"imagery diagnostic {stage}: alpha {valid}/{total} ({valid / total:.1%})", file=sys.stderr, flush=True)
 
 
 def _build_web_tiles(mosaic: Path, tiles: Path, config: SyncConfig) -> None:
@@ -652,7 +713,46 @@ def _scene_band_expressions() -> list[str]:
     # Sentinel SCL uses 255 for pixels outside a scene. An exclusion list
     # accidentally treated 255 as clear and published opaque white tiles.
     clear = "((D==2)|(D==4)|(D==5)|(D==6)|(D==7))"
-    return [f"{band}*{clear}" for band in "ABC"] + [f"255*{clear}"]
+    return [f"A*{clear}"] * 3 + [f"255*{clear}"]
+
+
+def _build_masked_scene(
+    warped_rgb: Path, warped_scl: Path, scene: Path, timeout: int
+) -> Path:
+    """Create RGBA with single-expression calls supported by GDAL 3.0."""
+    masked = scene / "masked.tif"
+    bands: list[Path] = []
+    for index, expression in enumerate(_scene_band_expressions(), start=1):
+        output = scene / f"masked-band-{index}.tif"
+        command = [
+            "gdal_calc.py", "-A", str(warped_rgb if index < 4 else warped_scl),
+            "--A_band=" + str(index if index < 4 else 1),
+            "-D", str(warped_scl), "--D_band=1",
+            f"--calc={expression}", "--type=Byte", "--NoDataValue=0",
+            "--co=TILED=YES", "--co=COMPRESS=DEFLATE", f"--outfile={output}",
+        ]
+        _run(command, timeout)
+        bands.append(output)
+    vrt = scene / "masked.vrt"
+    _run(["gdalbuildvrt", "-separate", str(vrt), *(str(band) for band in bands)], timeout)
+    tree = ET.parse(vrt)
+    vrt_bands = tree.findall("./VRTRasterBand")
+    if len(vrt_bands) != 4:
+        raise ReleaseValidationError(f"masked scene VRT has {len(vrt_bands)} bands instead of 4")
+    for band, color in zip(vrt_bands, ("Red", "Green", "Blue", "Alpha")):
+        interpretation = band.find("ColorInterp")
+        if interpretation is None:
+            interpretation = ET.SubElement(band, "ColorInterp")
+        interpretation.text = color
+    tree.write(vrt, encoding="utf-8", xml_declaration=True)
+    _run(
+        ["gdal_translate", "-of", "GTiff", "-co", "TILED=YES", "-co", "COMPRESS=DEFLATE",
+         "-co", "BIGTIFF=IF_SAFER", str(vrt), str(masked)],
+        timeout,
+    )
+    for temporary in (*bands, vrt):
+        temporary.unlink()
+    return masked
 
 
 def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: int) -> Path:
@@ -748,32 +848,7 @@ def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: in
             config.command_timeout_seconds,
         )
     _run_remote_warp(config, candidate.assets["scl"], warp_common, "near", warped_scl)
-    masked = scene / "masked.tif"
-    _run(
-        [
-            "gdal_calc.py",
-            "-A",
-            str(warped_rgb),
-            "--A_band=1",
-            "-B",
-            str(warped_rgb),
-            "--B_band=2",
-            "-C",
-            str(warped_rgb),
-            "--C_band=3",
-            "-D",
-            str(warped_scl),
-            "--D_band=1",
-            *[f"--calc={expression}" for expression in _scene_band_expressions()],
-            "--type=Byte",
-            "--NoDataValue=0",
-            "--co=TILED=YES",
-            "--co=COMPRESS=DEFLATE",
-            "--co=BIGTIFF=IF_SAFER",
-            f"--outfile={masked}",
-        ],
-        config.command_timeout_seconds,
-    )
+    masked = _build_masked_scene(warped_rgb, warped_scl, scene, config.command_timeout_seconds)
     warped_rgb.unlink()
     warped_scl.unlink()
     if rgb.exists():
@@ -795,7 +870,9 @@ def build_release(
         def build_scene(item: tuple[int, Candidate]) -> Path:
             index, candidate = item
             require_free_space(config.root, config.minimum_free_bytes)
-            return _build_scene(config, candidate, work, index)
+            scene = _build_scene(config, candidate, work, index)
+            _log_alpha_coverage(f"scene grid={candidate.grid_code or 'unknown'}", scene)
+            return scene
 
         worker_count = _scene_worker_count(len(indexed_candidates))
         if worker_count == 1:
@@ -817,6 +894,9 @@ def build_release(
             ],
             config.command_timeout_seconds,
         )
+        # A broad random sample across the VRT reopens hundreds of large source
+        # rasters and can exceed the diagnostic's fixed timeout. Publication is
+        # gated below by actual tile coverage and by release validation.
         mosaic = work / "mosaic.tif"
         _run(
             [
@@ -837,10 +917,17 @@ def build_release(
         require_free_space(config.root, config.minimum_free_bytes)
         tiles = staging / "tiles"
         _build_web_tiles(mosaic, tiles, config)
-        _discard_tiny_webp_tiles(tiles)
+        tile_count = sum(1 for _ in tiles.rglob("*.webp"))
+        removed = _discard_tiny_webp_tiles(tiles)
+        print(
+            f"imagery diagnostic webp tiles: generated={tile_count} "
+            f"tiny_removed={removed} retained={tile_count - removed}",
+            file=sys.stderr, flush=True,
+        )
         if not any(tiles.rglob("*.webp")):
             raise ReleaseValidationError("GDAL produced no imagery tiles")
         _require_nonempty_tile_coverage(tiles, aoi_bounds(config.aoi), config.maximum_zoom)
+        _require_region_tile_coverage(tiles, config.aoi, config.maximum_zoom)
         observed = sorted(candidate.observed_at for candidate in candidates)
         metadata = {
             "version": window.identifier,
@@ -855,6 +942,13 @@ def build_release(
                 sum(candidate.cloud_percent for candidate in candidates) / len(candidates), 2
             ),
             "status": "CURRENT",
+            "coverageRegionCodes": [
+                feature["properties"]["regionCode"]
+                for feature in json.loads(config.aoi.read_text()).get("features", [])
+                if isinstance(feature, Mapping)
+                and isinstance(feature.get("properties"), Mapping)
+                and isinstance(feature["properties"].get("regionCode"), str)
+            ],
             "sourceProductIds": [candidate.product_id for candidate in candidates],
             "truthStatement": "Latest available cloud-filtered observation; not live video.",
         }
@@ -1016,6 +1110,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--now", help="UTC ISO instant used for deterministic operation")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--revision", type=int, help="positive same-month republication number")
+    parser.add_argument("--build-only", action="store_true", help="validate staging without changing current")
     arguments = parser.parse_args(argv)
     now = (
         datetime.fromisoformat(arguments.now.replace("Z", "+00:00"))
@@ -1023,6 +1119,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         else datetime.now(timezone.utc)
     )
     window = complete_month(now)
+    if arguments.revision is not None:
+        if arguments.revision < 2 or arguments.revision > 99:
+            raise ValueError("revision must be between 2 and 99")
+        window = WeekWindow(f"{window.identifier}-r{arguments.revision}", window.start, window.end)
     if arguments.dry_run:
         print(
             json.dumps(
@@ -1043,15 +1143,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         search_candidates(config, window.start, window.end), config.maximum_cloud_percent
     )
     if not candidates:
-        expanded_start = window.start - timedelta(days=30)
-        candidates = rank_candidates(
-            search_candidates(config, expanded_start, window.end), config.maximum_cloud_percent
-        )
-    if not candidates:
-        raise RuntimeError("no authorized cloud-qualified Sentinel-2 product is available")
+        raise RuntimeError("no cloud-qualified Sentinel-2 product exists in the last 30 complete days")
     candidates = select_grid_candidates(candidates)
     require_free_space(config.root, config.minimum_free_bytes)
     staging = build_release(config, window, candidates, now)
+    if arguments.build_only:
+        print(f"monthly imagery staged and validated: {staging}")
+        return 0
     published = publish_release(config.root, staging, config.backend_reader_uid)
     retain_releases(config.root, keep=config.retention_count)
     print(f"monthly imagery published: {published.name}")

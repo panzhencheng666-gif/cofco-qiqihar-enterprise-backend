@@ -14,6 +14,9 @@ import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.YearMonth;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.temporal.IsoFields;
 import java.time.temporal.TemporalAdjusters;
@@ -134,7 +137,10 @@ public class MapImageryTileGateway {
 
     public Tile tile(int zoom, int x, int y) throws IOException, InterruptedException {
         validateCoordinate(zoom, x, y);
-        if (localReleases != null && localReleases.currentMetadata().isPresent()) {
+        var currentRelease = localReleases == null
+                ? java.util.Optional.<LocalImageryReleaseStore.ReleaseMetadata>empty()
+                : localReleases.currentMetadata();
+        if (currentRelease.isPresent()) {
             try {
                 var tile = localReleases.currentTile(zoom, x, y);
                 var bytes = tile.bytes();
@@ -144,9 +150,13 @@ public class MapImageryTileGateway {
                 return new Tile(
                         bytes, tile.contentType(), tile.etag(), tile.version(), false);
             } catch (IOException outsideLocalCoverage) {
-                // The public overview includes context outside Qiqihar. Keep the
-                // historical fallback there instead of turning the whole raster
-                // source into a partially missing layer.
+                // A four-region release must never quietly mix old provider
+                // imagery into a map advertised as recent Sentinel-2.
+                if (currentRelease.orElseThrow().coverageRegionCodes().size() >= 4) {
+                    throw outsideLocalCoverage;
+                }
+                // Legacy single-region releases still need their historical
+                // surrounding context until the four-region cutover.
             }
         }
         ImageryPeriod period = imageryPeriod();
@@ -202,6 +212,17 @@ public class MapImageryTileGateway {
                     if (age.compareTo(maximumAge) > 0 || age.compareTo(Duration.ofHours(-1)) < 0) {
                         status = "STALE";
                     }
+                    if ("MONTHLY".equals(metadata.updateCadence())) {
+                        var chinaNow = clock.instant().atZone(ZoneId.of("Asia/Shanghai"));
+                        var scheduledMonth = YearMonth.from(chinaNow).toString();
+                        var scheduledRunStarted = chinaNow.getDayOfMonth() > 1
+                                || !chinaNow.toLocalTime().isBefore(LocalTime.of(1, 0));
+                        if (scheduledRunStarted
+                                && !metadata.version().equals(scheduledMonth)
+                                && !metadata.version().startsWith(scheduledMonth + "-r")) {
+                            status = "STALE";
+                        }
+                    }
                 } catch (RuntimeException invalidTimestamp) {
                     status = "STALE";
                 }
@@ -218,6 +239,7 @@ public class MapImageryTileGateway {
                         metadata.spatialResolutionMeters(),
                         metadata.cloudCoveragePercent(),
                         status,
+                        metadata.coverageRegionCodes(),
                         metadata.sourceProductIds(),
                         metadata.truthStatement());
             }
@@ -239,6 +261,7 @@ public class MapImageryTileGateway {
                 null,
                 null,
                 weeklyConfigured ? "CURRENT" : "FALLBACK",
+                List.of(),
                 List.of(),
                 weeklyConfigured
                         ? "Latest available governed weekly observation; not live video."
@@ -400,9 +423,11 @@ public class MapImageryTileGateway {
             Integer spatialResolutionMeters,
             Double cloudCoveragePercent,
             String status,
+            List<String> coverageRegionCodes,
             List<String> sourceProductIds,
             String truthStatement) {
         public Metadata {
+            coverageRegionCodes = List.copyOf(coverageRegionCodes);
             sourceProductIds = List.copyOf(sourceProductIds);
         }
     }

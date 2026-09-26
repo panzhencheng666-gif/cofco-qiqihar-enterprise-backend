@@ -15,7 +15,7 @@ import tools.jackson.databind.ObjectMapper;
 
 @Component
 public class LocalImageryReleaseStore {
-    private static final Pattern VERSION = Pattern.compile("[0-9]{4}-(?:W[0-9]{2}|[0-9]{2})");
+    private static final Pattern VERSION = Pattern.compile("[0-9]{4}-(?:W[0-9]{2}|[0-9]{2})(?:-r(?:[2-9]|[1-9][0-9]))?");
     private static final int MAXIMUM_TILE_BYTES = 5 * 1024 * 1024;
 
     private final Path root;
@@ -129,9 +129,11 @@ public class LocalImageryReleaseStore {
             int spatialResolutionMeters,
             double cloudCoveragePercent,
             String status,
+            List<String> coverageRegionCodes,
             List<String> sourceProductIds,
             String truthStatement) {
         public ReleaseMetadata {
+            coverageRegionCodes = coverageRegionCodes == null ? List.of() : List.copyOf(coverageRegionCodes);
             sourceProductIds = List.copyOf(sourceProductIds);
         }
     }

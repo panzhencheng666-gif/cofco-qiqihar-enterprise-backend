@@ -45,6 +45,31 @@ output="$({
 [[ "$output" == *"WEEKLY_IMAGERY_RELEASE_OK version=2026-09"* ]] || \
   fail "success marker missing: $output"
 
+mv "$release" "${release}-r2"
+release="${release}-r2"
+python3 - "$release" <<'PY'
+from hashlib import sha256
+import json
+from pathlib import Path
+import sys
+
+release = Path(sys.argv[1])
+metadata = release / "metadata.json"
+payload = json.loads(metadata.read_text())
+payload["version"] = "2026-09-r2"
+metadata.write_text(json.dumps(payload) + "\n")
+(release / "manifest.sha256").write_text("".join(
+    f"{sha256(path.read_bytes()).hexdigest()}  {path.relative_to(release).as_posix()}\n"
+    for path in sorted(release.rglob("*"))
+    if path.is_file() and path.name != "manifest.sha256"
+))
+PY
+ln -sfn "releases/2026-09-r2" "${fixture}/current"
+output="$(bash "$verifier" --root "$fixture" --now 2026-09-22T06:00:00Z \
+  --max-age-hours 48 --skip-systemd 2>&1)" || fail "$output"
+[[ "$output" == *"WEEKLY_IMAGERY_RELEASE_OK version=2026-09-r2"* ]] || \
+  fail "revision marker missing: $output"
+
 printf 'tampered' >> "${release}/tiles/5/26/11.webp"
 if bash "$verifier" --root "$fixture" --now 2026-09-22T06:00:00Z \
   --max-age-hours 48 --skip-systemd >/dev/null 2>&1; then

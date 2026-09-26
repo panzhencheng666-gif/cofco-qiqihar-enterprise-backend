@@ -51,6 +51,16 @@ class LocalImageryReleaseStoreTest {
     }
 
     @Test
+    void readsRevisedMonthlyReleaseWithIndependentCacheVersion() throws Exception {
+        var release = release("2026-09-r2");
+        Files.createSymbolicLink(temporary.resolve("current"), release);
+        var store = new LocalImageryReleaseStore(temporary.toString(), new ObjectMapper());
+
+        assertThat(store.currentMetadata().orElseThrow().version()).isEqualTo("2026-09-r2");
+        assertThat(store.tile("2026-09-r2", 14, 13871, 5612).bytes()).isNotEmpty();
+    }
+
+    @Test
     void isDisabledWhenTheReleaseRootIsBlank() {
         var store = new LocalImageryReleaseStore("", new ObjectMapper());
 

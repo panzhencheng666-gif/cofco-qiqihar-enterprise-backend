@@ -83,7 +83,7 @@ class WeeklyImagerySyncTest(unittest.TestCase):
         clear = "((D==2)|(D==4)|(D==5)|(D==6)|(D==7))"
         self.assertEqual(
             [
-                f"A*{clear}", f"B*{clear}", f"C*{clear}", f"255*{clear}",
+                f"A*{clear}", f"A*{clear}", f"A*{clear}", f"255*{clear}",
             ],
             worker._scene_band_expressions(),
         )
@@ -121,6 +121,30 @@ class WeeklyImagerySyncTest(unittest.TestCase):
                 (tiles / "5" / str(x) / f"{y}.webp").write_bytes(b"R" * 400)
 
             worker._require_nonempty_tile_coverage(tiles, bounds, 5)
+
+    def test_region_gate_rejects_a_visible_missing_tile(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            aoi = root / "aoi.geojson"
+            aoi.write_text(json.dumps({
+                "type": "Feature",
+                "geometry": {"type": "Polygon", "coordinates": [[
+                    [112.6, 32.1], [134.9, 32.1], [134.9, 48.0],
+                    [112.6, 48.0], [112.6, 32.1],
+                ]]},
+            }))
+            tiles = root / "tiles"
+            for x, y in ((26, 11), (26, 12), (27, 11)):
+                tile = tiles / "5" / str(x) / f"{y}.webp"
+                tile.parent.mkdir(parents=True, exist_ok=True)
+                tile.write_bytes(b"R" * 400)
+
+            with self.assertRaisesRegex(ReleaseValidationError, "AOI region 1"):
+                worker._require_region_tile_coverage(tiles, aoi, 5)
+
+            missing = tiles / "5/27/12.webp"
+            missing.write_bytes(b"R" * 400)
+            worker._require_region_tile_coverage(tiles, aoi, 5)
 
     def test_discards_tiny_white_webp_tiles_before_publication(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -171,6 +195,7 @@ class WeeklyImagerySyncTest(unittest.TestCase):
 
         self.assertIn("--exclude", run.call_args_list[0].args[0])
 
+    @patch("scripts.weekly_imagery_sync._log_alpha_coverage")
     @patch("scripts.weekly_imagery_sync.require_free_space")
     @patch("scripts.weekly_imagery_sync._require_nonempty_tile_coverage")
     @patch("scripts.weekly_imagery_sync._build_web_tiles")
@@ -178,7 +203,7 @@ class WeeklyImagerySyncTest(unittest.TestCase):
     @patch("scripts.weekly_imagery_sync._build_scene")
     @patch("scripts.weekly_imagery_sync._check_gdal")
     def test_build_release_manifest_excludes_removed_work_files(
-        self, check_gdal, build_scene, run, build_tiles, coverage, free_space
+        self, check_gdal, build_scene, run, build_tiles, coverage, free_space, log_alpha
     ):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -208,7 +233,9 @@ class WeeklyImagerySyncTest(unittest.TestCase):
             self.assertFalse((staging / "work").exists())
             self.assertNotIn("work/", (staging / "manifest.sha256").read_text())
             self.assertEqual("MONTHLY", json.loads((staging / "metadata.json").read_text())["updateCadence"])
-            coverage.assert_called_once()
+            self.assertEqual(2, coverage.call_count)
+            self.assertEqual(1, log_alpha.call_count)
+            self.assertEqual("scene grid=unknown", log_alpha.call_args.args[0])
             validate_release(staging)
 
     @patch("scripts.weekly_imagery_sync.time.sleep")
@@ -326,7 +353,7 @@ class WeeklyImagerySyncTest(unittest.TestCase):
         self.assertEqual("2026-10", window.identifier)
         self.assertEqual("2026-09-30", window.end.isoformat())
 
-    @patch("scripts.weekly_imagery_sync.aoi_bounds", return_value=(123, 47, 124, 48))
+    @patch("scripts.weekly_imagery_sync.aoi_feature_bounds", return_value=[(123, 47, 124, 48)])
     @patch("scripts.weekly_imagery_sync._read_json_response")
     def test_monthly_catalog_search_follows_post_pagination(self, read_json, bounds):
         def feature(identifier):
@@ -354,6 +381,47 @@ class WeeklyImagerySyncTest(unittest.TestCase):
         self.assertEqual(["first", "second"], [item.product_id for item in found])
         self.assertEqual("page-2", json.loads(read_json.call_args.args[0].data)["token"])
         self.assertEqual("collection", json.loads(read_json.call_args.args[0].data)["collections"][0])
+
+    @patch("scripts.weekly_imagery_sync._read_json_response")
+    def test_four_region_catalog_search_queries_each_envelope_and_deduplicates(self, read_json):
+        def feature(identifier):
+            return {
+                "id": identifier,
+                "properties": {"datetime": "2026-09-20T00:00:00Z", "eo:cloud_cover": 1},
+                "assets": {
+                    "visual": {"href": "https://example.test/visual.tif"},
+                    "scl": {"href": "https://example.test/scl.tif"},
+                },
+            }
+
+        read_json.side_effect = [
+            {"features": [feature("shared"), feature("west")], "links": []},
+            {"features": [feature("shared"), feature("east")], "links": []},
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            aoi = root / "aoi.geojson"
+            aoi.write_text(json.dumps({"type": "FeatureCollection", "features": [
+                {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [
+                    [[120, 47], [121, 47], [121, 48], [120, 48], [120, 47]]]}},
+                {"type": "Feature", "geometry": {"type": "Polygon", "coordinates": [
+                    [[124, 49], [125, 49], [125, 50], [124, 50], [124, 49]]]}},
+            ]}))
+            config = SyncConfig(root, aoi, "https://example.test/search", "collection", ("example.test",), 30, 5, 14, 5, 60, "", 0, 2)
+            found = search_candidates(config, datetime(2026, 9, 1).date(), datetime(2026, 9, 22).date())
+
+        self.assertEqual({"shared", "west", "east"}, {item.product_id for item in found})
+        self.assertEqual([(120, 47, 121, 48), (124, 49, 125, 50)], [
+            tuple(json.loads(item.args[0].data)["bbox"]) for item in read_json.call_args_list
+        ])
+
+    def test_governed_four_region_aoi_contains_all_root_regions(self):
+        aoi = json.loads((REPOSITORY_ROOT / "ops/imagery/four-region-aoi.geojson").read_text())
+        self.assertEqual(
+            {"230200", "150700", "231100", "232700"},
+            {feature["properties"]["regionCode"] for feature in aoi["features"]},
+        )
+        self.assertEqual(4, len(worker.aoi_feature_bounds(REPOSITORY_ROOT / "ops/imagery/four-region-aoi.geojson")))
 
     def test_rank_prefers_authorized_clear_and_recent_products(self):
         candidates = [
