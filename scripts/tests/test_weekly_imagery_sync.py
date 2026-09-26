@@ -48,6 +48,27 @@ from scripts import weekly_imagery_sync as worker  # noqa: E402
 
 
 class WeeklyImagerySyncTest(unittest.TestCase):
+    def test_r4i_repair_seed_is_isolated_and_never_publishable(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            staging = root / worker.R4I_BASE_STAGE_NAME
+            staging.mkdir()
+            (staging / "manifest.sha256").write_text("pinned manifest\n")
+            (staging / "tile.webp").write_bytes(b"original")
+            digest = worker._file_sha256(staging / "manifest.sha256")
+            with patch.object(worker, "R4I_MANIFEST_SHA256", digest), patch.object(
+                worker, "validate_r4i_repair_baseline"
+            ) as baseline_guard:
+                seed = worker.seed_r4i_repair(root, staging, root / "plan.json", root / "delta.json", 0)
+            baseline_guard.assert_called_once_with(staging, digest, root / "plan.json", root / "delta.json")
+            self.assertTrue(seed.name.startswith(".failed-2026-09-r4-repair-seed-"))
+            self.assertTrue((seed / "FAILED").is_file())
+            self.assertNotEqual((staging / "tile.webp").stat().st_ino, (seed / "tile.webp").stat().st_ino)
+            (seed / "tile.webp").write_bytes(b"changed")
+            self.assertEqual(b"original", (staging / "tile.webp").read_bytes())
+            with self.assertRaisesRegex(ReleaseValidationError, "failed candidate"):
+                validate_release(seed)
+
     def test_r4i_repair_baseline_requires_exact_inventory_and_identity(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

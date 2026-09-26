@@ -49,6 +49,7 @@ R4E_SOURCE_AUDIT_SHA256 = "3af5e4dca99f635fc329b9c7e532553c216bb881c8f91bffb3f47
 R4J_BASE_PLAN_SHA256 = "87b70edd5eaf850ab66a7f87edfd08c241cd5e138f17c911fbbfae7e139b70d9"
 R4J_SOURCE_DELTA_SHA256 = "7f725ea837b38771b2ded5e698d8094e076b3ea8aa26da5a6e3af43c2da4c078"
 R4I_BASE_STAGE_NAME = ".staging-2026-09-r4-bxf12k9l"
+R4I_MANIFEST_SHA256 = "3782bea1cefbf3f04233cfe017e1fc78b0cdd99f8533e8943076f3c9f3fa409e"
 _PLANETARY_TOKEN_CACHE: dict[tuple[str, str], str] = {}
 _PLANETARY_TOKEN_LOCK = threading.Lock()
 REQUIRED_GDAL_COMMANDS = (
@@ -1726,6 +1727,34 @@ def validate_r4i_repair_baseline(
     if set(metadata.source_product_ids) != product_ids or len(metadata.source_product_ids) != 189:
         raise ReleaseValidationError("r4i baseline product list mismatch")
     return metadata
+
+
+def seed_r4i_repair(
+    root: Path, staging: Path, base_plan_path: Path, delta_path: Path,
+    minimum_free_bytes: int,
+) -> Path:
+    """Copy the guarded r4i baseline into an explicitly unpublishable repair seed."""
+    if staging.resolve().parent != root.resolve():
+        raise ReleaseValidationError("r4i baseline is outside the imagery root")
+    validate_r4i_repair_baseline(staging, R4I_MANIFEST_SHA256, base_plan_path, delta_path)
+    apparent_bytes = sum(path.stat().st_size for path in staging.rglob("*") if path.is_file())
+    required = max(minimum_free_bytes, 2 * apparent_bytes)
+    available = shutil.disk_usage(root).free
+    if available < required:
+        raise ReleaseValidationError(
+            f"insufficient space for isolated repair seed: available={available}, required={required}"
+        )
+    seed = Path(tempfile.mkdtemp(prefix=".failed-2026-09-r4-repair-seed-", dir=root))
+    (seed / "FAILED").write_text("Repair seed incomplete; never publish directly.\n")
+    try:
+        shutil.copytree(staging, seed, dirs_exist_ok=True, copy_function=shutil.copy2)
+        if _file_sha256(seed / "manifest.sha256") != R4I_MANIFEST_SHA256 \
+                or _file_sha256(staging / "manifest.sha256") != R4I_MANIFEST_SHA256:
+            raise ReleaseValidationError("r4i manifest changed while copying repair seed")
+    except BaseException:
+        print(f"incomplete repair seed retained: {seed}", file=sys.stderr, flush=True)
+        raise
+    return seed
 
 
 def publish_release(
