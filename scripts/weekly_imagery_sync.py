@@ -285,6 +285,31 @@ def validate_r4j_source_delta(base_plan_path: Path, delta_path: Path) -> dict[st
     return record
 
 
+def r4j_repair_candidate(
+    config: SyncConfig, base_plan_path: Path, delta_path: Path,
+) -> Candidate:
+    """Convert only the pinned September 9 product to a repair input."""
+    product = validate_r4j_source_delta(base_plan_path, delta_path)["delta"]
+    feature = {
+        "id": product["candidateId"],
+        "bbox": product["bbox"],
+        "properties": {
+            "datetime": product["acquiredAt"],
+            "eo:cloud_cover": product["cloudPercent"],
+            "source:provider": product["provider"],
+            "s2:product_uri": product["productUri"],
+        },
+        "assets": {"visual": product["assets"]["visual"], "scl": product["assets"]["SCL"]},
+    }
+    counts = {"planetary-computer": 0, "google-public-sentinel-2-l2a": 0}
+    _validate_mixed_source_feature(feature, counts)
+    candidates = parse_candidates({"features": [feature]}, config.allowed_hosts)
+    if len(candidates) != 1 or len(rank_candidates(candidates, config.maximum_cloud_percent)) != 1 \
+            or candidates[0].grid_code != "51UYT":
+        raise ReleaseValidationError("r4j repair product is not authorized and cloud-qualified")
+    return candidates[0]
+
+
 def _validate_mixed_source_feature(feature: Mapping[str, Any], counts: dict[str, int]) -> None:
     """Keep the audited one-off source switch narrow and product-identical."""
     identifier = feature.get("id")
