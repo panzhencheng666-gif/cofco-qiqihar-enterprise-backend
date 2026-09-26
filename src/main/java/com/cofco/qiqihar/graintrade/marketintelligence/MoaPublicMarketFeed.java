@@ -33,7 +33,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -62,6 +63,7 @@ public class MoaPublicMarketFeed {
 
     private final JdbcClient jdbc;
     private final JdbcTemplate template;
+    private final TransactionTemplate transactions;
     private final ObjectMapper mapper;
     private final HttpClient http = createOfficialSourceClient();
 
@@ -87,9 +89,11 @@ public class MoaPublicMarketFeed {
         }
     }
 
-    public MoaPublicMarketFeed(JdbcClient jdbc, JdbcTemplate template, ObjectMapper mapper) {
+    public MoaPublicMarketFeed(JdbcClient jdbc, JdbcTemplate template, ObjectMapper mapper,
+                               PlatformTransactionManager transactionManager) {
         this.jdbc = jdbc;
         this.template = template;
+        this.transactions = new TransactionTemplate(transactionManager);
         this.mapper = mapper;
     }
 
@@ -188,8 +192,12 @@ public class MoaPublicMarketFeed {
         }
     }
 
-    @Transactional
     public void save(List<Headline> headlines, List<Quote> quotes, Instant fetchedAt) {
+        // refresh invokes this method directly, so the transaction must not depend on a proxy.
+        transactions.executeWithoutResult(status -> saveBatch(headlines, quotes, fetchedAt));
+    }
+
+    private void saveBatch(List<Headline> headlines, List<Quote> quotes, Instant fetchedAt) {
         template.batchUpdate("""
                 INSERT INTO market_intelligence.news_headline (source_code,article_url,title,published_at,fetched_at)
                 VALUES ('moa-public-monitor',?,?,?,?)

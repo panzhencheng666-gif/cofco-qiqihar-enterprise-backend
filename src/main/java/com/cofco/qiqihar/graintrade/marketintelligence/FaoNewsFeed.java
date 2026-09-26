@@ -24,7 +24,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.w3c.dom.Element;
@@ -37,12 +38,15 @@ public class FaoNewsFeed {
     private static final int MAX_BYTES = 1_000_000;
     private final JdbcClient jdbc;
     private final JdbcTemplate template;
+    private final TransactionTemplate transactions;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(8))
             .followRedirects(HttpClient.Redirect.NORMAL).build();
 
-    public FaoNewsFeed(JdbcClient jdbc, JdbcTemplate template) {
+    public FaoNewsFeed(JdbcClient jdbc, JdbcTemplate template,
+                       PlatformTransactionManager transactionManager) {
         this.jdbc = jdbc;
         this.template = template;
+        this.transactions = new TransactionTemplate(transactionManager);
     }
 
     public record Headline(String title, String url, Instant publishedAt, Instant fetchedAt) { }
@@ -117,8 +121,12 @@ public class FaoNewsFeed {
         }
     }
 
-    @Transactional
     public void save(List<Headline> headlines, Instant fetchedAt) {
+        // refresh invokes this method directly, so the transaction must not depend on a proxy.
+        transactions.executeWithoutResult(status -> saveBatch(headlines, fetchedAt));
+    }
+
+    private void saveBatch(List<Headline> headlines, Instant fetchedAt) {
         template.batchUpdate("""
                 INSERT INTO market_intelligence.news_headline
                     (source_code,article_url,title,published_at,fetched_at)

@@ -22,7 +22,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /** Headlines and links from the Ministry's public department-news index. */
 @Component
@@ -35,11 +36,14 @@ public class MoaDepartmentNewsFeed {
     private static final Pattern RELEVANT = Pattern.compile("粮|秋收|夏收|耕地|农机|农业生产|农作物|农业机械化|农产品|大豆|玉米|小麦|水稻|油料|畜|渔|灾|虫|肥|种植|丰收");
     private final JdbcClient jdbc;
     private final JdbcTemplate template;
+    private final TransactionTemplate transactions;
     private final HttpClient http = MoaPublicMarketFeed.createOfficialSourceClient();
 
-    public MoaDepartmentNewsFeed(JdbcClient jdbc, JdbcTemplate template) {
+    public MoaDepartmentNewsFeed(JdbcClient jdbc, JdbcTemplate template,
+                                 PlatformTransactionManager transactionManager) {
         this.jdbc = jdbc;
         this.template = template;
+        this.transactions = new TransactionTemplate(transactionManager);
     }
 
     public record Headline(String title, String url, LocalDate publishedOn) { }
@@ -88,8 +92,12 @@ public class MoaDepartmentNewsFeed {
         }
     }
 
-    @Transactional
     public void save(List<Headline> headlines, Instant fetchedAt) {
+        // refresh invokes this method directly, so the transaction must not depend on a proxy.
+        transactions.executeWithoutResult(status -> saveBatch(headlines, fetchedAt));
+    }
+
+    private void saveBatch(List<Headline> headlines, Instant fetchedAt) {
         template.batchUpdate("""
                 INSERT INTO market_intelligence.news_headline (source_code,article_url,title,published_at,fetched_at)
                 VALUES ('moa-department-news',?,?,?,?)
