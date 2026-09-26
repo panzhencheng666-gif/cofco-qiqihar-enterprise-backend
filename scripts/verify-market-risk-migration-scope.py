@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Keep pending risk migrations out of a market-only local install."""
 
+import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -13,11 +15,43 @@ RISK_MIGRATIONS = {
     "217": "V217__isolate_risk_schema_runtime.sql",
 }
 DATABASE = "qiqihar_enterprise_dev"
+DATABASE_URL = f"jdbc:postgresql://127.0.0.1:5432/{DATABASE}"
+
+
+def require_managed_database_target():
+    # The launch agent exports this file after inheriting its own environment.
+    # Require an explicit target in that file; the installer's shell environment
+    # alone cannot establish the target of the separately launched agent.
+    config = Path(os.environ.get("COFCO_ENTERPRISE_LOCAL_ENV_FILE") or
+                  Path.home() / ".config/cofco-qiqihar-enterprise/local-runtime.env")
+    if config.is_symlink() or not config.is_file():
+        raise ValueError("Managed database target requires a regular runtime config")
+    if stat.S_IMODE(config.stat().st_mode) & 0o077:
+        raise ValueError("Managed runtime config has unsafe permissions")
+    target = None
+    for line in config.read_text(encoding="utf-8").split("\n"):
+        line = line.removesuffix("\r")
+        if not line or line.startswith("#"):
+            continue
+        key, separator, value = line.partition("=")
+        if not separator:
+            raise ValueError("Managed runtime config contains an invalid line")
+        if key == "QIQIHAR_DB_URL":
+            target = value  # Match the launcher's literal, last-value-wins parsing.
+    if target is None:
+        raise ValueError("Managed database target must be explicit in runtime config")
+    if target != DATABASE_URL:
+        raise ValueError("Managed database target differs from the supported formal local target")
+    if any(os.environ.get(key) for key in (
+        "SPRING_DATASOURCE_URL", "SPRING_FLYWAY_URL", "SPRING_APPLICATION_JSON"
+    )):
+        raise ValueError("Unsupported Spring database override during managed preflight")
 
 
 def installed_migrations():
+    require_managed_database_target()
     query = (
-        "SELECT version || '|' || script FROM flyway_schema_history "
+        "SELECT version || '|' || script FROM public.flyway_schema_history "
         "WHERE success AND version IN ('214','215','216','217') "
         "ORDER BY installed_rank"
     )
