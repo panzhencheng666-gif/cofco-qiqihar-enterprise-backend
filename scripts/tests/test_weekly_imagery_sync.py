@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import math
 import os
 import subprocess
 import sys
@@ -304,18 +305,37 @@ class WeeklyImagerySyncTest(unittest.TestCase):
             with self.assertRaisesRegex(ReleaseValidationError, "AOI region 2"):
                 worker._require_release_tile_coverage(tiles, aoi, 5)
 
-    def test_discards_tiny_white_webp_tiles_before_publication(self):
+    def test_discards_only_tiny_white_webp_tiles_with_empty_mosaic_alpha(self):
         with tempfile.TemporaryDirectory() as temporary:
             tiles = Path(temporary)
             blank = tiles / "14/13949/5764.webp"
-            valid = tiles / "14/13949/5765.webp"
+            valid = tiles / "14/13869/5625.webp"
+            white_with_imagery = tiles / "14/13949/5765.webp"
             blank.parent.mkdir(parents=True)
+            valid.parent.mkdir(parents=True)
             blank.write_bytes(b"RIFF" + b"\0" * 4 + b"WEBP" + b"\0" * 166)
-            valid.write_bytes(b"RIFF" + b"\0" * 4 + b"WEBP" + b"X" * 388)
+            valid.write_bytes(b"RIFF" + b"\0" * 4 + b"WEBP" + b"X" * 286)
+            white_with_imagery.write_bytes(b"RIFF" + b"\0" * 4 + b"WEBP" + b"\0" * 166)
+            mosaic = tiles / "mosaic.tif"
+            extent = math.pi * 6378137.0
+            blank_top = extent - 5764 * (2 * extent / (1 << 14))
 
-            self.assertEqual(1, worker._discard_tiny_webp_tiles(tiles))
+            def inspect(raster, band, value, bounds=None):
+                if raster == valid:
+                    return False
+                if raster == mosaic:
+                    self.assertEqual(4, band)
+                    self.assertIsNotNone(bounds)
+                    return abs(bounds[1] - blank_top) < 1e-6
+                return True
+
+            with patch.object(worker, "_raster_band_is_constant", side_effect=inspect) as inspect_pixels:
+                self.assertEqual(1, worker._discard_tiny_webp_tiles(tiles, mosaic))
+
             self.assertFalse(blank.exists())
             self.assertTrue(valid.exists())
+            self.assertTrue(white_with_imagery.exists())
+            self.assertEqual(2, sum(call.args[0] == mosaic for call in inspect_pixels.call_args_list))
 
     @patch("scripts.weekly_imagery_sync._run")
     @patch("scripts.weekly_imagery_sync.subprocess.run")

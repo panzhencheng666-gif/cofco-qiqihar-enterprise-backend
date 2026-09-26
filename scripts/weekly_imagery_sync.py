@@ -649,14 +649,48 @@ def _legacy_webp_band_args(source: Path) -> list[str]:
     return []
 
 
-def _discard_tiny_webp_tiles(tiles: Path) -> int:
-    """Remove GDAL's tiny opaque white no-data tiles before publication."""
+def _raster_band_is_constant(raster: Path, band: int, value: int, bounds: tuple[float, ...] | None = None) -> bool:
+    """Inspect every pixel; a small compressed WebP can contain real imagery."""
+    command = ["gdal_translate", "-q", "-of", "XYZ", "-b", str(band)]
+    if bounds is not None:
+        command.extend(["-projwin_srs", "EPSG:3857", "-projwin", *(str(edge) for edge in bounds)])
+    command.extend(["-outsize", "256", "256", str(raster), "/vsistdout/"])
+    try:
+        result = subprocess.run(
+            command, check=True, timeout=120, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True,
+        )
+        pixels = [float(line.rsplit(" ", 1)[-1]) for line in result.stdout.splitlines()]
+    except (OSError, subprocess.SubprocessError, ValueError) as failure:
+        raise ReleaseValidationError(f"unable to inspect tile pixels: {raster}") from failure
+    if len(pixels) != 256 * 256:
+        raise ReleaseValidationError(f"unexpected pixel count for {raster}: {len(pixels)}")
+    return all(pixel == value for pixel in pixels)
+
+
+def _discard_tiny_webp_tiles(tiles: Path, mosaic: Path) -> int:
+    """Remove tiny opaque white tiles only when their mosaic alpha is empty."""
     removed = 0
     for tile in tiles.rglob("*.webp"):
         if tile.stat().st_size > 300:
             continue
         data = tile.read_bytes()
-        if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+            raise ReleaseValidationError(f"invalid tiny WebP tile: {tile}")
+        if not all(_raster_band_is_constant(tile, band, 255) for band in (1, 2, 3)):
+            continue
+        relative = tile.relative_to(tiles)
+        try:
+            zoom, x, y = int(relative.parts[0]), int(relative.parts[1]), int(relative.stem)
+            if len(relative.parts) != 3 or zoom < 0 or x < 0 or y < 0 or x >= 1 << zoom or y >= 1 << zoom:
+                raise ValueError("out of range")
+        except (IndexError, ValueError) as failure:
+            raise ReleaseValidationError(f"invalid tile coordinates: {relative}") from failure
+        extent = math.pi * 6378137.0
+        span = 2 * extent / (1 << zoom)
+        bounds = (-extent + x * span, extent - y * span,
+                  -extent + (x + 1) * span, extent - (y + 1) * span)
+        if _raster_band_is_constant(mosaic, 4, 0, bounds):
             tile.unlink()
             removed += 1
     return removed
@@ -1484,7 +1518,7 @@ def build_release(
         tiles = staging / "tiles"
         _build_web_tiles(mosaic, tiles, config)
         tile_count = sum(1 for _ in tiles.rglob("*.webp"))
-        removed = _discard_tiny_webp_tiles(tiles)
+        removed = _discard_tiny_webp_tiles(tiles, mosaic)
         print(
             f"imagery diagnostic webp tiles: generated={tile_count} "
             f"tiny_removed={removed} retained={tile_count - removed}",
