@@ -83,7 +83,7 @@ def verify(manifest_path, workspace):
         "--backend-root", str(backend),
         "--frontend-root", str(workspace / "cofco-qiqihar-enterprise-frontend"),
         "--web-root", str(web),
-        "--node-version", command("node", "--version"),
+        "--node-version", command("node", "--print", "process.versions.node"),
         "--npm-version", command("npm", "--version"),
         "--jdk-version", version.group(1),
         timeout=120,
