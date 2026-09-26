@@ -95,6 +95,7 @@ class SyncConfig:
     minimum_free_bytes: int
     retention_count: int
     backend_reader_uid: int | None = None
+    candidate_single_range: bool = False
 
 
 @dataclass(frozen=True)
@@ -587,7 +588,10 @@ def _prepare_tiling_temp(work: Path) -> Path:
     return directory
 
 
-def _run(command: Sequence[str], timeout: int, cwd: Path | None = None) -> None:
+def _run(
+    command: Sequence[str], timeout: int, cwd: Path | None = None,
+    *, extra_env: Mapping[str, str] | None = None,
+) -> None:
     environment = os.environ.copy()
     if Path(command[0]).name == "gdal2tiles.py":
         environment["TMPDIR"] = str(_prepare_tiling_temp(Path(command[-2]).parent))
@@ -599,6 +603,8 @@ def _run(command: Sequence[str], timeout: int, cwd: Path | None = None) -> None:
         environment.setdefault("VSI_CACHE", "TRUE")
         environment.setdefault("VSI_CACHE_SIZE", "50000000")
         environment.setdefault("CPL_VSIL_CURL_CACHE_SIZE", "200000000")
+    if extra_env:
+        environment.update(extra_env)
     try:
         subprocess.run(
             list(command),
@@ -836,19 +842,28 @@ def _run_remote_warp(
     destination: Path,
 ) -> None:
     """Retry a transient remote GDAL read with a newly signed source URL."""
+    single_range = (
+        config.candidate_single_range
+        and urllib.parse.urlparse(url).hostname == "sentinel2l2a01.blob.core.windows.net"
+    )
+    overrides = {
+        "GDAL_HTTP_MULTIRANGE": "NO",
+        "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "NO",
+    } if single_range else {}
     for attempt in range(3):
         try:
             source = _vsicurl(url, config.allowed_hosts, config.request_timeout_seconds)
             _run(
                 ["gdalwarp", *warp_common, "-r", resampling, source, str(destination)],
                 config.command_timeout_seconds,
+                extra_env=overrides,
             )
             return
         except RuntimeError as failure:
             destination.unlink(missing_ok=True)
             if attempt == 2:
                 raise RuntimeError(
-                    f"remote imagery warp failed after 3 attempts: {destination.name}"
+                    f"remote imagery warp failed after 3 attempts: {destination.name}: {failure}"
                 ) from failure
             _invalidate_planetary_token(url)
             time.sleep(2**attempt)
@@ -1064,13 +1079,18 @@ def build_release(
         if source_plan is not None:
             _prepare_tiling_temp(work)
             cutline = _dissolve_historical_cutline(config, work / "cutline-union.geojson")
-            scene_config = replace(config, aoi=cutline)
+            scene_config = replace(config, aoi=cutline, candidate_single_range=True)
         indexed_candidates = list(enumerate(reversed(candidates)))
 
         def build_scene(item: tuple[int, Candidate]) -> Path:
             index, candidate = item
             require_free_space(config.root, config.minimum_free_bytes)
-            scene = _build_scene(scene_config, candidate, work, index)
+            try:
+                scene = _build_scene(scene_config, candidate, work, index)
+            except RuntimeError as failure:
+                raise RuntimeError(
+                    f"scene-{index:03d} product={candidate.product_id}: {failure}"
+                ) from failure
             _log_alpha_coverage(f"scene grid={candidate.grid_code or 'unknown'}", scene)
             return scene
 

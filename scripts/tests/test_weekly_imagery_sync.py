@@ -167,6 +167,37 @@ class WeeklyImagerySyncTest(unittest.TestCase):
             sleep.assert_called_once()
 
     @patch("scripts.weekly_imagery_sync.subprocess.run")
+    @patch("scripts.weekly_imagery_sync._vsicurl", return_value="/vsicurl/signed")
+    def test_single_range_is_scoped_to_candidate_pc_child(self, vsicurl, run):
+        root = Path("/tmp")
+        config = SyncConfig(root, root / "aoi", "https://example.test", "sentinel-2-l2a", (), 30, 5, 14, 5, 60, "", 0, 4)
+        pc = "https://sentinel2l2a01.blob.core.windows.net/test.tif"
+        with patch.dict(os.environ, {"GDAL_HTTP_MULTIRANGE": "YES", "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "YES"}):
+            for candidate, url, expected in ((False, pc, "YES"), (True, pc, "NO"), (True, "https://example.test/test.tif", "YES")):
+                with self.subTest(candidate=candidate, url=url):
+                    worker._run_remote_warp(worker.replace(config, candidate_single_range=candidate), url, [], "near", root / "out.tif")
+                    environment = run.call_args.kwargs["env"]
+                    self.assertEqual(expected, environment["GDAL_HTTP_MULTIRANGE"])
+                    self.assertEqual(expected, environment["GDAL_HTTP_MERGE_CONSECUTIVE_RANGES"])
+            self.assertEqual("YES", os.environ["GDAL_HTTP_MULTIRANGE"])
+
+    @patch("scripts.weekly_imagery_sync.time.sleep")
+    @patch("scripts.weekly_imagery_sync._invalidate_planetary_token")
+    @patch("scripts.weekly_imagery_sync._vsicurl", return_value="/vsicurl/signed")
+    @patch("scripts.weekly_imagery_sync.subprocess.run")
+    def test_remote_warp_retains_sanitized_underlying_error(self, run, vsicurl, invalidate, sleep):
+        run.side_effect = subprocess.CalledProcessError(1, ["gdalwarp"], stderr="IReadBlock X12 Y14 https://example.test/a?sig=SECRET")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = SyncConfig(root, root / "aoi", "https://example.test", "sentinel-2-l2a", (), 30, 5, 14, 5, 60, "", 0, 4)
+            with self.assertRaises(RuntimeError) as failure:
+                worker._run_remote_warp(config, "https://example.test/a", [], "near", root / "rgb.tif")
+            self.assertIn("IReadBlock X12 Y14", str(failure.exception))
+            self.assertIn("rgb.tif", str(failure.exception))
+            self.assertNotIn("SECRET", str(failure.exception))
+            self.assertEqual(3, run.call_count)
+
+    @patch("scripts.weekly_imagery_sync.subprocess.run")
     def test_gdal_error_does_not_log_signed_asset_url(self, run):
         run.side_effect = subprocess.CalledProcessError(
             1, ["gdalwarp"], stderr="ERROR 4: /vsicurl/https://example.test/scl.tif?sig=SECRET not recognized"
@@ -369,7 +400,15 @@ class WeeklyImagerySyncTest(unittest.TestCase):
             self.assertEqual(1, log_alpha.call_count)
             self.assertEqual("scene grid=unknown", log_alpha.call_args.args[0])
             self.assertEqual("cutline-union.geojson", build_scene.call_args.args[0].aoi.name)
+            self.assertTrue(build_scene.call_args.args[0].candidate_single_range)
             validate_release(staging)
+
+            build_scene.side_effect = RuntimeError("IReadBlock failed")
+            with self.assertRaisesRegex(RuntimeError, "scene-000 product=S2-test: IReadBlock failed"):
+                build_release(config, WeekWindow("2026-09", datetime(2026, 8, 24).date(), datetime(2026, 9, 22).date()), [candidate], datetime(2026, 9, 21, tzinfo=timezone.utc), source_plan={"version": "2026-09-r4"})
+            failed = list(root.glob(".failed-*"))
+            self.assertEqual(1, len(failed))
+            self.assertIn("not publishable", (failed[0] / "FAILED").read_text())
 
     @patch("scripts.weekly_imagery_sync.time.sleep")
     @patch("scripts.weekly_imagery_sync.urllib.request.urlopen")
