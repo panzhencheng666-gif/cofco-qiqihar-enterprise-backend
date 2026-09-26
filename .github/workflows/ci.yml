@@ -113,6 +113,7 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'pull_request'
         run: |
           mvn -B -ntp -DskipTests package
+          mvn -B -ntp -Dtest=MarketTestDatabaseResetTest test
           mvn -B -ntp \
             -Dtest=MapImageryTileGatewayTest,OverviewMapImageryControllerTest,OpenMeteoOperationalWeatherNowTest,OperationalFacilityRestIntegrationTest,OperationalSituationRestIntegrationTest,RegionalAgricultureProfileCalculatorTest,RegionalAgricultureProfileResponseTest \
             test
