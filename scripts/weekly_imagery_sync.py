@@ -1132,10 +1132,13 @@ def _scene_resume_context(
     }
 
 
-def _write_scene_completion(raster: Path, context: Mapping[str, Any], index: int) -> None:
+def _write_scene_completion(
+    raster: Path, context: Mapping[str, Any], index: int, origin: Mapping[str, Any] | None = None,
+) -> None:
     _atomic_json(raster.parent / "complete.json", {
         "contextSha256": _json_sha256(context), "scene": context["scenes"][index],
         "sha256": _file_sha256(raster), "bytes": raster.stat().st_size,
+        "origin": dict(origin) if origin is not None else {"kind": "generated"},
     })
 
 
@@ -1256,7 +1259,7 @@ def _restore_scenes(
             if _file_sha256(partial) != digest or _file_sha256(source) != digest:
                 raise ReleaseValidationError("recovery digest changed during validation/copy")
             partial.replace(destination)
-            _write_scene_completion(destination, context, index)
+            _write_scene_completion(destination, context, index, record.get("origin"))
             restored[index] = destination
             audit["scenes"].append({"index": index, "productId": identity["productId"], "sha256": digest, **checked})
         if not restored:
@@ -1267,10 +1270,129 @@ def _restore_scenes(
         raise ReleaseValidationError("recovery evidence is invalid or unreadable") from failure
 
 
+# One-off evidence pins from the independent 2026-09-26 production audit.
+# These are not producer completion records and never authorize publication.
+_R4G_MIGRATION = {
+    "failedName": ".failed-2026-09-r4-t9s5w865", "version": "2026-09-r4",
+    "reportSha256": "ed025f9021f0c828ea1380a32ddb1ad257addb6104412b8c744a1e821104723b",
+    "originalWorkerSha256": "05b7ad3ee4f0636f87860ba0619e5353f768417020121c8200881e2889450f0e",
+    "checkerWorkerSha256": "4e7e2a99d9d8d6c8d54a19a368553d6118c8418ab26191fe902f82ddde09c6e9",
+    "planFileSha256": "87b70edd5eaf850ab66a7f87edfd08c241cd5e138f17c911fbbfae7e139b70d9",
+    "aoiSha256": "6457202160f92a169b70766275a97984041da49f040a79446170125c4923b072",
+    "cutlineSha256": "8066dc9d3501bd3530f7bf728a1b6507aa1ab127188db38a9f4151adcc2bc0ed",
+    "indices": [*range(16), 17, 18],
+    "processingSha256": "eaa53d55099e6ecc6ff4ce7375c0e1fd833eeae64399a0712140255fe591a695",
+}
+
+
+def _r4g_unit_evidence() -> dict[str, str]:
+    unit = "cofco-four-region-imagery-candidate-r4g-20260926.service"
+    try:
+        output = subprocess.check_output(
+            ["systemctl", "show", unit, "--property=ActiveState,Result,ExecMainStatus,ExecStart"],
+            text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as failure:
+        raise ReleaseValidationError("legacy original unit evidence unavailable") from failure
+    fields = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+    command = fields.get("ExecStart", "")
+    if any(fields.get(k) != v for k, v in {"ActiveState": "failed", "Result": "exit-code", "ExecMainStatus": "1"}.items()) or not all(
+        value in command for value in (
+            "/usr/local/lib/cofco-imagery/weekly_imagery_sync-r4g.py",
+            "--root /var/lib/cofco/imagery", "--aoi /usr/local/lib/cofco-imagery/four-region-aoi.geojson",
+            "--historical-source-plan /usr/local/lib/cofco-imagery/r4e-source-plan.json",
+            "--revision 4 --", "--build-only", "/run/cofco-imagery/sync.lock",
+        )
+    ):
+        raise ReleaseValidationError("legacy original unit identity mismatch")
+    return {"unit": unit, **fields}
+
+
+def _migrate_r4g_scenes(
+    config: SyncConfig, failed: Path, work: Path, context: Mapping[str, Any],
+    report_path: Path, original_worker: Path, plan_path: Path,
+) -> dict[int, Path]:
+    """Explicit, pinned migration of audited old files; never mutates quarantine."""
+    pins = _R4G_MIGRATION
+    failed = failed.absolute()
+    if failed.is_symlink() or failed.parent.resolve() != config.root.resolve() or failed.name != pins["failedName"]:
+        raise ReleaseValidationError("legacy quarantine identity mismatch")
+    try:
+        _recovery_regular(failed / "FAILED", failed)
+        _recovery_regular(report_path, config.root)
+        if _file_sha256(report_path) != pins["reportSha256"]:
+            raise ReleaseValidationError("legacy report digest mismatch")
+        report = json.loads(report_path.read_text())
+        if _json_sha256(context["processing"]) != pins["processingSha256"]:
+            raise ReleaseValidationError("legacy processing contract mismatch")
+        if context["version"] != pins["version"] or report.get("schema") != 1:
+            raise ReleaseValidationError("legacy version mismatch")
+        for key in ("originalWorkerSha256", "checkerWorkerSha256", "planFileSha256", "aoiSha256", "cutlineSha256"):
+            if report.get(key) != pins[key]:
+                raise ReleaseValidationError(f"legacy evidence mismatch: {key}")
+        for key in ("aoiSha256", "cutlineSha256"):
+            if context[key] != pins[key]:
+                raise ReleaseValidationError(f"legacy target mismatch: {key}")
+        if _file_sha256(_recovery_regular(original_worker, original_worker.parent)) != pins["originalWorkerSha256"]:
+            raise ReleaseValidationError("legacy original worker mismatch")
+        if _file_sha256(_recovery_regular(plan_path, plan_path.parent)) != pins["planFileSha256"] or _json_sha256(json.loads(plan_path.read_text())) != context["sourcePlanSha256"]:
+            raise ReleaseValidationError("legacy plan mismatch")
+        cutline = _recovery_regular(failed / "work" / "cutline-union.geojson", failed)
+        if _file_sha256(cutline) != pins["cutlineSha256"]:
+            raise ReleaseValidationError("legacy source cutline mismatch")
+        if (failed / "build-context.json").exists() or not all(report.get(k) is True for k in ("orderAgreesWithOriginalWorker", "nativeRecordsAbsent", "all18Readable")):
+            raise ReleaseValidationError("legacy audit incomplete or native records present")
+        rows = report["scenes"]
+        if [row["scene"]["index"] for row in rows] != pins["indices"]:
+            raise ReleaseValidationError("legacy scene set mismatch")
+        unit = _r4g_unit_evidence()
+        # Validate all identities before copying any output.
+        for row in rows:
+            index = row["scene"]["index"]
+            if row["scene"] != context["scenes"][index] or not all(row.get(k) is True for k in ("mtimeWithinOriginalRun", "fullRasterPass", "unchangedAfterRead")) or row.get("completeRecordExists") is not False:
+                raise ReleaseValidationError("legacy scene identity or audit mismatch")
+        receipt = {"kind": "independent-legacy-audit-copy", "reportSha256": pins["reportSha256"],
+                   "originalWorkerSha256": pins["originalWorkerSha256"], "unitEvidence": unit,
+                   "targetContextSha256": _json_sha256(context), "source": failed.name, "scenes": []}
+        restored = {}
+        for row in rows:
+            identity = row["scene"]; index = identity["index"]
+            source = _recovery_regular(failed / "work" / f"scene-{index:03d}" / "masked.tif", failed)
+            if (source.parent / "complete.json").exists():
+                raise ReleaseValidationError("legacy producer record unexpectedly present")
+            st = source.stat(); digest = _file_sha256(source)
+            if digest != row["sha256"] or st.st_size != row["bytes"] or st.st_mtime_ns != row["mtimeNs"]:
+                raise ReleaseValidationError("legacy source digest or timestamp mismatch")
+            print(f"imagery legacy migration validating scene-{index:03d} product={identity['productId']}", file=sys.stderr, flush=True)
+            checked = _validate_resume_raster(source, identity["grid"], config.command_timeout_seconds)
+            if checked != row["rasterCheck"] or checked.get("gdalVersion") != context["gdalVersion"]:
+                raise ReleaseValidationError("legacy raster audit or GDAL mismatch")
+            require_free_space(config.root, config.minimum_free_bytes + st.st_size)
+            destination = work / source.parent.name / "masked.tif"; destination.parent.mkdir()
+            partial = destination.with_suffix(".part")
+            shutil.copyfile(source, partial)
+            if _file_sha256(partial) != digest or _file_sha256(source) != digest or source.stat().st_mtime_ns != st.st_mtime_ns:
+                raise ReleaseValidationError("legacy digest changed during copy")
+            partial.replace(destination)
+            _atomic_json(destination.parent / "complete.json", {
+                "contextSha256": receipt["targetContextSha256"], "scene": identity,
+                "sha256": digest, "bytes": st.st_size,
+                "origin": {"kind": receipt["kind"], "reportSha256": pins["reportSha256"],
+                           "originalWorkerSha256": pins["originalWorkerSha256"]},
+            })
+            receipt["scenes"].append({"index": index, "sha256": digest, **checked})
+            restored[index] = destination
+        _atomic_json(work.parent / "legacy-migration.json", receipt)
+        return restored
+    except (OSError, ValueError, KeyError, TypeError, IndexError) as failure:
+        raise ReleaseValidationError("legacy evidence invalid or unreadable") from failure
+
+
 def build_release(
     config: SyncConfig, window: WeekWindow, candidates: Sequence[Candidate], now: datetime,
     source_plan: Mapping[str, Any] | None = None,
     resume_failed: Path | None = None,
+    migrate_r4g_audit: Path | None = None,
 ) -> Path:
     _check_gdal()
     config.root.mkdir(parents=True, exist_ok=True)
@@ -1281,6 +1403,8 @@ def build_release(
         scene_config = config
         context = None
         restored: dict[int, Path] = {}
+        if migrate_r4g_audit is not None and (resume_failed is not None or source_plan is None):
+            raise ReleaseValidationError("legacy migration requires exclusive historical candidate mode")
         if resume_failed is not None and source_plan is None:
             raise ReleaseValidationError("recovery requires a historical candidate")
         if source_plan is not None:
@@ -1292,6 +1416,12 @@ def build_release(
             _atomic_json(staging / "source-plan.json", source_plan)
             if resume_failed is not None:
                 restored = _restore_scenes(config, resume_failed, work, context)
+            if migrate_r4g_audit is not None:
+                base = Path(__file__).resolve().parent
+                restored = _migrate_r4g_scenes(
+                    config, config.root / _R4G_MIGRATION["failedName"], work, context,
+                    migrate_r4g_audit, base / "weekly_imagery_sync-r4g.py", base / "r4e-source-plan.json",
+                )
         indexed_candidates = list(enumerate(reversed(candidates)))
 
         def build_scene(item: tuple[int, Candidate]) -> Path:
@@ -1570,7 +1700,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--historical-source-plan", type=Path,
                         help="audited one-off September 2026 Sentinel-2 source plan")
     parser.add_argument("--resume-failed", type=Path, help="strictly validate and copy completed candidate scenes from quarantine")
+    parser.add_argument("--migrate-r4g-audit", type=Path, help="one-off pinned independent r4g migration audit; build-only")
     arguments = parser.parse_args(argv)
+    if arguments.migrate_r4g_audit is not None and (arguments.resume_failed is not None or arguments.historical_source_plan is None or not arguments.build_only):
+        raise ValueError("legacy migration requires exclusive historical source plan and --build-only")
     if arguments.resume_failed is not None and (arguments.historical_source_plan is None or not arguments.build_only):
         raise ValueError("recovery requires historical source plan and --build-only")
     now = (
@@ -1614,7 +1747,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise RuntimeError("no cloud-qualified Sentinel-2 product exists in the last 30 complete days")
         candidates = select_grid_candidates(candidates)
     require_free_space(config.root, config.minimum_free_bytes)
-    staging = build_release(config, window, candidates, now, source_plan=source_plan, resume_failed=arguments.resume_failed)
+    staging = build_release(config, window, candidates, now, source_plan=source_plan, resume_failed=arguments.resume_failed, migrate_r4g_audit=arguments.migrate_r4g_audit)
     if arguments.build_only:
         print(f"monthly imagery staged and validated: {staging}")
         return 0
