@@ -87,11 +87,25 @@ jobs:
 
       - name: Check patch whitespace
         run: |
+          python3 -m unittest scripts/tests/test_check_patch_whitespace.py -v
           if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
-            git diff --check "origin/${GITHUB_BASE_REF}...HEAD"
+            patch_base=$(git merge-base "origin/${GITHUB_BASE_REF}" HEAD)
           else
-            git diff --check HEAD^ HEAD
+            patch_base=$(git rev-parse HEAD^)
           fi
+          python3 scripts/check-patch-whitespace.py "$patch_base" HEAD
+
+      - name: Verify managed runtime release guards
+        run: |
+          bash -n scripts/local-runtime.sh
+          python3 -B -m unittest discover -s scripts/tests -p test_verify_market_risk_migration_scope.py -v
+          python3 -B -m unittest discover -s scripts/tests -p test_local_runtime_port_timeout.py -v
+
+      - name: Verify risk API availability boundary
+        run: mvn -B -ntp -Dtest=RiskApiAvailabilityInterceptorTest,RiskWorkbenchServiceTest,RiskTrainingOrchestratorTest test
+
+      - name: Verify market feed atomic refresh
+        run: mvn -B -ntp -Dtest=MarketFeedTransactionIntegrationTest,FaoNewsFeedTest,MoaDepartmentNewsFeedTest,MoaPublicMarketFeedTest test
 
       - name: Verify weekly imagery worker
         run: |
@@ -111,6 +125,7 @@ jobs:
         if: github.event_name == 'push' || github.event_name == 'pull_request'
         run: |
           mvn -B -ntp -DskipTests package
+          mvn -B -ntp -Dtest=MarketTestDatabaseResetTest test
           mvn -B -ntp \
             -Dtest=MapImageryTileGatewayTest,OverviewMapImageryControllerTest,OpenMeteoOperationalWeatherNowTest,OperationalFacilityRestIntegrationTest,OperationalSituationRestIntegrationTest,RegionalAgricultureProfileCalculatorTest,RegionalAgricultureProfileResponseTest \
             test

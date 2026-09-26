@@ -3,20 +3,22 @@ set -euo pipefail
 
 backend_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_workspace_root="$(cd "${backend_root}/.." && pwd)"
-runtime_home="${HOME}/Library/Application Support/COFCO Qiqihar Enterprise"
+runtime_home="${COFCO_ENTERPRISE_RUNTIME_HOME:-${HOME}/Library/Application Support/COFCO Qiqihar Enterprise}"
 snapshot_workspace="${runtime_home}/runtime"
 runtime_root="${runtime_home}/state"
 label="com.cofco.qiqihar.enterprise.local-stack"
 domain="gui/$(id -u)"
 service_target="${domain}/${label}"
 source_plist="${backend_root}/ops/launchd/${label}.plist"
-installed_plist="${HOME}/Library/LaunchAgents/${label}.plist"
-launchd_log_dir="${HOME}/Library/Logs/COFCO Qiqihar Enterprise"
+launch_agents_dir="${COFCO_ENTERPRISE_LAUNCH_AGENTS_DIR:-${HOME}/Library/LaunchAgents}"
+installed_plist="${launch_agents_dir}/${label}.plist"
+launchd_log_dir="${COFCO_ENTERPRISE_LOG_DIR:-${HOME}/Library/Logs/COFCO Qiqihar Enterprise}"
 source "${backend_root}/scripts/local-process-ownership.sh"
 
 backend_port="${COFCO_ENTERPRISE_BACKEND_PORT:-8090}"
 business_port="${COFCO_ENTERPRISE_BUSINESS_PORT:-63182}"
 overview_port="${COFCO_ENTERPRISE_OVERVIEW_PORT:-63200}"
+rollback_workspace=""
 
 usage() {
   echo "Usage: $0 {install|uninstall|start|stop|restart|status}"
@@ -88,18 +90,35 @@ refresh_runtime_snapshot() {
       echo "Required source repository is missing: $source_repository" >&2
       return 1
     fi
-    /bin/cp -cR "$source_repository" "${temporary_workspace}/${repository}"
+    if ! /bin/cp -cR "$source_repository" "${temporary_workspace}/${repository}"; then
+      remove_runtime_cache "$temporary_root"
+      echo "Failed to stage source repository: $source_repository" >&2
+      return 1
+    fi
   done
+
+  if ! python3 "${backend_root}/scripts/verify-local-install-source.py" "$temporary_workspace"; then
+    remove_runtime_cache "$temporary_root"
+    echo "Staged runtime source did not match the approved release manifest." >&2
+    return 1
+  fi
 
   if [[ -d "$snapshot_workspace" ]]; then
     previous_workspace="${runtime_home}/runtime.previous.$$"
-    /bin/mv "$snapshot_workspace" "$previous_workspace"
+    if ! /bin/mv "$snapshot_workspace" "$previous_workspace"; then
+      remove_runtime_cache "$temporary_root"
+      return 1
+    fi
   fi
-  /bin/mv "$temporary_workspace" "$snapshot_workspace"
+  if ! /bin/mv "$temporary_workspace" "$snapshot_workspace"; then
+    if [[ -n "$previous_workspace" ]]; then
+      /bin/mv "$previous_workspace" "$snapshot_workspace"
+    fi
+    remove_runtime_cache "$temporary_root"
+    return 1
+  fi
+  rollback_workspace="$previous_workspace"
   /bin/rmdir "$temporary_root"
-  if [[ -n "$previous_workspace" ]]; then
-    remove_runtime_cache "$previous_workspace"
-  fi
   echo "Refreshed launchd-readable runtime snapshot: $snapshot_workspace"
 }
 
@@ -139,6 +158,43 @@ owned_service_is_ready() {
     curl -fsS --max-time 2 "$url" >/dev/null 2>&1
 }
 
+verify_running_snapshot() {
+  local service
+  local pid_file
+  local port
+  local repository
+  local listener_pid
+
+  for service in backend 'business frontend' 'overview frontend'; do
+    case "$service" in
+      backend)
+        pid_file="${runtime_root}/pids/backend.pid"
+        port=$backend_port
+        repository=cofco-qiqihar-enterprise-backend
+        ;;
+      'business frontend')
+        pid_file="${runtime_root}/pids/business.pid"
+        port=$business_port
+        repository=cofco-qiqihar-enterprise-web
+        ;;
+      'overview frontend')
+        pid_file="${runtime_root}/pids/overview.pid"
+        port=$overview_port
+        repository=cofco-qiqihar-enterprise-frontend
+        ;;
+    esac
+    listener_pid="$(pid_listening_on_port "$port" || true)"
+    if [[ -z "$listener_pid" ]] ||
+        ! owned_listener_runs_from_directory \
+          "$pid_file" "$listener_pid" "$port" "$service" \
+          "${snapshot_workspace}/${repository}"; then
+      echo "$service is not running from the installed runtime snapshot." >&2
+      return 1
+    fi
+  done
+  echo "Verified all owned listeners and root processes use the installed runtime snapshot."
+}
+
 wait_for_ports_released() {
   local attempt
   for ((attempt=1; attempt<=40; attempt++)); do
@@ -153,26 +209,124 @@ wait_for_ports_released() {
   return 1
 }
 
+record_port_release_timeout() {
+  local previous_plist=$1
+  # A historical incident record, not a claim about current service health.
+  python3 - "$runtime_home" "$snapshot_workspace" "$installed_plist" \
+    "$previous_plist" "$service_target" "$backend_port" "$business_port" "$overview_port" <<'PY'
+import datetime
+import json
+import os
+import sys
+import tempfile
+
+home, snapshot, plist, previous, target, *ports = sys.argv[1:]
+record = {
+    "schemaVersion": 1,
+    "recordedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    "state": "MAINTENANCE_REQUIRED",
+    "reason": "PORT_RELEASE_TIMEOUT",
+    "serviceTarget": target,
+    "runtimeReplaced": False,
+    "serviceRestored": False,
+    "snapshotWorkspace": snapshot,
+    "installedPlist": plist,
+    "previousPlist": previous or None,
+    "ports": [int(port) for port in ports],
+    "nextAction": "Inspect port owners; do not kill unknown listeners. Once ports are free, "
+                  "verify the retained plist and runtime, then run local-runtime.sh start "
+                  "and verify owned listeners and health. If the plist is missing, recover "
+                  "its verified configuration before starting.",
+}
+fd, path = tempfile.mkstemp(prefix=".runtime-install.recovery.", suffix=".json", dir=home)
+try:
+    with os.fdopen(fd, "w") as handle:
+        json.dump(record, handle, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+except Exception:
+    os.unlink(path)
+    raise
+print(f"Recovery record: {path}", file=sys.stderr)
+PY
+}
+
 install_agent() {
+  local previous_plist=""
+  local had_loaded_agent=0
+  local failed_workspace=""
+  python3 "${backend_root}/scripts/verify-local-install-source.py" "$source_workspace_root"
+  python3 "${backend_root}/scripts/verify-market-risk-migration-scope.py" "$backend_root"
   [[ -f "$source_plist" ]] || {
     echo "LaunchAgent source plist not found: $source_plist" >&2
     return 1
   }
   plutil -lint "$source_plist" >/dev/null
   assert_source_git_metadata_is_safe
-  mkdir -p "${HOME}/Library/LaunchAgents" "$launchd_log_dir" "${runtime_root}/logs" "${runtime_root}/pids"
+  mkdir -p "$launch_agents_dir" "$launchd_log_dir" "${runtime_root}/logs" "${runtime_root}/pids"
   chmod 700 "$launchd_log_dir" "${runtime_root}/logs" "${runtime_root}/pids"
+  if [[ -f "$installed_plist" ]]; then
+    previous_plist="$(mktemp "${runtime_home}/.runtime-install.plist.XXXXXX")"
+    /bin/cp -p "$installed_plist" "$previous_plist"
+    chmod 600 "$previous_plist"
+  fi
 
   if agent_is_loaded; then
+    had_loaded_agent=1
     launchctl bootout "$service_target"
-    wait_for_ports_released
+    if ! wait_for_ports_released; then
+      echo "MAINTENANCE_REQUIRED: port release timed out; installation stopped before replacing the runtime." >&2
+      echo "The LaunchAgent was unloaded; service restoration has NOT completed. No restart was attempted on occupied ports." >&2
+      echo "Retained runtime: $snapshot_workspace" >&2
+      echo "Retained installed plist: $installed_plist" >&2
+      echo "Previous plist backup: ${previous_plist:-none}" >&2
+      if ! record_port_release_timeout "$previous_plist"; then
+        echo "Could not persist recovery record; use the retained paths above for recovery." >&2
+      fi
+      echo "Inspect port owners; after ports are free, verify the retained configuration, run '$0 start', and verify health." >&2
+      return 1
+    fi
   fi
-  refresh_runtime_snapshot
-  install -m 600 "$source_plist" "$installed_plist"
-
-  launchctl enable "$service_target"
-  launchctl bootstrap "$domain" "$installed_plist"
-  wait_for_stack 90
+  if ! refresh_runtime_snapshot; then
+    [[ -z "$previous_plist" ]] || /bin/rm -f "$previous_plist"
+    if ((had_loaded_agent)); then
+      launchctl bootstrap "$domain" "$installed_plist"
+      wait_for_stack 90
+    fi
+    return 1
+  fi
+  if ! {
+    install -m 600 "$source_plist" "$installed_plist" &&
+      launchctl enable "$service_target" &&
+      launchctl bootstrap "$domain" "$installed_plist" &&
+      wait_for_stack 90 &&
+      verify_running_snapshot
+  }; then
+    echo "New runtime failed health verification; restoring the previous snapshot." >&2
+    if agent_is_loaded; then
+      launchctl bootout "$service_target" || true
+      wait_for_ports_released || true
+    fi
+    if [[ -n "$rollback_workspace" ]]; then
+      failed_workspace="${runtime_home}/.runtime-install.failed.$$"
+      /bin/mv "$snapshot_workspace" "$failed_workspace"
+      /bin/mv "$rollback_workspace" "$snapshot_workspace"
+      remove_runtime_cache "$failed_workspace"
+    fi
+    if [[ -n "$previous_plist" ]]; then
+      /bin/mv "$previous_plist" "$installed_plist"
+    else
+      /bin/rm -f "$installed_plist"
+    fi
+    if ((had_loaded_agent)); then
+      launchctl bootstrap "$domain" "$installed_plist"
+      wait_for_stack 90
+    fi
+    return 1
+  fi
+  [[ -z "$rollback_workspace" ]] || remove_runtime_cache "$rollback_workspace"
+  [[ -z "$previous_plist" ]] || /bin/rm -f "$previous_plist"
   status_agent
 }
 
@@ -189,6 +343,7 @@ start_agent() {
     launchctl bootstrap "$domain" "$installed_plist"
   fi
   wait_for_stack 90
+  verify_running_snapshot
   status_agent
 }
 
@@ -208,6 +363,7 @@ restart_agent() {
     return
   fi
   wait_for_stack 90
+  verify_running_snapshot
   status_agent
 }
 
@@ -271,6 +427,7 @@ status_agent() {
     "http://127.0.0.1:${business_port}/" || ok=0
   print_service_status "overview" "${runtime_root}/pids/overview.pid" "$overview_port" \
     "http://127.0.0.1:${overview_port}/" || ok=0
+  verify_running_snapshot || ok=0
   echo "Logs: ${runtime_root}/logs and ${launchd_log_dir}"
 
   [[ "$installed" == "yes" && "$loaded" == "yes" && "$enabled" == "yes" && "$ok" -eq 1 ]]
