@@ -95,6 +95,12 @@ jobs:
           fi
           python3 scripts/check-patch-whitespace.py "$patch_base" HEAD
 
+      - name: Verify managed runtime release guards
+        run: |
+          bash -n scripts/local-runtime.sh
+          python3 -B -m unittest discover -s scripts/tests -p test_verify_market_risk_migration_scope.py -v
+          python3 -B -m unittest discover -s scripts/tests -p test_local_runtime_port_timeout.py -v
+
       - name: Verify weekly imagery worker
         run: |
           python3 -m unittest scripts/tests/test_weekly_imagery_sync.py -v
