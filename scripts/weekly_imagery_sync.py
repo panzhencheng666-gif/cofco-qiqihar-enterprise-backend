@@ -577,8 +577,20 @@ def _search_candidates_bbox(
     raise RuntimeError("STAC pagination exceeded 20 pages")
 
 
+def _prepare_tiling_temp(work: Path) -> Path:
+    # ProtectSystem=strict makes the system defaults read-only in candidate units.
+    directory = work.resolve() / ".gdal-tmp"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with tempfile.TemporaryFile(dir=directory) as probe:
+        probe.write(b"tempdir preflight")
+        probe.flush()
+    return directory
+
+
 def _run(command: Sequence[str], timeout: int, cwd: Path | None = None) -> None:
     environment = os.environ.copy()
+    if Path(command[0]).name == "gdal2tiles.py":
+        environment["TMPDIR"] = str(_prepare_tiling_temp(Path(command[-2]).parent))
     if Path(command[0]).name.startswith("gdal"):
         environment.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
         environment.setdefault("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".tif,.TIF")
@@ -1050,6 +1062,7 @@ def build_release(
         work.mkdir()
         scene_config = config
         if source_plan is not None:
+            _prepare_tiling_temp(work)
             cutline = _dissolve_historical_cutline(config, work / "cutline-union.geojson")
             scene_config = replace(config, aoi=cutline)
         indexed_candidates = list(enumerate(reversed(candidates)))
@@ -1156,7 +1169,15 @@ def build_release(
         validate_release(staging)
         return staging
     except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
+        if source_plan is not None:
+            # Quarantine expensive candidate artifacts for diagnosis/recovery.
+            # A failed candidate must never pass publication validation.
+            (staging / "FAILED").write_text("Candidate build failed; not publishable.\n")
+            failed = staging.with_name(staging.name.replace(".staging-", ".failed-", 1))
+            staging.rename(failed)
+            print(f"failed imagery candidate retained: {failed}", file=sys.stderr, flush=True)
+        else:
+            shutil.rmtree(staging, ignore_errors=True)
         raise
 
 
@@ -1176,6 +1197,8 @@ def _write_manifest(path: Path) -> None:
 
 def validate_release(path: Path) -> ReleaseMetadata:
     root = path.resolve()
+    if (root / "FAILED").exists() or root.name.startswith(".failed-"):
+        raise ReleaseValidationError("failed candidate cannot be published")
     metadata_path = root / "metadata.json"
     manifest_path = root / "manifest.sha256"
     if not metadata_path.is_file() or not manifest_path.is_file():

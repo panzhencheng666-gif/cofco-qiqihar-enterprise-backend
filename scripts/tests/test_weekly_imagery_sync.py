@@ -47,6 +47,30 @@ from scripts import weekly_imagery_sync as worker  # noqa: E402
 
 
 class WeeklyImagerySyncTest(unittest.TestCase):
+    def test_tiling_uses_writable_sibling_temp_without_global_environment_change(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with patch.dict(os.environ, {"TMPDIR": "/unwritable-default"}), patch.object(worker.subprocess, "run") as run:
+                worker._run(["gdal2tiles.py", str(root / "mosaic.tif"), str(root / "tiles")], 5)
+                selected = Path(run.call_args.kwargs["env"]["TMPDIR"])
+                self.assertEqual(root.resolve() / ".gdal-tmp", selected)
+                self.assertTrue(selected.is_dir())
+                self.assertEqual("/unwritable-default", os.environ["TMPDIR"])
+
+    def test_candidate_temp_preflight_fails_before_scene_build_and_preserves_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = SyncConfig(root, root / "aoi", "", "", (), 30, 5, 5, 5, 60, "", 0, 4)
+            with patch.object(worker, "_check_gdal"), patch.object(worker, "_dissolve_historical_cutline", side_effect=RuntimeError("reached scenes")) as dissolve, patch.object(worker.tempfile, "TemporaryFile", side_effect=PermissionError("temp unwritable")):
+                with self.assertRaisesRegex(PermissionError, "temp unwritable"):
+                    build_release(config, WeekWindow("test", datetime.now().date(), datetime.now().date()), [], datetime.now(timezone.utc), source_plan={})
+                dissolve.assert_not_called()
+            failed = list(root.glob(".failed-*"))
+            self.assertEqual(1, len(failed))
+            self.assertTrue((failed[0] / "FAILED").is_file())
+            with self.assertRaisesRegex(ReleaseValidationError, "failed candidate"):
+                validate_release(failed[0])
+
     def test_mixed_source_rejects_cross_product_asset_and_false_date(self):
         product = "S2B_MSIL2A_20260914T023529_N0512_R089_T51TXM_20260914T044641.SAFE"
         root = "https://storage.googleapis.com/gcp-public-data-sentinel-2/L2/tiles/51/T/XM/"
