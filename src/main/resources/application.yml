@@ -41,6 +41,9 @@ server:
 
 qiqihar:
   risk:
+    api:
+      # Availability only; enabling preserves existing authentication and authorization.
+      enabled: ${QIQIHAR_RISK_API_ENABLED:false}
     training:
       enabled: ${QIQIHAR_RISK_TRAINING_ENABLED:true}
       artifact-root: ${QIQIHAR_RISK_MODEL_ARTIFACT_ROOT:}
