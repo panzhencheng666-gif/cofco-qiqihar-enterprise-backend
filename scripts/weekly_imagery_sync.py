@@ -46,6 +46,8 @@ EARTH_SEARCH_GLOBAL_HOST = "e84-earth-search-sentinel-data.s3.amazonaws.com"
 PLANETARY_COMPUTER_HOST = "planetarycomputer.microsoft.com"
 PLANETARY_SENTINEL_HOST = "sentinel2l2a01.blob.core.windows.net"
 R4E_SOURCE_AUDIT_SHA256 = "3af5e4dca99f635fc329b9c7e532553c216bb881c8f91bffb3f4788b76d05d97"
+R4J_BASE_PLAN_SHA256 = "87b70edd5eaf850ab66a7f87edfd08c241cd5e138f17c911fbbfae7e139b70d9"
+R4J_SOURCE_DELTA_SHA256 = "7f725ea837b38771b2ded5e698d8094e076b3ea8aa26da5a6e3af43c2da4c078"
 _PLANETARY_TOKEN_CACHE: dict[tuple[str, str], str] = {}
 _PLANETARY_TOKEN_LOCK = threading.Lock()
 REQUIRED_GDAL_COMMANDS = (
@@ -232,6 +234,53 @@ def load_historical_source_plan(config: SyncConfig, path: Path, version: str) ->
     ):
         raise ReleaseValidationError("historical source plan must contain both recent and dated fill")
     return ranked, payload
+
+
+def validate_r4j_source_delta(base_plan_path: Path, delta_path: Path) -> dict[str, Any]:
+    """Pin the one-scene repair input without changing the audited 189-scene plan."""
+    base_bytes = base_plan_path.read_bytes()
+    delta_bytes = delta_path.read_bytes()
+    if hashlib.sha256(base_bytes).hexdigest() != R4J_BASE_PLAN_SHA256:
+        raise ReleaseValidationError("r4j base source plan SHA mismatch")
+    if hashlib.sha256(delta_bytes).hexdigest() != R4J_SOURCE_DELTA_SHA256:
+        raise ReleaseValidationError("r4j source delta SHA mismatch")
+    base = json.loads(base_bytes)
+    record = json.loads(delta_bytes)
+    identity = record.get("base", {})
+    product = record.get("delta", {})
+    features = base.get("features", [])
+    if (
+        record.get("kind") != "single-product-source-delta-identity"
+        or record.get("schema") != 1
+        or record.get("status") != "IDENTITY_VERIFIED_PIXEL_WINDOW_ONLY_NOT_RELEASE_AUDIT"
+        or base.get("version") != "2026-09-r4"
+        or base.get("sourceAuditSha256") != R4E_SOURCE_AUDIT_SHA256
+        or identity.get("sourceAuditSha256") != R4E_SOURCE_AUDIT_SHA256
+        or identity.get("fileSha256") != R4J_BASE_PLAN_SHA256
+        or identity.get("featureCount") != 189
+        or identity.get("providerCounts") != {"planetary-computer": 180, "google-public-sentinel-2-l2a": 9}
+        or not isinstance(features, list) or len(features) != 189
+    ):
+        raise ReleaseValidationError("r4j source delta baseline mismatch")
+    if product.get("provider") != "planetary-computer" or product.get("collection") != DEFAULT_COLLECTION \
+            or product.get("catalog") != DEFAULT_STAC_URL \
+            or product.get("candidateId") != "S2C_51UYT_20260909_0_L2A" \
+            or product.get("itemId") != "S2C_MSIL2A_20260909T023531_R089_T51UYT_20260909T053905" \
+            or product.get("productUri") != "S2C_MSIL2A_20260909T023531_N0512_R089_T51UYT_20260909T053905.SAFE" \
+            or product.get("acquiredAt") != "2026-09-09T02:35:31.025000Z" \
+            or any(feature.get("id") == product["candidateId"] for feature in features):
+        raise ReleaseValidationError("r4j source delta product identity mismatch")
+    for band, resolution, suffix in (("visual", 10, "_TCI_10m.tif"), ("SCL", 20, "_SCL_20m.tif")):
+        asset = product.get("assets", {}).get(band)
+        if not isinstance(asset, dict) or asset.get("gsd") != resolution:
+            raise ReleaseValidationError("r4j source delta resolution mismatch")
+        href = asset.get("href")
+        parsed = urllib.parse.urlparse(href) if isinstance(href, str) else None
+        if parsed is None or parsed.scheme != "https" or parsed.hostname != PLANETARY_SENTINEL_HOST \
+                or product["productUri"] not in parsed.path.split("/") \
+                or not parsed.path.endswith(suffix) or parsed.query or parsed.fragment:
+            raise ReleaseValidationError("r4j source delta asset identity mismatch")
+    return record
 
 
 def _validate_mixed_source_feature(feature: Mapping[str, Any], counts: dict[str, int]) -> None:
