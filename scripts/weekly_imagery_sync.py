@@ -1851,7 +1851,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="audited one-off September 2026 Sentinel-2 source plan")
     parser.add_argument("--resume-failed", type=Path, help="strictly validate and copy completed candidate scenes from quarantine")
     parser.add_argument("--migrate-r4g-audit", type=Path, help="one-off pinned independent r4g migration audit; build-only")
+    parser.add_argument("--seed-r4i-repair", type=Path,
+                        help="copy the pinned successful r4i staging to an unpublishable repair seed")
+    parser.add_argument("--source-delta", type=Path,
+                        help="pinned one-scene identity record for the r4i repair seed")
     arguments = parser.parse_args(argv)
+    if arguments.seed_r4i_repair is not None:
+        if (arguments.source_delta is None or arguments.historical_source_plan is None
+                or arguments.revision != 4 or not arguments.build_only
+                or arguments.resume_failed is not None or arguments.migrate_r4g_audit is not None
+                or arguments.force or arguments.dry_run):
+            raise ValueError("r4i repair seed requires exclusive --revision 4 --build-only, base plan and source delta")
+    elif arguments.source_delta is not None:
+        raise ValueError("source delta requires --seed-r4i-repair")
     if arguments.migrate_r4g_audit is not None and (arguments.resume_failed is not None or arguments.historical_source_plan is None or not arguments.build_only):
         raise ValueError("legacy migration requires exclusive historical source plan and --build-only")
     if arguments.resume_failed is not None and (arguments.historical_source_plan is None or not arguments.build_only):
@@ -1881,6 +1893,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if current.exists() and current.resolve().name == window.identifier and not arguments.force:
         validate_release(current.resolve())
         print(f"monthly imagery already published: {window.identifier}")
+        return 0
+    if arguments.seed_r4i_repair is not None:
+        if window.identifier != "2026-09-r4":
+            raise ValueError("r4i repair seed is limited to September 2026 revision 4")
+        seed = seed_r4i_repair(
+            config.root, arguments.seed_r4i_repair, arguments.historical_source_plan,
+            arguments.source_delta, config.minimum_free_bytes,
+        )
+        print(f"unpublishable r4i repair seed retained: {seed}")
         return 0
     source_plan = None
     if arguments.historical_source_plan is not None:

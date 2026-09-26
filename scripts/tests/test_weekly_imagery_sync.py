@@ -48,6 +48,31 @@ from scripts import weekly_imagery_sync as worker  # noqa: E402
 
 
 class WeeklyImagerySyncTest(unittest.TestCase):
+    def test_r4i_seed_cli_is_exclusive_and_reports_unpublishable_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            aoi = root / "aoi.geojson"
+            aoi.write_text("{}")
+            baseline = root / worker.R4I_BASE_STAGE_NAME
+            base = root / "base.json"
+            delta = root / "delta.json"
+            args = ["--root", str(root), "--aoi", str(aoi), "--now", "2026-09-26T00:00:00Z",
+                    "--revision", "4", "--build-only", "--historical-source-plan", str(base),
+                    "--source-delta", str(delta), "--seed-r4i-repair", str(baseline)]
+            seed = root / ".failed-2026-09-r4-repair-seed-test"
+            with patch.object(worker, "seed_r4i_repair", return_value=seed) as create, \
+                    patch.object(worker, "build_release") as build, patch("sys.stdout", new_callable=io.StringIO) as output:
+                self.assertEqual(0, worker.main(args))
+                create.assert_called_once_with(root.resolve(), baseline, base, delta, worker._config(
+                    SimpleNamespace(root=root, aoi=aoi)
+                ).minimum_free_bytes)
+                build.assert_not_called()
+                self.assertIn("unpublishable r4i repair seed retained", output.getvalue())
+            with self.assertRaisesRegex(ValueError, "exclusive"):
+                worker.main(args + ["--force"])
+            with self.assertRaisesRegex(ValueError, "exclusive"):
+                worker.main(args + ["--resume-failed", str(root / "failed")])
+
     def test_r4i_repair_seed_is_isolated_and_never_publishable(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
