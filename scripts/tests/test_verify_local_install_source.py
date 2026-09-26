@@ -54,6 +54,8 @@ class InstallSourceGateTest(unittest.TestCase):
             return 'openjdk version "21.0.12"'
         if args == ("node", "--version"):
             return "v24.19.0"
+        if args == ("node", "--print", "process.versions.node"):
+            return "24.19.0"
         if args == ("npm", "--version"):
             return "11.17.0"
         self.fail(f"unexpected command: {args}")
@@ -67,6 +69,27 @@ class InstallSourceGateTest(unittest.TestCase):
         self.assertIn("--frontend-root", verify[0])
         self.assertIn("--web-root", verify[0])
         self.assertIn("21.0.12", verify[0])
+
+    def test_node_runtime_version_matches_manifest_version_format(self):
+        with patch.object(gate, "command", side_effect=self.command):
+            gate.verify(str(self.manifest), self.workspace)
+        verify = next(args for args, _, _ in self.calls
+                      if len(args) > 2 and args[0] == "node" and args[2] == "verify")
+        self.assertEqual(verify[verify.index("--node-version") + 1], "24.19.0")
+
+    def test_different_runtime_version_is_forwarded_without_using_manifest_version(self):
+        def different_node(*args, **kwargs):
+            if args == ("node", "--print", "process.versions.node"):
+                return "24.20.0"
+            if args == ("node", "--version"):
+                return "v24.20.0"
+            return self.command(*args, **kwargs)
+
+        with patch.object(gate, "command", side_effect=different_node):
+            gate.verify(str(self.manifest), self.workspace)
+        verify = next(args for args, _, _ in self.calls
+                      if len(args) > 2 and args[0] == "node" and args[2] == "verify")
+        self.assertEqual(verify[verify.index("--node-version") + 1], "24.20.0")
 
     def test_content_mismatch_stops_install(self):
         def reject_content(*args, **kwargs):
