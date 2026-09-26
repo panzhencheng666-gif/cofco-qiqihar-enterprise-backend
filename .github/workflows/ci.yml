@@ -104,6 +104,9 @@ jobs:
       - name: Verify risk API availability boundary
         run: mvn -B -ntp -Dtest=RiskApiAvailabilityInterceptorTest,RiskWorkbenchServiceTest,RiskTrainingOrchestratorTest test
 
+      - name: Verify market feed atomic refresh
+        run: mvn -B -ntp -Dtest=MarketFeedTransactionIntegrationTest,FaoNewsFeedTest,MoaDepartmentNewsFeedTest,MoaPublicMarketFeedTest test
+
       - name: Verify weekly imagery worker
         run: |
           python3 -m unittest scripts/tests/test_weekly_imagery_sync.py -v
