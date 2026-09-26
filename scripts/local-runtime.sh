@@ -209,6 +209,49 @@ wait_for_ports_released() {
   return 1
 }
 
+record_port_release_timeout() {
+  local previous_plist=$1
+  # A historical incident record, not a claim about current service health.
+  python3 - "$runtime_home" "$snapshot_workspace" "$installed_plist" \
+    "$previous_plist" "$service_target" "$backend_port" "$business_port" "$overview_port" <<'PY'
+import datetime
+import json
+import os
+import sys
+import tempfile
+
+home, snapshot, plist, previous, target, *ports = sys.argv[1:]
+record = {
+    "schemaVersion": 1,
+    "recordedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    "state": "MAINTENANCE_REQUIRED",
+    "reason": "PORT_RELEASE_TIMEOUT",
+    "serviceTarget": target,
+    "runtimeReplaced": False,
+    "serviceRestored": False,
+    "snapshotWorkspace": snapshot,
+    "installedPlist": plist,
+    "previousPlist": previous or None,
+    "ports": [int(port) for port in ports],
+    "nextAction": "Inspect port owners; do not kill unknown listeners. Once ports are free, "
+                  "verify the retained plist and runtime, then run local-runtime.sh start "
+                  "and verify owned listeners and health. If the plist is missing, recover "
+                  "its verified configuration before starting.",
+}
+fd, path = tempfile.mkstemp(prefix=".runtime-install.recovery.", suffix=".json", dir=home)
+try:
+    with os.fdopen(fd, "w") as handle:
+        json.dump(record, handle, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+except Exception:
+    os.unlink(path)
+    raise
+print(f"Recovery record: {path}", file=sys.stderr)
+PY
+}
+
 install_agent() {
   local previous_plist=""
   local had_loaded_agent=0
@@ -226,12 +269,24 @@ install_agent() {
   if [[ -f "$installed_plist" ]]; then
     previous_plist="$(mktemp "${runtime_home}/.runtime-install.plist.XXXXXX")"
     /bin/cp -p "$installed_plist" "$previous_plist"
+    chmod 600 "$previous_plist"
   fi
 
   if agent_is_loaded; then
     had_loaded_agent=1
     launchctl bootout "$service_target"
-    wait_for_ports_released
+    if ! wait_for_ports_released; then
+      echo "MAINTENANCE_REQUIRED: port release timed out; installation stopped before replacing the runtime." >&2
+      echo "The LaunchAgent was unloaded; service restoration has NOT completed. No restart was attempted on occupied ports." >&2
+      echo "Retained runtime: $snapshot_workspace" >&2
+      echo "Retained installed plist: $installed_plist" >&2
+      echo "Previous plist backup: ${previous_plist:-none}" >&2
+      if ! record_port_release_timeout "$previous_plist"; then
+        echo "Could not persist recovery record; use the retained paths above for recovery." >&2
+      fi
+      echo "Inspect port owners; after ports are free, verify the retained configuration, run '$0 start', and verify health." >&2
+      return 1
+    fi
   fi
   if ! refresh_runtime_snapshot; then
     [[ -z "$previous_plist" ]] || /bin/rm -f "$previous_plist"
