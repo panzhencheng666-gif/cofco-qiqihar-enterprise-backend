@@ -98,6 +98,7 @@ jobs:
       - name: Verify managed runtime release guards
         run: |
           bash -n scripts/local-runtime.sh
+          python3 -B -m unittest discover -s scripts/tests -p test_verify_local_install_source.py -v
           python3 -B -m unittest discover -s scripts/tests -p test_verify_market_risk_migration_scope.py -v
           python3 -B -m unittest discover -s scripts/tests -p test_local_runtime_port_timeout.py -v
 
