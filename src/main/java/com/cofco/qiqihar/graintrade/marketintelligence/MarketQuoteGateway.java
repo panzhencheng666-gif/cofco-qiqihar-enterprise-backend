@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -123,6 +124,7 @@ public class MarketQuoteGateway {
     private final String feedUrl;
     private final String bearerToken;
     private final boolean distributionAuthorized;
+    private final Set<String> displayAllowedInstrumentIds;
     private final Clock clock;
     private volatile Feed feed = new Feed(Map.of(), "NOT_OBSERVED", null, null, null);
     private volatile Instant lastAttemptAt;
@@ -131,17 +133,46 @@ public class MarketQuoteGateway {
     public MarketQuoteGateway(ObjectMapper mapper,
             @Value("${qiqihar.market-intelligence.quote-feed.url:}") String feedUrl,
             @Value("${qiqihar.market-intelligence.quote-feed.bearer-token:}") String bearerToken,
-            @Value("${qiqihar.market-intelligence.quote-feed.distribution-authorized:false}") boolean distributionAuthorized) {
-        this(mapper, feedUrl, bearerToken, distributionAuthorized, Clock.systemUTC());
+            @Value("${qiqihar.market-intelligence.quote-feed.distribution-authorized:false}") boolean distributionAuthorized,
+            @Value("${qiqihar.market-intelligence.quote-feed.display-allowed-instrument-ids:}") String displayAllowedInstrumentIds) {
+        this(mapper, feedUrl, bearerToken, distributionAuthorized,
+                parseDisplayAllowedInstrumentIds(displayAllowedInstrumentIds), Clock.systemUTC());
     }
 
     MarketQuoteGateway(ObjectMapper mapper, String feedUrl, String bearerToken,
                        boolean distributionAuthorized, Clock clock) {
+        this(mapper, feedUrl, bearerToken, distributionAuthorized, Set.of(), clock);
+    }
+
+    MarketQuoteGateway(ObjectMapper mapper, String feedUrl, String bearerToken,
+                       boolean distributionAuthorized, Set<String> displayAllowedInstrumentIds, Clock clock) {
         this.mapper = mapper;
         this.feedUrl = feedUrl.trim();
         this.bearerToken = bearerToken.trim();
         this.distributionAuthorized = distributionAuthorized;
+        if (!BY_ID.keySet().containsAll(displayAllowedInstrumentIds))
+            throw new IllegalArgumentException("QUOTE_FEED_DISPLAY_SCOPE_UNKNOWN_INSTRUMENT");
+        this.displayAllowedInstrumentIds = Set.copyOf(displayAllowedInstrumentIds);
         this.clock = clock;
+    }
+
+    MarketQuoteGateway(ObjectMapper mapper, String feedUrl, String bearerToken,
+                       boolean distributionAuthorized, Set<String> displayAllowedInstrumentIds) {
+        this(mapper, feedUrl, bearerToken, distributionAuthorized,
+                displayAllowedInstrumentIds, Clock.systemUTC());
+    }
+
+    MarketQuoteGateway(ObjectMapper mapper, String feedUrl, String bearerToken,
+                       boolean distributionAuthorized) {
+        this(mapper, feedUrl, bearerToken, distributionAuthorized, Set.of(), Clock.systemUTC());
+    }
+
+    private static Set<String> parseDisplayAllowedInstrumentIds(String value) {
+        if (value.isBlank()) return Set.of();
+        var ids = Arrays.stream(value.split(",", -1)).map(String::trim).toList();
+        if (ids.stream().anyMatch(String::isBlank) || ids.size() != Set.copyOf(ids).size())
+            throw new IllegalArgumentException("QUOTE_FEED_DISPLAY_SCOPE_INVALID");
+        return Set.copyOf(ids);
     }
 
     private static Instrument item(String id, String name, String group, String market, String unit) {
@@ -165,7 +196,7 @@ public class MarketQuoteGateway {
     @Scheduled(initialDelayString = "${qiqihar.market-intelligence.quote-feed.initial-delay:15s}",
             fixedDelayString = "${qiqihar.market-intelligence.quote-feed.poll-interval:10s}")
     public synchronized void refresh() {
-        if (!distributionAuthorized || feedUrl.isBlank()) return;
+        if (!distributionAuthorized || feedUrl.isBlank() || displayAllowedInstrumentIds.isEmpty()) return;
         lastAttemptAt = clock.instant();
         try {
             URI uri = URI.create(feedUrl);
@@ -204,7 +235,7 @@ public class MarketQuoteGateway {
             for (JsonNode row : body.path("quotes")) {
                 try {
                     String id = row.path("id").asText("");
-                    if (!BY_ID.containsKey(id) || !row.path("last").isNumber()) continue;
+                    if (!displayAllowedInstrumentIds.contains(id) || !row.path("last").isNumber()) continue;
                     BigDecimal price = row.path("last").decimalValue();
                     if (price.signum() <= 0) continue;
                     Instant sourceAt = Instant.parse(row.path("sourceAt").asText());
@@ -286,7 +317,7 @@ public class MarketQuoteGateway {
         var quotes = new ArrayList<Quote>();
         for (Instrument instrument : INSTRUMENTS) {
             Quote quote = snapshot.quotes().get(instrument.id());
-            if (quote == null) continue;
+            if (quote == null || !displayAllowedInstrumentIds.contains(instrument.id())) continue;
             quotes.add(new Quote(quote.id(), quote.last(), quote.previousClose(), quote.sourceAt(),
                     quote.provider(), quote.contractId(),
                     quote.sourceAt().isBefore(now.minus(maximumAge(instrument.cadence())))
@@ -295,7 +326,7 @@ public class MarketQuoteGateway {
         String error = snapshot.publishedAt() != null && !freshPublication(snapshot.publishedAt(), now)
                 ? "QUOTE_FEED_HEARTBEAT_STALE" : snapshot.error();
         String gatewayState = !distributionAuthorized ? "PENDING_AUTHORIZATION"
-                : feedUrl.isBlank() ? "PENDING_CONFIGURATION"
+                : feedUrl.isBlank() || displayAllowedInstrumentIds.isEmpty() ? "PENDING_CONFIGURATION"
                 : Set.of("PENDING_AUTHORIZATION", "ENTITLEMENT_ERROR").contains(snapshot.state())
                         ? "PENDING_AUTHORIZATION"
                 : error != null ? "SOURCE_ERROR"

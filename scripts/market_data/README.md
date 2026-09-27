@@ -143,6 +143,16 @@ HTTP endpoint or deployment is installed by importing these modules.
 
 ### Backend feed envelope v1
 
+The gateway also requires `qiqihar.market-intelligence.quote-feed.display-allowed-instrument-ids`,
+a comma-separated set of exact system catalogue IDs. It defaults to empty:
+even with `distribution-authorized=true` and a feed URL, an empty display
+scope prevents polling and keeps the board at `PENDING_CONFIGURATION`.
+Unknown or duplicate IDs fail configuration. A feed row outside the configured
+scope cannot enter the quote cache or public board. Set each ID only after its
+supplier product, fields, actual response, and internal/public display rights
+have been checked; this configuration is an operator assertion, not proof of
+those rights. The existing global distribution flag remains a separate gate.
+
 `MarketQuoteGateway` now requires an explicit health envelope. Bare `quotes`
 arrays from the earlier candidate contract are intentionally rejected; no live
 provider was configured when this contract was changed. An upstream service
