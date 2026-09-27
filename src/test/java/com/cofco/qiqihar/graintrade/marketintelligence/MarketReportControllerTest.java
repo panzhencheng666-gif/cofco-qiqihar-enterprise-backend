@@ -12,9 +12,12 @@ import org.apache.poi.xwpf.usermodel.XWPFHyperlinkRun;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.mockito.ArgumentCaptor;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class MarketReportControllerTest {
@@ -61,7 +64,9 @@ class MarketReportControllerTest {
                 List.of(new MarketReportController.Source("world-bank-pink-sheet",
                                 Instant.parse("2026-09-27T11:00:00Z"), LocalDate.of(2026, 8, 1), null),
                         new MarketReportController.Source("moa-public-monitor",
-                                Instant.parse("2026-09-27T11:00:00Z"), LocalDate.of(2026, 9, 24), null)));
+                                Instant.parse("2026-09-27T11:00:00Z"), LocalDate.of(2026, 9, 24), null),
+                        new MarketReportController.Source("fao-food-price-index",
+                                Instant.parse("2026-09-27T11:00:00Z"), LocalDate.of(2026, 8, 1), null)));
         try (var document = new XWPFDocument(new ByteArrayInputStream(bytes))) {
             var sources = document.getTables().get(0);
             var domestic = document.getTables().get(1);
@@ -69,6 +74,7 @@ class MarketReportControllerTest {
             assertThat(sources.getRow(0).getCell(2).getText()).isEqualTo("源最新统计日或月份");
             assertThat(sources.getRow(1).getCell(2).getText()).isEqualTo("2026-08");
             assertThat(sources.getRow(2).getCell(2).getText()).isEqualTo("2026-09-24");
+            assertThat(sources.getRow(3).getCell(2).getText()).isEqualTo("2026-08");
             assertThat(domestic.getRow(0).getCell(1).getText()).isEqualTo("统计日");
             assertThat(domestic.getRow(1).getCell(1).getText()).isEqualTo("2026-09-24");
             assertThat(world.getRow(0).getCell(1).getText()).isEqualTo("统计月份");
@@ -104,6 +110,11 @@ class MarketReportControllerTest {
 
         var bytes = new MarketReportController(jdbc).download(
                 MarketReportController.Period.MONTH, LocalDate.of(2026, 9, 1)).getBody();
+        var statements = ArgumentCaptor.forClass(String.class);
+        verify(jdbc, atLeastOnce()).sql(statements.capture());
+        assertThat(statements.getAllValues()).anySatisfy(sql ->
+                assertThat(sql).contains("'fao-food-price-index'")
+                        .doesNotContain("'fao-food-price'"));
         try (var document = new XWPFDocument(new ByteArrayInputStream(bytes))) {
             var text = document.getParagraphs().stream().map(paragraph -> paragraph.getText())
                     .reduce("", (left, right) -> left + right);
