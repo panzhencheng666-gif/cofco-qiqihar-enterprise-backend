@@ -1065,7 +1065,10 @@ def _build_masked_scene(
     return masked
 
 
-def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: int) -> Path:
+def _build_scene(
+    config: SyncConfig, candidate: Candidate, work: Path, index: int,
+    bounds_override: tuple[float, float, float, float] | None = None,
+) -> Path:
     scene = work / f"scene-{index:03d}"
     scene.mkdir()
     rgb = scene / "rgb.tif"
@@ -1130,6 +1133,13 @@ def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: in
             raise RuntimeError(f"candidate does not intersect AOI: {candidate.product_id}")
     else:
         west, south, east, north = aoi_west, aoi_south, aoi_east, aoi_north
+    if bounds_override is not None:
+        if len(bounds_override) != 4 or not all(math.isfinite(value) for value in bounds_override):
+            raise ReleaseValidationError("repair window has invalid bounds")
+        west, south = max(west, bounds_override[0]), max(south, bounds_override[1])
+        east, north = min(east, bounds_override[2]), min(north, bounds_override[3])
+        if west >= east or south >= north:
+            raise ReleaseValidationError("repair window does not intersect source and AOI")
     warp_common = [
         "-t_srs",
         "EPSG:3857",
@@ -1859,6 +1869,71 @@ def _r4i_repair_plan(base_plan: Mapping[str, Any], delta: Mapping[str, Any]) -> 
     }
 
 
+def render_r4i_repair_group(
+    config: SyncConfig, seed: Path, base_plan_path: Path, delta_path: Path, group: str,
+) -> Path:
+    """Render one pinned source window inside a quarantined seed, never the release tiles."""
+    if group not in ("dax", "hulun") or seed.is_symlink() or \
+            seed.parent.resolve() != config.root.resolve() or \
+            not seed.name.startswith(".failed-2026-09-r4-repair-seed-") or \
+            not (seed / "FAILED").is_file():
+        raise ReleaseValidationError("repair render requires an explicit quarantined seed and group")
+    _recovery_regular(seed / "FAILED", seed)
+    manifest = _recovery_regular(seed / "manifest.sha256", seed)
+    if _file_sha256(manifest) != R4I_MANIFEST_SHA256:
+        raise ReleaseValidationError("repair seed manifest mismatch")
+    base_plan = json.loads(base_plan_path.read_text())
+    delta_record = validate_r4j_source_delta(base_plan_path, delta_path)
+    plan = _r4i_repair_plan(base_plan, delta_record["delta"])
+    if json.loads(_recovery_regular(seed / "repair-plan.json", seed).read_text()) != plan or \
+            _json_sha256(json.loads(_recovery_regular(seed / "source-plan.json", seed).read_text())) != _json_sha256(base_plan):
+        raise ReleaseValidationError("repair seed source plan changed")
+    source_id = "S2C_51UYT_20260909_0_L2A" if group == "dax" else "S2B_51UXQ_20260914_0_L2A"
+    selected = [tile for tile in plan["tiles"] if tile["productId"] == source_id]
+    if len(selected) != (5 if group == "dax" else 1):
+        raise ReleaseValidationError("repair group does not match six-hole plan")
+    if group == "dax":
+        candidate = r4j_repair_candidate(config, base_plan_path, delta_path)
+    else:
+        feature = next(feature for feature in base_plan["features"] if feature["id"] == source_id)
+        candidates = rank_candidates(parse_candidates({"features": [feature]}, config.allowed_hosts),
+                                     config.maximum_cloud_percent)
+        if len(candidates) != 1 or candidates[0].product_id != source_id:
+            raise ReleaseValidationError("Hulun repair product is not authorized")
+        candidate = candidates[0]
+    if candidate.observed_at != selected[0]["observedAt"]:
+        raise ReleaseValidationError("repair acquisition time differs from pinned plan")
+    require_free_space(config.root, config.minimum_free_bytes)
+    work = seed / "repair-work" / group
+    work.mkdir(parents=True, exist_ok=False)  # An incomplete render is retained for inspection.
+    bounds = (
+        min(tile["bbox4326"][0] for tile in selected),
+        min(tile["bbox4326"][1] for tile in selected),
+        max(tile["bbox4326"][2] for tile in selected),
+        max(tile["bbox4326"][3] for tile in selected),
+    )
+    cutline = _dissolve_historical_cutline(config, work / "cutline-union.geojson")
+    scene_config = replace(config, aoi=cutline, candidate_single_range=True,
+                           minimum_zoom=14, maximum_zoom=14)
+    masked = _build_scene(scene_config, candidate, work, 0, bounds_override=bounds)
+    tiles = work / "tiles"
+    _build_web_tiles(masked, tiles, scene_config)
+    _discard_tiny_webp_tiles(tiles, masked)
+    rendered = []
+    for tile in selected:
+        path = tiles / "14" / str(tile["x"]) / f'{tile["y"]}.webp'
+        if not _tile_has_imagery(path):
+            raise ReleaseValidationError(f'repair source produced no tile 14/{tile["x"]}/{tile["y"]}')
+        rendered.append({"path": str(path.relative_to(work)), "sha256": _file_sha256(path),
+                         "bytes": path.stat().st_size, "productId": source_id,
+                         "observedAt": candidate.observed_at})
+    _atomic_json(work / "tile-render-complete.json", {
+        "schema": 1, "status": "ISOLATED_TILES_ONLY_NOT_RELEASE_READY",
+        "group": group, "repairPlanSha256": _json_sha256(plan), "tiles": rendered,
+    })
+    return work
+
+
 def publish_release(
     root: Path, staging: Path, backend_reader_uid: int | None = None
 ) -> Path:
@@ -1955,15 +2030,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--migrate-r4g-audit", type=Path, help="one-off pinned independent r4g migration audit; build-only")
     parser.add_argument("--seed-r4i-repair", type=Path,
                         help="copy the pinned successful r4i staging to an unpublishable repair seed")
+    parser.add_argument("--render-r4i-repair-seed", type=Path,
+                        help="render one bounded source window inside an existing unpublishable seed")
+    parser.add_argument("--repair-group", choices=("dax", "hulun"),
+                        help="one of the two pinned six-hole repair groups")
     parser.add_argument("--source-delta", type=Path,
                         help="pinned one-scene identity record for the r4i repair seed")
     arguments = parser.parse_args(argv)
     if arguments.seed_r4i_repair is not None:
         if (arguments.source_delta is None or arguments.historical_source_plan is None
                 or arguments.revision != 4 or not arguments.build_only
+                or arguments.render_r4i_repair_seed is not None or arguments.repair_group is not None
                 or arguments.resume_failed is not None or arguments.migrate_r4g_audit is not None
                 or arguments.force or arguments.dry_run):
             raise ValueError("r4i repair seed requires exclusive --revision 4 --build-only, base plan and source delta")
+    elif arguments.render_r4i_repair_seed is not None:
+        if (arguments.source_delta is None or arguments.historical_source_plan is None
+                or arguments.repair_group is None or arguments.revision != 4 or not arguments.build_only
+                or arguments.resume_failed is not None or arguments.migrate_r4g_audit is not None
+                or arguments.force or arguments.dry_run):
+            raise ValueError("r4i repair render requires exclusive --revision 4 --build-only, seed, plan, delta and group")
+    elif arguments.repair_group is not None:
+        raise ValueError("repair group requires --render-r4i-repair-seed")
     elif arguments.source_delta is not None:
         raise ValueError("source delta requires --seed-r4i-repair")
     if arguments.migrate_r4g_audit is not None and (arguments.resume_failed is not None or arguments.historical_source_plan is None or not arguments.build_only):
@@ -2004,6 +2092,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.source_delta, config.minimum_free_bytes,
         )
         print(f"unpublishable r4i repair seed retained: {seed}")
+        return 0
+    if arguments.render_r4i_repair_seed is not None:
+        if window.identifier != "2026-09-r4":
+            raise ValueError("r4i repair render is limited to September 2026 revision 4")
+        work = render_r4i_repair_group(
+            config, arguments.render_r4i_repair_seed, arguments.historical_source_plan,
+            arguments.source_delta, arguments.repair_group,
+        )
+        print(f"unpublishable isolated tile window retained: {work}")
         return 0
     source_plan = None
     if arguments.historical_source_plan is not None:

@@ -74,6 +74,17 @@ class WeeklyImagerySyncTest(unittest.TestCase):
                 worker.main(args + ["--force"])
             with self.assertRaisesRegex(ValueError, "exclusive"):
                 worker.main(args + ["--resume-failed", str(root / "failed")])
+            render_args = ["--root", str(root), "--aoi", str(aoi),
+                           "--now", "2026-09-26T00:00:00Z", "--revision", "4", "--build-only",
+                           "--historical-source-plan", str(base), "--source-delta", str(delta),
+                           "--render-r4i-repair-seed", str(seed), "--repair-group", "dax"]
+            with patch.object(worker, "render_r4i_repair_group", return_value=seed / "repair-work/dax") as render, \
+                    patch.object(worker, "build_release") as build:
+                self.assertEqual(0, worker.main(render_args))
+                render.assert_called_once()
+                build.assert_not_called()
+            with self.assertRaisesRegex(ValueError, "exclusive"):
+                worker.main(render_args + ["--force"])
 
     def test_r4i_repair_seed_is_isolated_and_never_publishable(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -124,6 +135,87 @@ class WeeklyImagerySyncTest(unittest.TestCase):
         self.assertEqual("13/6934/2812.webp", plan["tiles"][-1]["ancestorPaths"][0])
         with self.assertRaisesRegex(ReleaseValidationError, "misses tile"):
             worker._r4i_repair_plan({"features": [hulun]}, {**delta, "bbox": [0, 0, 1, 1]})
+
+    def test_r4i_render_stays_in_quarantine_and_refuses_reuse(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            aoi = root / "aoi.geojson"
+            aoi.write_text("{}")
+            base = root / "base.json"
+            base.write_text("{}")
+            delta = root / "delta.json"
+            seed = root / ".failed-2026-09-r4-repair-seed-test"
+            seed.mkdir()
+            (seed / "FAILED").write_text("never publish")
+            (seed / "manifest.sha256").write_text("pinned")
+            (seed / "source-plan.json").write_text("{}")
+            selected = [{"x": x, "y": y, "productId": "S2C_51UYT_20260909_0_L2A",
+                         "observedAt": "2026-09-09T02:35:31.025000Z",
+                         "bbox4326": [126.0, 51.4, 126.1, 51.5]}
+                        for x, y in ((13928, 5453), (13928, 5454), (13929, 5454),
+                                     (13930, 5454), (13931, 5454))]
+            plan = {"tiles": selected}
+            (seed / "repair-plan.json").write_text(json.dumps(plan))
+            config = worker._config(SimpleNamespace(root=root, aoi=aoi))
+            candidate = Candidate("S2C_51UYT_20260909_0_L2A", selected[0]["observedAt"],
+                                  3.6, True, {})
+
+            def generate(_masked, destination, _config):
+                for tile in selected:
+                    path = destination / "14" / str(tile["x"]) / f'{tile["y"]}.webp'
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(b"R" * 400)
+
+            with patch.object(worker, "R4I_MANIFEST_SHA256", worker._file_sha256(seed / "manifest.sha256")), \
+                    patch.object(worker, "validate_r4j_source_delta", return_value={"delta": {}}), \
+                    patch.object(worker, "_r4i_repair_plan", return_value=plan), \
+                    patch.object(worker, "r4j_repair_candidate", return_value=candidate), \
+                    patch.object(worker, "require_free_space"), \
+                    patch.object(worker, "_dissolve_historical_cutline", return_value=aoi), \
+                    patch.object(worker, "_build_scene", return_value=root / "masked.tif") as build, \
+                    patch.object(worker, "_build_web_tiles", side_effect=generate), \
+                    patch.object(worker, "_discard_tiny_webp_tiles", return_value=0):
+                work = worker.render_r4i_repair_group(config, seed, base, delta, "dax")
+                self.assertEqual(seed / "repair-work/dax", work)
+                self.assertEqual(5, len(json.loads((work / "tile-render-complete.json").read_text())["tiles"]))
+                self.assertEqual((126.0, 51.4, 126.1, 51.5), build.call_args.kwargs["bounds_override"])
+                with self.assertRaises(FileExistsError):
+                    worker.render_r4i_repair_group(config, seed, base, delta, "dax")
+            self.assertTrue((seed / "FAILED").is_file())
+            self.assertFalse((seed / "tiles").exists())
+
+    def test_repair_scene_warp_is_clipped_to_tile_window(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            aoi = root / "aoi.geojson"
+            aoi.write_text(json.dumps({"type": "Polygon", "coordinates": [[
+                [125, 51], [127, 51], [127, 52], [125, 52], [125, 51],
+            ]]}))
+            config = worker._config(SimpleNamespace(root=root, aoi=aoi))
+            candidate = Candidate("test", "2026-09-09T02:35:31Z", 3, True,
+                                  {"visual": "https://sentinel2l2a01.blob.core.windows.net/visual.tif",
+                                   "scl": "https://sentinel2l2a01.blob.core.windows.net/scl.tif"},
+                                  bounds=(125.5, 51.2, 126.5, 51.8))
+
+            def warp(_config, _url, _options, _resampling, destination):
+                destination.write_bytes(b"warped")
+
+            def mask(_rgb, _scl, scene, _timeout):
+                output = scene / "masked.tif"
+                output.write_bytes(b"masked")
+                return output
+
+            with patch.object(worker, "_run_remote_warp", side_effect=warp) as remote, \
+                    patch.object(worker, "_build_masked_scene", side_effect=mask):
+                output = worker._build_scene(config, candidate, root, 0,
+                                             bounds_override=(126.0, 51.4, 126.1, 51.5))
+            self.assertTrue(output.is_file())
+            options = remote.call_args_list[0].args[2]
+            self.assertEqual(["126.0", "51.4", "126.1", "51.5"],
+                             options[options.index("-te") + 1:options.index("-te") + 5])
+            with self.assertRaisesRegex(ReleaseValidationError, "does not intersect"):
+                worker._build_scene(config, candidate, root, 1,
+                                    bounds_override=(0, 0, 1, 1))
 
     def test_r4i_repair_baseline_requires_exact_inventory_and_identity(self):
         with tempfile.TemporaryDirectory() as temporary:
