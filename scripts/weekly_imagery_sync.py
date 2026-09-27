@@ -1934,6 +1934,76 @@ def render_r4i_repair_group(
     return work
 
 
+def validate_r4i_repair_rendered_tiles(
+    root: Path, seed: Path, base_plan_path: Path, delta_path: Path,
+) -> dict[str, Any]:
+    """Read-only gate for all six quarantined z14 tiles before any pyramid merge."""
+    if seed.is_symlink() or seed.parent.resolve() != root.resolve() or \
+            not seed.name.startswith(".failed-2026-09-r4-repair-seed-"):
+        raise ReleaseValidationError("repair validation requires the pinned quarantined seed")
+    _recovery_regular(seed / "FAILED", seed)
+    if _file_sha256(_recovery_regular(seed / "manifest.sha256", seed)) != R4I_MANIFEST_SHA256:
+        raise ReleaseValidationError("repair seed baseline manifest mismatch")
+    base_plan = json.loads(base_plan_path.read_text())
+    delta = validate_r4j_source_delta(base_plan_path, delta_path)["delta"]
+    plan = _r4i_repair_plan(base_plan, delta)
+    if json.loads(_recovery_regular(seed / "repair-plan.json", seed).read_text()) != plan:
+        raise ReleaseValidationError("repair seed plan mismatch")
+    if _json_sha256(json.loads(_recovery_regular(seed / "source-plan.json", seed).read_text())) != _json_sha256(base_plan):
+        raise ReleaseValidationError("repair seed source plan mismatch")
+    expected = {
+        f'tiles/14/{tile["x"]}/{tile["y"]}.webp': tile
+        for tile in plan["tiles"]
+    }
+    if len(expected) != 6:
+        raise ReleaseValidationError("repair plan must contain six distinct tiles")
+    actual: dict[str, dict[str, Any]] = {}
+    for group in ("dax", "hulun"):
+        work = seed / "repair-work" / group
+        record = json.loads(_recovery_regular(work / "tile-render-complete.json", seed).read_text())
+        if record.get("status") != "ISOLATED_TILES_ONLY_NOT_RELEASE_READY" or \
+                record.get("group") != group or record.get("repairPlanSha256") != _json_sha256(plan):
+            raise ReleaseValidationError(f"{group} isolated render record mismatch")
+        items = record.get("tiles")
+        if not isinstance(items, list) or len(items) != (5 if group == "dax" else 1):
+            raise ReleaseValidationError(f"{group} isolated tile count mismatch")
+        for item in items:
+            if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                raise ReleaseValidationError("isolated tile record is invalid")
+            relative = item["path"]
+            planned = expected.get(relative)
+            if planned is None or relative in actual or \
+                    item.get("productId") != planned["productId"] or \
+                    item.get("observedAt") != planned["observedAt"] or \
+                    (group == "dax") != (planned["productId"] == delta["candidateId"]):
+                raise ReleaseValidationError(f"isolated tile provenance mismatch: {relative}")
+            tile = _recovery_regular(work / relative, seed)
+            if tile.stat().st_size != item.get("bytes") or \
+                    _file_sha256(tile) != item.get("sha256") or not _tile_is_full_webp(tile):
+                raise ReleaseValidationError(f"isolated tile content mismatch: {relative}")
+            if (seed / relative).exists():
+                raise ReleaseValidationError(f"repair tile already merged into seed: {relative}")
+            actual[relative] = item
+    if set(actual) != set(expected):
+        raise ReleaseValidationError("isolated repair tiles do not cover all six holes")
+    return {"status": "SIX_ISOLATED_TILES_VALIDATED_NOT_RELEASE_READY",
+            "repairPlanSha256": _json_sha256(plan), "tiles": sorted(actual)}
+
+
+def _tile_is_full_webp(tile: Path) -> bool:
+    try:
+        result = subprocess.run(
+            ["gdalinfo", "-json", str(tile)], check=True, timeout=30,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ, "GDAL_PAM_ENABLED": "NO"},
+        )
+        info = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+    return info.get("driverShortName") == "WEBP" and info.get("size") == [256, 256] \
+        and len(info.get("bands", [])) in (3, 4)
+
+
 def publish_release(
     root: Path, staging: Path, backend_reader_uid: int | None = None
 ) -> Path:
@@ -2032,6 +2102,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="copy the pinned successful r4i staging to an unpublishable repair seed")
     parser.add_argument("--render-r4i-repair-seed", type=Path,
                         help="render one bounded source window inside an existing unpublishable seed")
+    parser.add_argument("--validate-r4i-repair-seed", type=Path,
+                        help="read-only validation of six isolated tiles; never merges or publishes")
     parser.add_argument("--repair-group", choices=("dax", "hulun"),
                         help="one of the two pinned six-hole repair groups")
     parser.add_argument("--source-delta", type=Path,
@@ -2040,7 +2112,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments.seed_r4i_repair is not None:
         if (arguments.source_delta is None or arguments.historical_source_plan is None
                 or arguments.revision != 4 or not arguments.build_only
-                or arguments.render_r4i_repair_seed is not None or arguments.repair_group is not None
+                or arguments.render_r4i_repair_seed is not None or arguments.validate_r4i_repair_seed is not None
+                or arguments.repair_group is not None
                 or arguments.resume_failed is not None or arguments.migrate_r4g_audit is not None
                 or arguments.force or arguments.dry_run):
             raise ValueError("r4i repair seed requires exclusive --revision 4 --build-only, base plan and source delta")
@@ -2048,8 +2121,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         if (arguments.source_delta is None or arguments.historical_source_plan is None
                 or arguments.repair_group is None or arguments.revision != 4 or not arguments.build_only
                 or arguments.resume_failed is not None or arguments.migrate_r4g_audit is not None
-                or arguments.force or arguments.dry_run):
+                or arguments.validate_r4i_repair_seed is not None or arguments.force or arguments.dry_run):
             raise ValueError("r4i repair render requires exclusive --revision 4 --build-only, seed, plan, delta and group")
+    elif arguments.validate_r4i_repair_seed is not None:
+        if (arguments.source_delta is None or arguments.historical_source_plan is None
+                or arguments.repair_group is not None or arguments.revision != 4 or not arguments.build_only
+                or arguments.resume_failed is not None or arguments.migrate_r4g_audit is not None
+                or arguments.force or arguments.dry_run):
+            raise ValueError("r4i repair validation requires exclusive --revision 4 --build-only, seed, plan and delta")
     elif arguments.repair_group is not None:
         raise ValueError("repair group requires --render-r4i-repair-seed")
     elif arguments.source_delta is not None:
@@ -2101,6 +2180,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.source_delta, arguments.repair_group,
         )
         print(f"unpublishable isolated tile window retained: {work}")
+        return 0
+    if arguments.validate_r4i_repair_seed is not None:
+        if window.identifier != "2026-09-r4":
+            raise ValueError("r4i repair validation is limited to September 2026 revision 4")
+        result = validate_r4i_repair_rendered_tiles(
+            config.root, arguments.validate_r4i_repair_seed,
+            arguments.historical_source_plan, arguments.source_delta,
+        )
+        print(json.dumps(result, sort_keys=True))
         return 0
     source_plan = None
     if arguments.historical_source_plan is not None:

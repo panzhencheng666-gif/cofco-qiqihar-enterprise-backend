@@ -50,6 +50,58 @@ from scripts import weekly_imagery_sync as worker  # noqa: E402
 
 
 class WeeklyImagerySyncTest(unittest.TestCase):
+    def test_r4i_six_tile_gate_is_read_only_and_rejects_drift(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            seed = root / ".failed-2026-09-r4-repair-seed-test"
+            seed.mkdir()
+            (seed / "FAILED").write_text("never publish")
+            (seed / "manifest.sha256").write_text("pinned")
+            base = root / "base.json"
+            base.write_text("{}")
+            delta = root / "delta.json"
+            (seed / "source-plan.json").write_text("{}")
+            dax_id = "S2C_51UYT_20260909_0_L2A"
+            hulun_id = "S2B_51UXQ_20260914_0_L2A"
+            plan = {"tiles": [
+                {"x": x, "y": y, "productId": product_id, "observedAt": "2026-09-09T00:00:00Z"}
+                for x, y, product_id in [
+                    (13928, 5453, dax_id), (13928, 5454, dax_id),
+                    (13929, 5454, dax_id), (13930, 5454, dax_id),
+                    (13931, 5454, dax_id), (13869, 5625, hulun_id),
+                ]
+            ]}
+            (seed / "repair-plan.json").write_text(json.dumps(plan))
+            for group, selected in (("dax", plan["tiles"][:5]), ("hulun", plan["tiles"][5:])):
+                work = seed / "repair-work" / group
+                work.mkdir(parents=True)
+                items = []
+                for entry in selected:
+                    relative = f'tiles/14/{entry["x"]}/{entry["y"]}.webp'
+                    tile = work / relative
+                    tile.parent.mkdir(parents=True, exist_ok=True)
+                    tile.write_bytes(b"R" * 400)
+                    items.append({"path": relative, "sha256": worker._file_sha256(tile),
+                                  "bytes": 400, "productId": entry["productId"],
+                                  "observedAt": entry["observedAt"]})
+                (work / "tile-render-complete.json").write_text(json.dumps({
+                    "status": "ISOLATED_TILES_ONLY_NOT_RELEASE_READY", "group": group,
+                    "repairPlanSha256": worker._json_sha256(plan), "tiles": items,
+                }))
+            with patch.object(worker, "R4I_MANIFEST_SHA256", worker._file_sha256(seed / "manifest.sha256")), \
+                    patch.object(worker, "validate_r4j_source_delta", return_value={"delta": {"candidateId": dax_id}}), \
+                    patch.object(worker, "_r4i_repair_plan", return_value=plan), \
+                    patch.object(worker, "_tile_is_full_webp", return_value=True):
+                result = worker.validate_r4i_repair_rendered_tiles(root, seed, base, delta)
+                self.assertEqual("SIX_ISOLATED_TILES_VALIDATED_NOT_RELEASE_READY", result["status"])
+                self.assertEqual(6, len(result["tiles"]))
+                self.assertTrue((seed / "FAILED").is_file())
+                self.assertFalse((seed / "tiles").exists())
+                tile = seed / "repair-work/dax/tiles/14/13928/5453.webp"
+                tile.write_bytes(b"changed" * 80)
+                with self.assertRaisesRegex(ReleaseValidationError, "content mismatch"):
+                    worker.validate_r4i_repair_rendered_tiles(root, seed, base, delta)
+
     def test_r4i_seed_cli_is_exclusive_and_reports_unpublishable_output(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -85,6 +137,20 @@ class WeeklyImagerySyncTest(unittest.TestCase):
                 build.assert_not_called()
             with self.assertRaisesRegex(ValueError, "exclusive"):
                 worker.main(render_args + ["--force"])
+            validate_args = ["--root", str(root), "--aoi", str(aoi),
+                             "--now", "2026-09-26T00:00:00Z", "--revision", "4", "--build-only",
+                             "--historical-source-plan", str(base), "--source-delta", str(delta),
+                             "--validate-r4i-repair-seed", str(seed)]
+            verdict = {"status": "SIX_ISOLATED_TILES_VALIDATED_NOT_RELEASE_READY", "tiles": []}
+            with patch.object(worker, "validate_r4i_repair_rendered_tiles", return_value=verdict) as validate, \
+                    patch.object(worker, "build_release") as build, \
+                    patch("sys.stdout", new_callable=io.StringIO) as output:
+                self.assertEqual(0, worker.main(validate_args))
+                validate.assert_called_once_with(root.resolve(), seed, base, delta)
+                build.assert_not_called()
+                self.assertEqual(verdict, json.loads(output.getvalue()))
+            with self.assertRaisesRegex(ValueError, "exclusive"):
+                worker.main(validate_args + ["--repair-group", "dax"])
 
     def test_r4i_repair_seed_is_isolated_and_never_publishable(self):
         with tempfile.TemporaryDirectory() as temporary:
