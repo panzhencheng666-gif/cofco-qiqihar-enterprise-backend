@@ -32,6 +32,7 @@ import org.springframework.web.server.ResponseStatusException;
 public class MarketReportController {
     private static final ZoneId REPORT_ZONE = ZoneId.of("Asia/Shanghai");
     private static final DateTimeFormatter DATE = DateTimeFormatter.ISO_LOCAL_DATE;
+    private static final DateTimeFormatter MONTH = DateTimeFormatter.ofPattern("yyyy-MM");
     private static final Map<String, String> CHINA_LABELS = Map.of(
             "grain", "粮食价格指数", "grain-oil", "粮油产品批发价格指数",
             "edible-oil", "食用油价格指数", "agri-200", "农产品批发价格200指数",
@@ -184,11 +185,11 @@ public class MarketReportController {
                 line(document, "本期尚未结束，资讯与指标仅覆盖生成时已采集的记录。");
             line(document, "本报告按已接入来源的发布节奏生成；不表示全网覆盖或交易所实时行情。");
             heading(document, "一、来源状态", 13);
-            var sourceTable = table(document, "来源代码", "最近成功采集", "源最新统计日", "状态");
+            var sourceTable = table(document, "来源代码", "最近成功采集", "源最新统计日或月份", "状态");
             if (sources.isEmpty()) line(document, "尚无来源状态记录。");
             for (var source : sources) row(sourceTable, source.name(),
                     source.lastSuccessAt() == null ? "待接入" : source.lastSuccessAt().atZone(REPORT_ZONE).format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")),
-                    source.latestPeriod() == null ? "--" : source.latestPeriod().toString(),
+                    sourcePeriod(source),
                     source.lastError() == null ? "最近采集成功" : "最近采集失败：" + source.lastError());
 
             heading(document, "二、国内官方批发价格指数", 13);
@@ -206,7 +207,7 @@ public class MarketReportController {
             }
             heading(document, "六、口径与缺口", 13);
             line(document, "历史区间按生成时数据库内的记录回看；来源状态也以生成时为准，并非历史时点的数据快照。");
-            line(document, "国内指数的变化值为本系统对最近两次官方发布数值的差；国际基准价格取世界银行已发布月度值。表内标注原始统计日，可早于报告区间。");
+            line(document, "国内指数的变化值为本系统对最近两次官方发布数值的差；国际基准价格取世界银行已发布月度值。表内标注原始统计日或月份，可早于报告区间。");
             line(document, "FAO 食品价格指数按月发布，显示原始统计月份及来源；不代表当日交易行情。");
             line(document, "交易所实时行情、持仓、运价、直播视频及未经授权的付费来源未接入，本报告不填充模拟值或预测结论。");
             document.write(output);
@@ -214,8 +215,14 @@ public class MarketReportController {
         }
     }
 
+    private static String sourcePeriod(Source source) {
+        if (source.latestPeriod() == null) return "--";
+        return (source.name().equals("world-bank-pink-sheet") || source.name().equals("fao-food-price"))
+                ? source.latestPeriod().format(MONTH) : source.latestPeriod().format(DATE);
+    }
+
     private static void observationTable(XWPFDocument document, List<Observation> rows, boolean domestic) {
-        var table = table(document, "指标", "统计日", "最新", "较前次", "原始来源");
+        var table = table(document, "指标", domestic ? "统计日" : "统计月份", "最新", "较前次", "原始来源");
         if (rows.isEmpty()) { row(table, "待接入", "--", "--", "--", "--"); return; }
         for (var latest : rows) {
             if (latest.position() != 1) continue;
@@ -224,7 +231,8 @@ public class MarketReportController {
             var label = domestic ? CHINA_LABELS.getOrDefault(latest.series(), latest.series())
                     : WorldBankMonthlySeries.fromCode(latest.series()).title;
             var delta = previous == null ? "--" : latest.value().subtract(previous.value()).stripTrailingZeros().toPlainString();
-            row(table, label, latest.period().format(DATE), latest.value().stripTrailingZeros().toPlainString()
+            row(table, label, latest.period().format(domestic ? DATE : MONTH),
+                    latest.value().stripTrailingZeros().toPlainString()
                     + " " + latest.unit(), delta, latest.url());
         }
     }
@@ -238,7 +246,7 @@ public class MarketReportController {
                     .findFirst().orElse(null);
             var delta = previous == null ? "--" : latest.value().subtract(previous.value()).stripTrailingZeros().toPlainString();
             row(table, FaoFoodPriceSeries.fromCode(latest.series()).title,
-                    latest.period().format(DateTimeFormatter.ofPattern("yyyy-MM")),
+                    latest.period().format(MONTH),
                     latest.value().stripTrailingZeros().toPlainString() + " " + latest.unit(), delta, latest.url());
         }
     }

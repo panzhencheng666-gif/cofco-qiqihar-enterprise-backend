@@ -3,6 +3,7 @@ package com.cofco.qiqihar.graintrade.marketintelligence;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.ByteArrayInputStream;
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
@@ -40,6 +41,39 @@ class MarketReportControllerTest {
             var text = document.getParagraphs().stream().map(paragraph -> paragraph.getText())
                     .reduce("", (left, right) -> left + right);
             assertThat(text).contains("全球粮食商情日报", "本区间暂无已采集资讯", "不填充模拟值或预测结论");
+        }
+    }
+
+    @Test
+    void monthlySourcesDisplayStatisticalMonthWithoutTurningItIntoADay() throws Exception {
+        var sourceUrl = "https://thedocs.worldbank.org/example.xlsx";
+        var bytes = MarketReportController.render(MarketReportController.Period.MONTH,
+                new MarketReportController.Range(LocalDate.of(2026, 9, 1), LocalDate.of(2026, 10, 1)),
+                Instant.parse("2026-09-27T12:00:00Z"), List.of(),
+                List.of(new MarketReportController.Observation("grain", LocalDate.of(2026, 9, 24),
+                        new BigDecimal("109.74"), "指数点", "https://scs.moa.gov.cn/",
+                        Instant.parse("2026-09-27T11:00:00Z"), 1)),
+                List.of(new MarketReportController.Observation("maize", LocalDate.of(2026, 8, 1),
+                        new BigDecimal("224"), "美元/吨", sourceUrl,
+                        Instant.parse("2026-09-27T11:00:00Z"), 1)),
+                List.of(),
+                List.of(new MarketReportController.Source("world-bank-pink-sheet",
+                                Instant.parse("2026-09-27T11:00:00Z"), LocalDate.of(2026, 8, 1), null),
+                        new MarketReportController.Source("moa-public-monitor",
+                                Instant.parse("2026-09-27T11:00:00Z"), LocalDate.of(2026, 9, 24), null)));
+        try (var document = new XWPFDocument(new ByteArrayInputStream(bytes))) {
+            var sources = document.getTables().get(0);
+            var domestic = document.getTables().get(1);
+            var world = document.getTables().get(2);
+            assertThat(sources.getRow(0).getCell(2).getText()).isEqualTo("源最新统计日或月份");
+            assertThat(sources.getRow(1).getCell(2).getText()).isEqualTo("2026-08");
+            assertThat(sources.getRow(2).getCell(2).getText()).isEqualTo("2026-09-24");
+            assertThat(domestic.getRow(0).getCell(1).getText()).isEqualTo("统计日");
+            assertThat(domestic.getRow(1).getCell(1).getText()).isEqualTo("2026-09-24");
+            assertThat(world.getRow(0).getCell(1).getText()).isEqualTo("统计月份");
+            assertThat(world.getRow(1).getCell(1).getText()).isEqualTo("2026-08");
+            assertThat(world.getRow(1).getCell(2).getText()).isEqualTo("224 美元/吨");
+            assertThat(world.getRow(1).getCell(4).getText()).isEqualTo(sourceUrl);
         }
     }
 
