@@ -85,11 +85,13 @@ class ChoiceFeedProcessTest {
         try (var fixture = new Fixture()) {
             int port = fixture.await("ready").path("port").asInt();
             String url = "http://127.0.0.1:" + port + "/quotes";
-            var wrongToken = new MarketQuoteGateway(new ObjectMapper(), url, "invalid-test-token", true);
+            var wrongToken = new MarketQuoteGateway(new ObjectMapper(), url, "invalid-test-token", true,
+                    java.util.Set.of("dce-corn"));
             wrongToken.refresh();
             assertEquals("SOURCE_ERROR", wrongToken.overview().data().gatewayState());
             assertTrue(wrongToken.overview().data().quotes().isEmpty());
-            var gateway = new MarketQuoteGateway(new ObjectMapper(), url, fixture.token, true);
+            var gateway = new MarketQuoteGateway(new ObjectMapper(), url, fixture.token, true,
+                    java.util.Set.of("dce-corn"));
             gateway.refresh();
             var first = gateway.overview().data();
             assertEquals("CONNECTED", first.gatewayState());
@@ -118,7 +120,8 @@ class ChoiceFeedProcessTest {
         try (var fixture = new Fixture()) {
             int port = fixture.await("ready").path("port").asInt();
             var gateway = new MarketQuoteGateway(new ObjectMapper(),
-                    "http://127.0.0.1:" + port + "/quotes", fixture.token, true, clock);
+                    "http://127.0.0.1:" + port + "/quotes", fixture.token, true,
+                    java.util.Set.of("dce-corn"), clock);
             gateway.refresh();
             assertEquals("CONNECTED", gateway.overview().data().gatewayState());
             fixture.command("freeze");

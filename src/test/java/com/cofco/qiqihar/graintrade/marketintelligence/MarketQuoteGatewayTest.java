@@ -3,6 +3,7 @@ package com.cofco.qiqihar.graintrade.marketintelligence;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.sun.net.httpserver.HttpServer;
@@ -19,6 +20,8 @@ import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
 
 class MarketQuoteGatewayTest {
+    private static final Set<String> TEST_SCOPE = Set.of("dce-corn", "cbot-corn", "dxy",
+            "dce-soybean", "czce-wheat", "czce-common-wheat", "czce-rice");
     private static String envelope(String state, Instant publishedAt, String content) {
         return "{\"schemaVersion\":1,\"state\":\"" + state + "\",\"publishedAt\":\""
                 + publishedAt + "\"," + content.substring(1);
@@ -38,6 +41,16 @@ class MarketQuoteGatewayTest {
 
     private static void withFeed(String initial, Clock clock,
             BiConsumer<MarketQuoteGateway, AtomicReference<String>> assertions) throws Exception {
+        withFeed(initial, TEST_SCOPE, clock, assertions);
+    }
+
+    private static void withFeed(String initial, Set<String> displayScope,
+            BiConsumer<MarketQuoteGateway, AtomicReference<String>> assertions) throws Exception {
+        withFeed(initial, displayScope, Clock.systemUTC(), assertions);
+    }
+
+    private static void withFeed(String initial, Set<String> displayScope, Clock clock,
+            BiConsumer<MarketQuoteGateway, AtomicReference<String>> assertions) throws Exception {
         var payload = new AtomicReference<>(initial);
         var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/quotes", exchange -> {
@@ -48,7 +61,8 @@ class MarketQuoteGatewayTest {
         server.start();
         try {
             assertions.accept(new MarketQuoteGateway(new ObjectMapper(),
-                    "http://127.0.0.1:" + server.getAddress().getPort() + "/quotes", "", true, clock), payload);
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/quotes", "", true,
+                    displayScope, clock), payload);
         } finally {
             server.stop(0);
         }
@@ -169,6 +183,44 @@ class MarketQuoteGatewayTest {
     }
 
     @Test
+    void globalAuthorizationWithoutAnInstrumentDisplayScopeCannotFetchOrDisplay() {
+        var gateway = new MarketQuoteGateway(new ObjectMapper(), "http://127.0.0.1:1/quotes", "", true,
+                Set.of());
+        gateway.refresh();
+        var board = gateway.overview().data();
+        assertEquals("PENDING_CONFIGURATION", board.gatewayState());
+        assertNull(board.lastAttemptAt());
+        assertTrue(board.quotes().isEmpty());
+    }
+
+    @Test
+    void onlyExplicitlyDisplayAllowedInstrumentsReachTheBoard() throws Exception {
+        Instant now = Instant.now();
+        String body = "{\"quotes\":["
+                + grainRow("dce-corn", "DCE", "c", "DCE.c2601", now) + ","
+                + "{\"id\":\"dxy\",\"last\":99,\"sourceAt\":\"" + now
+                + "\",\"provider\":\"synthetic-test\"}]}";
+        withFeed(envelope("RECONCILED", now, body), Set.of("dce-corn"), (gateway, payload) -> {
+            gateway.refresh();
+            var board = gateway.overview().data();
+            assertEquals("CONNECTED", board.gatewayState());
+            assertEquals(1, board.quotes().size());
+            assertEquals("dce-corn", board.quotes().getFirst().id());
+        });
+    }
+
+    @Test
+    void invalidDisplayScopeCannotSilentlyEnableTheWrongInstrument() {
+        var configured = new MarketQuoteGateway(new ObjectMapper(), "http://127.0.0.1:1/quotes", "",
+                true, " dce-corn ");
+        assertEquals("WAITING_FIRST_TICK", configured.overview().data().gatewayState());
+        assertThrows(IllegalArgumentException.class, () -> new MarketQuoteGateway(new ObjectMapper(),
+                "http://127.0.0.1:1/quotes", "", true, "dce-corn,unknown"));
+        assertThrows(IllegalArgumentException.class, () -> new MarketQuoteGateway(new ObjectMapper(),
+                "http://127.0.0.1:1/quotes", "", true, "dce-corn,dce-corn"));
+    }
+
+    @Test
     void acceptsOnlyKnownAttributedQuotesAndMarksOldTicksStale() throws Exception {
         var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/quotes", exchange -> {
@@ -187,7 +239,8 @@ class MarketQuoteGatewayTest {
         server.start();
         try {
             var gateway = new MarketQuoteGateway(new ObjectMapper(),
-                    "http://127.0.0.1:" + server.getAddress().getPort() + "/quotes", "", true);
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/quotes", "", true,
+                    TEST_SCOPE);
             gateway.refresh();
             var board = gateway.overview().data();
             assertEquals("STALE_DATA", board.gatewayState());
@@ -221,7 +274,8 @@ class MarketQuoteGatewayTest {
         server.start();
         try {
             var gateway = new MarketQuoteGateway(new ObjectMapper(),
-                    "http://127.0.0.1:" + server.getAddress().getPort() + "/quotes", "", true);
+                    "http://127.0.0.1:" + server.getAddress().getPort() + "/quotes", "", true,
+                    TEST_SCOPE);
             gateway.refresh();
             payload.set(("""
                     {"quotes":[{"id":"cbot-corn","last":80,"sourceAt":"%s","provider":"licensed-test"}]}
