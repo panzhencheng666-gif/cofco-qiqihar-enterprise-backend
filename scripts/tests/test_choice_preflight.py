@@ -72,6 +72,17 @@ class PreflightTest(unittest.TestCase):
         self.write('bindings.json', [row, row])
         self.assertIn('DUPLICATE_MAPPING', self.check()['errors'])
 
+    def test_grain_contract_identity_must_be_explicit(self):
+        self.write('catalogue.json', {'dce-corn': '元/吨'})
+        self.write('bindings.json', [{'code': 'TEST.CORN', 'id': 'dce-corn',
+                                    'unit': '元/吨', 'verified': True}])
+        self.assertIn('GRAIN_CONTRACT_IDENTITY_INVALID', self.check()['errors'])
+        self.write('bindings.json', [{'code': 'TEST.CORN', 'id': 'dce-corn',
+                                    'unit': '元/吨', 'verified': True,
+                                    'exchangeId': 'DCE', 'productId': 'c',
+                                    'contractId': 'DCE.c2601'}])
+        self.assertEqual('CONFIG_VALID_VENDOR_CHECK_REQUIRED', self.check()['state'])
+
     def test_token_permissions_symlink_and_format(self):
         self.token.chmod(0o644)
         self.assertIn('BEARER_TOKEN_FILE_INVALID', self.check()['errors'])

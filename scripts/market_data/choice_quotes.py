@@ -12,6 +12,14 @@ import math
 import re
 from threading import Lock
 
+_GRAIN_PRODUCTS = {
+    'dce-soybean': ('DCE', 'a', r'DCE\.a[0-9]{2}(0[1-9]|1[0-2])'),
+    'dce-corn': ('DCE', 'c', r'DCE\.c[0-9]{2}(0[1-9]|1[0-2])'),
+    'czce-wheat': ('CZCE', 'WH', r'CZCE\.WH[0-9](0[1-9]|1[0-2])'),
+    'czce-common-wheat': ('CZCE', 'PM', r'CZCE\.PM[0-9](0[1-9]|1[0-2])'),
+    'czce-rice': ('CZCE', 'LR', r'CZCE\.LR[0-9](0[1-9]|1[0-2])'),
+}
+
 
 class QuoteNormalizer:
     def __init__(self, catalogue, bindings, *, clock=None):
@@ -29,9 +37,18 @@ class QuoteNormalizer:
                 raise ValueError('UNKNOWN_INSTRUMENT')
             if not isinstance(unit, str) or not unit or unit != catalogue[identifier]:
                 raise ValueError('UNIT_MISMATCH')
+            expected = _GRAIN_PRODUCTS.get(identifier)
+            if expected is not None:
+                exchange_id, product_id, pattern = expected
+                if (binding.get('exchangeId') != exchange_id
+                        or binding.get('productId') != product_id
+                        or unit != '元/吨'
+                        or not isinstance(binding.get('contractId'), str)
+                        or re.fullmatch(pattern, binding['contractId']) is None):
+                    raise ValueError('GRAIN_CONTRACT_IDENTITY_INVALID')
             if code in self._bindings or identifier in ids:
                 raise ValueError('DUPLICATE_MAPPING')
-            self._bindings[code] = identifier
+            self._bindings[code] = dict(binding)
             ids.add(identifier)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._latest = {}
@@ -45,7 +62,7 @@ class QuoteNormalizer:
 
     @property
     def instrument_ids(self):
-        return frozenset(self._bindings.values())
+        return frozenset(binding['id'] for binding in self._bindings.values())
 
     @staticmethod
     def _price(value):
@@ -118,10 +135,15 @@ class QuoteNormalizer:
                 except ValueError as error:
                     rejected[str(error)] += 1
                     continue
-                identifier = self._bindings[code]
+                binding = self._bindings[code]
+                identifier = binding['id']
                 quote = {'id': identifier, 'last': last, 'previousClose': previous,
                          'sourceAt': source_at.isoformat().replace('+00:00', 'Z'),
                          'provider': '东方财富 Choice'}
+                if identifier in _GRAIN_PRODUCTS:
+                    quote.update(exchangeId=binding['exchangeId'],
+                                 productId=binding['productId'],
+                                 contractId=binding['contractId'], unit=binding['unit'])
                 cached = self._latest.get(identifier)
                 if cached:
                     old_time, old_quote = cached

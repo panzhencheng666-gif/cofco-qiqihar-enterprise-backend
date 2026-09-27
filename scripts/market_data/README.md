@@ -89,13 +89,21 @@ This validates only the declared exchange product, contract shape, and quote
 unit; it does not establish supplier entitlement, a currently active contract,
 or the supplier's dominant-contract choice.
 
-The present Choice normalizer emits no contract identity, and the local
-publisher copies only its earlier quote-field allowlist. Consequently this
-worker cannot publish accepted prices for these five IDs yet. A later supplier
-adapter stage must verify the real incoming contract, resolve main-contract
-rollover from supplier evidence, carry all four identity fields through the
-normalizer and publisher, and test actual authorized callbacks. Do not mark
-these grain quotes connected using the current worker.
+The candidate Choice normalizer now requires those four fields in a verified
+binding for each gated grain ID and attaches them to its quote. Preflight
+rejects missing or mismatched contract identity, and the local publisher
+preserves the fields or hides a grain quote when one is absent. Other catalogue
+IDs retain their existing mapping behavior. Synthetic tests can therefore
+exercise the full worker-to-gateway record shape.
+
+`verified: true` and the binding's `contractId` are operator assertions. The
+worker still cannot prove that a Choice `code` names that actual dated contract,
+that the account may redistribute its price, or that a main contract has rolled.
+Use a separately verified dated supplier code, never a continuous alias, and
+refresh its binding only after checking the actual supplier response. A later
+authorized-callback stage must verify vendor code semantics, source time,
+dominant-contract rollover and delivery to the backend. No synthetic binding
+or passing preflight marks these grain quotes connected.
 
 ### Recovery coordinator
 
@@ -331,9 +339,11 @@ codes, not supplied values, paths, tokens or exception text.
 redistribution, not evidence of a supplier entitlement. Leave it false until
 actual permission is obtained. Catalogue JSON is an ID-to-unit object exported
 from the target backend; bindings are the verified records consumed by
-`QuoteNormalizer` (`code`, `id`, `unit`, `verified:true`). The checker validates
-consistency between these files, not their provenance, provider codes, contract
-roll rules or agreement scope. Never use synthetic test codes as production
+`QuoteNormalizer` (`code`, `id`, `unit`, `verified:true`; gated grains also require
+`exchangeId`, `productId`, `contractId`). The checker validates consistency
+between these files and the gated grain product/contract shape, not their
+provenance, actual provider code identity, contract roll rules or agreement
+scope. Never use synthetic test codes as production
 mappings. Refresh the catalogue when the backend catalogue changes.
 
 The bearer file contains the **local HTTP feed token**, not the Choice account
