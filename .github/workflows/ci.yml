@@ -111,7 +111,9 @@ jobs:
 
       - name: Verify grain quote identity
         run: |
-          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p 'test_choice_*.py' -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_choice_feed.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_choice_preflight.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_choice_quotes.py -v
           mvn -B -ntp -Dtest=MarketQuoteGatewayTest,ChoiceFeedProcessTest test
 
       - name: Verify weekly imagery worker
