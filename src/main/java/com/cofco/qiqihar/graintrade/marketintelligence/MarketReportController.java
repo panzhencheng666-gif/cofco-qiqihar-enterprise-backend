@@ -3,6 +3,7 @@ package com.cofco.qiqihar.graintrade.marketintelligence;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.DayOfWeek;
 import java.time.Instant;
@@ -15,6 +16,8 @@ import java.time.temporal.TemporalAdjusters;
 import java.util.List;
 import java.util.Map;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
+import org.apache.poi.xwpf.usermodel.XWPFParagraph;
+import org.apache.poi.xwpf.usermodel.XWPFRun;
 import org.apache.poi.xwpf.usermodel.XWPFTable;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
@@ -199,11 +202,11 @@ public class MarketReportController {
             heading(document, "四、FAO 月度食品价格指数", 13);
             faoObservationTable(document, fao);
             heading(document, "五、区间内官方资讯", 13);
-            line(document, "以下为来源标题与原文链接；最多列出国内、国际各 25 条。标题不是已核验的事件影响结论。");
+            line(document, "以下为来源标题与原文链接；最多列出国内、国际各 25 条。标题不是已核验的事件影响结论。", true);
             if (news.isEmpty()) line(document, "本区间暂无已采集资讯。");
             for (var item : news) {
                 line(document, item.publishedAt().atZone(REPORT_ZONE).toLocalDate() + " | " + item.source() + " | " + item.title());
-                line(document, item.url());
+                sourceLine(document, item.url());
             }
             heading(document, "六、口径与缺口", 13);
             line(document, "历史区间按生成时数据库内的记录回看；来源状态也以生成时为准，并非历史时点的数据快照。");
@@ -253,20 +256,81 @@ public class MarketReportController {
 
     private static void heading(XWPFDocument document, String value, int size) {
         var paragraph = document.createParagraph();
+        paragraph.getCTP().addNewPPr();
+        paragraph.setKeepNext(true);
         var run = paragraph.createRun();
-        run.setBold(true); run.setFontFamily("Microsoft YaHei"); run.setFontSize(size); run.setText(value);
+        style(run, size, true);
+        run.setText(value);
     }
     private static void line(XWPFDocument document, String value) {
-        var run = document.createParagraph().createRun();
-        run.setFontFamily("Microsoft YaHei"); run.setFontSize(9); run.setText(value);
+        line(document, value, false);
+    }
+    private static void line(XWPFDocument document, String value, boolean keepNext) {
+        var paragraph = document.createParagraph();
+        if (keepNext) {
+            paragraph.getCTP().addNewPPr();
+            paragraph.setKeepNext(true);
+        }
+        var run = paragraph.createRun();
+        style(run, 9, false);
+        run.setText(value);
+    }
+    private static void sourceLine(XWPFDocument document, String url) {
+        sourceLink(document.createParagraph(), url);
     }
     private static XWPFTable table(XWPFDocument document, String... headers) {
         var table = document.createTable(1, headers.length);
-        for (int i = 0; i < headers.length; i++) table.getRow(0).getCell(i).setText(headers[i]);
+        for (int i = 0; i < headers.length; i++) {
+            var run = table.getRow(0).getCell(i).getParagraphs().get(0).createRun();
+            style(run, 9, true);
+            run.setText(headers[i]);
+        }
         return table;
     }
     private static void row(XWPFTable table, String... values) {
         var row = table.createRow();
-        for (int i = 0; i < values.length; i++) row.getCell(i).setText(values[i]);
+        for (int i = 0; i < values.length; i++) {
+            var paragraph = row.getCell(i).getParagraphs().get(0);
+            if (i == values.length - 1 && values[i] != null && values[i].startsWith("http")) {
+                sourceLink(paragraph, values[i]);
+            } else {
+                var run = paragraph.createRun();
+                style(run, 9, false);
+                run.setText(values[i] == null ? "--" : values[i]);
+            }
+        }
+    }
+    private static void sourceLink(XWPFParagraph paragraph, String url) {
+        if (url == null || url.isBlank()) {
+            var run = paragraph.createRun();
+            style(run, 9, false);
+            run.setText("--");
+            return;
+        }
+        try {
+            var uri = URI.create(url);
+            if (("https".equals(uri.getScheme()) || "http".equals(uri.getScheme()))
+                    && uri.getHost() != null) {
+                var run = paragraph.createHyperlinkRun(url);
+                style(run, 9, false);
+                run.setColor("185ABC");
+                run.setText("查看原文");
+                return;
+            }
+        } catch (IllegalArgumentException ignored) {
+            // Preserve malformed stored source text instead of generating a false link.
+        }
+        var run = paragraph.createRun();
+        style(run, 9, false);
+        run.setText(url);
+    }
+    private static void style(XWPFRun run, int size, boolean bold) {
+        // Keep the original Word font and apply it to table cells too.
+        // Readers without this font can use their installed CJK fallback.
+        run.setFontFamily("Microsoft YaHei");
+        run.setFontFamily("Microsoft YaHei", XWPFRun.FontCharRange.eastAsia);
+        run.setLang("zh-CN");
+        run.setFontSize(size);
+        run.setBold(bold);
     }
 }

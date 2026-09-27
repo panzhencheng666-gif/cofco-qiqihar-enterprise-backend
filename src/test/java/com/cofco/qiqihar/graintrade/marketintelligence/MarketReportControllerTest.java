@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
+import org.apache.poi.xwpf.usermodel.XWPFHyperlinkRun;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.core.simple.JdbcClient;
@@ -73,7 +74,12 @@ class MarketReportControllerTest {
             assertThat(world.getRow(0).getCell(1).getText()).isEqualTo("统计月份");
             assertThat(world.getRow(1).getCell(1).getText()).isEqualTo("2026-08");
             assertThat(world.getRow(1).getCell(2).getText()).isEqualTo("224 美元/吨");
-            assertThat(world.getRow(1).getCell(4).getText()).isEqualTo(sourceUrl);
+            var source = world.getRow(1).getCell(4);
+            assertThat(source.getText()).isEqualTo("查看原文");
+            var hyperlink = (XWPFHyperlinkRun) source.getParagraphs().get(0).getRuns().get(0);
+            assertThat(hyperlink.getHyperlink(document).getURL()).isEqualTo(sourceUrl);
+            assertThat(domestic.getRow(0).getCell(0).getParagraphs().get(0).getRuns().get(0)
+                    .getCTR().getRPr().getRFontsArray(0).getEastAsia()).isEqualTo("Microsoft YaHei");
         }
     }
 
@@ -104,7 +110,10 @@ class MarketReportControllerTest {
             var cells = document.getTables().stream().flatMap(table -> table.getRows().stream())
                     .flatMap(row -> row.getTableCells().stream()).map(cell -> cell.getText())
                     .reduce("", (left, right) -> left + right);
-            assertThat(text + cells).contains("FAO 谷物价格指数", "109.2 指数点", "https://www.fao.org/");
+            assertThat(text + cells).contains("FAO 谷物价格指数", "109.2 指数点", "查看原文");
+            var source = document.getTables().get(3).getRow(1).getCell(4);
+            var hyperlink = (XWPFHyperlinkRun) source.getParagraphs().get(0).getRuns().get(0);
+            assertThat(hyperlink.getHyperlink(document).getURL()).isEqualTo("https://www.fao.org/");
         }
     }
 }
