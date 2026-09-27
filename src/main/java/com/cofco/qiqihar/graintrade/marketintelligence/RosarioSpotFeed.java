@@ -15,6 +15,7 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -42,6 +43,7 @@ public class RosarioSpotFeed {
     private final boolean enabled;
     private volatile Snapshot snapshot = empty("WAITING_SOURCE", null, null);
 
+    @Autowired
     public RosarioSpotFeed(ObjectMapper mapper,
             @Value("${qiqihar.market-intelligence.rosario-spot.enabled:true}") boolean enabled) {
         this(mapper, HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build(),
