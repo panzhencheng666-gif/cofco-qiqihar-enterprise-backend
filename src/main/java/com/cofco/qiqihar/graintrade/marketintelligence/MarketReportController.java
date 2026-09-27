@@ -85,8 +85,9 @@ public class MarketReportController {
         var news = news(start, cutoff);
         var china = observations("china_daily_index", cutoff);
         var world = observations("monthly_benchmark_price", cutoff);
+        var fao = observations("fao_food_price_index", cutoff);
         var sources = sources();
-        var bytes = render(period, range, now, news, china, world, sources);
+        var bytes = render(period, range, now, news, china, world, fao, sources);
         var filename = "grain-market-" + period.name().toLowerCase() + "-" + anchor + ".docx";
         return ResponseEntity.ok()
                 .header(HttpHeaders.CACHE_CONTROL, "no-store")
@@ -119,8 +120,9 @@ public class MarketReportController {
     }
 
     private List<Observation> observations(String table, OffsetDateTime cutoff) {
-        // Both names are fixed internal choices, never request parameters.
-        if (!table.equals("china_daily_index") && !table.equals("monthly_benchmark_price"))
+        // These names are fixed internal choices, never request parameters.
+        if (!table.equals("china_daily_index") && !table.equals("monthly_benchmark_price")
+                && !table.equals("fao_food_price_index"))
             throw new IllegalArgumentException("Unsupported report series");
         var sql = table.equals("china_daily_index") ? """
                 WITH ranked AS (
@@ -129,12 +131,19 @@ public class MarketReportController {
                     FROM market_intelligence.china_daily_index WHERE period <= :cutoff
                 ) SELECT series_code,period,value,'指数点' AS unit,source_url,fetched_at,position
                   FROM ranked WHERE position <= 2 ORDER BY series_code,position
-                """ : """
+                """ : table.equals("monthly_benchmark_price") ? """
                 WITH ranked AS (
                     SELECT series_code,period,price AS value,unit,source_url,fetched_at,
                            ROW_NUMBER() OVER (PARTITION BY series_code ORDER BY period DESC) AS position
                     FROM market_intelligence.monthly_benchmark_price WHERE period <= :cutoff
                 ) SELECT series_code,period,value,unit,source_url,fetched_at,position
+                  FROM ranked WHERE position <= 2 ORDER BY series_code,position
+                """ : """
+                WITH ranked AS (
+                    SELECT series_code,period,value,source_url,fetched_at,
+                           ROW_NUMBER() OVER (PARTITION BY series_code ORDER BY period DESC) AS position
+                    FROM market_intelligence.fao_food_price_index WHERE period <= :cutoff
+                ) SELECT series_code,period,value,'指数点' AS unit,source_url,fetched_at,position
                   FROM ranked WHERE position <= 2 ORDER BY series_code,position
                 """;
         var lastIncludedDay = cutoff.toLocalTime().equals(LocalTime.MIDNIGHT)
@@ -152,7 +161,7 @@ public class MarketReportController {
                 SELECT source_code,last_success_at,latest_period,last_error
                 FROM market_intelligence.source_sync_state
                 WHERE source_code IN ('moa-public-monitor','moa-department-news',
-                                      'fao-newsroom-rss','world-bank-pink-sheet')
+                                      'fao-newsroom-rss','fao-food-price','world-bank-pink-sheet')
                 ORDER BY source_code
                 """).query((rs, row) -> new Source(rs.getString("source_code"),
                 rs.getObject("last_success_at", OffsetDateTime.class) == null ? null
@@ -162,7 +171,8 @@ public class MarketReportController {
     }
 
     static byte[] render(Period period, Range range, Instant generatedAt, List<News> news,
-                         List<Observation> china, List<Observation> world, List<Source> sources) throws IOException {
+                         List<Observation> china, List<Observation> world, List<Observation> fao,
+                         List<Source> sources) throws IOException {
         try (var document = new XWPFDocument(); var output = new ByteArrayOutputStream()) {
             heading(document, "全球粮食商情" + switch (period) {
                 case DAY -> "日报"; case WEEK -> "周报"; case MONTH -> "月报";
@@ -185,16 +195,19 @@ public class MarketReportController {
             observationTable(document, china, true);
             heading(document, "三、国际月度公开基准", 13);
             observationTable(document, world, false);
-            heading(document, "四、区间内官方资讯", 13);
+            heading(document, "四、FAO 月度食品价格指数", 13);
+            faoObservationTable(document, fao);
+            heading(document, "五、区间内官方资讯", 13);
             line(document, "以下为来源标题与原文链接；最多列出国内、国际各 25 条。标题不是已核验的事件影响结论。");
             if (news.isEmpty()) line(document, "本区间暂无已采集资讯。");
             for (var item : news) {
                 line(document, item.publishedAt().atZone(REPORT_ZONE).toLocalDate() + " | " + item.source() + " | " + item.title());
                 line(document, item.url());
             }
-            heading(document, "五、口径与缺口", 13);
+            heading(document, "六、口径与缺口", 13);
             line(document, "历史区间按生成时数据库内的记录回看；来源状态也以生成时为准，并非历史时点的数据快照。");
             line(document, "国内指数的变化值为本系统对最近两次官方发布数值的差；国际基准价格取世界银行已发布月度值。表内标注原始统计日，可早于报告区间。");
+            line(document, "FAO 食品价格指数按月发布，显示原始统计月份及来源；不代表当日交易行情。");
             line(document, "交易所实时行情、持仓、运价、直播视频及未经授权的付费来源未接入，本报告不填充模拟值或预测结论。");
             document.write(output);
             return output.toByteArray();
@@ -213,6 +226,20 @@ public class MarketReportController {
             var delta = previous == null ? "--" : latest.value().subtract(previous.value()).stripTrailingZeros().toPlainString();
             row(table, label, latest.period().format(DATE), latest.value().stripTrailingZeros().toPlainString()
                     + " " + latest.unit(), delta, latest.url());
+        }
+    }
+
+    private static void faoObservationTable(XWPFDocument document, List<Observation> rows) {
+        var table = table(document, "指标", "统计月份", "最新", "较前次", "原始来源");
+        if (rows.isEmpty()) { row(table, "待接入", "--", "--", "--", "--"); return; }
+        for (var latest : rows) {
+            if (latest.position() != 1) continue;
+            var previous = rows.stream().filter(item -> item.series().equals(latest.series()) && item.position() == 2)
+                    .findFirst().orElse(null);
+            var delta = previous == null ? "--" : latest.value().subtract(previous.value()).stripTrailingZeros().toPlainString();
+            row(table, FaoFoodPriceSeries.fromCode(latest.series()).title,
+                    latest.period().format(DateTimeFormatter.ofPattern("yyyy-MM")),
+                    latest.value().stripTrailingZeros().toPlainString() + " " + latest.unit(), delta, latest.url());
         }
     }
 

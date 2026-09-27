@@ -8,6 +8,12 @@ import java.time.LocalDate;
 import java.util.List;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;
 import org.junit.jupiter.api.Test;
+import org.springframework.jdbc.core.RowMapper;
+import org.springframework.jdbc.core.simple.JdbcClient;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class MarketReportControllerTest {
     @Test
@@ -29,11 +35,42 @@ class MarketReportControllerTest {
     void emptyReportStatesEvidenceBoundaryWithoutInventingValues() throws Exception {
         var bytes = MarketReportController.render(MarketReportController.Period.DAY,
                 new MarketReportController.Range(LocalDate.of(2026, 9, 25), LocalDate.of(2026, 9, 26)),
-                Instant.parse("2026-09-25T00:00:00Z"), List.of(), List.of(), List.of(), List.of());
+                Instant.parse("2026-09-25T00:00:00Z"), List.of(), List.of(), List.of(), List.of(), List.of());
         try (var document = new XWPFDocument(new ByteArrayInputStream(bytes))) {
             var text = document.getParagraphs().stream().map(paragraph -> paragraph.getText())
                     .reduce("", (left, right) -> left + right);
             assertThat(text).contains("全球粮食商情日报", "本区间暂无已采集资讯", "不填充模拟值或预测结论");
+        }
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void downloadedReportIncludesFaoMonthlyIndexWithSource() throws Exception {
+        JdbcClient jdbc = mock(JdbcClient.class);
+        JdbcClient.StatementSpec empty = mock(JdbcClient.StatementSpec.class);
+        JdbcClient.StatementSpec fao = mock(JdbcClient.StatementSpec.class);
+        JdbcClient.MappedQuerySpec emptyRows = mock(JdbcClient.MappedQuerySpec.class);
+        JdbcClient.MappedQuerySpec faoRows = mock(JdbcClient.MappedQuerySpec.class);
+        when(empty.param(anyString(), any())).thenReturn(empty);
+        when(fao.param(anyString(), any())).thenReturn(fao);
+        when(empty.query(any(RowMapper.class))).thenReturn(emptyRows);
+        when(fao.query(any(RowMapper.class))).thenReturn(faoRows);
+        when(emptyRows.list()).thenReturn(List.of());
+        when(faoRows.list()).thenReturn(List.of(new MarketReportController.Observation(
+                "cereals", LocalDate.of(2026, 8, 1), new java.math.BigDecimal("109.2"),
+                "指数点", "https://www.fao.org/", Instant.parse("2026-09-05T00:00:00Z"), 1)));
+        when(jdbc.sql(anyString())).thenAnswer(invocation ->
+                ((String) invocation.getArgument(0)).contains("fao_food_price_index") ? fao : empty);
+
+        var bytes = new MarketReportController(jdbc).download(
+                MarketReportController.Period.MONTH, LocalDate.of(2026, 9, 1)).getBody();
+        try (var document = new XWPFDocument(new ByteArrayInputStream(bytes))) {
+            var text = document.getParagraphs().stream().map(paragraph -> paragraph.getText())
+                    .reduce("", (left, right) -> left + right);
+            var cells = document.getTables().stream().flatMap(table -> table.getRows().stream())
+                    .flatMap(row -> row.getTableCells().stream()).map(cell -> cell.getText())
+                    .reduce("", (left, right) -> left + right);
+            assertThat(text + cells).contains("FAO 谷物价格指数", "109.2 指数点", "https://www.fao.org/");
         }
     }
 }
