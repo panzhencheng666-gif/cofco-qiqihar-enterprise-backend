@@ -1547,6 +1547,7 @@ def build_release(
     source_plan: Mapping[str, Any] | None = None,
     resume_failed: Path | None = None,
     migrate_r4g_audit: Path | None = None,
+    atomic_source_mosaic: bool = False,
 ) -> Path:
     _check_gdal()
     config.root.mkdir(parents=True, exist_ok=True)
@@ -1618,22 +1619,47 @@ def build_release(
         # rasters and can exceed the diagnostic's fixed timeout. Publication is
         # gated below by actual tile coverage and by release validation.
         mosaic = work / "mosaic.tif"
-        _run(
-            [
-                "gdal_translate",
-                "-of",
-                "GTiff",
-                "-co",
-                "TILED=YES",
-                "-co",
-                "COMPRESS=DEFLATE",
-                "-co",
-                "BIGTIFF=IF_SAFER",
-                str(mosaic_vrt),
-                str(mosaic),
-            ],
-            config.command_timeout_seconds,
-        )
+        if atomic_source_mosaic:
+            scene_table = [
+                {"sceneIndex": position, "productId": candidate.product_id,
+                 "acquiredAt": candidate.observed_at, "maskedRaster": str(scene)}
+                for position, ((_, candidate), scene) in enumerate(zip(indexed_candidates, scenes), 1)
+            ]
+            _atomic_json(work / "atomic-scene-table.json", {"scenesInPriorityOrder": scene_table})
+            _run(
+                [os.environ.get("COFCO_IMAGERY_GDAL_PYTHON", "/usr/bin/python3"),
+                 str(Path(__file__).with_name("atomic_scene_mosaic.py")),
+                 "--grid-vrt", str(mosaic_vrt),
+                 "--scene-table", str(work / "atomic-scene-table.json"),
+                 "--rgba-out", str(mosaic),
+                 "--index-out", str(staging / "scene-index.tif")],
+                max(config.command_timeout_seconds, 8 * 3600),
+            )
+            _atomic_json(staging / "source-index.json", {
+                "schema": 1,
+                "indexRaster": "scene-index.tif",
+                "scenesInPriorityOrder": [
+                    {key: entry[key] for key in ("sceneIndex", "productId", "acquiredAt")}
+                    for entry in scene_table
+                ],
+            })
+        else:
+            _run(
+                [
+                    "gdal_translate",
+                    "-of",
+                    "GTiff",
+                    "-co",
+                    "TILED=YES",
+                    "-co",
+                    "COMPRESS=DEFLATE",
+                    "-co",
+                    "BIGTIFF=IF_SAFER",
+                    str(mosaic_vrt),
+                    str(mosaic),
+                ],
+                config.command_timeout_seconds,
+            )
         require_free_space(config.root, config.minimum_free_bytes)
         tiles = staging / "tiles"
         _build_web_tiles(mosaic, tiles, config)
@@ -1677,6 +1703,8 @@ def build_release(
                 "Latest available cloud-filtered observation; not live video."
             ),
         }
+        if atomic_source_mosaic:
+            metadata["positionDateIndex"] = "source-index.json"
         (staging / "metadata.json").write_text(
             json.dumps(metadata, ensure_ascii=False, sort_keys=True) + "\n"
         )
@@ -2096,6 +2124,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--build-only", action="store_true", help="validate staging without changing current")
     parser.add_argument("--historical-source-plan", type=Path,
                         help="audited one-off September 2026 Sentinel-2 source plan")
+    parser.add_argument("--atomic-source-mosaic", action="store_true",
+                        help="build an isolated same-scene RGBA mosaic and position date index")
     parser.add_argument("--resume-failed", type=Path, help="strictly validate and copy completed candidate scenes from quarantine")
     parser.add_argument("--migrate-r4g-audit", type=Path, help="one-off pinned independent r4g migration audit; build-only")
     parser.add_argument("--seed-r4i-repair", type=Path,
@@ -2109,6 +2139,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--source-delta", type=Path,
                         help="pinned one-scene identity record for the r4i repair seed")
     arguments = parser.parse_args(argv)
+    if arguments.atomic_source_mosaic and (not arguments.build_only or
+                                            arguments.historical_source_plan is None or
+                                            arguments.seed_r4i_repair is not None or
+                                            arguments.render_r4i_repair_seed is not None or
+                                            arguments.validate_r4i_repair_seed is not None):
+        raise ValueError("atomic source mosaic requires an isolated historical build-only candidate")
     if arguments.seed_r4i_repair is not None:
         if (arguments.source_delta is None or arguments.historical_source_plan is None
                 or arguments.revision != 4 or not arguments.build_only
@@ -2205,7 +2241,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise RuntimeError("no cloud-qualified Sentinel-2 product exists in the last 30 complete days")
         candidates = select_grid_candidates(candidates)
     require_free_space(config.root, config.minimum_free_bytes)
-    staging = build_release(config, window, candidates, now, source_plan=source_plan, resume_failed=arguments.resume_failed, migrate_r4g_audit=arguments.migrate_r4g_audit)
+    staging = build_release(config, window, candidates, now, source_plan=source_plan,
+                            resume_failed=arguments.resume_failed,
+                            migrate_r4g_audit=arguments.migrate_r4g_audit,
+                            atomic_source_mosaic=arguments.atomic_source_mosaic)
     if arguments.build_only:
         print(f"monthly imagery staged and validated: {staging}")
         return 0
