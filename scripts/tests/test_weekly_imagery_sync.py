@@ -1,8 +1,10 @@
+import base64
 import hashlib
 import io
 import json
 import math
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -331,6 +333,29 @@ class WeeklyImagerySyncTest(unittest.TestCase):
                 (tiles / "5" / str(x) / f"{y}.webp").write_bytes(b"R" * 400)
 
             worker._require_nonempty_tile_coverage(tiles, bounds, 5)
+
+    def test_valid_tiny_webp_counts_as_covered_tile(self):
+        if shutil.which("gdalinfo") is None:
+            self.skipTest("GDAL is required to decode a tiny WebP")
+        # Real 256x256 WebP encoding of a synthetic pixel window, 194 bytes.
+        tiny = base64.b64decode(
+            "UklGRroAAABXRUJQVlA4IK4AAAAwEQCdASoAAQABPmEwlkikIyIhICgAgAwJ"
+            "aW7hdrEe3AAAE9gHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77Z"
+            "OQ99snIe+2TkPfbJyHvtk5D32ych77ZOQ99snIe+2TkPfbJyHvtk5D32ych77Z"
+            "OQ99snCgAD+/2cK//+drYYgex//ELvYwoAAAAAAAAAAAAA="
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            tiles = Path(temporary)
+            for x, y in ((26, 11), (26, 12), (27, 11)):
+                tile = tiles / "5" / str(x) / f"{y}.webp"
+                tile.parent.mkdir(parents=True, exist_ok=True)
+                tile.write_bytes(b"R" * 400)
+            last = tiles / "5/27/12.webp"
+            last.write_bytes(tiny)
+            worker._require_nonempty_tile_coverage(tiles, (112.6, 32.1, 134.9, 48.0), 5)
+            last.write_bytes(b"R" * 194)
+            with self.assertRaisesRegex(ReleaseValidationError, "coverage"):
+                worker._require_nonempty_tile_coverage(tiles, (112.6, 32.1, 134.9, 48.0), 5)
 
     def test_region_gate_rejects_a_visible_missing_tile(self):
         with tempfile.TemporaryDirectory() as temporary:

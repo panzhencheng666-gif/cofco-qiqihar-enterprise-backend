@@ -561,7 +561,7 @@ def _require_nonempty_tile_coverage(
     y_range = range(tile_y(north), tile_y(south) + 1)
     expected = len(x_range) * len(y_range)
     present = sum(
-        tile.is_file() and tile.stat().st_size > 300
+        _tile_has_imagery(tile)
         for x in x_range for y in y_range
         for tile in (tiles / str(zoom) / str(x) / f"{y}.webp",)
     )
@@ -570,6 +570,32 @@ def _require_nonempty_tile_coverage(
             f"imagery tile coverage {present}/{expected} ({present / expected:.1%}) "
             f"at zoom {zoom} is below the {minimum_ratio:.0%} publication threshold"
         )
+
+
+def _tile_has_imagery(tile: Path) -> bool:
+    """Count a tiny tile only when GDAL can decode a full WebP image.
+
+    The tiling step removes empty white tiles against mosaic alpha first. A
+    valid single-product tile can still compress below 301 bytes.
+    """
+    if not tile.is_file():
+        return False
+    if tile.stat().st_size > 300:
+        return True
+    header = tile.read_bytes()[:12]
+    if len(header) < 12 or header[:4] != b"RIFF" or header[8:12] != b"WEBP":
+        return False
+    try:
+        result = subprocess.run(
+            ["gdalinfo", "-json", str(tile)], check=True, timeout=30,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ, "GDAL_PAM_ENABLED": "NO"},
+        )
+        info = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+    return info.get("driverShortName") == "WEBP" and info.get("size") == [256, 256] \
+        and len(info.get("bands", [])) in (3, 4)
 
 
 def _require_region_tile_coverage(tiles: Path, aoi: Path, zoom: int) -> None:
