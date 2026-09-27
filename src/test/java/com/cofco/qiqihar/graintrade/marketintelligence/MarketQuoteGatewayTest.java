@@ -241,6 +241,44 @@ class MarketQuoteGatewayTest {
     }
 
     @Test
+    void sameSourceTimeWithConflictingValueNeverOverwritesAnAcceptedTick() throws Exception {
+        Instant sourceAt = Instant.now().minusSeconds(5);
+        String first = "{\"quotes\":[{\"id\":\"cbot-corn\",\"last\":100,"
+                + "\"sourceAt\":\"" + sourceAt + "\",\"provider\":\"licensed-test\"}]}";
+        String conflict = first.replace("\"last\":100", "\"last\":101");
+        withFeed(envelope("RECONCILED", Instant.now(), first), (gateway, payload) -> {
+            gateway.refresh();
+            assertEquals("CONNECTED", gateway.overview().data().gatewayState());
+            payload.set(envelope("RECONCILED", Instant.now(), conflict));
+            gateway.refresh();
+            var board = gateway.overview().data();
+            assertEquals("SOURCE_ERROR", board.gatewayState());
+            assertEquals("QUOTE_FEED_TIMESTAMP_CONFLICT", board.lastError());
+            assertEquals(100, board.quotes().getFirst().last().intValueExact());
+            payload.set(envelope("RECONCILED", Instant.now(), first));
+            gateway.refresh();
+            assertEquals("CONNECTED", gateway.overview().data().gatewayState());
+            assertEquals(100, gateway.overview().data().quotes().getFirst().last().intValueExact());
+        });
+    }
+
+    @Test
+    void conflictingRowsWithinOneEnvelopeRejectThatEnvelope() throws Exception {
+        Instant sourceAt = Instant.now().minusSeconds(5);
+        String row = "{\"id\":\"cbot-corn\",\"last\":100,\"sourceAt\":\""
+                + sourceAt + "\",\"provider\":\"licensed-test\"}";
+        String body = "{\"quotes\":[" + row + ","
+                + row.replace("\"last\":100", "\"last\":101") + "]}";
+        withFeed(envelope("RECONCILED", Instant.now(), body), (gateway, payload) -> {
+            gateway.refresh();
+            var board = gateway.overview().data();
+            assertEquals("SOURCE_ERROR", board.gatewayState());
+            assertEquals("QUOTE_FEED_TIMESTAMP_CONFLICT", board.lastError());
+            assertTrue(board.quotes().isEmpty());
+        });
+    }
+
+    @Test
     void grainQuotesRejectMissingOrMismatchedContractIdentity() throws Exception {
         Instant now = Instant.now();
         var invalidRows = java.util.List.of(

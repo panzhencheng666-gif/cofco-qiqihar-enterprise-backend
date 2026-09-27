@@ -200,6 +200,7 @@ public class MarketQuoteGateway {
                 return;
             }
             var accepted = new HashMap<String, Quote>();
+            boolean timestampConflict = false;
             for (JsonNode row : body.path("quotes")) {
                 try {
                     String id = row.path("id").asText("");
@@ -215,11 +216,28 @@ public class MarketQuoteGateway {
                     BigDecimal previous = row.path("previousClose").isNumber()
                             ? row.path("previousClose").decimalValue() : null;
                     var quote = new Quote(id, price, previous, sourceAt, provider, contractId, "");
-                    accepted.merge(id, quote, (earlier, later) ->
-                            later.sourceAt().isAfter(earlier.sourceAt()) ? later : earlier);
+                    Quote earlier = accepted.get(id);
+                    if (earlier == null || sourceAt.isAfter(earlier.sourceAt())) {
+                        accepted.put(id, quote);
+                    } else if (sourceAt.equals(earlier.sourceAt()) && !sameObservation(earlier, quote)) {
+                        timestampConflict = true;
+                    }
                 } catch (RuntimeException ignored) {
                     // One malformed instrument must not discard other valid supplier observations.
                 }
+            }
+            for (var entry : accepted.entrySet()) {
+                Quote cached = feed.quotes().get(entry.getKey());
+                Quote incoming = entry.getValue();
+                if (cached != null && cached.sourceAt().equals(incoming.sourceAt())
+                        && !sameObservation(cached, incoming)) {
+                    timestampConflict = true;
+                }
+            }
+            if (timestampConflict) {
+                feed = new Feed(feed.quotes(), "SOURCE_ERROR", feed.publishedAt(),
+                        feed.lastSuccessAt(), "QUOTE_FEED_TIMESTAMP_CONFLICT");
+                return;
             }
             // Empty or invalid supplier responses must not masquerade as a successful refresh.
             if (accepted.isEmpty()) throw new IllegalArgumentException("QUOTE_FEED_NO_VALID_QUOTES");
@@ -239,6 +257,17 @@ public class MarketQuoteGateway {
 
     private static boolean freshPublication(Instant publishedAt, Instant now) {
         return !publishedAt.isBefore(now.minusSeconds(30)) && !publishedAt.isAfter(now.plusSeconds(5));
+    }
+
+    private static boolean sameObservation(Quote first, Quote second) {
+        return first.last().compareTo(second.last()) == 0
+                && samePrice(first.previousClose(), second.previousClose())
+                && first.provider().equals(second.provider())
+                && first.contractId().equals(second.contractId());
+    }
+
+    private static boolean samePrice(BigDecimal first, BigDecimal second) {
+        return first == null ? second == null : second != null && first.compareTo(second) == 0;
     }
 
     private static boolean matchesVerifiedGrain(JsonNode row, String id) {
