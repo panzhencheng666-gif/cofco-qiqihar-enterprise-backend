@@ -40,6 +40,13 @@ class RiskMigrationScopeTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "V216__automate_risk_model_promotion"):
                 gate.verify(self.backend)
 
+    def test_pending_governance_guard_cannot_be_silently_installed(self):
+        name = gate.RISK_MIGRATIONS["222"]
+        (self.migrations / name).write_text("UPDATE risk.ai_training_policy")
+        with patch.object(gate, "installed_migrations", return_value={}):
+            with self.assertRaisesRegex(ValueError, "V222__disable_unreviewed_risk_model_auto_activation"):
+                gate.verify(self.backend)
+
     def test_matching_applied_risk_migration_passes(self):
         name = gate.RISK_MIGRATIONS["216"]
         (self.migrations / name).write_text("already applied")

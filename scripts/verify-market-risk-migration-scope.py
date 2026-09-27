@@ -13,6 +13,7 @@ RISK_MIGRATIONS = {
     "215": "V215__operate_daily_risk_ai_training.sql",
     "216": "V216__automate_risk_model_promotion.sql",
     "217": "V217__isolate_risk_schema_runtime.sql",
+    "222": "V222__disable_unreviewed_risk_model_auto_activation.sql",
 }
 DATABASE = "qiqihar_enterprise_dev"
 DATABASE_URL = f"jdbc:postgresql://127.0.0.1:5432/{DATABASE}"
@@ -52,7 +53,7 @@ def installed_migrations():
     require_managed_database_target()
     query = (
         "SELECT version || '|' || script FROM public.flyway_schema_history "
-        "WHERE success AND version IN ('214','215','216','217') "
+        "WHERE success AND version IN ('214','215','216','217','222') "
         "ORDER BY installed_rank"
     )
     result = subprocess.run(

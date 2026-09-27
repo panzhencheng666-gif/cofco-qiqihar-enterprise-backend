@@ -40,7 +40,7 @@ class FormalRiskReadonlyTest(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, json.dumps(snapshot()), "")
 
         result = self.module.probe(run=run)
-        self.assertEqual(result["dbScope"], "MATCH_PENDING_V214_V217")
+        self.assertEqual(result["dbScope"], "MATCH_PENDING_RISK_MIGRATIONS")
         self.assertFalse(result["applyAllowed"])
         self.assertEqual(len(calls), 1)
         command, kwargs = calls[0]
