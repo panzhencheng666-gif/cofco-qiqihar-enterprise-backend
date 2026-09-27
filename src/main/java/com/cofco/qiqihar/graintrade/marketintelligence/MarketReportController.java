@@ -165,7 +165,7 @@ public class MarketReportController {
                 SELECT source_code,last_success_at,latest_period,last_error
                 FROM market_intelligence.source_sync_state
                 WHERE source_code IN ('moa-public-monitor','moa-department-news',
-                                      'fao-newsroom-rss','fao-food-price','world-bank-pink-sheet')
+                                      'fao-newsroom-rss','fao-food-price-index','world-bank-pink-sheet')
                 ORDER BY source_code
                 """).query((rs, row) -> new Source(rs.getString("source_code"),
                 rs.getObject("last_success_at", OffsetDateTime.class) == null ? null
@@ -220,7 +220,7 @@ public class MarketReportController {
 
     private static String sourcePeriod(Source source) {
         if (source.latestPeriod() == null) return "--";
-        return (source.name().equals("world-bank-pink-sheet") || source.name().equals("fao-food-price"))
+        return (source.name().equals("world-bank-pink-sheet") || source.name().equals("fao-food-price-index"))
                 ? source.latestPeriod().format(MONTH) : source.latestPeriod().format(DATE);
     }
 
