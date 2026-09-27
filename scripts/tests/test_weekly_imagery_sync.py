@@ -82,19 +82,48 @@ class WeeklyImagerySyncTest(unittest.TestCase):
             staging.mkdir()
             (staging / "manifest.sha256").write_text("pinned manifest\n")
             (staging / "tile.webp").write_bytes(b"original")
+            (root / "plan.json").write_text("{}")
             digest = worker._file_sha256(staging / "manifest.sha256")
             with patch.object(worker, "R4I_MANIFEST_SHA256", digest), patch.object(
                 worker, "validate_r4i_repair_baseline"
-            ) as baseline_guard:
+            ) as baseline_guard, patch.object(worker, "validate_r4j_source_delta", return_value={"delta": {}}), \
+                    patch.object(worker, "_r4i_repair_plan", return_value={"status": "UNPUBLISHABLE_TILE_REPAIR_PLAN_ONLY"}):
                 seed = worker.seed_r4i_repair(root, staging, root / "plan.json", root / "delta.json", 0)
             baseline_guard.assert_called_once_with(staging, digest, root / "plan.json", root / "delta.json")
             self.assertTrue(seed.name.startswith(".failed-2026-09-r4-repair-seed-"))
             self.assertTrue((seed / "FAILED").is_file())
+            self.assertEqual("UNPUBLISHABLE_TILE_REPAIR_PLAN_ONLY", json.loads(
+                (seed / "repair-plan.json").read_text())["status"])
             self.assertNotEqual((staging / "tile.webp").stat().st_ino, (seed / "tile.webp").stat().st_ino)
             (seed / "tile.webp").write_bytes(b"changed")
             self.assertEqual(b"original", (staging / "tile.webp").read_bytes())
             with self.assertRaisesRegex(ReleaseValidationError, "failed candidate"):
                 validate_release(seed)
+
+    def test_r4i_repair_plan_binds_only_six_holes_and_their_ancestors(self):
+        product_uri = "S2B_MSIL2A_20260914T023529_N0512_R089_T51UXQ_20260914T044641.SAFE"
+        prefix = f"https://sentinel2l2a01.blob.core.windows.net/sentinel2-l2/{product_uri}/"
+        hulun = {
+            "id": "S2B_51UXQ_20260914_0_L2A",
+            "bbox": [124.357925, 48.629831, 125.904558, 49.641696],
+            "properties": {"datetime": "2026-09-14T02:44:02.573000Z",
+                           "source:provider": "planetary-computer", "s2:product_uri": product_uri},
+            "assets": {"visual": {"gsd": 10, "href": prefix + "T51UXQ_20260914T023529_TCI_10m.tif"},
+                       "scl": {"gsd": 20, "href": prefix + "T51UXQ_20260914T023529_SCL_20m.tif"}},
+        }
+        delta = {"candidateId": "S2C_51UYT_20260909_0_L2A",
+                 "bbox": [125.8702158, 51.2789252, 127.5399797, 52.3140378],
+                 "acquiredAt": "2026-09-09T02:35:31.025000Z"}
+        plan = worker._r4i_repair_plan({"features": [hulun]}, delta)
+        self.assertEqual("UNPUBLISHABLE_TILE_REPAIR_PLAN_ONLY", plan["status"])
+        self.assertEqual(6, len(plan["tiles"]))
+        self.assertEqual(5, sum(tile["productId"] == delta["candidateId"] for tile in plan["tiles"]))
+        self.assertTrue(all(tile["visualResolutionMeters"] == 10 and
+                            tile["sclResolutionMeters"] == 20 and
+                            len(tile["ancestorPaths"]) == 9 for tile in plan["tiles"]))
+        self.assertEqual("13/6934/2812.webp", plan["tiles"][-1]["ancestorPaths"][0])
+        with self.assertRaisesRegex(ReleaseValidationError, "misses tile"):
+            worker._r4i_repair_plan({"features": [hulun]}, {**delta, "bbox": [0, 0, 1, 1]})
 
     def test_r4i_repair_baseline_requires_exact_inventory_and_identity(self):
         with tempfile.TemporaryDirectory() as temporary:

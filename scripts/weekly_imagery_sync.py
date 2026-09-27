@@ -50,6 +50,14 @@ R4J_BASE_PLAN_SHA256 = "87b70edd5eaf850ab66a7f87edfd08c241cd5e138f17c911fbbfae7e
 R4J_SOURCE_DELTA_SHA256 = "7f725ea837b38771b2ded5e698d8094e076b3ea8aa26da5a6e3af43c2da4c078"
 R4I_BASE_STAGE_NAME = ".staging-2026-09-r4-bxf12k9l"
 R4I_MANIFEST_SHA256 = "3782bea1cefbf3f04233cfe017e1fc78b0cdd99f8533e8943076f3c9f3fa409e"
+_R4I_REPAIR_HOLES = (
+    (13928, 5453, "S2C_51UYT_20260909_0_L2A"),
+    (13928, 5454, "S2C_51UYT_20260909_0_L2A"),
+    (13929, 5454, "S2C_51UYT_20260909_0_L2A"),
+    (13930, 5454, "S2C_51UYT_20260909_0_L2A"),
+    (13931, 5454, "S2C_51UYT_20260909_0_L2A"),
+    (13869, 5625, "S2B_51UXQ_20260914_0_L2A"),
+)
 _PLANETARY_TOKEN_CACHE: dict[tuple[str, str], str] = {}
 _PLANETARY_TOKEN_LOCK = threading.Lock()
 REQUIRED_GDAL_COMMANDS = (
@@ -1802,10 +1810,53 @@ def seed_r4i_repair(
         if _file_sha256(seed / "manifest.sha256") != R4I_MANIFEST_SHA256 \
                 or _file_sha256(staging / "manifest.sha256") != R4I_MANIFEST_SHA256:
             raise ReleaseValidationError("r4i manifest changed while copying repair seed")
+        base_plan = json.loads(base_plan_path.read_text())
+        source_delta = validate_r4j_source_delta(base_plan_path, delta_path)["delta"]
+        _atomic_json(seed / "repair-plan.json", _r4i_repair_plan(base_plan, source_delta))
     except BaseException:
         print(f"incomplete repair seed retained: {seed}", file=sys.stderr, flush=True)
         raise
     return seed
+
+
+def _r4i_repair_plan(base_plan: Mapping[str, Any], delta: Mapping[str, Any]) -> dict[str, Any]:
+    """Bind only six known holes to source products in an unpublishable seed."""
+    features = base_plan.get("features", [])
+    hulun = [feature for feature in features if feature.get("id") == "S2B_51UXQ_20260914_0_L2A"]
+    if len(hulun) != 1 or delta.get("candidateId") != "S2C_51UYT_20260909_0_L2A":
+        raise ReleaseValidationError("r4i repair sources do not match six-hole plan")
+    _validate_mixed_source_feature(hulun[0], {"planetary-computer": 0, "google-public-sentinel-2-l2a": 0})
+    sources = {
+        delta["candidateId"]: (delta["bbox"], delta["acquiredAt"]),
+        hulun[0]["id"]: (hulun[0]["bbox"], hulun[0]["properties"]["datetime"]),
+    }
+    tiles = []
+    scale = 1 << 14
+
+    def latitude(row: int) -> float:
+        return math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * row / scale))))
+
+    for x, y, product_id in _R4I_REPAIR_HOLES:
+        bounds = [x / scale * 360 - 180, latitude(y + 1),
+                  (x + 1) / scale * 360 - 180, latitude(y)]
+        source_bounds, observed_at = sources[product_id]
+        if not isinstance(source_bounds, list) or len(source_bounds) != 4 or \
+                not (bounds[0] < source_bounds[2] and bounds[2] > source_bounds[0]
+                         and bounds[1] < source_bounds[3] and bounds[3] > source_bounds[1]):
+            raise ReleaseValidationError(f"repair product misses tile 14/{x}/{y}")
+        tiles.append({
+            "z": 14, "x": x, "y": y, "bbox4326": bounds,
+            "productId": product_id, "observedAt": observed_at,
+            "visualResolutionMeters": 10, "sclResolutionMeters": 20,
+            "ancestorPaths": [f"{z}/{x >> (14-z)}/{y >> (14-z)}.webp" for z in range(13, 4, -1)],
+        })
+    return {
+        "schema": 1, "status": "UNPUBLISHABLE_TILE_REPAIR_PLAN_ONLY",
+        "baseManifestSha256": R4I_MANIFEST_SHA256,
+        "basePlanSha256": R4J_BASE_PLAN_SHA256,
+        "deltaSha256": R4J_SOURCE_DELTA_SHA256,
+        "tiles": tiles,
+    }
 
 
 def publish_release(
