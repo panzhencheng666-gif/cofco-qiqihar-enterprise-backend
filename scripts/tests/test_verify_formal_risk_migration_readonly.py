@@ -3,6 +3,7 @@ import json
 import subprocess
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "verify-formal-risk-migration-readonly.py"
@@ -67,6 +68,23 @@ class FormalRiskReadonlyTest(unittest.TestCase):
                 self.assertEqual(result["dbScope"], "BLOCKED")
                 self.assertIn("TARGET_OR_READONLY_MISMATCH", result["blockers"])
                 self.assertFalse(result["applyAllowed"])
+
+    def test_inherited_postgres_routing_cannot_override_fixed_target(self):
+        captured = {}
+
+        def run(command, **kwargs):
+            captured.update(kwargs["env"])
+            return subprocess.CompletedProcess(command, 0, json.dumps(snapshot()), "")
+
+        with patch.dict("os.environ", {
+            "PGHOSTADDR": "192.0.2.8", "PGHOST": "example.invalid",
+            "PGPORT": "9999", "PGDATABASE": "other", "PGSERVICE": "other",
+            "PGOPTIONS": "-c default_transaction_read_only=off",
+        }):
+            self.module.probe(run=run)
+        for key in ("PGHOSTADDR", "PGHOST", "PGPORT", "PGDATABASE", "PGSERVICE"):
+            self.assertFalse(key in captured, f"{key} leaked into the psql environment")
+        self.assertEqual(captured["PGOPTIONS"].count("default_transaction_read_only=on"), 1)
 
     def test_partial_or_advanced_migration_fails_closed(self):
         cases = (

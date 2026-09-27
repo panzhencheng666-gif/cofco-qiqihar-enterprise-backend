@@ -41,7 +41,7 @@ def probe(run=subprocess.run):
         ],
     }
     environment = os.environ.copy()
-    for key in ("PGHOST", "PGPORT", "PGDATABASE", "PGSERVICE", "PGOPTIONS"):
+    for key in ("PGHOSTADDR", "PGHOST", "PGPORT", "PGDATABASE", "PGSERVICE", "PGOPTIONS"):
         environment.pop(key, None)
     environment["PGOPTIONS"] = (
         "-c default_transaction_read_only=on -c statement_timeout=5000 -c lock_timeout=1000"
