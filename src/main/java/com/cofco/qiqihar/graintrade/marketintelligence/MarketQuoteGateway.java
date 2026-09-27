@@ -28,7 +28,7 @@ public class MarketQuoteGateway {
     public record Instrument(String id, String name, String group, String market, String unit,
                              String cadence) { }
     public record Quote(String id, BigDecimal last, BigDecimal previousClose, Instant sourceAt,
-                        String provider, String state) { }
+                        String provider, String contractId, String state) { }
     public record Board(List<Instrument> instruments, List<Quote> quotes, String gatewayState,
                         Instant lastAttemptAt, Instant lastSuccessAt, String lastError,
                         String feedState, Instant feedPublishedAt, Long feedAgeSeconds) { }
@@ -106,6 +106,17 @@ public class MarketQuoteGateway {
     );
     private static final Map<String, Instrument> BY_ID = INSTRUMENTS.stream()
             .collect(java.util.stream.Collectors.toUnmodifiableMap(Instrument::id, item -> item));
+    // The supplier adapter must provide the actual dated contract, not just a
+    // continuous-contract alias. These are the exchange products verified for
+    // the first grain mapping gate; other catalogue items remain unverified.
+    private record GrainContract(String exchangeId, String productId, String unit,
+                                 String contractPattern) { }
+    private static final Map<String, GrainContract> GATED_GRAIN_PRODUCTS = Map.of(
+            "dce-soybean", new GrainContract("DCE", "a", "元/吨", "DCE\\.a[0-9]{2}(0[1-9]|1[0-2])"),
+            "dce-corn", new GrainContract("DCE", "c", "元/吨", "DCE\\.c[0-9]{2}(0[1-9]|1[0-2])"),
+            "czce-wheat", new GrainContract("CZCE", "WH", "元/吨", "CZCE\\.WH[0-9](0[1-9]|1[0-2])"),
+            "czce-common-wheat", new GrainContract("CZCE", "PM", "元/吨", "CZCE\\.PM[0-9](0[1-9]|1[0-2])"),
+            "czce-rice", new GrainContract("CZCE", "LR", "元/吨", "CZCE\\.LR[0-9](0[1-9]|1[0-2])"));
 
     private final ObjectMapper mapper;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
@@ -199,9 +210,11 @@ public class MarketQuoteGateway {
                     if (sourceAt.isAfter(clock.instant().plusSeconds(60))) continue;
                     String provider = row.path("provider").asText("").trim();
                     if (provider.isBlank()) continue;
+                    if (!matchesVerifiedGrain(row, id)) continue;
+                    String contractId = row.path("contractId").asText("");
                     BigDecimal previous = row.path("previousClose").isNumber()
                             ? row.path("previousClose").decimalValue() : null;
-                    var quote = new Quote(id, price, previous, sourceAt, provider, "");
+                    var quote = new Quote(id, price, previous, sourceAt, provider, contractId, "");
                     accepted.merge(id, quote, (earlier, later) ->
                             later.sourceAt().isAfter(earlier.sourceAt()) ? later : earlier);
                 } catch (RuntimeException ignored) {
@@ -228,6 +241,15 @@ public class MarketQuoteGateway {
         return !publishedAt.isBefore(now.minusSeconds(30)) && !publishedAt.isAfter(now.plusSeconds(5));
     }
 
+    private static boolean matchesVerifiedGrain(JsonNode row, String id) {
+        GrainContract expected = GATED_GRAIN_PRODUCTS.get(id);
+        if (expected == null) return true;
+        return expected.exchangeId().equals(row.path("exchangeId").asText(""))
+                && expected.productId().equals(row.path("productId").asText(""))
+                && expected.unit().equals(row.path("unit").asText(""))
+                && row.path("contractId").asText("").matches(expected.contractPattern());
+    }
+
     @GetMapping("/api/v1/market-intelligence/quotes/overview")
     public ApiResponse<Board> overview() {
         Instant now = clock.instant();
@@ -237,7 +259,8 @@ public class MarketQuoteGateway {
             Quote quote = snapshot.quotes().get(instrument.id());
             if (quote == null) continue;
             quotes.add(new Quote(quote.id(), quote.last(), quote.previousClose(), quote.sourceAt(),
-                    quote.provider(), quote.sourceAt().isBefore(now.minus(maximumAge(instrument.cadence())))
+                    quote.provider(), quote.contractId(),
+                    quote.sourceAt().isBefore(now.minus(maximumAge(instrument.cadence())))
                             ? "STALE" : "CURRENT"));
         }
         String error = snapshot.publishedAt() != null && !freshPublication(snapshot.publishedAt(), now)

@@ -26,7 +26,9 @@ class MarketQuoteGatewayTest {
 
     private static String currentQuote() {
         return "{\"quotes\":[{\"id\":\"dce-corn\",\"last\":2000,\"sourceAt\":\""
-                + Instant.now() + "\",\"provider\":\"synthetic-test\"}]}";
+                + Instant.now() + "\",\"provider\":\"synthetic-test\","
+                + "\"exchangeId\":\"DCE\",\"productId\":\"c\","
+                + "\"contractId\":\"DCE.c2601\",\"unit\":\"元/吨\"}]}";
     }
 
     private static void withFeed(String initial,
@@ -236,5 +238,56 @@ class MarketQuoteGatewayTest {
         } finally {
             server.stop(0);
         }
+    }
+
+    @Test
+    void grainQuotesRejectMissingOrMismatchedContractIdentity() throws Exception {
+        Instant now = Instant.now();
+        var invalidRows = java.util.List.of(
+                "\"id\":\"dce-corn\",\"last\":2000",
+                "\"id\":\"dce-corn\",\"last\":2000,\"exchangeId\":\"CZCE\",\"productId\":\"c\",\"contractId\":\"DCE.c2601\",\"unit\":\"元/吨\"",
+                "\"id\":\"dce-corn\",\"last\":2000,\"exchangeId\":\"DCE\",\"productId\":\"a\",\"contractId\":\"DCE.a2601\",\"unit\":\"元/吨\"",
+                "\"id\":\"dce-corn\",\"last\":2000,\"exchangeId\":\"DCE\",\"productId\":\"c\",\"contractId\":\"KQ.m@DCE.c\",\"unit\":\"元/吨\"",
+                "\"id\":\"dce-corn\",\"last\":2000,\"exchangeId\":\"DCE\",\"productId\":\"c\",\"contractId\":\"DCE.c2600\",\"unit\":\"元/吨\"",
+                "\"id\":\"dce-corn\",\"last\":2000,\"exchangeId\":\"DCE\",\"productId\":\"c\",\"contractId\":\"DCE.c2601\",\"unit\":\"美分/蒲式耳\""
+        );
+        withFeed(envelope("RECONCILED", now, currentQuote()), (gateway, payload) -> {
+            for (String row : invalidRows) {
+                payload.set(envelope("RECONCILED", Instant.now(), "{\"quotes\":[{"
+                        + row + ",\"sourceAt\":\"" + now + "\",\"provider\":\"synthetic-test\"}]}"));
+                gateway.refresh();
+                assertTrue(gateway.overview().data().quotes().isEmpty());
+                assertEquals("SOURCE_ERROR", gateway.overview().data().gatewayState());
+            }
+        });
+    }
+
+    @Test
+    void grainQuotesPreserveValidatedActualContracts() throws Exception {
+        Instant now = Instant.now();
+        String body = "{\"quotes\":["
+                + grainRow("dce-soybean", "DCE", "a", "DCE.a2601", now) + ","
+                + grainRow("dce-corn", "DCE", "c", "DCE.c2601", now) + ","
+                + grainRow("czce-wheat", "CZCE", "WH", "CZCE.WH601", now) + ","
+                + grainRow("czce-common-wheat", "CZCE", "PM", "CZCE.PM601", now) + ","
+                + grainRow("czce-rice", "CZCE", "LR", "CZCE.LR601", now) + "]}";
+        withFeed(envelope("RECONCILED", now, body), (gateway, payload) -> {
+            gateway.refresh();
+            var board = gateway.overview().data();
+            assertEquals("CONNECTED", board.gatewayState());
+            assertEquals(5, board.quotes().size());
+            assertEquals("DCE.c2601", board.quotes().stream()
+                    .filter(q -> "dce-corn".equals(q.id())).findFirst().orElseThrow().contractId());
+            assertEquals("CZCE.LR601", board.quotes().stream()
+                    .filter(q -> "czce-rice".equals(q.id())).findFirst().orElseThrow().contractId());
+        });
+    }
+
+    private static String grainRow(String id, String exchangeId, String productId,
+                                   String contractId, Instant sourceAt) {
+        return "{\"id\":\"" + id + "\",\"last\":2000,\"sourceAt\":\"" + sourceAt
+                + "\",\"provider\":\"synthetic-test\",\"exchangeId\":\"" + exchangeId
+                + "\",\"productId\":\"" + productId + "\",\"contractId\":\"" + contractId
+                + "\",\"unit\":\"元/吨\"}";
     }
 }

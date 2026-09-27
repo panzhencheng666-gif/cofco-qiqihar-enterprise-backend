@@ -77,6 +77,26 @@ rollover, HTTP serving and dashboard wiring
 remain separate integration work. A process restart currently loses this cache.
 Neither module starts itself or supplies production prices.
 
+### First grain contract identity gate
+
+The candidate backend requires `exchangeId`, `productId`, `contractId`, and
+`unit` on quote rows for the first five gated grain catalogue IDs: `dce-soybean`,
+`dce-corn`, `czce-wheat`, `czce-common-wheat`, and `czce-rice`. `contractId` must
+name an actual dated exchange contract in canonical form (for example,
+`DCE.c2601`), not a main-continuous alias. The backend rejects a missing or
+mismatched identity and includes an accepted `contractId` in its quote board.
+This validates only the declared exchange product, contract shape, and quote
+unit; it does not establish supplier entitlement, a currently active contract,
+or the supplier's dominant-contract choice.
+
+The present Choice normalizer emits no contract identity, and the local
+publisher copies only its earlier quote-field allowlist. Consequently this
+worker cannot publish accepted prices for these five IDs yet. A later supplier
+adapter stage must verify the real incoming contract, resolve main-contract
+rollover from supplier evidence, carry all four identity fields through the
+normalizer and publisher, and test actual authorized callbacks. Do not mark
+these grain quotes connected using the current worker.
+
 ### Recovery coordinator
 
 `choice_recovery.py` adds `ChoiceRecovery(subscription, normalizer_factory)`.
