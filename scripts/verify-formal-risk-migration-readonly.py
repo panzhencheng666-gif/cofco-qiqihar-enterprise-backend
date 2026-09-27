@@ -21,7 +21,7 @@ SELECT json_build_object(
   'riskSchemaPresent', to_regnamespace('risk') IS NOT NULL,
   'riskMigrations', (SELECT coalesce(json_agg(json_build_object(
       'version', version, 'script', script, 'success', success) ORDER BY installed_rank), '[]'::json)
-    FROM public.flyway_schema_history WHERE version IN ('214', '215', '216', '217'))
+    FROM public.flyway_schema_history WHERE version IN ('214', '215', '216', '217', '222'))
 );
 """
 
@@ -34,6 +34,8 @@ def probe(run=subprocess.run):
         "target": "127.0.0.1:5432/qiqihar_enterprise_dev",
         "blockers": [],
         "remainingGates": [
+            "Independent model approval governance for any future automatic activation",
+            "Intervening V218-V221 market migrations require a separate ordered Flyway gate",
             "Same-window backup and isolated restore",
             "Verified write boundary",
             "Bounded formal migration executor and recovery procedure",
@@ -76,14 +78,14 @@ def probe(run=subprocess.run):
             or observed.get("riskMigrations") != []):
         result["blockers"].append("UNEXPECTED_MIGRATION_STATE")
     if not result["blockers"]:
-        result["dbScope"] = "MATCH_PENDING_V214_V217"
+        result["dbScope"] = "MATCH_PENDING_RISK_MIGRATIONS"
     return result
 
 
 def main():
     result = probe()
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0 if result["dbScope"] == "MATCH_PENDING_V214_V217" else 1
+    return 0 if result["dbScope"] == "MATCH_PENDING_RISK_MIGRATIONS" else 1
 
 
 if __name__ == "__main__":
