@@ -16,7 +16,10 @@ _STATES = frozenset({'NEW', 'STARTING', 'WAITING_DATA', 'PENDING_AUTHORIZATION',
     'RECOVERY_REQUIRED', 'RECONCILED', 'STALE_DATA'})
 _HIDE = frozenset({'NEW', 'STARTING', 'WAITING_DATA', 'PENDING_AUTHORIZATION',
     'ENTITLEMENT_ERROR', 'SESSION_LOST', 'SOURCE_ERROR', 'CLOSED'})
-_FIELDS = ('id', 'last', 'previousClose', 'sourceAt', 'provider', 'state')
+_FIELDS = ('id', 'last', 'previousClose', 'sourceAt', 'provider', 'state',
+           'exchangeId', 'productId', 'contractId', 'unit')
+_GRAIN_IDS = frozenset({'dce-soybean', 'dce-corn', 'czce-wheat',
+                       'czce-common-wheat', 'czce-rice'})
 
 
 class QuotePublisher:
@@ -42,6 +45,10 @@ class QuotePublisher:
             for quote in quotes:
                 if not isinstance(quote, dict) or not {'id', 'last', 'sourceAt', 'provider'} <= quote.keys():
                     raise ValueError('INVALID_QUOTE')
+                if quote['id'] in _GRAIN_IDS and not all(
+                        isinstance(quote.get(key), str) and quote[key]
+                        for key in ('exchangeId', 'productId', 'contractId', 'unit')):
+                    raise ValueError('GRAIN_CONTRACT_IDENTITY_INVALID')
                 public_quotes.append({key: quote[key] for key in _FIELDS if key in quote})
         body = json.dumps({'schemaVersion': 1, 'state': state,
             'publishedAt': now.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z'),

@@ -12,7 +12,8 @@ from choice_quotes import QuoteNormalizer
 _KEYS = {'schemaVersion', 'distributionAuthorized', 'host', 'port',
          'intervalSeconds', 'catalogueFile', 'bindingsFile', 'bearerTokenFile'}
 _MAPPING_ERRORS = {'VERIFIED_MAPPING_REQUIRED', 'INVALID_PROVIDER_CODE',
-                   'UNKNOWN_INSTRUMENT', 'UNIT_MISMATCH', 'DUPLICATE_MAPPING'}
+                   'UNKNOWN_INSTRUMENT', 'UNIT_MISMATCH', 'DUPLICATE_MAPPING',
+                   'GRAIN_CONTRACT_IDENTITY_INVALID'}
 
 
 def _read(path, limit, *, secret=False):

@@ -79,7 +79,9 @@ def main():
     session = ChoiceSubscription(sdk, ['TEST.CORN'], authorized=True)
     recovery = ControlledRecovery(ChoiceRecovery(session, lambda: QuoteNormalizer(
         {'dce-corn': '元/吨'}, [{'code': 'TEST.CORN', 'id': 'dce-corn',
-                             'unit': '元/吨', 'verified': True}])))
+                             'unit': '元/吨', 'verified': True,
+                             'exchangeId': 'DCE', 'productId': 'c',
+                             'contractId': 'DCE.c2601'}])))
     publisher = QuotePublisher(recovery, authorized=True)
     worker = ChoiceWorker(session, publisher, authorized=True, interval=0.05)
     try:

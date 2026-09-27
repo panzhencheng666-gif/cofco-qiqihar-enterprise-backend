@@ -25,7 +25,9 @@ class FakeRecovery:
         self.data = {'state': 'RECONCILED', 'transport': {'private': 'omit-me'},
                      'quotes': [{'id': 'dce-corn', 'last': 2000, 'previousClose': None,
                                  'sourceAt': '2026-09-26T01:30:00Z',
-                                 'provider': 'synthetic-test', 'state': 'CURRENT'}]}
+                                 'provider': 'synthetic-test', 'state': 'CURRENT',
+                                 'exchangeId': 'DCE', 'productId': 'c',
+                                 'contractId': 'DCE.c2601', 'unit': '元/吨'}]}
 
     def step(self):
         self.steps += 1
@@ -71,6 +73,7 @@ class ChoiceFeedTest(unittest.TestCase):
         payload = json.loads(initial)
         self.assertEqual(2000, payload['quotes'][0]['last'])
         self.assertEqual('2026-09-26T01:30:00Z', payload['publishedAt'])
+        self.assertEqual('DCE.c2601', payload['quotes'][0]['contractId'])
         self.assertNotIn('transport', payload)
         publisher.step()
         self.assertEqual('2026-09-26T01:30:45Z', json.loads(publisher.read())['publishedAt'])
@@ -92,6 +95,14 @@ class ChoiceFeedTest(unittest.TestCase):
             self.recovery.data = data
             publisher.step()
             self.assertEqual('SOURCE_ERROR', json.loads(publisher.read())['state'])
+
+    def test_grain_identity_cannot_be_dropped_before_publication(self):
+        publisher = self.make()
+        self.recovery.data['quotes'][0].pop('contractId')
+        publisher.step()
+        payload = json.loads(publisher.read())
+        self.assertEqual('SOURCE_ERROR', payload['state'])
+        self.assertEqual([], payload['quotes'])
 
     def test_http_is_authenticated_loopback_only_and_cannot_refresh_worker(self):
         publisher = self.make()
@@ -165,6 +176,8 @@ class ChoiceFeedTest(unittest.TestCase):
                 self.assertEqual('RECONCILED', payload['state'])
                 self.assertEqual(2, len(payload['quotes']))
                 self.assertEqual(1, payload['schemaVersion'])
+                self.assertEqual('DCE.c2601', next(quote['contractId'] for quote in payload['quotes']
+                    if quote['id'] == 'dce-corn'))
                 sdk.main(Result(ErrorCode=10001021))
                 publisher.step()
                 payload = json.loads(self.get(server)[2])

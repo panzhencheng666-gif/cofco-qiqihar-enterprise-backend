@@ -14,8 +14,10 @@ NOW = datetime(2026, 9, 25, 2, 0, 0, tzinfo=timezone.utc)
 # Synthetic provider identifiers; these are not real Choice futures mappings.
 CATALOGUE = {'dce-corn': '元/吨', 'dce-soybean': '元/吨'}
 BINDINGS = [
-    {'code': 'TEST.CORN', 'id': 'dce-corn', 'unit': '元/吨', 'verified': True},
-    {'code': 'TEST.SOY', 'id': 'dce-soybean', 'unit': '元/吨', 'verified': True},
+    {'code': 'TEST.CORN', 'id': 'dce-corn', 'unit': '元/吨', 'verified': True,
+     'exchangeId': 'DCE', 'productId': 'c', 'contractId': 'DCE.c2601'},
+    {'code': 'TEST.SOY', 'id': 'dce-soybean', 'unit': '元/吨', 'verified': True,
+     'exchangeId': 'DCE', 'productId': 'a', 'contractId': 'DCE.a2601'},
 ]
 
 
@@ -40,6 +42,8 @@ class ChoiceQuotesTest(unittest.TestCase):
         self.assertEqual(2000, quote['last'])
         self.assertEqual(1990, quote['previousClose'])
         self.assertEqual('东方财富 Choice', quote['provider'])
+        self.assertEqual(('DCE', 'c', 'DCE.c2601', '元/吨'),
+                         tuple(quote[key] for key in ('exchangeId', 'productId', 'contractId', 'unit')))
 
     def test_time_only_or_naive_dates_are_never_filled_from_clock_or_dates(self):
         for value in ['10:00:00', '100000', '2026-09-25', '2026-09-25T10:00:00', None]:
@@ -104,6 +108,36 @@ class ChoiceQuotesTest(unittest.TestCase):
                         [BINDINGS[0], BINDINGS[0]]]:
             with self.assertRaises(ValueError):
                 QuoteNormalizer(CATALOGUE, mapping, clock=lambda: NOW)
+
+    def test_grain_binding_rejects_missing_or_mismatched_actual_contract(self):
+        for change in ({'contractId': None}, {'contractId': 'KQ.m@DCE.c'},
+                       {'contractId': 'DCE.c2600'}, {'contractId': 'DCE.a2601'},
+                       {'exchangeId': 'CZCE'}, {'productId': 'a'}):
+            with self.subTest(change=change):
+                binding = dict(BINDINGS[0], **change)
+                with self.assertRaisesRegex(ValueError, 'GRAIN_CONTRACT_IDENTITY_INVALID'):
+                    QuoteNormalizer(CATALOGUE, [binding], clock=lambda: NOW)
+
+    def test_each_gated_grain_preserves_declared_dated_contract(self):
+        cases = [
+            ('dce-soybean', 'DCE', 'a', 'DCE.a2601'),
+            ('dce-corn', 'DCE', 'c', 'DCE.c2601'),
+            ('czce-wheat', 'CZCE', 'WH', 'CZCE.WH601'),
+            ('czce-common-wheat', 'CZCE', 'PM', 'CZCE.PM601'),
+            ('czce-rice', 'CZCE', 'LR', 'CZCE.LR601'),
+        ]
+        for identifier, exchange, product, contract in cases:
+            with self.subTest(identifier=identifier):
+                binding = {'code': 'TEST.GRAIN', 'id': identifier, 'unit': '元/吨',
+                           'verified': True, 'exchangeId': exchange,
+                           'productId': product, 'contractId': contract}
+                adapter = QuoteNormalizer({identifier: '元/吨'}, [binding], clock=lambda: NOW)
+                self.assertEqual(1, adapter.ingest(frame({
+                    'TEST.GRAIN': ['2026-09-25T02:00:00Z', 2000, None]}))['accepted'])
+                quote = adapter.snapshot()['quotes'][0]
+                self.assertEqual((identifier, exchange, product, contract),
+                                 tuple(quote[key] for key in
+                                       ('id', 'exchangeId', 'productId', 'contractId')))
 
     def test_ambiguous_dimensions_rejected_without_touching_cache(self):
         adapter = self.make()
