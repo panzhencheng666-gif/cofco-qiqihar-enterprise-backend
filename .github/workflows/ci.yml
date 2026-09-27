@@ -109,6 +109,11 @@ jobs:
       - name: Verify market feed atomic refresh
         run: mvn -B -ntp -Dtest=MarketFeedTransactionIntegrationTest,FaoNewsFeedTest,MoaDepartmentNewsFeedTest,MoaPublicMarketFeedTest test
 
+      - name: Verify grain quote identity
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p 'test_choice_*.py' -v
+          mvn -B -ntp -Dtest=MarketQuoteGatewayTest,ChoiceFeedProcessTest test
+
       - name: Verify weekly imagery worker
         run: |
           python3 -m unittest scripts/tests/test_weekly_imagery_sync.py -v
