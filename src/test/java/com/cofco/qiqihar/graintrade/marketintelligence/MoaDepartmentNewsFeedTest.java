@@ -24,4 +24,15 @@ class MoaDepartmentNewsFeedTest {
         assertThatThrownBy(() -> MoaDepartmentNewsFeed.parse("<html>粮食</html>", Instant.now()))
                 .hasMessageContaining("no relevant dated headlines");
     }
+
+    @Test
+    void acceptsTheNewBeijingDayButNotTomorrow() throws Exception {
+        var html = """
+                <li class="ztlb"><a href="./202609/t20260928_1.htm" title='秋粮收购'>秋粮</a><span> 2026-09-28</span></li>
+                <li class="ztlb"><a href="./202609/t20260929_2.htm" title='秋粮生产'>秋粮</a><span> 2026-09-29</span></li>
+                """;
+        var items = MoaDepartmentNewsFeed.parse(html, Instant.parse("2026-09-27T16:30:00Z"));
+        assertThat(items).singleElement().satisfies(item ->
+                assertThat(item.publishedOn()).isEqualTo(java.time.LocalDate.parse("2026-09-28")));
+    }
 }

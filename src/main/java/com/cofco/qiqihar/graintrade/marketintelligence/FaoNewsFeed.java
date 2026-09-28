@@ -82,7 +82,7 @@ public class FaoNewsFeed {
                         DateTimeFormatter.RFC_1123_DATE_TIME).toInstant();
             } catch (RuntimeException badItem) { continue; }
             if (!"https".equals(url.getScheme()) || !"www.fao.org".equals(url.getHost())
-                    || date.isAfter(fetchedAt.plus(Duration.ofDays(1)))) continue;
+                    || date.isAfter(fetchedAt.plus(Duration.ofMinutes(5)))) continue;
             result.add(new Headline(title, url.toString(), date, fetchedAt));
         }
         if (result.isEmpty()) throw new IOException("FAO RSS has no valid headlines");

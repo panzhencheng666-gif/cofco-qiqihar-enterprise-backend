@@ -30,4 +30,14 @@ class FaoNewsFeedTest {
         assertThatThrownBy(() -> FaoNewsFeed.parse("<rss><channel/></rss>".getBytes(StandardCharsets.UTF_8), Instant.now()))
                 .hasMessageContaining("no valid headlines");
     }
+
+    @Test
+    void rejectsFutureSourceTimestamp() {
+        var xml = """
+                <rss><channel><item><title>Future story</title><link>https://www.fao.org/newsroom/detail/future/en</link>
+                <pubDate>Mon, 28 Sep 2026 12:00:00 Z</pubDate></item></channel></rss>
+                """;
+        assertThatThrownBy(() -> FaoNewsFeed.parse(xml.getBytes(StandardCharsets.UTF_8),
+                Instant.parse("2026-09-27T00:00:00Z"))).hasMessageContaining("no valid headlines");
+    }
 }
