@@ -151,7 +151,8 @@ public class NassVideoNewsFeed {
     static class Refresh {
         private final NassVideoNewsFeed feed;
         Refresh(NassVideoNewsFeed feed) { this.feed = feed; }
-        @Scheduled(initialDelayString = "${qiqihar.market-intelligence.nass-video.initial-delay:50s}",
+        @Scheduled(scheduler = "officialNewsScheduler",
+                initialDelayString = "${qiqihar.market-intelligence.nass-video.initial-delay:50s}",
                 fixedDelayString = "${qiqihar.market-intelligence.nass-video.refresh-delay:2m}")
         public void run() { feed.refresh(); }
     }

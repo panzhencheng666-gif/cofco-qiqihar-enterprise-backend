@@ -152,7 +152,8 @@ public class EiaTodayInEnergyFeed {
     static class Refresh {
         private final EiaTodayInEnergyFeed feed;
         Refresh(EiaTodayInEnergyFeed feed) { this.feed = feed; }
-        @Scheduled(initialDelayString = "${qiqihar.market-intelligence.eia.initial-delay:40s}",
+        @Scheduled(scheduler = "officialNewsScheduler",
+                initialDelayString = "${qiqihar.market-intelligence.eia.initial-delay:40s}",
                 fixedDelayString = "${qiqihar.market-intelligence.eia.refresh-delay:2m}")
         public void run() { feed.refresh(); }
     }

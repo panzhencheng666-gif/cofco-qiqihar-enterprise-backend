@@ -144,7 +144,8 @@ public class FaoWebcastFeed {
     static class Refresh {
         private final FaoWebcastFeed feed;
         Refresh(FaoWebcastFeed feed) { this.feed = feed; }
-        @Scheduled(initialDelayString = "${qiqihar.market-intelligence.fao-webcast.initial-delay:1m}",
+        @Scheduled(scheduler = "officialNewsScheduler",
+                initialDelayString = "${qiqihar.market-intelligence.fao-webcast.initial-delay:1m}",
                 fixedDelayString = "${qiqihar.market-intelligence.fao-webcast.refresh-delay:2m}")
         public void run() { feed.refresh(); }
     }

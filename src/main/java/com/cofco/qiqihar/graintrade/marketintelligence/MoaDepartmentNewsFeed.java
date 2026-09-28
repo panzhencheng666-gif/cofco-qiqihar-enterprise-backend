@@ -124,7 +124,8 @@ public class MoaDepartmentNewsFeed {
     static class Refresh {
         private final MoaDepartmentNewsFeed feed;
         Refresh(MoaDepartmentNewsFeed feed) { this.feed = feed; }
-        @Scheduled(initialDelayString = "${qiqihar.market-intelligence.moa-news.initial-delay:35s}",
+        @Scheduled(scheduler = "officialNewsScheduler",
+                initialDelayString = "${qiqihar.market-intelligence.moa-news.initial-delay:35s}",
                 fixedDelayString = "${qiqihar.market-intelligence.moa-news.refresh-delay:2m}")
         public void run() { feed.refresh(); }
     }

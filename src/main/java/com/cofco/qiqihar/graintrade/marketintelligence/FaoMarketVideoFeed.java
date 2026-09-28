@@ -141,7 +141,8 @@ public class FaoMarketVideoFeed {
     static class Refresh {
         private final FaoMarketVideoFeed feed;
         Refresh(FaoMarketVideoFeed feed) { this.feed = feed; }
-        @Scheduled(initialDelayString = "${qiqihar.market-intelligence.fao-video.initial-delay:55s}",
+        @Scheduled(scheduler = "officialNewsScheduler",
+                initialDelayString = "${qiqihar.market-intelligence.fao-video.initial-delay:55s}",
                 fixedDelayString = "${qiqihar.market-intelligence.fao-video.refresh-delay:2m}")
         public void run() { feed.refresh(); }
     }
