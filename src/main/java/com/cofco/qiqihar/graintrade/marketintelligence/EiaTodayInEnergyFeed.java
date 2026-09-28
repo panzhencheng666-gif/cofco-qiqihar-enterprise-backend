@@ -97,7 +97,8 @@ public class EiaTodayInEnergyFeed {
         var attemptedAt = Instant.now();
         try {
             var request = HttpRequest.newBuilder(SOURCE).timeout(Duration.ofSeconds(25))
-                    .header("Accept", "application/rss+xml, application/xml")
+                    // EIA currently returns HTTP 406 for an RSS-only Accept header.
+                    .header("Accept", "application/xml, text/xml, */*")
                     .header("User-Agent", "QiLiang-MarketIntelligence/1.0 (+official headline aggregation)")
                     .GET().build();
             var response = http.send(request, HttpResponse.BodyHandlers.ofInputStream());
