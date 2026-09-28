@@ -82,7 +82,7 @@ public class FaoNewsFeed {
                         DateTimeFormatter.RFC_1123_DATE_TIME).toInstant();
             } catch (RuntimeException badItem) { continue; }
             if (!"https".equals(url.getScheme()) || !"www.fao.org".equals(url.getHost())
-                    || date.isAfter(fetchedAt.plus(Duration.ofDays(1)))) continue;
+                    || date.isAfter(fetchedAt.plus(Duration.ofMinutes(5)))) continue;
             result.add(new Headline(title, url.toString(), date, fetchedAt));
         }
         if (result.isEmpty()) throw new IOException("FAO RSS has no valid headlines");
@@ -174,7 +174,8 @@ public class FaoNewsFeed {
     static class Refresh {
         private final FaoNewsFeed feed;
         Refresh(FaoNewsFeed feed) { this.feed = feed; }
-        @Scheduled(initialDelayString = "${qiqihar.market-intelligence.fao.initial-delay:30s}",
+        @Scheduled(scheduler = "officialNewsScheduler",
+                initialDelayString = "${qiqihar.market-intelligence.fao.initial-delay:30s}",
                 fixedDelayString = "${qiqihar.market-intelligence.fao.refresh-delay:2m}")
         public void run() { feed.refresh(); }
     }

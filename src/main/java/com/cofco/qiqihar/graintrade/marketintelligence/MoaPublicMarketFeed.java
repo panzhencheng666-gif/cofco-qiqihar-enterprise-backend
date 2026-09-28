@@ -17,6 +17,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
@@ -107,7 +108,7 @@ public class MoaPublicMarketFeed {
         var matcher = HEADLINE.matcher(html);
         while (matcher.find() && result.size() < 40) {
             var date = LocalDate.parse(matcher.group(3));
-            if (date.isAfter(fetchedAt.atZone(ZoneOffset.UTC).toLocalDate().plusDays(1))) continue;
+            if (date.isAfter(fetchedAt.atZone(ZoneId.of("Asia/Shanghai")).toLocalDate())) continue;
             var url = INDEX_PAGE.resolve(matcher.group(1));
             if (!"scs.moa.gov.cn".equals(url.getHost())) continue;
             var title = matcher.group(2).replace("&amp;", "&").replace("&quot;", "\"").trim();
@@ -251,8 +252,9 @@ public class MoaPublicMarketFeed {
     static class Refresh {
         private final MoaPublicMarketFeed feed;
         Refresh(MoaPublicMarketFeed feed) { this.feed = feed; }
-        @Scheduled(initialDelayString = "${qiqihar.market-intelligence.moa.initial-delay:45s}",
-                fixedDelayString = "${qiqihar.market-intelligence.moa.refresh-delay:5m}")
+        @Scheduled(scheduler = "officialNewsScheduler",
+                initialDelayString = "${qiqihar.market-intelligence.moa.initial-delay:45s}",
+                fixedDelayString = "${qiqihar.market-intelligence.moa.refresh-delay:2m}")
         public void run() { feed.refresh(); }
     }
 

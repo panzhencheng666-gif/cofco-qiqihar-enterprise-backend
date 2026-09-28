@@ -29,9 +29,13 @@ public class MarketSourceStatusController {
                        state.last_attempt_at, state.last_success_at,
                        state.latest_period, state.last_error
                 FROM (VALUES
-                    ('moa-public-monitor', '农业农村部监测', '每日发布 · 自动轮询'),
-                    ('moa-department-news', '农业农村部动态', '按源发布 · 自动轮询'),
-                    ('fao-newsroom-rss', 'FAO 新闻', '按源发布 · 自动轮询'),
+                    ('moa-public-monitor', '农业农村部监测', '按源发布 · 2 分钟轮询'),
+                    ('moa-department-news', '农业农村部动态', '按源发布 · 2 分钟轮询'),
+                    ('fao-newsroom-rss', 'FAO 新闻', '按源发布 · 2 分钟轮询'),
+                    ('eia-today-in-energy', '美国能源信息署', '按源发布 · 2 分钟轮询'),
+                    ('fao-market-video', 'FAO 市场视频', '按源发布 · 2 分钟轮询'),
+                    ('usda-nass-video', 'USDA NASS 视频', '按源发布 · 2 分钟轮询'),
+                    ('fao-webcast', 'FAO 直播与回看', '按源发布 · 2 分钟轮询'),
                     ('world-bank-pink-sheet', '世界银行月度价格', '每月发布 · 每日检查'),
                     ('fao-food-price-index', 'FAO 食品价格指数', '每月发布 · 每 6 小时检查')
                 ) AS source(code, name, cadence)
@@ -40,8 +44,12 @@ public class MarketSourceStatusController {
                     WHEN 'moa-public-monitor' THEN 0
                     WHEN 'moa-department-news' THEN 1
                     WHEN 'fao-newsroom-rss' THEN 2
-                    WHEN 'world-bank-pink-sheet' THEN 3
-                    ELSE 4 END
+                    WHEN 'eia-today-in-energy' THEN 3
+                    WHEN 'fao-market-video' THEN 4
+                    WHEN 'usda-nass-video' THEN 5
+                    WHEN 'fao-webcast' THEN 6
+                    WHEN 'world-bank-pink-sheet' THEN 7
+                    ELSE 8 END
                 """).query((rs, row) -> new SourceStatus(
                 rs.getString("code"), rs.getString("name"), rs.getString("cadence"),
                 instant(rs.getObject("last_attempt_at", OffsetDateTime.class)),

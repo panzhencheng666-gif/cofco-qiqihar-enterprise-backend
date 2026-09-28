@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
@@ -57,7 +58,7 @@ public class MoaDepartmentNewsFeed {
             LocalDate date;
             try { date = LocalDate.parse(matches.group(3)); }
             catch (RuntimeException invalid) { continue; }
-            if (date.isAfter(fetchedAt.atZone(ZoneOffset.UTC).toLocalDate().plusDays(1))) continue;
+            if (date.isAfter(fetchedAt.atZone(ZoneId.of("Asia/Shanghai")).toLocalDate())) continue;
             var url = SOURCE.resolve(matches.group(1));
             if (!"https".equals(url.getScheme()) || !"www.moa.gov.cn".equals(url.getHost())) continue;
             headlines.add(new Headline(title, url.toString(), date));
@@ -123,8 +124,9 @@ public class MoaDepartmentNewsFeed {
     static class Refresh {
         private final MoaDepartmentNewsFeed feed;
         Refresh(MoaDepartmentNewsFeed feed) { this.feed = feed; }
-        @Scheduled(initialDelayString = "${qiqihar.market-intelligence.moa-news.initial-delay:35s}",
-                fixedDelayString = "${qiqihar.market-intelligence.moa-news.refresh-delay:5m}")
+        @Scheduled(scheduler = "officialNewsScheduler",
+                initialDelayString = "${qiqihar.market-intelligence.moa-news.initial-delay:35s}",
+                fixedDelayString = "${qiqihar.market-intelligence.moa-news.refresh-delay:2m}")
         public void run() { feed.refresh(); }
     }
 }
