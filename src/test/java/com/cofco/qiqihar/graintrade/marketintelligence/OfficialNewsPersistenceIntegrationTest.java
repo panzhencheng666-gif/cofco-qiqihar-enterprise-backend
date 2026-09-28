@@ -28,6 +28,12 @@ class OfficialNewsPersistenceIntegrationTest {
                     source_code varchar(40) PRIMARY KEY, last_attempt_at timestamptz,
                     last_success_at timestamptz, latest_period date, last_error varchar(400))
                 """);
+        template.execute("""
+                CREATE TABLE market_intelligence.webcast_event (
+                    source_code varchar(40) NOT NULL, event_url text NOT NULL, title text NOT NULL,
+                    starts_at timestamptz NOT NULL, fetched_at timestamptz NOT NULL,
+                    PRIMARY KEY (source_code, event_url))
+                """);
         var jdbc = JdbcClient.create(dataSource);
         var transactions = new DataSourceTransactionManager(dataSource);
         var fetchedAt = Instant.parse("2026-09-27T17:00:00Z");
@@ -47,6 +53,10 @@ class OfficialNewsPersistenceIntegrationTest {
                 new NassVideoNewsFeed.Video("Census release event",
                         "https://www.youtube.com/watch?v=0EY87thoLuo",
                         LocalDate.parse("2024-02-13"))), fetchedAt);
+        new FaoWebcastFeed(jdbc, template, transactions).save(List.of(
+                new FaoWebcastFeed.Event("Grain market webcast",
+                        "https://www.fao.org/webcast/detail/grain-market-event/en",
+                        Instant.parse("2026-09-25T09:30:00Z"))), fetchedAt);
 
         var news = new MarketNewsController(jdbc).latest().data();
         assertThat(news).hasSize(2);
@@ -68,5 +78,10 @@ class OfficialNewsPersistenceIntegrationTest {
         assertThat(videos).extracting(NassVideoNewsFeed.VideoItem::sourceName)
                 .contains("FAO 市场与贸易", "USDA NASS");
         assertThat(new NassVideoNewsFeed.Controller(jdbc).list().data()).hasSize(2);
+        assertThat(new FaoWebcastFeed.Controller(jdbc).list().data())
+                .singleElement().satisfies(item -> {
+                    assertThat(item.startsAt()).isEqualTo(Instant.parse("2026-09-25T09:30:00Z"));
+                    assertThat(item.url()).contains("fao.org/webcast/detail/");
+                });
     }
 }

@@ -35,6 +35,7 @@ public class MarketSourceStatusController {
                     ('eia-today-in-energy', '美国能源信息署', '按源发布 · 2 分钟轮询'),
                     ('fao-market-video', 'FAO 市场视频', '按源发布 · 2 分钟轮询'),
                     ('usda-nass-video', 'USDA NASS 视频', '按源发布 · 2 分钟轮询'),
+                    ('fao-webcast', 'FAO 直播与回看', '按源发布 · 2 分钟轮询'),
                     ('world-bank-pink-sheet', '世界银行月度价格', '每月发布 · 每日检查'),
                     ('fao-food-price-index', 'FAO 食品价格指数', '每月发布 · 每 6 小时检查')
                 ) AS source(code, name, cadence)
@@ -46,8 +47,9 @@ public class MarketSourceStatusController {
                     WHEN 'eia-today-in-energy' THEN 3
                     WHEN 'fao-market-video' THEN 4
                     WHEN 'usda-nass-video' THEN 5
-                    WHEN 'world-bank-pink-sheet' THEN 6
-                    ELSE 7 END
+                    WHEN 'fao-webcast' THEN 6
+                    WHEN 'world-bank-pink-sheet' THEN 7
+                    ELSE 8 END
                 """).query((rs, row) -> new SourceStatus(
                 rs.getString("code"), rs.getString("name"), rs.getString("cadence"),
                 instant(rs.getObject("last_attempt_at", OffsetDateTime.class)),
