@@ -2,11 +2,13 @@ package com.cofco.qiqihar.graintrade.bootstrap;
 
 import com.cofco.qiqihar.graintrade.shared.infrastructure.SessionPoolConfiguration;
 import com.zaxxer.hikari.HikariDataSource;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
 
 class SessionPoolResilienceTest {
     private final ApplicationContextRunner context = new ApplicationContextRunner()
@@ -18,6 +20,17 @@ class SessionPoolResilienceTest {
                 return properties;
             })
             .withUserConfiguration(SessionPoolConfiguration.class);
+
+    @Test void customBusinessDataSourceRetainsItsGuardAndDedicatedSessionPool() {
+        DataSource protectedDataSource = mock(DataSource.class);
+        context.withBean("dataSource", DataSource.class, () -> protectedDataSource,
+                definition -> definition.setPrimary(true)).run(c -> {
+            assertThat(c).hasNotFailed();
+            assertThat(c.getBean(DataSource.class)).isSameAs(protectedDataSource);
+            assertThat(c.getBean("sessionDataSource", HikariDataSource.class))
+                    .isNotSameAs(protectedDataSource);
+        });
+    }
 
     @Test void bothActualPoolsBoundSocketReadsAndConnectionLifetime() {
         context.run(c -> {

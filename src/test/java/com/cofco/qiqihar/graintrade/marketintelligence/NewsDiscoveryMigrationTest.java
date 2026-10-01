@@ -20,7 +20,7 @@ class NewsDiscoveryMigrationTest {
         sql.execute("CREATE SCHEMA IF NOT EXISTS market_intelligence");
         for (String name : new String[]{"candidate", "source_admission", "host_schedule", "search_schedule"})
             sql.execute("DROP TABLE IF EXISTS market_intelligence.news_discovery_" + name);
-        sql.execute("DROP TABLE IF EXISTS public.news_discovery_test_history");
+        sql.execute("DROP TABLE IF EXISTS market_intelligence.news_discovery_test_history");
         sql.execute("""
             DO $$ BEGIN
               IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='qiqihar_enterprise_runtime') THEN
@@ -29,7 +29,7 @@ class NewsDiscoveryMigrationTest {
             END $$;
             """);
         flyway = Flyway.configure().dataSource(ds).locations("classpath:" + LOCATION)
-            .defaultSchema("public").table("news_discovery_test_history")
+            .defaultSchema("market_intelligence").table("news_discovery_test_history")
             .baselineVersion("223").baselineOnMigrate(false).target("224")
             .cleanDisabled(true).group(true).load();
         // Isolated local fixture, NOT the production baseline/history.
@@ -43,6 +43,7 @@ class NewsDiscoveryMigrationTest {
         assertThat(flyway.migrate().migrationsExecuted).isEqualTo(1);
         flyway.validate();
         assertThat(flyway.migrate().migrationsExecuted).isZero();
+        assertThat(sql.queryForObject("SELECT to_regclass('public.news_discovery_test_history') IS NULL", Boolean.class)).isTrue();
         assertThat(sql.queryForObject("SELECT count(*) FROM market_intelligence.news_discovery_source_admission", Integer.class)).isZero();
         assertThat(sql.queryForObject("SELECT last_state FROM market_intelligence.news_discovery_search_schedule", String.class)).isEqualTo("NOT_RUN");
     }

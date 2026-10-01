@@ -6,6 +6,7 @@ import javax.sql.DataSource;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceProperties;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
@@ -19,6 +20,7 @@ import org.springframework.session.jdbc.JdbcIndexedSessionRepository;
 public class SessionPoolConfiguration {
     @Bean
     @Primary
+    @ConditionalOnMissingBean(name = "dataSource")
     public DataSource dataSource(DataSourceProperties properties,
             @Value("${QIQIHAR_DB_PREPARE_THRESHOLD:-1}") String prepareThreshold) {
         HikariDataSource dataSource = properties.initializeDataSourceBuilder()
