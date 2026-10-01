@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.cofco.qiqihar.graintrade.risk.application.LocalRiskClassifierTrainer;
 import com.cofco.qiqihar.graintrade.risk.application.RiskTrainingJob;
+import com.cofco.qiqihar.graintrade.risk.application.RiskTrainingClaim;
 import com.cofco.qiqihar.graintrade.testsupport.ProtectedTestDatabase;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -12,10 +13,12 @@ import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
+import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.jdbc.core.simple.JdbcClient;
+import org.springframework.jdbc.datasource.SingleConnectionDataSource;
 import tools.jackson.databind.ObjectMapper;
 
 class JdbcRiskTrainingRepositoryIntegrationTest {
@@ -23,7 +26,12 @@ class JdbcRiskTrainingRepositoryIntegrationTest {
 
     @BeforeAll
     static void migrateAndSeed() throws Exception {
-        DATABASE.flyway().migrate();
+        try (Connection connection=DATABASE.openConnection();
+                Statement statement=connection.createStatement()) {
+            statement.execute("DROP TABLE IF EXISTS public.risk_flyway_schema_history");
+        }
+        Flyway.configure().dataSource(DATABASE.dataSource())
+                .table("risk_flyway_schema_history").load().migrate();
         try (Connection connection=DATABASE.openConnection();Statement statement=connection.createStatement()) {
             statement.execute("""
                     INSERT INTO risk.risk_rule_set_version(
@@ -90,6 +98,30 @@ class JdbcRiskTrainingRepositoryIntegrationTest {
                       'SOURCE_UNAVAILABLE','证据不足，不得作为训练标签','reviewer',
                       TIMESTAMPTZ '2026-09-11 01:00:00+00')
                     """);
+        }
+    }
+
+    @Test
+    void reusesFrozenSnapshotWithoutUpdatePrivilege() throws Exception {
+        Instant cutoff=Instant.parse("2026-09-25T03:00:00Z");
+        var claim=new RiskTrainingClaim(UUID.randomUUID(),UUID.randomUUID(),UUID.randomUUID(),
+                "risk-domain-classifier-v1","风险案例领域分类模型","RISK_CLASSIFIER",
+                "CROSS_DOMAIN","builtin://bernoulli-naive-bayes/v1",30,10,42);
+        try (Connection connection=DATABASE.openConnection();
+                Statement statement=connection.createStatement()) {
+            statement.execute("SET ROLE qiqihar_enterprise_runtime");
+            JdbcClient limitedJdbc=JdbcClient.create(new SingleConnectionDataSource(connection,true));
+            var repository=new JdbcRiskTrainingRepository(limitedJdbc,new ObjectMapper());
+            assertThat(limitedJdbc.sql("SELECT has_table_privilege(current_user, 'risk.training_snapshot', 'UPDATE')")
+                    .query(Boolean.class).single()).isFalse();
+
+            var first=repository.freezeTrainingSnapshot(claim,cutoff);
+            var retry=repository.freezeTrainingSnapshot(claim,cutoff);
+
+            assertThat(retry.trainingSnapshotId()).isEqualTo(first.trainingSnapshotId());
+            assertThat(retry.examples()).hasSize(10);
+            assertThat(limitedJdbc.sql("SELECT count(*) FROM risk.training_snapshot WHERE training_snapshot_id=:id")
+                    .param("id",first.trainingSnapshotId()).query(Integer.class).single()).isEqualTo(1);
         }
     }
 

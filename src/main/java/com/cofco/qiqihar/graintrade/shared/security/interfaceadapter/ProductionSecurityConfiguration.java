@@ -177,13 +177,16 @@ public class ProductionSecurityConfiguration {
                         .requestMatchers("/api/v1/identity/registration-entry/**").permitAll()
                         .requestMatchers("/api/v1/identity/phone/bootstrap", "/api/v1/identity/phone/challenge", "/api/v1/identity/phone/login").permitAll()
                         .requestMatchers("/api/v1/identity/email/bootstrap", "/api/v1/identity/email/challenge", "/api/v1/identity/email/login").permitAll()
-                        .requestMatchers("/api/v1/session/login", "/oauth2/**", "/login/oauth2/**").permitAll()
+                        .requestMatchers("/api/v1/session/login", "/login", "/oauth2/**", "/login/oauth2/**").permitAll()
                         .requestMatchers("/logout/connect/back-channel/**").permitAll()
                         .requestMatchers("/api/v1/**").authenticated()
                         .anyRequest().denyAll())
-                .oauth2Login(login -> login.successHandler(loginSuccess)
-                        .authorizationEndpoint(endpoint -> endpoint.authorizationRequestResolver(
-                                new EnterpriseAuthorizationRequestResolver(clientRegistrations))))
+                .oauth2Login(login -> login.loginPage("/api/v1/session/login")
+                        .failureUrl("/login?error")
+                        .successHandler(loginSuccess)
+                        .authorizationEndpoint(endpoint -> endpoint
+                                .authorizationRequestRepository(new ConcurrentAuthorizationRequestRepository())
+                                .authorizationRequestResolver(new EnterpriseAuthorizationRequestResolver(clientRegistrations))))
                 .oidcLogout(oidc -> oidc.backChannel(backChannel -> { }))
                 .logout(logout -> logout
                         .logoutUrl("/api/v1/session/logout")
@@ -382,6 +385,13 @@ public class ProductionSecurityConfiguration {
             var session=request.getSession();
             Authentication stableAuthentication=bindStableSubject(authentication,principal);
             audit.record(stableAuthentication.getName(),session.getId(),"LOGIN_SUCCESS","{}");
+            Object requestedReturnTo=request.getAttribute(ConcurrentAuthorizationRequestRepository.CALLBACK_RETURN_TO_ATTRIBUTE);
+            request.removeAttribute(ConcurrentAuthorizationRequestRepository.CALLBACK_RETURN_TO_ATTRIBUTE);
+            session.removeAttribute(OidcLoginController.LOGIN_RETURN_TO_ATTRIBUTE);
+            if ("/risk/".equals(requestedReturnTo)) {
+                response.sendRedirect(request.getContextPath()+"/risk/");
+                return;
+            }
             if(principal.isRootAdministrator()) {
                 response.sendRedirect(request.getContextPath()+"/");
                 return;

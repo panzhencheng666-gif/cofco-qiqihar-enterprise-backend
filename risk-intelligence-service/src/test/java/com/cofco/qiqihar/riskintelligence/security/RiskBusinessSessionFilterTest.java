@@ -32,7 +32,7 @@ class RiskBusinessSessionFilterTest {
         MockMvc mvc = mvc(cookie -> {
             forwardedCookie.set(cookie);
             return Optional.of(new RiskBusinessSession(
-                    "real-employee", Set.of("BUSINESS_READ"), false));
+                    "real-employee", Set.of("BUSINESS_READ"), false, Set.of("230221")));
         });
 
         mvc.perform(get("/api/v1/risk/test")
@@ -47,7 +47,7 @@ class RiskBusinessSessionFilterTest {
     @Test
     void requiresReadPermissionForQueries() throws Exception {
         MockMvc mvc = mvc(cookie -> Optional.of(new RiskBusinessSession(
-                "employee", Set.of("BUSINESS_CREATE"), false)));
+                "employee", Set.of("BUSINESS_CREATE"), false, Set.of("230221"))));
 
         mvc.perform(get("/api/v1/risk/test").header("Cookie", "COFCO_SESSION=validated"))
                 .andExpect(status().isForbidden());
@@ -56,7 +56,7 @@ class RiskBusinessSessionFilterTest {
     @Test
     void requiresUpdatePermissionForMutations() throws Exception {
         MockMvc mvc = mvc(cookie -> Optional.of(new RiskBusinessSession(
-                "reader", Set.of("BUSINESS_READ"), false)));
+                "reader", Set.of("BUSINESS_READ"), false, Set.of("230221"))));
 
         mvc.perform(post("/api/v1/risk/test").header("Cookie", "COFCO_SESSION=validated"))
                 .andExpect(status().isForbidden());

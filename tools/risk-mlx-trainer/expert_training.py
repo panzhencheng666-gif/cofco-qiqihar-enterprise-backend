@@ -1,0 +1,260 @@
+"""Bounded expert SFT candidate production, called only under server WORKLOAD_GATE."""
+import fcntl
+import hashlib
+import json
+import math
+import os
+import re
+import shutil
+import stat
+import time
+from pathlib import Path
+
+import expert
+from expert_dataset import DatasetValidationError, validate_dataset, write_dataset
+import expert_training_artifacts as artifacts
+from expert_training_process import (WorkerFailure, cancel_run, register_run, run_worker,
+                                     unregister_run)
+from expert_training_worker import SEQUENCE_MESSAGES, SequenceValidationError, validate_metrics
+
+
+class ExpertTrainingUnavailable(RuntimeError):
+    pass
+
+
+class ExpertTrainingConflict(RuntimeError):
+    pass
+
+
+class ExpertTrainingCancelled(RuntimeError):
+    pass
+
+
+def validate_run_id(value):
+    if type(value) is not str or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,63}', value):
+        raise ValueError('Invalid runId')
+    return value
+
+
+def validate_cancel_request(payload):
+    if type(payload) is not dict or set(payload) != {'runId'}:
+        raise ValueError('Expected runId')
+    return validate_run_id(payload['runId'])
+
+
+def cancel_expert(run_id):
+    return cancel_run(validate_run_id(run_id))
+
+
+def validate_training_request(payload: dict) -> dict:
+    if type(payload) is not dict or set(payload) != {'runId', 'dataset', 'config'}:
+        raise ValueError('Expected runId, dataset and config')
+    validate_run_id(payload['runId'])
+    config = payload['config']
+    ranges = {'iterations': (1, 1000), 'maxSeqLength': (256, 2048),
+              'numLayers': (1, 8), 'seed': (0, 2147483647)}
+    if type(config) is not dict or set(config) != set(ranges) | {'learningRate'}:
+        raise ValueError('Invalid config fields')
+    for key, (lower, upper) in ranges.items():
+        if type(config[key]) is not int or not lower <= config[key] <= upper:
+            raise ValueError('Invalid config.' + key)
+    rate = config['learningRate']
+    if type(rate) not in (int, float) or not 1e-6 <= rate <= 1e-4 or not math.isfinite(rate):
+        raise ValueError('Invalid config.learningRate')
+    return dict(runId=payload['runId'], dataset=validate_dataset(payload['dataset']),
+                config={**config, 'learningRate': float(rate)})
+
+
+def _manifest(identity, hashes):
+    return dict(kind='EXPERT_SFT_ADAPTER', status='CANDIDATE', publicationStatus='NOT_EVALUATED',
+                identity=identity, requestSha256=hashlib.sha256(artifacts.canonical(identity)).hexdigest(),
+                files=hashes)
+
+
+def _worker_dataset_error(path, counts):
+    # Never trust arbitrary worker output, links, broad modes, unknown keys or rows.
+    with artifacts.open_regular(path, 512, private=True) as stream:
+        data = stream.read(513)
+    if len(data) > 512:
+        raise ValueError('Invalid worker diagnostic')
+    record = json.loads(data, object_pairs_hook=expert.unique_json_object)
+    if type(record) is not dict or set(record) != {'reasonCode', 'split', 'row'}:
+        raise ValueError('Invalid worker diagnostic')
+    error = SequenceValidationError(record['reasonCode'], record['split'], record['row'])
+    if error.row > counts[error.split]:
+        raise ValueError('Invalid worker diagnostic row')
+    return DatasetValidationError([dict(row=error.row, field=error.split + '.messages',
+                                        code=error.reason_code, message=SEQUENCE_MESSAGES[error.reason_code])])
+
+
+def _stage_path(base, run_id):
+    return base / ('.expert-stage-' + run_id)
+
+
+def _clean_stale_stage(base, run_id):
+    path = _stage_path(base, run_id)
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return
+    if (path.is_symlink() or not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o700):
+        raise ValueError('Unsafe stale training stage')
+    shutil.rmtree(path)
+
+
+def _valid_lock_identity(info):
+    return (stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
+            and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1)
+
+
+def _lock_path_matches(lock, identity):
+    try:
+        current = lock.lstat()
+    except FileNotFoundError:
+        return False
+    return (_valid_lock_identity(current)
+            and (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino))
+
+
+def _acquire_run_lock(lock):
+    # An opener can retain an unlinked inode while the pathname is recreated. Revalidate
+    # after flock so only the owner of the current pathname can enter the critical section.
+    for _ in range(32):
+        lock_fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        try:
+            identity = os.fstat(lock_fd)
+            if not _valid_lock_identity(identity):
+                raise ValueError('Unsafe training lock')
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                if _lock_path_matches(lock, identity):
+                    raise ExpertTrainingConflict('EXPERT_TRAINING_BUSY') from None
+                continue
+            identity = os.fstat(lock_fd)
+            if not _valid_lock_identity(identity) or not _lock_path_matches(lock, identity):
+                continue
+            acquired_fd = lock_fd
+            lock_fd = None
+            return acquired_fd, identity
+        finally:
+            if lock_fd is not None:
+                os.close(lock_fd)
+    raise ValueError('Unstable training lock')
+
+
+def _verified_result(directory, identity, request, deadline):
+    if directory.is_symlink():
+        raise ValueError('Symlink target')
+    hashes, content_hash = artifacts.layout_hashes(directory, deadline, manifest=True)
+    manifest = artifacts.read_object(directory / 'model_manifest.json')
+    del hashes['model_manifest.json']
+    # Validate integrity before deciding whether this is a replay or a conflict.
+    if set(manifest) != set(_manifest(identity, hashes)):
+        raise ValueError('Incomplete manifest')
+    if manifest != _manifest(manifest['identity'], hashes):
+        raise ValueError('Artifact verification failed')
+    if manifest['identity'] != identity:
+        raise ExpertTrainingConflict('EXPERT_TRAINING_REQUEST_CONFLICT')
+    artifacts.read_object(directory / 'adapter_config.json')
+    metrics = validate_metrics(artifacts.read_object(directory / 'training_metrics.json'),
+                               request['config']['iterations'], request['dataset']['counts']['test'])
+    return dict(runId=request['runId'], kind=manifest['kind'], status=manifest['status'],
+                publicationStatus=manifest['publicationStatus'], requestSha256=manifest['requestSha256'],
+                artifactSha256=content_hash, artifactPath=str(directory), metrics=metrics)
+
+
+def train_expert(payload: dict) -> dict:
+    deadline = time.monotonic() + 1800
+    request = validate_training_request(payload)
+    stage, lock_fd, lock, lock_identity, owned = None, None, None, None, None
+    try:
+        base = artifacts.controlled_root()
+        target = base / request['runId']
+        if target.is_symlink():
+            raise ValueError('Symlink target')
+        lock = base / (request['runId'] + '.lock')
+        lock_fd, lock_identity = _acquire_run_lock(lock)
+        _clean_stale_stage(base, request['runId'])
+        owned = register_run(request['runId'])
+        model = expert.configured_model()
+        identity = dict(runId=request['runId'], datasetSha256=request['dataset']['datasetSha256'],
+                        config=request['config'], model=artifacts.model_identity(model, deadline),
+                        sourceSha256=artifacts.source_identity(deadline), engine='mlx-lm0.31.3')
+        if target.exists():
+            result = _verified_result(target, identity, request, deadline)
+            with owned.lock:
+                if owned.cancelled.is_set():
+                    raise ExpertTrainingCancelled('EXPERT_TRAINING_CANCELLED')
+                owned.finished = True
+            return result
+        stage = _stage_path(base, request['runId'])
+        stage.mkdir(mode=0o700)
+        write_dataset(stage / 'dataset', request['dataset'])
+        original_data = {name: artifacts.file_hash(stage / name, deadline) for name in artifacts.DATA_FILES}
+        request_path = stage / '.worker_request.json'
+        artifacts.private_json(request_path, dict(modelPath=str(model), dataPath=str(stage / 'dataset'),
+                                                 adapterPath=str(stage), config=request['config']))
+        try:
+            run_worker(request_path, deadline, owned)
+        except WorkerFailure as failure:
+            if str(failure) == 'EXPERT_TRAINING_CANCELLED':
+                raise ExpertTrainingCancelled('EXPERT_TRAINING_CANCELLED') from None
+            if str(failure) == 'EXPERT_TRAINING_WORKER_FAILED':
+                raise _worker_dataset_error(stage / '.worker_error.json', request['dataset']['counts'])
+            raise
+        if os.path.lexists(stage / '.worker_error.json'):
+            raise ValueError('Worker succeeded with error record')
+        request_path.unlink()
+        hashes, _ = artifacts.layout_hashes(stage, deadline)
+        if any(hashes[name] != digest for name, digest in original_data.items()):
+            raise ValueError('Dataset snapshot changed')
+        artifacts.read_object(stage / 'adapter_config.json')
+        validate_metrics(artifacts.read_object(stage / 'training_metrics.json'),
+                         request['config']['iterations'], request['dataset']['counts']['test'])
+        if (identity['model'] != artifacts.model_identity(model, deadline)
+                or identity['sourceSha256'] != artifacts.source_identity(deadline)):
+            raise ValueError('Training identity changed')
+        for name in artifacts.REQUIRED_FILES:
+            os.chmod(stage / name, 0o600, follow_symlinks=False)
+        artifacts.private_json(stage / 'model_manifest.json', _manifest(identity, hashes))
+        result = _verified_result(stage, identity, request, deadline)
+        if owned.cancelled.is_set():
+            raise ExpertTrainingCancelled('EXPERT_TRAINING_CANCELLED')
+        artifacts.check_deadline(deadline)
+        with owned.lock:
+            if owned.cancelled.is_set():
+                raise ExpertTrainingCancelled('EXPERT_TRAINING_CANCELLED')
+            artifacts.atomic_publish(stage, target)
+            owned.finished = True
+        stage = None
+        result['artifactPath'] = str(target)
+        return result
+    except (ExpertTrainingConflict, ExpertTrainingCancelled, DatasetValidationError):
+        raise
+    except Exception:
+        raise ExpertTrainingUnavailable('EXPERT_TRAINING_FAILED') from None
+    finally:
+        cleanup_failed = False
+        if owned is not None:
+            unregister_run(request['runId'], owned)
+        if stage is not None:
+            # Only the private mkdtemp owned by this invocation, never an existing target.
+            try:
+                shutil.rmtree(stage)
+            except OSError:
+                cleanup_failed = True
+        if lock_fd is not None:
+            try:
+                current = lock.lstat()
+                if (current.st_dev, current.st_ino) == (lock_identity.st_dev, lock_identity.st_ino):
+                    lock.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                cleanup_failed = True
+            finally:
+                os.close(lock_fd)
+        if cleanup_failed:
+            raise ExpertTrainingUnavailable('EXPERT_TRAINING_FAILED') from None

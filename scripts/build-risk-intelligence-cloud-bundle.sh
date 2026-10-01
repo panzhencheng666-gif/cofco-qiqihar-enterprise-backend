@@ -8,6 +8,9 @@ stage="${output_dir}/${bundle_name}"
 archive="${output_dir}/${bundle_name}.tar.gz"
 acceptance="${stage}/LOCAL_ACCEPTANCE"
 
+[[ -z "$(git -C "$backend_root" status --porcelain --untracked-files=normal)" ]] \
+  || { echo "Refusing to build from a dirty or untracked source tree" >&2; exit 1; }
+
 mkdir -p "$output_dir"
 [[ ! -e "$stage" ]] || { echo "Refusing to overwrite bundle stage: $stage" >&2; exit 1; }
 mkdir -p "$stage/migrations"
@@ -33,6 +36,8 @@ for contract in "${backend_root}"/scripts/tests/*.test.sh; do bash "$contract"; 
   printf 'accepted_at_utc=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
   printf 'java_tests=passed\npython_tests=passed\nshell_contracts=passed\nreal_mlx_training=passed\n'
   printf 'git_commit=%s\n' "$(git -C "$backend_root" rev-parse HEAD)"
+  printf 'git_tree=%s\n' "$(git -C "$backend_root" rev-parse HEAD^{tree})"
+  printf 'source_state=clean\n'
 } > "$acceptance"
 chmod 400 "$acceptance"
 
@@ -46,9 +51,24 @@ install -m 400 "${backend_root}/ops/systemd/cofco-risk-intelligence.service" "$s
 for migration in V214__create_inventory_risk_foundation.sql \
     V215__operate_daily_risk_ai_training.sql \
     V216__automate_risk_model_promotion.sql \
-    V217__isolate_risk_schema_runtime.sql; do
-  install -m 400 "${backend_root}/src/main/resources/db/migration/${migration}" \
-    "$stage/migrations/"
+    V217__isolate_risk_schema_runtime.sql \
+    V217_1__preserve_bootstrap_identity_before_qiliang.sql \
+    V218__establish_qiliang_risk_model_identity.sql \
+    V219__harden_qiliang_model_lineage.sql \
+    V220__create_expert_sft_queue.sql \
+    V221__grant_expert_queue_risk_runtime.sql \
+    V222__create_qiliang_ai_assistant.sql \
+    V223__govern_ai_knowledge_snapshots.sql \
+    V224__project_formal_market_facts_to_risk.sql \
+    V225__track_market_rule_assessments.sql \
+    V226__require_manual_qiliang_model_promotion.sql; do
+  case "$migration" in
+    V214__*|V215__*|V216__*|V217__*) source_path="src/main/resources/db/migration/${migration}" ;;
+    *) source_path="ops/risk-intelligence/migrations/${migration}" ;;
+  esac
+  git -C "$backend_root" ls-files --error-unmatch "$source_path" >/dev/null \
+    || { echo "Migration is not tracked by git: ${migration}" >&2; exit 1; }
+  install -m 400 "${backend_root}/${source_path}" "$stage/migrations/"
 done
 
 (cd "$stage" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)

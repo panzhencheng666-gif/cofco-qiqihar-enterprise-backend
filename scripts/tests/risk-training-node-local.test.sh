@@ -18,6 +18,7 @@ plutil -lint "$plist" >/dev/null || fail "training node plist is invalid"
 
 assert_contains scripts/risk-training-node-local.sh "RISK_TRAINING_CLOUD_URL"
 assert_contains scripts/risk-training-node-local.sh "Refusing to replace an unowned listener"
+assert_contains scripts/risk-training-node-local.sh "active-expert-claim.json"
 assert_contains scripts/run-risk-training-node-launch-agent.sh "training-node.env"
 assert_contains scripts/run-risk-training-node-launch-agent.sh "remote_worker.py"
 assert_contains scripts/run-risk-training-node-launch-agent.sh "risk-mlx-trainer.py"

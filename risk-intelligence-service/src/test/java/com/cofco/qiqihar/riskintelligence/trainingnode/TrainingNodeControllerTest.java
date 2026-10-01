@@ -26,6 +26,22 @@ class TrainingNodeControllerTest {
     private static final String TOKEN="node-secret";
     private static final String NODE="mac-m5-max";
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"claims", "scoring-claims"})
+    void businessSessionAndForgedRootHeadersCannotReadGlobalModelInputs(String endpoint) throws Exception {
+        var coordinator = mock(RemoteTrainingCoordinator.class);
+        var scoring = mock(RemoteScoringCoordinator.class);
+        var artifacts = mock(RemoteArtifactStore.class);
+        var mvc = MockMvcBuilders.standaloneSetup(
+                new TrainingNodeController(coordinator, scoring, artifacts, TOKEN)).build();
+        mvc.perform(post("/api/v1/risk-intelligence/training-node/" + endpoint)
+                .header("Cookie", "session=synthetic-regional-user")
+                .header("X-Root-Administrator", "true").header("X-Region-Codes", "*")
+                .header("X-Risk-Training-Node-Id", NODE))
+                .andExpect(status().isUnauthorized());
+        org.mockito.Mockito.verifyNoInteractions(coordinator, scoring, artifacts);
+    }
+
     @Test
     void rejectsAClaimWithoutTheTrainingNodeCredential() throws Exception {
         RemoteTrainingCoordinator coordinator=mock(RemoteTrainingCoordinator.class);
@@ -58,8 +74,8 @@ class TrainingNodeControllerTest {
         UUID modelId=UUID.randomUUID();
         UUID snapshotId=UUID.randomUUID();
         when(coordinator.claimNext(NODE)).thenReturn(Optional.of(new RemoteTrainingJob(
-                executionId,runId,modelId,"risk-reasoning-llm-v1","DOMAIN_LLM",
-                "CROSS_DOMAIN","mlx-community/Qwen3-0.6B-4bit",3,snapshotId,
+                executionId,runId,modelId,"qiliang-risk-llm-v1","DOMAIN_LLM",
+                "CROSS_DOMAIN","mlx-community/Qwen3.8-27B-4bit",3,snapshotId,
                 "a".repeat(64),7L,Instant.parse("2026-09-21T18:00:00Z"),
                 List.of(new RemoteTrainingExample(
                         Instant.parse("2026-09-21T01:00:00Z"),"真实证据",true)))));

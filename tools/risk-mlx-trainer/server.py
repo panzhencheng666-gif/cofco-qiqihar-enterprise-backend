@@ -1,22 +1,38 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import math
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+
+import expert
+import expert_dataset
+import expert_training
 
 ROOT = Path(os.environ.get("RISK_LLM_ARTIFACT_ROOT", "var/risk-llm-adapters")).resolve()
 TOKEN = os.environ.get("RISK_LLM_BEARER_TOKEN", "")
 ITERATIONS = int(os.environ.get("RISK_LLM_TRAIN_ITERS", "80"))
 MAX_BODY = 8 * 1024 * 1024
+WORKLOAD_GATE = threading.Lock()
 SAFE = re.compile(r"^[A-Za-z0-9._-]{1,120}$")
+MODEL_IDENTITY = "齐粮智研模型 QL-Risk-27B"
+DOMAIN_INSTRUCTION = (
+    f"你是{MODEL_IDENTITY}，是粮食行业风险研判预警系统的专属模型。"
+    "只能依据输入证据判断风险是否成立，证据不足时不得臆测。"
+    "风险成立输出1，不成立输出0。\n输入："
+)
+INSTRUCTION_SHA256 = hashlib.sha256(DOMAIN_INSTRUCTION.encode()).hexdigest()
 
 
 def canonical_hash(directory: Path) -> str:
@@ -34,11 +50,7 @@ def split_examples(examples: list[dict[str, Any]]) -> dict[str, list[dict[str, A
     for example in examples:
         label = "1" if bool(example["positive"]) else "0"
         rows.append({
-            "prompt": (
-                "你是粮食经营风险研判模型。只能依据输入证据判断风险是否成立。"
-                "证据不足时不得臆测。风险成立输出1，不成立输出0。\n输入："
-                + str(example["input"]) + "\n结论："
-            ),
+            "prompt": DOMAIN_INSTRUCTION + str(example["input"]) + "\n结论：",
             "completion": label,
             "domainCode": str(example.get("domainCode", "UNKNOWN")),
         })
@@ -63,14 +75,42 @@ def write_dataset(directory: Path, examples: list[dict[str, Any]]) -> dict[str, 
     return partitions
 
 
-def completed_artifact(target: Path, training_examples: int) -> dict[str, Any]:
+def request_manifest(payload: dict[str, Any]) -> dict[str, Any]:
+    definition = {
+        "modelIdentity": MODEL_IDENTITY,
+        "modelCode": str(payload["modelCode"]),
+        "modelId": str(payload["modelId"]),
+        "candidateVersion": int(payload["candidateVersion"]),
+        "foundationModel": str(payload["baseModelReference"]),
+        "trainingKind": "QLORA_DOMAIN_ADAPTER",
+        "trainingSnapshotId": str(payload["trainingSnapshotId"]),
+        "randomSeed": int(payload["randomSeed"]),
+        "iterations": ITERATIONS,
+        "instructionSha256": INSTRUCTION_SHA256,
+        "examplesSha256": hashlib.sha256(json.dumps(
+            payload["examples"], ensure_ascii=False, sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest(),
+    }
+    definition["requestSha256"] = hashlib.sha256(json.dumps(
+        definition, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":")).encode()).hexdigest()
+    return definition
+
+
+def completed_artifact(target: Path, training_examples: int,
+                       expected_manifest: dict[str, Any]) -> dict[str, Any]:
     weights = target / "adapters.safetensors"
     config = target / "adapter_config.json"
     metrics_file = target / "training_metrics.json"
+    manifest_file = target / "model_manifest.json"
     if (not weights.is_file() or weights.stat().st_size == 0 or not config.is_file()
-            or not metrics_file.is_file()):
+            or not metrics_file.is_file() or not manifest_file.is_file()):
         raise RuntimeError("MLX LoRA 工件目录不完整，拒绝覆盖")
     measured = json.loads(metrics_file.read_text(encoding="utf-8"))
+    manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+    for key, expected in expected_manifest.items():
+        if manifest.get(key) != expected:
+            raise RuntimeError(f"MLX LoRA 工件身份不匹配: {key}")
     return {
         "artifactReference": str(target),
         "artifactSha256": canonical_hash(target),
@@ -79,6 +119,8 @@ def completed_artifact(target: Path, training_examples: int) -> dict[str, Any]:
             "iterations": ITERATIONS,
             "adapterBytes": weights.stat().st_size,
             "engine": "mlx-lm-0.31.3",
+            "modelIdentity": manifest["modelIdentity"],
+            "foundationModel": manifest["foundationModel"],
             "offlineEvaluation": measured,
         },
         "thresholds": {"positiveProbability": 0.5},
@@ -95,34 +137,46 @@ def train(payload: dict[str, Any]) -> dict[str, Any]:
     target = ROOT / model_id / f"v{version}-{snapshot}"
     examples = list(payload["examples"])
     partitions = split_examples(examples)
+    expected_manifest = request_manifest(payload)
     if target.exists():
-        if not (target / "training_metrics.json").is_file():
-            measured = evaluate_adapter(base, target, partitions)
-            (target / "training_metrics.json").write_text(
-                json.dumps(measured, ensure_ascii=False, separators=(",", ":")) + "\n",
-                encoding="utf-8")
-        return completed_artifact(target, len(examples))
+        return completed_artifact(target, len(examples), expected_manifest)
     target.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="risk-lora-") as temporary:
-        data = Path(temporary) / "data"
-        partitions = write_dataset(data, examples)
-        command = [
-            sys.executable, "-m", "mlx_lm.lora", "--model", base, "--train",
-            "--data", str(data), "--adapter-path", str(target), "--mask-prompt",
-            "--iters", str(ITERATIONS), "--batch-size", "1", "--num-layers", "8",
-            "--learning-rate", "1e-5", "--steps-per-report", "10",
-            "--steps-per-eval", str(max(10, ITERATIONS)), "--val-batches", "1",
-            "--save-every", str(max(10, ITERATIONS)), "--max-seq-length", "1024",
-            "--seed", str(int(payload["randomSeed"])),
+    staging_root = Path(tempfile.mkdtemp(prefix=f".{target.name}.", dir=target.parent))
+    staging = staging_root / "artifact"
+    try:
+        with tempfile.TemporaryDirectory(prefix="risk-lora-") as temporary:
+            data = Path(temporary) / "data"
+            partitions = write_dataset(data, examples)
+            command = [
+                sys.executable, "-m", "mlx_lm.lora", "--model", base, "--train",
+                "--data", str(data), "--adapter-path", str(staging), "--mask-prompt",
+                "--iters", str(ITERATIONS), "--batch-size", "1", "--num-layers", "8",
+                "--learning-rate", "1e-5", "--steps-per-report", "10",
+                "--steps-per-eval", str(max(10, ITERATIONS)), "--val-batches", "1",
+                "--save-every", str(max(10, ITERATIONS)), "--max-seq-length", "1024",
+                "--seed", str(int(payload["randomSeed"])),
+            ]
+            result = subprocess.run(command, text=True, capture_output=True, timeout=1800)
+            if result.returncode != 0:
+                raise RuntimeError("MLX LoRA 训练失败: " + result.stderr[-2000:])
+        manifest = dict(expected_manifest)
+        manifest["specialization"] = [
+            "grain_inventory", "grain_market", "supply", "logistics",
+            "quality", "operations", "risk_early_warning",
         ]
-        result = subprocess.run(command, text=True, capture_output=True, timeout=1800)
-        if result.returncode != 0:
-            raise RuntimeError("MLX LoRA 训练失败: " + result.stderr[-2000:])
-    measured = evaluate_adapter(base, target, partitions)
-    (target / "training_metrics.json").write_text(
-        json.dumps(measured, ensure_ascii=False, separators=(",", ":")) + "\n",
-        encoding="utf-8")
-    return completed_artifact(target, len(examples))
+        (staging / "model_manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, separators=(",", ":")) + "\n",
+            encoding="utf-8")
+        measured = evaluate_adapter(base, staging, partitions)
+        (staging / "training_metrics.json").write_text(
+            json.dumps(measured, ensure_ascii=False, separators=(",", ":")) + "\n",
+            encoding="utf-8")
+        if target.exists():
+            return completed_artifact(target, len(examples), expected_manifest)
+        os.replace(staging, target)
+    finally:
+        shutil.rmtree(staging_root, ignore_errors=True)
+    return completed_artifact(target, len(examples), expected_manifest)
 
 
 def evaluate_adapter(base: str, artifact: Path,
@@ -174,12 +228,14 @@ def score(payload: dict[str, Any]) -> dict[str, Any]:
     artifact = Path(str(payload["artifactReference"])).resolve()
     if not artifact.is_dir() or canonical_hash(artifact) != str(payload["artifactSha256"]):
         raise ValueError("LoRA 工件不存在或哈希不匹配")
+    manifest = json.loads((artifact / "model_manifest.json").read_text(encoding="utf-8"))
+    if (manifest.get("modelIdentity") != MODEL_IDENTITY
+            or manifest.get("modelId") != str(payload["modelId"])
+            or manifest.get("candidateVersion") != int(payload["modelVersion"])
+            or manifest.get("foundationModel") != str(payload["baseModelReference"])):
+        raise ValueError("LoRA 工件身份或底座与评分请求不匹配")
     model, tokenizer = load(str(payload["baseModelReference"]), adapter_path=str(artifact))
-    prompt = (
-        "你是粮食经营风险研判模型。只能依据输入证据判断风险是否成立。"
-        "证据不足时不得臆测。风险成立输出1，不成立输出0。\n输入："
-        + str(payload["input"]) + "\n结论："
-    )
+    prompt = DOMAIN_INSTRUCTION + str(payload["input"]) + "\n结论："
     tokens = tokenizer.encode(prompt)
     logits = model(mx.array(tokens)[None])[:, -1, :]
     positive_id = tokenizer.encode("1", add_special_tokens=False)[0]
@@ -201,24 +257,154 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(404, {"error": "NOT_FOUND"})
 
     def do_POST(self) -> None:
-        if TOKEN and self.headers.get("Authorization") != f"Bearer {TOKEN}":
+        if self.path == '/v1/inference-release':
+            if not TOKEN.strip():
+                self.reply(403, {'error': 'EXPERT_AUTH_NOT_CONFIGURED'})
+                return
+            if not hmac.compare_digest(
+                    self.headers.get('Authorization', '').encode(), f'Bearer {TOKEN}'.encode()):
+                self.reply(401, {'error': 'UNAUTHORIZED'})
+                return
+            if not WORKLOAD_GATE.acquire(blocking=False):
+                self.reply(503, {'error': 'WORKLOAD_BUSY'})
+                return
+            try:
+                expert.stop_inference_worker()
+            except Exception:
+                self.reply(503, {'error': 'INFERENCE_RELEASE_FAILED'})
+                return
+            finally:
+                WORKLOAD_GATE.release()
+            self.reply(200, {'status': 'RELEASED'})
+            return
+        if self.path in ('/v1/expert-datasets/validate', '/v1/expert-train',
+                         '/v1/expert-train-cancel'):
+            try:
+                status, result = self.expert_sft_response()
+                self.reply(status, result)
+            except OSError:
+                # A disconnected client cannot retain the workload gate or leak details.
+                self.close_connection = True
+            return
+        is_expert = self.path == "/v1/expert-answer"
+        if is_expert and not TOKEN.strip():
+            self.reply(403, {"error": "EXPERT_AUTH_NOT_CONFIGURED"})
+            return
+        if TOKEN and not hmac.compare_digest(
+                self.headers.get("Authorization", "").encode(), f"Bearer {TOKEN}".encode()):
             self.reply(401, {"error": "UNAUTHORIZED"})
             return
         try:
             length = int(self.headers.get("Content-Length", "0"))
-            if length <= 0 or length > MAX_BODY:
+            if length <= 0 or length > (32768 if is_expert else MAX_BODY):
                 raise ValueError("请求体大小不合法")
-            payload = json.loads(self.rfile.read(length))
-            if self.path == "/v1/train":
-                self.reply(200, train(payload))
-            elif self.path == "/v1/score":
-                self.reply(200, score(payload))
-            else:
+            body = self.rfile.read(length)
+            payload = (json.loads(body, object_pairs_hook=expert.unique_json_object)
+                       if is_expert else json.loads(body))
+            operations = {"/v1/train": train, "/v1/score": score,
+                          "/v1/expert-answer": expert.answer_question}
+            operation = operations.get(self.path)
+            if operation is None:
                 self.reply(404, {"error": "NOT_FOUND"})
+                return
+            if is_expert:
+                expert.validate_question(payload)
+            if not WORKLOAD_GATE.acquire(blocking=False):
+                self.reply(503, {"error": "WORKLOAD_BUSY"})
+                return
+            try:
+                if not is_expert:
+                    expert.stop_inference_worker()
+                result = operation(payload)
+            finally:
+                WORKLOAD_GATE.release()
+            self.reply(200, result)
+        except expert.ExpertUnavailable:
+            self.reply(503, {"error": "EXPERT_UNAVAILABLE"})
         except (KeyError, TypeError, ValueError) as error:
             self.reply(400, {"error": "INVALID_REQUEST", "message": str(error)})
         except Exception as error:
-            self.reply(500, {"error": "TRAINER_FAILURE", "message": str(error)[:2000]})
+            if is_expert:
+                self.reply(503, {"error": "EXPERT_UNAVAILABLE"})
+            else:
+                self.reply(500, {"error": "TRAINER_FAILURE", "message": str(error)[:2000]})
+
+    def read_expert_sft_body(self) -> Any:
+        lengths = self.headers.get_all('Content-Length', [])
+        if (len(lengths) != 1 or self.headers.get_all('Transfer-Encoding')
+                or not re.fullmatch(r'[0-9]{1,10}', lengths[0])):
+            raise ValueError('Invalid body framing')
+        length = int(lengths[0])
+        if not 0 < length <= MAX_BODY:
+            raise ValueError('Invalid body size')
+        previous_timeout = self.connection.gettimeout()
+        deadline = time.monotonic() + 10
+        complete = False
+        try:
+            body = bytearray()
+            while len(body) < length:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('Body deadline')
+                self.connection.settimeout(remaining)
+                chunk = self.rfile.read1(min(65536, length - len(body)))
+                if not chunk:
+                    raise ValueError('Truncated body')
+                body.extend(chunk)
+            complete = True
+        finally:
+            if complete:
+                self.connection.settimeout(previous_timeout)
+            else:
+                self.close_connection = True
+        def reject_constant(value):
+            raise ValueError('Nonfinite JSON')
+        return json.loads(body, object_pairs_hook=expert.unique_json_object,
+                          parse_constant=reject_constant)
+
+    def expert_sft_response(self) -> tuple[int, dict]:
+        # Do not reuse a connection whose rejected body might be unread.
+        self.close_connection = True
+        if not TOKEN.strip():
+            return 403, {'error': 'EXPERT_AUTH_NOT_CONFIGURED'}
+        authorization = self.headers.get_all('Authorization', [])
+        if (len(authorization) != 1 or not hmac.compare_digest(
+                authorization[0].encode(), f'Bearer {TOKEN}'.encode())):
+            return 401, {'error': 'UNAUTHORIZED'}
+        try:
+            payload = self.read_expert_sft_body()
+            if self.path == '/v1/expert-train-cancel':
+                run_id = expert_training.validate_cancel_request(payload)
+                if expert_training.cancel_expert(run_id):
+                    return 200, {'status': 'CANCEL_REQUESTED'}
+                return 404, {'status': 'NOT_FOUND'}
+            if self.path == '/v1/expert-datasets/validate':
+                dataset = expert_dataset.validate_dataset(payload)
+                return 200, dict(datasetId=dataset['datasetId'], datasetSha256=dataset['datasetSha256'],
+                                 counts=dataset['counts'], trainingKind='EXPERT_SFT_ADAPTER',
+                                 qualityStatus='NOT_EVALUATED', provenanceStatus='CALLER_DECLARED')
+            expert_training.validate_training_request(payload)
+        except expert_dataset.DatasetValidationError as error:
+            return 422, {'error': 'INVALID_EXPERT_DATASET', 'errors': error.errors}
+        except (ValueError, TypeError, KeyError, RecursionError, OSError):
+            return 400, {'error': 'INVALID_REQUEST', 'message': 'Invalid request body or fields.'}
+        except Exception:
+            return 503, {'error': 'EXPERT_TRAINING_UNAVAILABLE'}
+        if not WORKLOAD_GATE.acquire(blocking=False):
+            return 503, {'error': 'WORKLOAD_BUSY'}
+        try:
+            expert.stop_inference_worker()
+            return 200, expert_training.train_expert(payload)
+        except expert_dataset.DatasetValidationError as error:
+            return 422, {'error': 'INVALID_EXPERT_DATASET', 'errors': error.errors}
+        except expert_training.ExpertTrainingConflict:
+            return 409, {'error': 'EXPERT_TRAINING_CONFLICT'}
+        except expert_training.ExpertTrainingCancelled:
+            return 409, {'error': 'EXPERT_TRAINING_CANCELLED'}
+        except Exception:
+            return 503, {'error': 'EXPERT_TRAINING_UNAVAILABLE'}
+        finally:
+            WORKLOAD_GATE.release()
 
     def log_message(self, message: str, *args: Any) -> None:
         sys.stderr.write("risk-mlx-trainer: " + message % args + "\n")

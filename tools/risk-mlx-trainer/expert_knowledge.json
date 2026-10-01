@@ -1,0 +1,97 @@
+{
+  "version": "2026-09-25.task1.v6",
+  "use": "RETRIEVAL_ONLY",
+  "sources": [
+    {
+      "id": "MOA-WHEAT-FHB-2018",
+      "title": "农业农村部：小麦全生育期赤霉病防控指导意见",
+      "url": "https://zzys.moa.gov.cn/gzjl/201809/t20180928_6296321.htm",
+      "verifiedDate": "2026-09-25",
+      "provenance": {"summary": "VERIFIED_SOURCE_SUMMARY", "applicability": "SYSTEM_EDITORIAL_NOTE", "limitations": "SYSTEM_EDITORIAL_NOTE"},
+      "coverage": "PARTIAL_NOT_FULL_TEXT",
+      "summary": "农业农村部2018年指导意见要求从小麦播种开始，将赤霉病防控贯穿产前、产中、产后全过程，以减轻病害危害程度、降低毒素污染风险。",
+      "applicability": "用于说明小麦赤霉病的一般病害和毒素污染风险，以及防控工作范围。",
+      "limitations": "系统分析：指导意见不能证明某地某日已经发生赤霉病，也不能据此推算当前风险等级、产量损失或具体健康影响；当地判断须结合监测和天气资料。",
+      "keywords": ["小麦赤霉病", "赤霉病", "小麦病害", "毒素污染风险"],
+      "use": "RETRIEVAL_ONLY"
+    },
+    {
+      "id": "LSWZ-SOY-PROTEIN-2020",
+      "title": "国家粮食和物资储备局：2020年东北地区部分省份新收获大豆质量调查报告",
+      "url": "https://www.lswz.gov.cn/html/ywpd/bzzl/2020-12/24/content_263393.shtml",
+      "verifiedDate": "2026-09-25",
+      "provenance": {"summary": "VERIFIED_SOURCE_SUMMARY", "applicability": "SYSTEM_EDITORIAL_NOTE", "limitations": "SYSTEM_EDITORIAL_NOTE"},
+      "coverage": "PARTIAL_NOT_FULL_TEXT",
+      "summary": "2020年三省270份新收获大豆粗蛋白质平均值为40.4%；内蒙古40份变幅37.8%～42.6%；吉林30份均值38.5%、变幅36.7%～43.6%；黑龙江200份均值40.7%、变幅36.9%～44.5%；高蛋白质大豆标准（粗蛋白质含量不低于40%）达标56.3%。",
+      "applicability": "回答原粮粗蛋白质含量口径及该报告所述高蛋白质大豆标准；须区分蛋白含量与营养学上的蛋白质品质评分。",
+      "limitations": "系统分析：这是一份2020年区域调查报告的摘要，不能将40%直接当作所有年份、品种、检测基准或交易合同的统一优秀等级；实际验收应核对现行标准、检测方法和合同约定。",
+      "keywords": ["大豆", "蛋白", "高蛋白", "粗蛋白", "黄豆"],
+      "use": "RETRIEVAL_ONLY"
+    },
+    {
+      "id": "GB1353-2018",
+      "title": "GB 1353-2018 玉米",
+      "url": "https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=86355F0376662F33FD37F41F044D97AF",
+      "verifiedDate": "2026-09-22",
+      "provenance": {"summary": "VERIFIED_SOURCE_SUMMARY", "applicability": "SYSTEM_EDITORIAL_NOTE", "limitations": "SYSTEM_EDITORIAL_NOTE"},
+      "coverage": "PARTIAL_NOT_FULL_TEXT",
+      "summary": "表1含水分含量≤14.0%、霉变粒含量≤2.0%等指标。第5.2条另要求食品安全合规，第9.2条规定仓储卫生及防护。第6.5条允许水分>15%时采用LS/T 6103方法。适用于商品玉米相关环节，排除糯、甜玉米及分类外特殊品种。",
+      "applicability": "商品玉米收购、储存、运输、加工、销售；不适用于糯玉米、甜玉米及分类外特殊品种。检验须对应批次、方法、单位。",
+      "limitations": "系统分析：等于表值界限不算超过；15%是方法条件，不是质量限值。不能把产品质量表值外推为通用储藏报警线，也不能据霉变粒推算毒素或据两项指标认定整批及食品安全合格。本次未单独复核引用方法，未发布企业规则；这些分析不是标准原文声明。",
+      "keywords": ["GB 1353", "GB1353", "玉米", "水分", "霉变粒", "含水量"],
+      "use": "RETRIEVAL_ONLY"
+    },
+    {
+      "id": "GBT29890-VERSIONS",
+      "title": "GB/T 29890 粮油储藏技术规范版本衔接",
+      "url": "https://openstd.samr.gov.cn/bzgk/std/newGbInfo?hcno=E1577CA0FE1B9CD89FF16DEC1300E0B3",
+      "verifiedDate": "2026-09-22",
+      "provenance": {"summary": "VERIFIED_SOURCE_SUMMARY", "applicability": "SYSTEM_EDITORIAL_NOTE", "limitations": "SYSTEM_EDITORIAL_NOTE"},
+      "coverage": "PARTIAL_NOT_FULL_TEXT",
+      "summary": "截至2026年9月22日核验，官方平台列2013版现行，2026版计划于2026年12月1日实施；属于推荐性国家标准。",
+      "applicability": "粮油储藏技术规范的版本索引；按业务适用日期复核版本。",
+      "limitations": "本次两版正文均未取得，只收录版本索引；不代表原文没有具体技术条款。系统使用约束：不得提前采用未实施版本或凭名称编造测温频次、升温速率及统一安全水分；推荐性标准不自动等于企业制度。",
+      "keywords": ["29890", "粮油储藏", "储藏技术规范", "测温频次", "安全水分", "升温速率"],
+      "use": "RETRIEVAL_ONLY"
+    },
+    {
+      "id": "GRAIN-QUALITY-2023",
+      "title": "粮食质量安全监管办法（国家发展改革委令第4号）",
+      "url": "https://sousuo.lswz.gov.cn/html/ywpd/bzzl/2023-08/24/content_275969.shtml",
+      "verifiedDate": "2026-09-25",
+      "provenance": {"summary": "VERIFIED_SOURCE_SUMMARY", "applicability": "SYSTEM_EDITORIAL_NOTE", "limitations": "SYSTEM_EDITORIAL_NOTE"},
+      "coverage": "PARTIAL_NOT_FULL_TEXT",
+      "summary": "2023年10月1日起施行，适用于粮食收购、储存、运输及政策性粮食购销的质量安全监管。第18条规定销售出库前须检验；超过正常储存年限或色泽、气味异常时须委托粮食质量安全检验机构；检验报告自签发起六个月有效，期满重检。第23条规定质量安全档案自粮食销售出库之日起不得少于3年。",
+      "applicability": "粮食收购、储存、运输及政策性粮食购销质量安全监管；政府储备特殊要求另核。",
+      "limitations": "六个月不等于180天，报告有效不证明货物当前合格；须核验例外、地方及储备规定。有限检索未穷尽效力变更，不能据此自动处置粮食。",
+      "keywords": ["检验报告", "出库", "质量安全监管", "报告有效期", "六个月", "档案", "保存期限", "保存多久", "保存到什么时候", "三年", "气味异常", "色泽异常", "储存年限"],
+      "use": "RETRIEVAL_ONLY"
+    },
+    {
+      "id": "NBS-202609-EARLY",
+      "title": "国家统计局2026年9月上旬流通领域重要生产资料市场价格",
+      "url": "https://www.stats.gov.cn/zwfwck/sjfb/202609/t20260914_1965293.html",
+      "verifiedDate": "2026-09-22",
+      "provenance": {"summary": "VERIFIED_SOURCE_SUMMARY", "applicability": "SYSTEM_EDITORIAL_NOTE", "limitations": "SYSTEM_EDITORIAL_NOTE"},
+      "coverage": "PARTIAL_NOT_FULL_TEXT",
+      "summary": "2026年9月14日发布的9月上旬监测：黄玉米二等2236.8元/吨，较8月下旬下降3.3元/吨、0.1%。口径为全国流通领域批发和销售价格。",
+      "applicability": "全国口径、黄玉米二等、2026年9月上旬观察期；须区分观察期和发布日期。",
+      "limitations": "不是齐齐哈尔收购价、期货价或逐日成交价，不代表当前价格；来源未给预警阈值，小幅下跌不能自动判风险。不得将公开后信息用于此前预测。",
+      "keywords": ["价格", "国家统计局", "2236.8", "市场行情", "黄玉米二等"],
+      "use": "RETRIEVAL_ONLY"
+    },
+    {
+      "id": "LANXI-2014",
+      "title": "黑龙江兰西等3起粮堆埋人事故通报",
+      "url": "https://sousuo.lswz.gov.cn/html/zfxxgk/2020-11/13/262173/files/49851f1a918546b5ab95d8ed5bb817a5.pdf",
+      "verifiedDate": "2026-09-22",
+      "provenance": {"summary": "VERIFIED_SOURCE_SUMMARY", "applicability": "SYSTEM_EDITORIAL_NOTE", "limitations": "SYSTEM_EDITORIAL_NOTE"},
+      "coverage": "PARTIAL_NOT_FULL_TEXT",
+      "summary": "2014年3月7日通报记载：兰西2月13日事故发生于处理烘前仓潮粮结顶过程中，玉米结顶层坍塌造成3死1伤。",
+      "applicability": "真实外部历史案例检索和作业风险说明；通报正文已读，调查报告附件未取得。",
+      "limitations": "本次收录材料未提供事前连续水分、温度与对照数据或本系统预测记录。系统分析：不能反推阈值或充当本系统预测真值，不能把三起事故综合原因全部归给一家企业，也不能据此外部案例声称本系统曾预警。这些是系统分析，不是通报对本系统的评价或要求。",
+      "keywords": ["兰西", "粮堆埋人", "结顶", "坍塌", "事故案例"],
+      "use": "RETRIEVAL_ONLY"
+    }
+  ]
+}

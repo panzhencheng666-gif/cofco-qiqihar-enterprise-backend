@@ -24,9 +24,42 @@ class SourceFactControllerTest {
               "sourceRecordId":"event-1",
               "sourceVersion":"v1",
               "businessOccurredAt":"2026-09-21T01:00:00Z",
-              "payload":{"actionCode":"SUBMITTED"}
+              "payload":{"regionCode":"230221","actionCode":"SUBMITTED"}
             }
             """;
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "{}", "{\"regionCode\":null}", "{\"regionCode\":230221}",
+            "{\"regionCode\":\"*\"}", "{\"regionCode\":\"230221%\"}"})
+    void clientHeadersCannotSupplyOrRepairPayloadRegion(String payload) throws Exception {
+        SourceFactRepository repository = mock(SourceFactRepository.class);
+        var service = new SourceFactIngestionService(repository, new tools.jackson.databind.ObjectMapper(),
+                java.time.Clock.systemUTC(), "230221");
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(new SourceFactController(service, "local-secret")).build();
+        mvc.perform(post("/api/v1/risk-intelligence/source-facts")
+                .header("X-Risk-Ingestion-Key", "local-secret")
+                .header("X-Region-Code", "230221").header("X-Actor", "root")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(BODY.replace("{\"regionCode\":\"230221\",\"actionCode\":\"SUBMITTED\"}", payload)))
+                .andExpect(status().isBadRequest());
+        org.mockito.Mockito.verifyNoInteractions(repository);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"", "230222"})
+    void validMachineKeyCannotBypassConfiguredRegions(String configured) throws Exception {
+        SourceFactRepository repository = mock(SourceFactRepository.class);
+        var service = new SourceFactIngestionService(repository, new tools.jackson.databind.ObjectMapper(),
+                java.time.Clock.systemUTC(), configured);
+        MockMvc mvc = MockMvcBuilders.standaloneSetup(new SourceFactController(service, "local-secret"))
+                .setControllerAdvice(Class.forName("com.cofco.qiqihar.riskintelligence.web.RiskApiErrorHandler")).build();
+        mvc.perform(post("/api/v1/risk-intelligence/source-facts")
+                .header("X-Risk-Ingestion-Key", "local-secret").header("X-Region-Code", "230222")
+                .contentType(MediaType.APPLICATION_JSON).content(BODY))
+                .andExpect(status().isForbidden());
+        org.mockito.Mockito.verifyNoInteractions(repository);
+    }
 
     @Test
     void rejectsRequestsWithoutTheLocalIngestionCredential() throws Exception {

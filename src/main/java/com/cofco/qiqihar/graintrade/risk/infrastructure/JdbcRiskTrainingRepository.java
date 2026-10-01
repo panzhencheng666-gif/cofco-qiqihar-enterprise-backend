@@ -127,12 +127,12 @@ public class JdbcRiskTrainingRepository implements RiskTrainingRepository {
                 UPDATE risk.ai_model
                 SET base_model_reference=:base,status_code='ACTIVE',
                     updated_by_subject='system:risk-llm-provisioner',updated_at=:now
-                WHERE model_code='risk-reasoning-llm-v1' AND status_code='DRAFT'
+                WHERE model_code='qiliang-risk-llm-v1' AND status_code='DRAFT'
                 """).param("base",baseModelReference).param("now",dbTime(configuredAt)).update();
         int enabled=jdbc.sql("""
                 UPDATE risk.ai_training_policy SET enabled=true,updated_at=:now
                 WHERE model_id=(SELECT model_id FROM risk.ai_model
-                  WHERE model_code='risk-reasoning-llm-v1' AND status_code='ACTIVE')
+                  WHERE model_code='qiliang-risk-llm-v1' AND status_code='ACTIVE')
                 """).param("now",dbTime(configuredAt)).update();
         return updated>0 || enabled>0;
     }
@@ -274,15 +274,14 @@ public class JdbcRiskTrainingRepository implements RiskTrainingRepository {
         String dataHash=sha256(String.join("\n",payloads).getBytes(StandardCharsets.UTF_8));
         UUID proposed=UUID.randomUUID();
         long positives=examples.stream().filter(RiskTrainingExample::positive).count();
-        UUID snapshotId=jdbc.sql("""
+        Optional<UUID> createdSnapshot=jdbc.sql("""
                 INSERT INTO risk.training_snapshot(
                   training_snapshot_id,domain_code,snapshot_date,cutoff_at,data_sha256,
                   feature_schema_version,row_count,positive_label_count,negative_label_count,
                   source_watermarks,status_code)
                 VALUES (:id,:domain,(:cutoff AT TIME ZONE 'Asia/Shanghai')::date,:cutoff,:hash,
                         'risk-feedback-v1',:rows,:positive,:negative,CAST(:watermarks AS jsonb),'FROZEN')
-                ON CONFLICT (domain_code,snapshot_date,data_sha256)
-                DO UPDATE SET data_sha256=EXCLUDED.data_sha256
+                ON CONFLICT (domain_code,snapshot_date,data_sha256) DO NOTHING
                 RETURNING training_snapshot_id
                 """).param("id",proposed).param("domain",claim.domainCode())
                 .param("cutoff",dbTime(cutoffAt)).param("hash",dataHash).param("rows",examples.size())
@@ -290,7 +289,14 @@ public class JdbcRiskTrainingRepository implements RiskTrainingRepository {
                 .param("watermarks",writeJson(Map.of(
                         "windowStart",windowStart.toString(),"cutoffAt",cutoffAt.toString(),
                         "labelSource","risk.risk_case_feedback")))
-                .query(UUID.class).single();
+                .query(UUID.class).optional();
+        UUID snapshotId=createdSnapshot.orElseGet(() -> jdbc.sql("""
+                SELECT training_snapshot_id FROM risk.training_snapshot
+                WHERE domain_code=:domain
+                  AND snapshot_date=(:cutoff AT TIME ZONE 'Asia/Shanghai')::date
+                  AND data_sha256=:hash
+                """).param("domain",claim.domainCode()).param("cutoff",dbTime(cutoffAt))
+                .param("hash",dataHash).query(UUID.class).single());
         int ordinal=0;
         for (int index=0;index<labels.size();index++) {
             LabelRow label=labels.get(index);

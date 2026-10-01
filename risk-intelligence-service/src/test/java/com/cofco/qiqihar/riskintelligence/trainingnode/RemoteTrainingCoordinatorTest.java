@@ -28,8 +28,8 @@ class RemoteTrainingCoordinatorTest {
         RiskTrainingRepository repository=mock(RiskTrainingRepository.class);
         RiskTrainingClaim claim=new RiskTrainingClaim(
                 UUID.randomUUID(),UUID.randomUUID(),UUID.randomUUID(),
-                "risk-reasoning-llm-v1","风险研判领域模型","DOMAIN_LLM","CROSS_DOMAIN",
-                "mlx-community/Qwen3-0.6B-4bit",30,2,7L);
+                "qiliang-risk-llm-v1","齐粮智研模型 QL-Risk-27B","DOMAIN_LLM","CROSS_DOMAIN",
+                "mlx-community/Qwen3.8-27B-4bit",30,2,7L);
         RiskTrainingSnapshot snapshot=new RiskTrainingSnapshot(
                 UUID.randomUUID(),"a".repeat(64),List.of(
                 new RiskTrainingExample(UUID.randomUUID(),NOW.minusSeconds(7200),"风险",true),

@@ -13,7 +13,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.simple.JdbcClient;
 
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE)
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.NONE,
+        properties = "qiqihar.risk.ingestion-allowed-regions=230221")
 @EnabledIfEnvironmentVariable(named = "RISK_DB_URL", matches = ".+")
 class JdbcSourceFactRepositoryIntegrationTest {
     @Autowired
@@ -31,7 +32,7 @@ class JdbcSourceFactRepositoryIntegrationTest {
                 recordId,
                 "v1",
                 Instant.parse("2026-09-21T01:00:00Z"),
-                Map.of("status", "VERIFIED", "sequence", 1));
+                Map.of("regionCode", "230221", "status", "VERIFIED", "sequence", 1));
 
         SourceFactReceipt first = ingestion.ingest(fact);
         SourceFactReceipt repeated = ingestion.ingest(fact);
@@ -43,17 +44,29 @@ class JdbcSourceFactRepositoryIntegrationTest {
                 SELECT count(*) FROM risk.source_fact_snapshot
                 WHERE source_system='risk-integration-test' AND source_record_id=:recordId
                 """).param("recordId", recordId).query(Integer.class).single()).isEqualTo(1);
+        String originalStatus=jdbc.sql("""
+                SELECT source_status FROM risk.source_fact_snapshot WHERE snapshot_id=:snapshotId
+                """).param("snapshotId", first.snapshotId()).query(String.class).single();
 
         assertThatThrownBy(() -> jdbc.sql("""
                 UPDATE risk.source_fact_snapshot SET source_status='WITHDRAWN'
                 WHERE snapshot_id=:snapshotId
                 """).param("snapshotId", first.snapshotId()).update())
-                .isInstanceOf(DataAccessException.class)
-                .hasMessageContaining("Source fact snapshots are immutable");
+                .isInstanceOf(DataAccessException.class);
+
+        assertThat(jdbc.sql("""
+                SELECT source_status FROM risk.source_fact_snapshot WHERE snapshot_id=:snapshotId
+                """).param("snapshotId", first.snapshotId()).query(String.class).single())
+                .isEqualTo(originalStatus);
 
         assertThatThrownBy(() -> jdbc.sql("""
                 DELETE FROM risk.source_fact_snapshot WHERE snapshot_id=:snapshotId
                 """).param("snapshotId", first.snapshotId()).update())
                 .isInstanceOf(DataAccessException.class);
+
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM risk.source_fact_snapshot WHERE snapshot_id=:snapshotId
+                """).param("snapshotId", first.snapshotId()).query(Integer.class).single())
+                .isEqualTo(1);
     }
 }

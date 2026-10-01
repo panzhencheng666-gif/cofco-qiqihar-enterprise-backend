@@ -22,7 +22,11 @@ load_config() {
       RISK_TRAINING_CLOUD_URL|RISK_TRAINING_NODE_TOKEN|RISK_TRAINING_NODE_ID|\
         RISK_TRAINING_NODE_STATE_ROOT|RISK_TRAINING_NODE_POLL_SECONDS|\
         RISK_TRAINING_NODE_HEARTBEAT_SECONDS|RISK_LLM_TRAINER_URL|\
-        RISK_LLM_BEARER_TOKEN|RISK_LLM_PORT|RISK_LLM_ARTIFACT_ROOT|RISK_LLM_TRAIN_ITERS)
+        RISK_LLM_BEARER_TOKEN|RISK_LLM_PORT|RISK_LLM_ARTIFACT_ROOT|RISK_LLM_TRAIN_ITERS|\
+        RISK_EXPERT_MODEL_PATH|RISK_EXPERT_TIMEOUT_SECONDS|RISK_EXPERT_REASONING_MODE)
+        if [[ "$key" == RISK_EXPERT_REASONING_MODE && "$value" != off && "$value" != bounded ]]; then
+          echo "Invalid expert reasoning mode" >&2; return 1
+        fi
         export "$key=$value" ;;
       *) echo "Unsupported training node config key: $key" >&2; return 1 ;;
     esac

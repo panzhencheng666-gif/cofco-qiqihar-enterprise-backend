@@ -1,5 +1,7 @@
 package com.cofco.qiqihar.graintrade.risk.infrastructure;
 
+import com.cofco.qiqihar.riskintelligence.security.RiskRegionScope;
+
 import com.cofco.qiqihar.graintrade.risk.application.RiskAssessmentDetail;
 import com.cofco.qiqihar.graintrade.risk.application.RiskAssessmentQuery;
 import com.cofco.qiqihar.graintrade.risk.application.RiskAssessmentSummary;
@@ -23,6 +25,11 @@ import tools.jackson.databind.ObjectMapper;
 
 @Repository
 public class JdbcRiskWorkbenchRepository implements RiskWorkbenchRepository {
+    private static final String REGION_PREDICATE = """
+            (:scopeRoot OR (:scopeHasRegions AND
+              jsonb_typeof(assessment.evidence_snapshot->'regionCode')='string'
+              AND assessment.evidence_snapshot->>'regionCode' IN (:scopeRegions)))
+            """;
     private static final String SUMMARY_COLUMNS="""
             assessment.assessment_id,assessment.domain_code,assessment.subject_type,
             assessment.subject_id,assessment.evaluation_mode,assessment.risk_level,
@@ -39,14 +46,16 @@ public class JdbcRiskWorkbenchRepository implements RiskWorkbenchRepository {
     }
 
     @Override
-    public List<RiskAssessmentSummary> findAssessments(RiskAssessmentQuery query) {
-        return jdbc.sql("""
+    public List<RiskAssessmentSummary> findAssessments(RiskAssessmentQuery query, RiskRegionScope scope) {
+        return scoped(jdbc.sql("""
                 SELECT
                 """ + SUMMARY_COLUMNS + """
                 FROM risk.risk_assessment assessment
                 LEFT JOIN risk.ai_model model ON model.model_id=assessment.model_id
                 LEFT JOIN risk.risk_case_feedback feedback ON feedback.assessment_id=assessment.assessment_id
-                WHERE (:domain='' OR assessment.domain_code=:domain)
+                WHERE
+                """ + REGION_PREDICATE + """
+                  AND (:domain='' OR assessment.domain_code=:domain)
                   AND (:level='' OR assessment.risk_level=:level)
                   AND (:status='ALL'
                     OR (:status='OPEN' AND feedback.feedback_id IS NULL)
@@ -56,7 +65,7 @@ public class JdbcRiskWorkbenchRepository implements RiskWorkbenchRepository {
                     OR EXISTS(SELECT 1 FROM unnest(assessment.reason_codes) reason WHERE reason ILIKE '%'||:search||'%'))
                 ORDER BY assessment.evaluated_at DESC,assessment.assessment_id
                 LIMIT :limit
-                """)
+                """), scope)
                 .param("domain",query.domainCode())
                 .param("level",query.riskLevel())
                 .param("status",query.reviewStatus())
@@ -66,8 +75,8 @@ public class JdbcRiskWorkbenchRepository implements RiskWorkbenchRepository {
     }
 
     @Override
-    public Optional<RiskAssessmentDetail> findAssessment(UUID assessmentId) {
-        return jdbc.sql("""
+    public Optional<RiskAssessmentDetail> findAssessment(UUID assessmentId, RiskRegionScope scope) {
+        return scoped(jdbc.sql("""
                 SELECT
                 """ + SUMMARY_COLUMNS + """
                   ,assessment.evidence_snapshot::text,
@@ -85,33 +94,36 @@ public class JdbcRiskWorkbenchRepository implements RiskWorkbenchRepository {
                   WHERE value.assessment_id=assessment.assessment_id
                   ORDER BY value.generated_at DESC,value.judgement_id DESC LIMIT 1
                 ) judgement ON true
-                WHERE assessment.assessment_id=:id
-                """).param("id",assessmentId).query((row,index) -> new RiskAssessmentDetail(
+                WHERE assessment.assessment_id=:id AND
+                """ + REGION_PREDICATE), scope).param("id",assessmentId).query((row,index) -> new RiskAssessmentDetail(
                         summary(row,index),node(row.getString("evidence_snapshot")),judgement(row),feedback(row)))
                 .optional();
     }
 
     @Override
-    public boolean assessmentExists(UUID assessmentId) {
-        return Boolean.TRUE.equals(jdbc.sql("""
-                SELECT EXISTS(SELECT 1 FROM risk.risk_assessment WHERE assessment_id=:id)
-                """).param("id",assessmentId).query(Boolean.class).single());
+    public boolean assessmentExists(UUID assessmentId, RiskRegionScope scope) {
+        return Boolean.TRUE.equals(scoped(jdbc.sql("""
+                SELECT EXISTS(SELECT 1 FROM risk.risk_assessment assessment WHERE assessment_id=:id AND
+                """ + REGION_PREDICATE + ")"), scope).param("id",assessmentId).query(Boolean.class).single());
     }
 
     @Override
     public Optional<RiskFeedback> createFeedback(
             UUID assessmentId,String conclusionCode,String reasonCode,String dispositionNote,
-            String resolvedBySubject,Instant resolvedAt) {
+            String resolvedBySubject,Instant resolvedAt, RiskRegionScope scope) {
         UUID feedbackId=UUID.randomUUID();
-        return jdbc.sql("""
+        return scoped(jdbc.sql("""
                 INSERT INTO risk.risk_case_feedback(
                   feedback_id,assessment_id,conclusion_code,reason_code,disposition_note,
                   resolved_by_subject,resolved_at)
-                VALUES(:feedbackId,:assessmentId,:conclusion,:reason,:note,:actor,:resolvedAt)
+                SELECT :feedbackId,assessment.assessment_id,:conclusion,:reason,:note,:actor,:resolvedAt
+                FROM risk.risk_assessment assessment
+                WHERE assessment.assessment_id=:assessmentId AND
+                """ + REGION_PREDICATE + """
                 ON CONFLICT (assessment_id) DO NOTHING
                 RETURNING feedback_id,assessment_id,conclusion_code,reason_code,disposition_note,
                   resolved_by_subject,resolved_at
-                """)
+                """), scope)
                 .param("feedbackId",feedbackId).param("assessmentId",assessmentId)
                 .param("conclusion",conclusionCode).param("reason",reasonCode)
                 .param("note",dispositionNote).param("actor",resolvedBySubject)
@@ -122,6 +134,13 @@ public class JdbcRiskWorkbenchRepository implements RiskWorkbenchRepository {
                         row.getString("reason_code"),row.getString("disposition_note"),
                         row.getString("resolved_by_subject"),row.getTimestamp("resolved_at").toInstant()))
                 .optional();
+    }
+
+    private static JdbcClient.StatementSpec scoped(JdbcClient.StatementSpec statement, RiskRegionScope scope) {
+        java.util.Objects.requireNonNull(scope, "scope");
+        return statement.param("scopeRoot", scope.rootAdministrator())
+                .param("scopeHasRegions", !scope.regionCodes().isEmpty())
+                .param("scopeRegions", scope.regionCodes().isEmpty() ? java.util.Set.of("") : scope.regionCodes());
     }
 
     private RiskAssessmentSummary summary(ResultSet row,int index) throws SQLException {
