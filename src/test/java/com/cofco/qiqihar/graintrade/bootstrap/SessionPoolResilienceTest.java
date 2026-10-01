@@ -14,6 +14,7 @@ class SessionPoolResilienceTest {
                 var properties = new DataSourceProperties();
                 properties.setUrl(System.getenv("QIQIHAR_TEST_DB_URL"));
                 properties.setUsername(System.getenv("QIQIHAR_TEST_DB_USERNAME"));
+                properties.setPassword(System.getenv("QIQIHAR_TEST_DB_PASSWORD"));
                 return properties;
             })
             .withUserConfiguration(SessionPoolConfiguration.class);
