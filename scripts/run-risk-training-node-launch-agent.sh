@@ -12,7 +12,7 @@ source "${release_root}/local-process-ownership.sh"
 load_config() {
   local mode line key value
   [[ -f "$config_file" ]] || { echo "Training node config is missing" >&2; return 1; }
-  mode="$(stat -f '%Lp' "$config_file")"
+  mode="$(python3 -c 'import os, stat, sys; print(format(stat.S_IMODE(os.stat(sys.argv[1]).st_mode), "o"))' "$config_file")" || return 1
   (( (8#$mode & 077) == 0 )) || { echo "Training node config permissions are unsafe" >&2; return 1; }
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -z "$line" || "$line" == \#* ]] && continue

@@ -76,7 +76,13 @@ install_release() {
 }
 
 activate_release() {
-  ln -sfn "$1" "${current_release}.new" && mv -fh "${current_release}.new" "$current_release"
+  ln -sfn "$1" "${current_release}.new" || return 1
+  python3 - "${current_release}.new" "$current_release" <<'PY'
+import os
+import sys
+
+os.replace(sys.argv[1], sys.argv[2])
+PY
 }
 
 require_release_sources() {
