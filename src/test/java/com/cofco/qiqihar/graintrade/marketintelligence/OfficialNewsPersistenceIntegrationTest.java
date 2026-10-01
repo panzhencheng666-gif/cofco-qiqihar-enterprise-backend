@@ -78,7 +78,7 @@ class OfficialNewsPersistenceIntegrationTest {
         assertThat(videos).extracting(NassVideoNewsFeed.VideoItem::sourceName)
                 .contains("FAO 市场与贸易", "USDA NASS");
         assertThat(new NassVideoNewsFeed.Controller(jdbc).list().data()).hasSize(2);
-        assertThat(new FaoWebcastFeed.Controller(jdbc).list().data())
+        assertThat(new FaoWebcastFeed.Controller(jdbc, new UnWebTvRepository(template, transactions), false).list().getBody().data())
                 .singleElement().satisfies(item -> {
                     assertThat(item.startsAt()).isEqualTo(Instant.parse("2026-09-25T09:30:00Z"));
                     assertThat(item.url()).contains("fao.org/webcast/detail/");

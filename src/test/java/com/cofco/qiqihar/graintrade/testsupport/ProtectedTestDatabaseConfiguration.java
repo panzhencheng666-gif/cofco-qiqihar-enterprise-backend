@@ -14,7 +14,7 @@ import org.springframework.jdbc.core.simple.JdbcClient;
 @TestConfiguration(proxyBeanMethods = false)
 public class ProtectedTestDatabaseConfiguration {
 
-    @Bean
+    @Bean(name = {"dataSource", "protectedTestDataSource"})
     @Primary
     DataSource protectedTestDataSource() {
         return ProtectedTestDatabase.shared().dataSource();

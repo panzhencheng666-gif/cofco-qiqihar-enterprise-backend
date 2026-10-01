@@ -10,14 +10,22 @@ assert_contains() {
 
 plist="${backend_root}/ops/launchd/com.cofco.qiqihar.risk-training-node.local.plist"
 [[ -f "$plist" ]] || fail "missing training node plist"
-plutil -lint "$plist" >/dev/null || fail "training node plist is invalid"
-[[ "$(plutil -extract Label raw -o - "$plist")" == \
-  "com.cofco.qiqihar.risk-training-node.local" ]] || fail "unexpected label"
-[[ "$(plutil -extract RunAtLoad raw -o - "$plist")" == "true" ]] || fail "RunAtLoad required"
-[[ "$(plutil -extract KeepAlive raw -o - "$plist")" == "true" ]] || fail "KeepAlive required"
+python3 - "$plist" <<'PY'
+import plistlib
+import sys
+
+with open(sys.argv[1], "rb") as source:
+    config = plistlib.load(source)
+if config.get("Label") != "com.cofco.qiqihar.risk-training-node.local":
+    sys.exit("FAIL: unexpected label")
+for key in ("RunAtLoad", "KeepAlive"):
+    if config.get(key) is not True:
+        sys.exit(f"FAIL: {key} required")
+PY
 
 assert_contains scripts/risk-training-node-local.sh "RISK_TRAINING_CLOUD_URL"
 assert_contains scripts/risk-training-node-local.sh "Refusing to replace an unowned listener"
+assert_contains scripts/risk-training-node-local.sh "active-expert-claim.json"
 assert_contains scripts/run-risk-training-node-launch-agent.sh "training-node.env"
 assert_contains scripts/run-risk-training-node-launch-agent.sh "remote_worker.py"
 assert_contains scripts/run-risk-training-node-launch-agent.sh "risk-mlx-trainer.py"

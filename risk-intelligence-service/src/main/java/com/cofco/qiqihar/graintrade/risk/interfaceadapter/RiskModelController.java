@@ -24,14 +24,13 @@ public class RiskModelController {
 
     @GetMapping("/overview")
     ApiResponse<RiskModelOverview> overview(HttpServletRequest request) {
-        RiskBusinessSession.require(request);
-        return new ApiResponse<>(service.overview());
+        return new ApiResponse<>(service.overview(RiskBusinessSession.require(request)));
     }
 
     @PostMapping("/{modelId}/training-requests")
     ApiResponse<RiskTrainingRequest> requestTraining(
             @PathVariable UUID modelId,
             HttpServletRequest request) {
-        return new ApiResponse<>(service.requestTraining(modelId,RiskBusinessSession.require(request).subjectId()));
+        return new ApiResponse<>(service.requestTraining(modelId,RiskBusinessSession.require(request)));
     }
 }

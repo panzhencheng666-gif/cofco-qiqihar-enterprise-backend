@@ -42,9 +42,9 @@ class JdbcSourceFactRepository implements SourceFactRepository {
         return jdbc.sql("""
                 INSERT INTO risk.source_fact_snapshot(
                   snapshot_id,source_system,source_record_type,source_record_id,source_version,
-                  business_occurred_at,ingested_at,payload_sha256,payload)
+                  business_occurred_at,ingested_at,payload_sha256,payload,source_status)
                 VALUES(:snapshotId,:sourceSystem,:recordType,:recordId,:sourceVersion,
-                  :businessOccurredAt,:ingestedAt,:payloadSha256,CAST(:payload AS jsonb))
+                  :businessOccurredAt,:ingestedAt,:payloadSha256,CAST(:payload AS jsonb),:sourceStatus)
                 ON CONFLICT(source_system,source_record_type,source_record_id,source_version)
                 DO NOTHING
                 """)
@@ -57,6 +57,8 @@ class JdbcSourceFactRepository implements SourceFactRepository {
                 .param("ingestedAt", Timestamp.from(snapshot.ingestedAt()))
                 .param("payloadSha256", snapshot.payloadSha256())
                 .param("payload", serialize(snapshot.payload()))
+                .param("sourceStatus", "MARKET_RECORD".equals(snapshot.key().sourceRecordType())
+                        && "VOIDED".equals(snapshot.payload().get("statusCode")) ? "WITHDRAWN" : "CURRENT")
                 .update() == 1;
     }
 

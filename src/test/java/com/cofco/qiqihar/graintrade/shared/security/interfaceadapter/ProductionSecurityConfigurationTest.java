@@ -80,7 +80,7 @@ class ProductionSecurityConfigurationTest {
     @MockitoBean
     SecuritySessionAuditRecorder sessionAudit;
 
-    @MockitoBean
+    @MockitoBean(name = "sessionJdbcClient")
     JdbcClient jdbc;
 
     @MockitoBean

@@ -33,6 +33,8 @@ REVOKE ALL ON ALL SEQUENCES IN SCHEMA risk FROM qiqihar_risk_runtime;
 GRANT SELECT ON ALL TABLES IN SCHEMA risk TO qiqihar_risk_runtime;
 GRANT INSERT ON TABLE
     risk.source_fact_snapshot,
+    risk.market_rule_assessment_evaluation,
+    risk.risk_assessment,
     risk.training_schedule_execution,
     risk.training_snapshot,
     risk.training_example,
@@ -41,14 +43,24 @@ GRANT INSERT ON TABLE
     risk.risk_case_feedback,
     risk.model_live_prediction,
     risk.model_evaluation,
-    risk.model_activation_event
+    risk.model_activation_event,
+    risk.expert_dataset_snapshot,
+    risk.expert_training_task,
+    risk.expert_training_audit,
+    risk.ai_knowledge_document,
+    risk.ai_knowledge_audit,
+    risk.ai_assistant_request,
+    risk.ai_assistant_audit
 TO qiqihar_risk_runtime;
 GRANT UPDATE ON TABLE
     risk.ai_model,
     risk.ai_training_policy,
     risk.training_schedule_execution,
     risk.training_run,
-    risk.model_version
+    risk.model_version,
+    risk.expert_training_task,
+    risk.ai_knowledge_document,
+    risk.ai_assistant_request
 TO qiqihar_risk_runtime;
 GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA risk TO qiqihar_risk_runtime;
 

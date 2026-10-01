@@ -112,6 +112,33 @@ jobs:
       - name: Verify official news, video, and scheduling
         run: mvn -B -ntp -Dtest=EiaTodayInEnergyFeedTest,FaoMarketVideoFeedTest,FaoWebcastFeedTest,NassVideoNewsFeedTest,OfficialNewsPersistenceIntegrationTest,OfficialNewsScheduleConfigurationTest test
 
+      - name: Verify news discovery, programme parsing, and login resilience
+        run: mvn -B -ntp '-Dtest=News*Test,Iqs*Test,EcsNewsCredentialsTest,UnWebTv*Test,SessionPoolResilienceTest,RegionalHierarchyMemoryTest' test
+
+      - name: Verify independent AI and migration isolation
+        env:
+          PGPASSWORD: postgres
+          RISK_MIGRATION_INTEGRATION_URL: jdbc:postgresql://127.0.0.1:55432/risk_migration_isolated_test
+          RISK_MIGRATION_INTEGRATION_PASSWORD: postgres
+        run: |
+          createdb --host 127.0.0.1 --port 55432 --username postgres risk_migration_isolated_test
+          mvn -B -ntp -f risk-intelligence-service/pom.xml '-Dtest=Ai*Test,Expert*Test,RiskMigration*Test,JdbcRiskTrainingSnapshotPrivilegeIntegrationTest' test
+          createdb --host 127.0.0.1 --port 55432 --username postgres --template risk_migration_isolated_test risk_knowledge_smoke
+          RISK_KNOWLEDGE_SMOKE_URL='jdbc:postgresql://127.0.0.1:55432/risk_knowledge_smoke?user=postgres&password=postgres' \
+            mvn -B -ntp -f risk-intelligence-service/pom.xml -Dtest=AiKnowledgeJdbcSmokeTest test
+          PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s tools/risk-mlx-trainer -p 'test_*.py' -v
+          bash scripts/tests/risk-intelligence-cloud.test.sh
+          createdb --host 127.0.0.1 --port 55432 --username postgres risk_forward_state_test
+          RISK_RECOVERY_TEST_URL=jdbc:postgresql://127.0.0.1:55432/risk_forward_state_test \
+            RISK_RECOVERY_TEST_USERNAME=postgres RISK_RECOVERY_TEST_PASSWORD=postgres \
+            bash scripts/tests/risk-forward-state-recovery.test.sh
+          bash scripts/tests/risk-training-node-local.test.sh
+
+      - name: Verify provider probe contracts without provider access
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s scripts/tests -p test_tqsdk_probe.py -v
+          PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s scripts/tests -p test_ifind_http_probe.py -v
+
       - name: Verify grain quote identity
         run: |
           PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/tests -p test_choice_feed.py -v

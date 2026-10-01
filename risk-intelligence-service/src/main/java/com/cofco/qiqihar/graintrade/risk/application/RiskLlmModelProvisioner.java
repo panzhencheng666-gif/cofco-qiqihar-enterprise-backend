@@ -15,19 +15,27 @@ public class RiskLlmModelProvisioner implements ApplicationRunner {
     private final Clock clock;
     private final String endpoint;
     private final String baseModelReference;
+    private final boolean remoteNodeEnabled;
+    private final String remoteNodeToken;
 
     public RiskLlmModelProvisioner(RiskTrainingRepository repository,Clock clock,
             @Value("${qiqihar.risk.training.llm.endpoint:}") String endpoint,
-            @Value("${qiqihar.risk.training.llm.base-model-reference:}") String baseModelReference) {
+            @Value("${qiqihar.risk.training.llm.base-model-reference:}") String baseModelReference,
+            @Value("${qiqihar.risk.training.remote-node.enabled:false}")
+            boolean remoteNodeEnabled,
+            @Value("${qiqihar.risk.training.remote-node.token:}") String remoteNodeToken) {
         this.repository=repository;
         this.clock=clock;
         this.endpoint=endpoint==null?"":endpoint.strip();
         this.baseModelReference=baseModelReference==null?"":baseModelReference.strip();
+        this.remoteNodeEnabled=remoteNodeEnabled;
+        this.remoteNodeToken=remoteNodeToken==null?"":remoteNodeToken.strip();
     }
 
     @Override
     public void run(ApplicationArguments arguments) {
-        if (validEndpoint(endpoint) && !baseModelReference.isBlank()) {
+        boolean configuredRemoteNode=remoteNodeEnabled && remoteNodeToken.length()>=32;
+        if ((validEndpoint(endpoint) || configuredRemoteNode) && !baseModelReference.isBlank()) {
             repository.configureExternalLlm(baseModelReference,clock.instant());
         }
     }

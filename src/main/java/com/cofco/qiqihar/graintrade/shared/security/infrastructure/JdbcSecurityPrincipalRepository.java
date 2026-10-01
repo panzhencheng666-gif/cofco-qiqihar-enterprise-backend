@@ -6,30 +6,40 @@ import java.util.List;
 import java.util.LinkedHashSet;
 import java.util.Optional;
 import java.util.Set;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.simple.JdbcClient;
 import org.springframework.stereotype.Repository;
 
 @Repository
 public class JdbcSecurityPrincipalRepository implements SecurityPrincipalRepository {
-    private final JdbcClient jdbc;
+    private final JdbcClient businessJdbc;
+    private final JdbcClient sessionJdbc;
 
     public JdbcSecurityPrincipalRepository(JdbcClient jdbc) {
-        this.jdbc = jdbc;
+        this(jdbc, jdbc);
+    }
+
+    @Autowired
+    public JdbcSecurityPrincipalRepository(JdbcClient businessJdbc,
+            @Qualifier("sessionJdbcClient") JdbcClient sessionJdbc) {
+        this.businessJdbc = businessJdbc;
+        this.sessionJdbc = sessionJdbc;
     }
 
     @Override
     public Optional<String> responsibleSubject(String regionCode, boolean countyReporting) {
         // Hold until the business write commits, including when no responsibility row exists yet.
         if(!org.springframework.transaction.support.TransactionSynchronizationManager.isCurrentTransactionReadOnly())
-            jdbc.sql("LOCK TABLE platform.region_responsibility IN SHARE MODE").update();
+            businessJdbc.sql("LOCK TABLE platform.region_responsibility IN SHARE MODE").update();
         String function=countyReporting?"county_reporting_subject":"region_responsible_subject";
-        return jdbc.sql("SELECT platform."+function+"(:region)").param("region",regionCode)
+        return businessJdbc.sql("SELECT platform."+function+"(:region)").param("region",regionCode)
                 .query((row,index)->row.getString(1)).optional();
     }
 
     @Override
     public Optional<SecurityPrincipal> findEnabled(String subjectId) {
-        return jdbc.sql("""
+        return sessionJdbc.sql("""
                 SELECT security_user.subject_id,security_user.display_name,security_user.work_unit_code,
                        work_unit.name,security_user.account_status,security_user.employment_status
                 FROM platform.security_user security_user
@@ -59,7 +69,7 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
     public Optional<SecurityPrincipal> findEnabledByOidcIdentity(String issuer,String providerSubject) {
         if(issuer==null||issuer.isBlank()||!issuer.startsWith("https://")
                 ||providerSubject==null||providerSubject.isBlank())return Optional.empty();
-        return jdbc.sql("""
+        return sessionJdbc.sql("""
                 SELECT security_subject_id
                 FROM platform.identity_provider_binding
                 WHERE issuer_uri=:issuer
@@ -72,17 +82,17 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
     }
 
     private Set<String> allPermissions() {
-        return new LinkedHashSet<>(jdbc.sql("SELECT code FROM platform.access_permission WHERE active ORDER BY code")
+        return new LinkedHashSet<>(sessionJdbc.sql("SELECT code FROM platform.access_permission WHERE active ORDER BY code")
                 .query(String.class).list());
     }
 
     private Set<String> allRegions() {
-        return new LinkedHashSet<>(jdbc.sql("SELECT code FROM platform.region ORDER BY code")
+        return new LinkedHashSet<>(sessionJdbc.sql("SELECT code FROM platform.region ORDER BY code")
                 .query(String.class).list());
     }
 
     private Set<String> permissions(String subjectId) {
-        return new LinkedHashSet<>(jdbc.sql("""
+        return new LinkedHashSet<>(sessionJdbc.sql("""
                 SELECT DISTINCT role_permission.permission_code
                 FROM platform.security_user_role user_role
                 JOIN platform.access_role access_role ON access_role.code = user_role.role_code AND access_role.active
@@ -96,7 +106,7 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
     }
 
     private Set<String> regions(String subjectId, String workUnitCode) {
-        return new LinkedHashSet<>(jdbc.sql("""
+        return new LinkedHashSet<>(sessionJdbc.sql("""
                 WITH RECURSIVE unit_authorized(region_code) AS (
                     SELECT scope.region_code
                     FROM platform.work_unit_region_scope scope
@@ -127,7 +137,7 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
     }
 
     private List<SecurityPrincipal.RegionScope> assignedRegions(String subjectId,String workUnitCode) {
-        return jdbc.sql("""
+        return sessionJdbc.sql("""
                 WITH RECURSIVE unit_authorized(region_code) AS (
                     SELECT scope.region_code
                     FROM platform.work_unit_region_scope scope
@@ -165,7 +175,7 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
     }
 
     private Set<String> roles(String subjectId) {
-        return new LinkedHashSet<>(jdbc.sql("""
+        return new LinkedHashSet<>(sessionJdbc.sql("""
                 SELECT role.code
                 FROM platform.security_user_role user_role
                 JOIN platform.access_role role ON role.code=user_role.role_code AND role.active
@@ -178,7 +188,7 @@ public class JdbcSecurityPrincipalRepository implements SecurityPrincipalReposit
     }
 
     private List<SecurityPrincipal.PositionAssignment> positions(String subjectId) {
-        return jdbc.sql("""
+        return sessionJdbc.sql("""
                 SELECT position.code,position.name,assignment.primary_position
                 FROM platform.security_user_position assignment
                 JOIN platform.position position ON position.code=assignment.position_code AND position.active

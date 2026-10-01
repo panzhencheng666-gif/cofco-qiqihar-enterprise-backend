@@ -153,17 +153,26 @@ public class FaoWebcastFeed {
     @RestController
     static class Controller {
         private final JdbcClient jdbc;
-        Controller(JdbcClient jdbc) { this.jdbc = jdbc; }
-
+        private final UnWebTvRepository repository;
+        private final boolean enabled;
+        private final java.time.Clock clock;
+        @org.springframework.beans.factory.annotation.Autowired
+        Controller(JdbcClient jdbc, UnWebTvRepository repository,
+                   @org.springframework.beans.factory.annotation.Value("${qiqihar.market-intelligence.un-webtv.enabled:false}") boolean enabled) {
+            this(jdbc,repository,enabled,java.time.Clock.systemUTC());
+        }
+        Controller(JdbcClient jdbc,UnWebTvRepository repository,boolean enabled,java.time.Clock clock) {
+            this.jdbc=jdbc;this.repository=repository;this.enabled=enabled;this.clock=clock;
+        }
         @GetMapping("/api/v1/market-intelligence/news/webcasts")
-        public ApiResponse<List<EventItem>> list() {
-            var events = jdbc.sql("""
-                    SELECT title,event_url,starts_at,fetched_at FROM market_intelligence.webcast_event
-                    WHERE source_code='fao-webcast' ORDER BY starts_at DESC LIMIT 40
-                    """).query((rs, row) -> new EventItem("FAO Webcast", rs.getString("title"),
-                    rs.getString("event_url"), rs.getObject("starts_at", OffsetDateTime.class).toInstant(),
-                    rs.getObject("fetched_at", OffsetDateTime.class).toInstant(), SOURCE.toString())).list();
-            return new ApiResponse<>(events);
+        public org.springframework.http.ResponseEntity<ApiResponse<List<UnWebTvRepository.Item>>> list() {
+            var events=jdbc.sql("SELECT title,event_url,starts_at,fetched_at FROM market_intelligence.webcast_event WHERE source_code='fao-webcast' ORDER BY starts_at DESC LIMIT 40")
+                .query((rs,row)->new UnWebTvRepository.Item("FAO Webcast",rs.getString("title"),rs.getString("event_url"),rs.getObject("starts_at",OffsetDateTime.class).toInstant(),rs.getObject("fetched_at",OffsetDateTime.class).toInstant(),SOURCE.toString(),null)).list();
+            var combined=new ArrayList<UnWebTvRepository.Item>();
+            if(enabled) combined.addAll(repository.list(clock.instant()));
+            combined.addAll(events);
+            return org.springframework.http.ResponseEntity.ok().cacheControl(org.springframework.http.CacheControl.noStore())
+                    .body(new ApiResponse<>(List.copyOf(combined)));
         }
     }
 }
