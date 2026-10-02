@@ -41,6 +41,7 @@ def replace(source):
     stat = JAR.stat()
     shutil.copy2(str(source), str(temp))
     os.chown(str(temp), stat.st_uid, stat.st_gid)
+    os.chmod(str(temp), stat.st_mode & 0o7777)
     with temp.open('rb') as stream:
         os.fsync(stream.fileno())
     os.replace(str(temp), str(JAR))
