@@ -12,19 +12,29 @@ import tools.jackson.databind.json.JsonMapper;
 final class NewsDiscoveryRead {
     record Item(String sourceHost, String title, String url, Instant publishedAt,
                 LocalDate publishedOn, String publicationPrecision, Instant reviewedAt) {}
-    record Snapshot(String state, String searchState, Instant lastSearchCompletedAt,
+    record Snapshot(String state, String searchState, String searchReason, Instant lastSearchCompletedAt,
+                    Instant nextSearchAt, long pendingReviewCount, long awaitingSourceCount,
                     Instant observedAt, List<Item> items) {}
     private final JdbcClient jdbc;
     NewsDiscoveryRead(JdbcClient jdbc) { this.jdbc = Objects.requireNonNull(jdbc); }
     Snapshot snapshot(boolean enabled, Instant deadline, Instant now) {
-        if (!enabled) return new Snapshot("DISABLED", "NOT_EVALUATED", null, now, List.of());
+        if (!enabled) return new Snapshot("DISABLED", "NOT_EVALUATED", null, null, null, 0, 0, now, List.of());
         if (deadline == null) return unavailable(now);
         try {
             var schedule = jdbc.sql("""
-                SELECT last_state,last_completed_at FROM market_intelligence.news_discovery_search_schedule WHERE slot=1
-                """).query((rs, row) -> new SearchStatus(rs.getString(1), instant(rs, "last_completed_at"))).single();
+                SELECT last_state,last_reason,last_completed_at,
+                       CASE WHEN isfinite(next_search_at) THEN next_search_at END AS next_search_at
+                FROM market_intelligence.news_discovery_search_schedule WHERE slot=1
+                """).query((rs, row) -> new SearchStatus(rs.getString("last_state"),
+                    safeReason(rs.getString("last_reason")), instant(rs, "last_completed_at"),
+                    instant(rs, "next_search_at"))).single();
             if (!List.of("NOT_RUN", "RUNNING", "CANDIDATES", "EMPTY", "DEGRADED", "FAILED").contains(schedule.state()))
                 return unavailable(now);
+            var pending = jdbc.sql("""
+                SELECT count(*) AS pending,
+                       count(*) FILTER (WHERE review_reason='SOURCE_ADMISSION_REQUIRED') AS awaiting_source
+                FROM market_intelligence.news_discovery_candidate WHERE review_state='PENDING_VERIFICATION'
+                """).query((rs, row) -> new long[]{rs.getLong("pending"), rs.getLong("awaiting_source")}).single();
             var items = jdbc.sql("""
                 SELECT c.article_url,c.source_host,c.review_evidence::text,c.reviewed_at,
                        a.review_reference,a.checked_at,a.expires_at
@@ -40,14 +50,17 @@ final class NewsDiscoveryRead {
                 .query((rs, row) -> project(rs, now)).list().stream().filter(Objects::nonNull).toList();
             // Configured is not proof of a live scheduler or successful search.
             return new Snapshot(deadline.isAfter(now) ? "CONFIGURED" : "EXPIRED",
-                schedule.state(), schedule.completed(), now, items);
+                schedule.state(), schedule.reason(), schedule.completed(), schedule.next(), pending[0], pending[1], now, items);
         } catch (org.springframework.dao.DataAccessException unavailable) {
             return unavailable(now);
         }
     }
-    private record SearchStatus(String state, Instant completed) {}
+    private record SearchStatus(String state, String reason, Instant completed, Instant next) {}
+    private static String safeReason(String reason) {
+        return reason != null && reason.matches("[A-Z0-9_]{1,80}") ? reason : null;
+    }
     private static Snapshot unavailable(Instant now) {
-        return new Snapshot("UNAVAILABLE", "NOT_EVALUATED", null, now, List.of());
+        return new Snapshot("UNAVAILABLE", "NOT_EVALUATED", null, null, null, 0, 0, now, List.of());
     }
     private static Instant instant(ResultSet rs, String column) throws SQLException {
         var value = rs.getObject(column, OffsetDateTime.class);
