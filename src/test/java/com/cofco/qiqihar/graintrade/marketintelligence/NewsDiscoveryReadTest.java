@@ -52,6 +52,25 @@ class NewsDiscoveryReadTest {
         assertThat(snapshot().searchState()).isEqualTo("FAILED");
         assertThat(snapshot().lastSearchCompletedAt()).isEqualTo(NOW.minusSeconds(10));
     }
+    @Test void responseExplainsBudgetClosureAndPendingSourceAdmission() throws Exception {
+        sql.update("UPDATE market_intelligence.news_discovery_search_schedule SET last_state='FAILED',last_reason='BUDGET_CLOSED',next_search_at=?",
+            NOW.plusSeconds(300).atOffset(ZoneOffset.UTC));
+        var repo = new NewsDiscoveryRepository(JdbcClient.create(sql.getDataSource()));
+        repo.save("CNLiteBasic", "grain", List.of(new NewsSearchResults.Candidate(
+            java.net.URI.create("https://news.example/grain"), "Wheat harvest", "2026-09-28", NOW)));
+        sql.update("UPDATE market_intelligence.news_discovery_candidate SET review_reason='SOURCE_ADMISSION_REQUIRED'");
+        var env = new org.springframework.mock.env.MockEnvironment()
+            .withProperty("qiqihar.market-intelligence.discovery.enabled", "true")
+            .withProperty("qiqihar.market-intelligence.discovery.deadline", "2099-01-01T00:00:00Z");
+        var mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(
+            new NewsDiscoveryController(JdbcClient.create(sql.getDataSource()), env)).build();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/market-intelligence/news/discovery"))
+            .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.searchReason").value("BUDGET_CLOSED"))
+            .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.nextSearchAt").value(NOW.plusSeconds(300).toString()))
+            .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.pendingReviewCount").value(1))
+            .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.awaitingSourceCount").value(1))
+            .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath("$.data.items").isEmpty());
+    }
     @Test void returnsReviewedTitleAndDateWithoutInventingMidnight() {
         verified(NewsCandidateReviewTest.HTML);
         assertThat(snapshot().items()).singleElement().satisfies(item -> {
