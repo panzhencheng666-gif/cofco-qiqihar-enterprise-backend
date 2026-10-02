@@ -62,7 +62,9 @@ def main():
             command = ' '.join(runtime['Config'].get('Cmd') or [])
             assert not any(key in command for key in keys), 'COMMAND_OVERRIDE'
             with zipfile.ZipFile(str(JAR)) as original:
-                assert RESOURCE in original.namelist(), 'MISSING_APPLICATION_PROPERTIES'
+                assert any(name in original.namelist() for name in [RESOURCE, 'BOOT-INF/classes/application.yml']), 'MISSING_APPLICATION_CONFIG'
+                overrides = ('\n# Official news collection is owned by the healthy 19091 backend.\n'
+                             + '\n'.join(key + '=false' for key in keys) + '\n').encode()
                 for name in original.namelist():
                     if name.startswith('BOOT-INF/classes/application-') and name.endswith(('.properties', '.yml', '.yaml')):
                         assert not any(key.encode() in original.read(name) for key in keys), 'PROFILE_OVERRIDE'
@@ -72,11 +74,12 @@ def main():
                     for info in original.infolist():
                         content = original.read(info)
                         if info.filename == RESOURCE:
-                            content += ('\n# Official news collection is owned by the healthy 19091 backend.\n'
-                                        + '\n'.join(key + '=false' for key in keys) + '\n').encode()
+                            content += overrides
                         candidate.writestr(info, content)
+                    if RESOURCE not in original.namelist():
+                        candidate.writestr(RESOURCE, overrides, compress_type=zipfile.ZIP_DEFLATED)
             with zipfile.ZipFile(str(ROOT / 'before.jar')) as before, zipfile.ZipFile(str(ROOT / 'after.jar')) as after:
-                assert after.testzip() is None and before.namelist() == after.namelist(), 'JAR_INVALID'
+                assert after.testzip() is None and set(after.namelist()) == set(before.namelist()) | {RESOURCE}, 'JAR_INVALID'
                 for name in before.namelist():
                     if name != RESOURCE:
                         assert before.read(name) == after.read(name), 'UNRELATED_CHANGE'
