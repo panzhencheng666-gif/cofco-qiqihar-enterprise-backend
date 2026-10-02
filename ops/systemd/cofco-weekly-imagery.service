@@ -1,5 +1,5 @@
 [Unit]
-Description=COFCO Qiqihar monthly Sentinel-2 imagery synchronization
+Description=COFCO four-region monthly Sentinel-2 imagery synchronization
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=1d
@@ -12,7 +12,7 @@ Group=cofco-imagery
 EnvironmentFile=/etc/cofco/weekly-imagery.env
 RuntimeDirectory=cofco-imagery
 RuntimeDirectoryMode=0750
-ExecStart=/usr/bin/flock --nonblock /run/cofco-imagery/sync.lock /usr/bin/python3.11 /usr/local/lib/cofco-imagery/weekly_imagery_sync.py --root /var/lib/cofco/imagery --aoi /usr/local/lib/cofco-imagery/qiqihar-aoi.geojson
+ExecStart=/usr/bin/flock --nonblock /run/cofco-imagery/sync.lock /usr/bin/python3.11 /usr/local/lib/cofco-imagery/weekly_imagery_sync.py --root /var/lib/cofco/imagery --aoi /usr/local/lib/cofco-imagery/four-region-aoi.geojson
 Restart=on-failure
 RestartSec=3h
 TimeoutStartSec=12h

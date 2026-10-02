@@ -19,7 +19,8 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
@@ -44,6 +45,19 @@ EARTH_SEARCH_REGIONAL_HOST = "e84-earth-search-sentinel-data.s3.us-west-2.amazon
 EARTH_SEARCH_GLOBAL_HOST = "e84-earth-search-sentinel-data.s3.amazonaws.com"
 PLANETARY_COMPUTER_HOST = "planetarycomputer.microsoft.com"
 PLANETARY_SENTINEL_HOST = "sentinel2l2a01.blob.core.windows.net"
+R4E_SOURCE_AUDIT_SHA256 = "3af5e4dca99f635fc329b9c7e532553c216bb881c8f91bffb3f4788b76d05d97"
+R4J_BASE_PLAN_SHA256 = "87b70edd5eaf850ab66a7f87edfd08c241cd5e138f17c911fbbfae7e139b70d9"
+R4J_SOURCE_DELTA_SHA256 = "7f725ea837b38771b2ded5e698d8094e076b3ea8aa26da5a6e3af43c2da4c078"
+R4I_BASE_STAGE_NAME = ".staging-2026-09-r4-bxf12k9l"
+R4I_MANIFEST_SHA256 = "3782bea1cefbf3f04233cfe017e1fc78b0cdd99f8533e8943076f3c9f3fa409e"
+_R4I_REPAIR_HOLES = (
+    (13928, 5453, "S2C_51UYT_20260909_0_L2A"),
+    (13928, 5454, "S2C_51UYT_20260909_0_L2A"),
+    (13929, 5454, "S2C_51UYT_20260909_0_L2A"),
+    (13930, 5454, "S2C_51UYT_20260909_0_L2A"),
+    (13931, 5454, "S2C_51UYT_20260909_0_L2A"),
+    (13869, 5625, "S2B_51UXQ_20260914_0_L2A"),
+)
 _PLANETARY_TOKEN_CACHE: dict[tuple[str, str], str] = {}
 _PLANETARY_TOKEN_LOCK = threading.Lock()
 REQUIRED_GDAL_COMMANDS = (
@@ -93,6 +107,7 @@ class SyncConfig:
     minimum_free_bytes: int
     retention_count: int
     backend_reader_uid: int | None = None
+    candidate_single_range: bool = False
 
 
 @dataclass(frozen=True)
@@ -171,6 +186,177 @@ def select_grid_candidates(ranked: Iterable[Candidate]) -> list[Candidate]:
             choices.append(scene)
         chosen_ids.update(scene.product_id for scene in choices)
     return [candidate for candidate in ordered if candidate.product_id in chosen_ids]
+
+
+def load_historical_source_plan(config: SyncConfig, path: Path, version: str) -> tuple[list[Candidate], dict[str, Any]]:
+    """Load a one-off audited Sentinel-2 plan without widening the monthly timer."""
+    if path.stat().st_size > 2 * 1024 * 1024:
+        raise ReleaseValidationError("historical source plan is too large")
+    payload = json.loads(path.read_text())
+    if not isinstance(payload, dict) or payload.get("version") != version:
+        raise ReleaseValidationError("historical source plan version mismatch")
+    recent = payload.get("recentPeriod")
+    historical = payload.get("historicalFillPeriod")
+    if recent != ["2026-09-14", "2026-09-20"] or historical != ["2026-08-01", "2026-09-13"]:
+        raise ReleaseValidationError("historical source plan has unexpected dates")
+    if payload.get("rgbResolutionMeters") != 10 or payload.get("sclResolutionMeters") != 20:
+        raise ReleaseValidationError("historical source plan resolution mismatch")
+    features = payload.get("features")
+    if not isinstance(features, list) or not features:
+        raise ReleaseValidationError("historical source plan has no products")
+    mixed_sources = "sourceAuditSha256" in payload
+    if mixed_sources and (
+        len(features) != 189
+        or payload["sourceAuditSha256"] != R4E_SOURCE_AUDIT_SHA256
+    ):
+        raise ReleaseValidationError("mixed source plan audit or product count mismatch")
+    source_counts = {"planetary-computer": 0, "google-public-sentinel-2-l2a": 0}
+    for feature in features:
+        if not isinstance(feature, dict):
+            raise ReleaseValidationError("historical source plan has an invalid product")
+        assets = feature.get("assets")
+        if mixed_sources:
+            _validate_mixed_source_feature(feature, source_counts)
+        elif not isinstance(assets, dict) or any(
+            not isinstance(assets.get(band), dict) or assets[band].get("gsd") != gsd
+            or not isinstance(assets[band].get("href"), str)
+            or not _trusted_https(assets[band].get("href", ""), ("sentinel-cogs.s3.us-west-2.amazonaws.com",))
+            for band, gsd in (("visual", 10), ("red", 10), ("green", 10), ("blue", 10), ("scl", 20))
+        ) or not assets["visual"]["href"].endswith("/TCI.tif"):
+            raise ReleaseValidationError("historical source plan asset resolution mismatch")
+    if mixed_sources and source_counts != {
+        "planetary-computer": 180,
+        "google-public-sentinel-2-l2a": 9,
+    }:
+        raise ReleaseValidationError("mixed source plan provider count mismatch")
+    plan_hosts = config.allowed_hosts + (("storage.googleapis.com",) if mixed_sources else ())
+    parsed = parse_candidates({"features": features}, plan_hosts)
+    if len(parsed) != len(features) or len({item.product_id for item in parsed}) != len(parsed):
+        raise ReleaseValidationError("historical source plan contains unauthorized or duplicate assets")
+    ranked = rank_candidates(parsed, config.maximum_cloud_percent)
+    if len(ranked) != len(parsed):
+        raise ReleaseValidationError("historical source plan cloud threshold mismatch")
+    dates = [item.observed_at[:10] for item in ranked]
+    if any(day < historical[0] or day > recent[1] for day in dates):
+        raise ReleaseValidationError("historical source plan product outside approved dates")
+    if not any(recent[0] <= day <= recent[1] for day in dates) or not any(
+        historical[0] <= day <= historical[1] for day in dates
+    ):
+        raise ReleaseValidationError("historical source plan must contain both recent and dated fill")
+    return ranked, payload
+
+
+def validate_r4j_source_delta(base_plan_path: Path, delta_path: Path) -> dict[str, Any]:
+    """Pin the one-scene repair input without changing the audited 189-scene plan."""
+    base_bytes = base_plan_path.read_bytes()
+    delta_bytes = delta_path.read_bytes()
+    if hashlib.sha256(base_bytes).hexdigest() != R4J_BASE_PLAN_SHA256:
+        raise ReleaseValidationError("r4j base source plan SHA mismatch")
+    if hashlib.sha256(delta_bytes).hexdigest() != R4J_SOURCE_DELTA_SHA256:
+        raise ReleaseValidationError("r4j source delta SHA mismatch")
+    base = json.loads(base_bytes)
+    record = json.loads(delta_bytes)
+    identity = record.get("base", {})
+    product = record.get("delta", {})
+    features = base.get("features", [])
+    if (
+        record.get("kind") != "single-product-source-delta-identity"
+        or record.get("schema") != 1
+        or record.get("status") != "IDENTITY_VERIFIED_PIXEL_WINDOW_ONLY_NOT_RELEASE_AUDIT"
+        or base.get("version") != "2026-09-r4"
+        or base.get("sourceAuditSha256") != R4E_SOURCE_AUDIT_SHA256
+        or identity.get("sourceAuditSha256") != R4E_SOURCE_AUDIT_SHA256
+        or identity.get("fileSha256") != R4J_BASE_PLAN_SHA256
+        or identity.get("featureCount") != 189
+        or identity.get("providerCounts") != {"planetary-computer": 180, "google-public-sentinel-2-l2a": 9}
+        or not isinstance(features, list) or len(features) != 189
+    ):
+        raise ReleaseValidationError("r4j source delta baseline mismatch")
+    if product.get("provider") != "planetary-computer" or product.get("collection") != DEFAULT_COLLECTION \
+            or product.get("catalog") != DEFAULT_STAC_URL \
+            or product.get("candidateId") != "S2C_51UYT_20260909_0_L2A" \
+            or product.get("itemId") != "S2C_MSIL2A_20260909T023531_R089_T51UYT_20260909T053905" \
+            or product.get("productUri") != "S2C_MSIL2A_20260909T023531_N0512_R089_T51UYT_20260909T053905.SAFE" \
+            or product.get("acquiredAt") != "2026-09-09T02:35:31.025000Z" \
+            or any(feature.get("id") == product["candidateId"] for feature in features):
+        raise ReleaseValidationError("r4j source delta product identity mismatch")
+    for band, resolution, suffix in (("visual", 10, "_TCI_10m.tif"), ("SCL", 20, "_SCL_20m.tif")):
+        asset = product.get("assets", {}).get(band)
+        if not isinstance(asset, dict) or asset.get("gsd") != resolution:
+            raise ReleaseValidationError("r4j source delta resolution mismatch")
+        href = asset.get("href")
+        parsed = urllib.parse.urlparse(href) if isinstance(href, str) else None
+        if parsed is None or parsed.scheme != "https" or parsed.hostname != PLANETARY_SENTINEL_HOST \
+                or product["productUri"] not in parsed.path.split("/") \
+                or not parsed.path.endswith(suffix) or parsed.query or parsed.fragment:
+            raise ReleaseValidationError("r4j source delta asset identity mismatch")
+    return record
+
+
+def r4j_repair_candidate(
+    config: SyncConfig, base_plan_path: Path, delta_path: Path,
+) -> Candidate:
+    """Convert only the pinned September 9 product to a repair input."""
+    product = validate_r4j_source_delta(base_plan_path, delta_path)["delta"]
+    feature = {
+        "id": product["candidateId"],
+        "bbox": product["bbox"],
+        "properties": {
+            "datetime": product["acquiredAt"],
+            "eo:cloud_cover": product["cloudPercent"],
+            "source:provider": product["provider"],
+            "s2:product_uri": product["productUri"],
+        },
+        "assets": {"visual": product["assets"]["visual"], "scl": product["assets"]["SCL"]},
+    }
+    counts = {"planetary-computer": 0, "google-public-sentinel-2-l2a": 0}
+    _validate_mixed_source_feature(feature, counts)
+    candidates = parse_candidates({"features": [feature]}, config.allowed_hosts)
+    if len(candidates) != 1 or len(rank_candidates(candidates, config.maximum_cloud_percent)) != 1 \
+            or candidates[0].grid_code != "51UYT":
+        raise ReleaseValidationError("r4j repair product is not authorized and cloud-qualified")
+    return candidates[0]
+
+
+def _validate_mixed_source_feature(feature: Mapping[str, Any], counts: dict[str, int]) -> None:
+    """Keep the audited one-off source switch narrow and product-identical."""
+    identifier = feature.get("id")
+    properties = feature.get("properties")
+    assets = feature.get("assets")
+    if not isinstance(identifier, str) or not isinstance(properties, Mapping) or not isinstance(assets, Mapping):
+        raise ReleaseValidationError("mixed source plan has an invalid product")
+    match = re.fullmatch(r"(S2[ABC])_(\d{2}[A-Z]{3})_(\d{8})_\d+_L2A", identifier)
+    product = properties.get("s2:product_uri")
+    provider = properties.get("source:provider")
+    if not match or not isinstance(product, str) or not product.startswith(match[1] + "_MSIL2A_") \
+            or f"_T{match[2]}_" not in product or match[3] not in product \
+            or not product.endswith(".SAFE") or provider not in counts:
+        raise ReleaseValidationError("mixed source plan product identity mismatch")
+    observed = properties.get("datetime")
+    if not isinstance(observed, str) or observed[:10] != f"{match[3][:4]}-{match[3][4:6]}-{match[3][6:]}":
+        raise ReleaseValidationError("mixed source plan acquisition date mismatch")
+    expected = (
+        ("sentinel2l2a01.blob.core.windows.net", "_TCI_10m.tif", "_SCL_20m.tif")
+        if provider == "planetary-computer" else
+        ("storage.googleapis.com", "_TCI_10m.jp2", "_SCL_20m.jp2")
+    )
+    for band, resolution, suffix in (("visual", 10, expected[1]), ("scl", 20, expected[2])):
+        asset = assets.get(band)
+        if not isinstance(asset, Mapping) or asset.get("gsd") != resolution:
+            raise ReleaseValidationError("mixed source plan asset resolution mismatch")
+        href = asset.get("href")
+        parsed = urllib.parse.urlparse(href) if isinstance(href, str) else None
+        if parsed is None or parsed.scheme != "https" or parsed.hostname != expected[0] \
+                or product not in parsed.path.split("/") or not parsed.path.endswith(suffix) \
+                or parsed.query or parsed.fragment:
+            raise ReleaseValidationError("mixed source plan asset product mismatch")
+        if provider == "google-public-sentinel-2-l2a" and (
+            not parsed.path.startswith("/gcp-public-data-sentinel-2/L2/tiles/")
+            or not isinstance(asset.get("bytes"), int)
+            or not 100_000 < asset["bytes"] < 300_000_000
+        ):
+            raise ReleaseValidationError("mixed source plan Google object metadata mismatch")
+    counts[provider] += 1
 
 
 def _mgrs_grid_code(properties: Mapping[str, Any], product_id: str) -> str | None:
@@ -343,6 +529,25 @@ def aoi_bounds(path: Path) -> tuple[float, float, float, float]:
     return bounds
 
 
+def aoi_feature_bounds(path: Path) -> list[tuple[float, float, float, float]]:
+    """Search each governed region separately so catalog pagination stays bounded."""
+    payload = json.loads(path.read_text())
+    if payload.get("type") != "FeatureCollection":
+        return [aoi_bounds(path)]
+    bounds: list[tuple[float, float, float, float]] = []
+    for feature in payload.get("features", []):
+        if not isinstance(feature, Mapping) or not isinstance(feature.get("geometry"), Mapping):
+            raise ValueError("AOI has an invalid feature")
+        points = list(_coordinates(feature["geometry"].get("coordinates")))
+        if not points:
+            raise ValueError("AOI feature has no coordinates")
+        bounds.append((min(x for x, _ in points), min(y for _, y in points),
+                       max(x for x, _ in points), max(y for _, y in points)))
+    if not bounds:
+        raise ValueError("AOI has no features")
+    return bounds
+
+
 def _require_nonempty_tile_coverage(
     tiles: Path, bounds: tuple[float, float, float, float], zoom: int,
     minimum_ratio: float = 0.8,
@@ -364,7 +569,7 @@ def _require_nonempty_tile_coverage(
     y_range = range(tile_y(north), tile_y(south) + 1)
     expected = len(x_range) * len(y_range)
     present = sum(
-        tile.is_file() and tile.stat().st_size > 300
+        _tile_has_imagery(tile)
         for x in x_range for y in y_range
         for tile in (tiles / str(zoom) / str(x) / f"{y}.webp",)
     )
@@ -375,10 +580,62 @@ def _require_nonempty_tile_coverage(
         )
 
 
+def _tile_has_imagery(tile: Path) -> bool:
+    """Count a tiny tile only when GDAL can decode a full WebP image.
+
+    The tiling step removes empty white tiles against mosaic alpha first. A
+    valid single-product tile can still compress below 301 bytes.
+    """
+    if not tile.is_file():
+        return False
+    if tile.stat().st_size > 300:
+        return True
+    header = tile.read_bytes()[:12]
+    if len(header) < 12 or header[:4] != b"RIFF" or header[8:12] != b"WEBP":
+        return False
+    try:
+        result = subprocess.run(
+            ["gdalinfo", "-json", str(tile)], check=True, timeout=30,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ, "GDAL_PAM_ENABLED": "NO"},
+        )
+        info = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+    return info.get("driverShortName") == "WEBP" and info.get("size") == [256, 256] \
+        and len(info.get("bands", [])) in (3, 4)
+
+
+def _require_region_tile_coverage(tiles: Path, aoi: Path, zoom: int) -> None:
+    """A recent four-region label requires dense tiles in every governed region."""
+    for index, bounds in enumerate(aoi_feature_bounds(aoi)):
+        try:
+            _require_nonempty_tile_coverage(tiles, bounds, zoom, minimum_ratio=0.99)
+        except ReleaseValidationError as failure:
+            raise ReleaseValidationError(f"AOI region {index + 1}: {failure}") from failure
+
+
+def _require_release_tile_coverage(tiles: Path, aoi: Path, zoom: int) -> None:
+    """Check each region without counting empty space between disjoint regions."""
+    if len(aoi_feature_bounds(aoi)) == 1:
+        _require_nonempty_tile_coverage(tiles, aoi_bounds(aoi), zoom)
+    _require_region_tile_coverage(tiles, aoi, zoom)
+
+
 def search_candidates(config: SyncConfig, start: date, end: date) -> list[Candidate]:
     if not _trusted_https(config.stac_url, config.allowed_hosts):
         raise ValueError("STAC URL is not an allowed HTTPS endpoint")
-    bbox = aoi_bounds(config.aoi)
+    found: dict[str, Candidate] = {}
+    for bbox in aoi_feature_bounds(config.aoi):
+        for candidate in _search_candidates_bbox(config, start, end, bbox):
+            found[candidate.product_id] = candidate
+    return list(found.values())
+
+
+def _search_candidates_bbox(
+    config: SyncConfig, start: date, end: date,
+    bbox: tuple[float, float, float, float],
+) -> list[Candidate]:
     search_body = {
         "collections": [config.collection],
         "bbox": list(bbox),
@@ -431,8 +688,23 @@ def search_candidates(config: SyncConfig, start: date, end: date) -> list[Candid
     raise RuntimeError("STAC pagination exceeded 20 pages")
 
 
-def _run(command: Sequence[str], timeout: int, cwd: Path | None = None) -> None:
+def _prepare_tiling_temp(work: Path) -> Path:
+    # ProtectSystem=strict makes the system defaults read-only in candidate units.
+    directory = work.resolve() / ".gdal-tmp"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with tempfile.TemporaryFile(dir=directory) as probe:
+        probe.write(b"tempdir preflight")
+        probe.flush()
+    return directory
+
+
+def _run(
+    command: Sequence[str], timeout: int, cwd: Path | None = None,
+    *, extra_env: Mapping[str, str] | None = None,
+) -> None:
     environment = os.environ.copy()
+    if Path(command[0]).name == "gdal2tiles.py":
+        environment["TMPDIR"] = str(_prepare_tiling_temp(Path(command[-2]).parent))
     if Path(command[0]).name.startswith("gdal"):
         environment.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
         environment.setdefault("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".tif,.TIF")
@@ -441,6 +713,8 @@ def _run(command: Sequence[str], timeout: int, cwd: Path | None = None) -> None:
         environment.setdefault("VSI_CACHE", "TRUE")
         environment.setdefault("VSI_CACHE_SIZE", "50000000")
         environment.setdefault("CPL_VSIL_CURL_CACHE_SIZE", "200000000")
+    if extra_env:
+        environment.update(extra_env)
     try:
         subprocess.run(
             list(command),
@@ -485,17 +759,73 @@ def _legacy_webp_band_args(source: Path) -> list[str]:
     return []
 
 
-def _discard_tiny_webp_tiles(tiles: Path) -> int:
-    """Remove GDAL's tiny opaque white no-data tiles before publication."""
+def _raster_band_is_constant(raster: Path, band: int, value: int, bounds: tuple[float, ...] | None = None) -> bool:
+    """Inspect every pixel; a small compressed WebP can contain real imagery."""
+    command = ["gdal_translate", "-q", "-of", "XYZ", "-b", str(band)]
+    if bounds is not None:
+        command.extend(["-projwin_srs", "EPSG:3857", "-projwin", *(str(edge) for edge in bounds)])
+    command.extend(["-outsize", "256", "256", str(raster), "/vsistdout/"])
+    try:
+        result = subprocess.run(
+            command, check=True, timeout=120, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True,
+        )
+        pixels = [float(line.rsplit(" ", 1)[-1]) for line in result.stdout.splitlines()]
+    except (OSError, subprocess.SubprocessError, ValueError) as failure:
+        raise ReleaseValidationError(f"unable to inspect tile pixels: {raster}") from failure
+    if len(pixels) != 256 * 256:
+        raise ReleaseValidationError(f"unexpected pixel count for {raster}: {len(pixels)}")
+    return all(pixel == value for pixel in pixels)
+
+
+def _discard_tiny_webp_tiles(tiles: Path, mosaic: Path) -> int:
+    """Remove tiny opaque white tiles only when their mosaic alpha is empty."""
     removed = 0
     for tile in tiles.rglob("*.webp"):
         if tile.stat().st_size > 300:
             continue
         data = tile.read_bytes()
-        if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        if len(data) < 12 or data[:4] != b"RIFF" or data[8:12] != b"WEBP":
+            raise ReleaseValidationError(f"invalid tiny WebP tile: {tile}")
+        if not all(_raster_band_is_constant(tile, band, 255) for band in (1, 2, 3)):
+            continue
+        relative = tile.relative_to(tiles)
+        try:
+            zoom, x, y = int(relative.parts[0]), int(relative.parts[1]), int(relative.stem)
+            if len(relative.parts) != 3 or zoom < 0 or x < 0 or y < 0 or x >= 1 << zoom or y >= 1 << zoom:
+                raise ValueError("out of range")
+        except (IndexError, ValueError) as failure:
+            raise ReleaseValidationError(f"invalid tile coordinates: {relative}") from failure
+        extent = math.pi * 6378137.0
+        span = 2 * extent / (1 << zoom)
+        bounds = (-extent + x * span, extent - y * span,
+                  -extent + (x + 1) * span, extent - (y + 1) * span)
+        if _raster_band_is_constant(mosaic, 4, 0, bounds):
             tile.unlink()
             removed += 1
     return removed
+
+
+def _sample_alpha_coverage(raster: Path, size: int = 64) -> tuple[int, int]:
+    """Sample band four without creating another large raster on the worker disk."""
+    result = subprocess.run(
+        ["gdal_translate", "-q", "-of", "XYZ", "-b", "4", "-outsize",
+         str(size), str(size), str(raster), "/vsistdout/"],
+        check=True,
+        timeout=120,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    values = [line.rsplit(" ", 1)[-1] for line in result.stdout.splitlines()]
+    if len(values) != size * size:
+        raise ReleaseValidationError(f"alpha diagnostic returned {len(values)} samples for {raster.name}")
+    return sum(float(value) > 0 for value in values), len(values)
+
+
+def _log_alpha_coverage(stage: str, raster: Path, size: int = 64) -> None:
+    valid, total = _sample_alpha_coverage(raster, size)
+    print(f"imagery diagnostic {stage}: alpha {valid}/{total} ({valid / total:.1%})", file=sys.stderr, flush=True)
 
 
 def _build_web_tiles(mosaic: Path, tiles: Path, config: SyncConfig) -> None:
@@ -616,6 +946,38 @@ def _invalidate_planetary_token(url: str) -> None:
         _PLANETARY_TOKEN_CACHE.pop((account, container), None)
 
 
+def _download_google_asset(config: SyncConfig, url: str, destination: Path) -> None:
+    """Sequentially fetch JP2 before GDAL opens it; remote random reads stalled on ECS."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or parsed.hostname != "storage.googleapis.com" \
+            or not parsed.path.startswith("/gcp-public-data-sentinel-2/L2/tiles/") \
+            or not parsed.path.endswith(".jp2") or parsed.query or parsed.fragment:
+        raise ValueError("Google imagery asset is not an approved public Sentinel-2 JP2")
+    partial = destination.with_suffix(destination.suffix + ".part")
+    for attempt in range(3):
+        partial.unlink(missing_ok=True)
+        try:
+            with urllib.request.urlopen(url, timeout=config.request_timeout_seconds) as response:
+                length = response.headers.get("Content-Length")
+                expected = int(length) if length is not None else None
+                if expected is not None and not 100_000 < expected < 300_000_000:
+                    raise RuntimeError("Google imagery asset size is out of range")
+                received = 0
+                with partial.open("wb") as output:
+                    while block := response.read(1024 * 1024):
+                        output.write(block)
+                        received += len(block)
+                if received <= 100_000 or (expected is not None and received != expected):
+                    raise RuntimeError("Google imagery asset download is incomplete")
+            partial.replace(destination)
+            return
+        except (OSError, RuntimeError, urllib.error.URLError) as failure:
+            partial.unlink(missing_ok=True)
+            if attempt == 2:
+                raise RuntimeError("Google imagery asset download failed after 3 attempts") from failure
+            time.sleep(2**attempt)
+
+
 def _run_remote_warp(
     config: SyncConfig,
     url: str,
@@ -624,19 +986,28 @@ def _run_remote_warp(
     destination: Path,
 ) -> None:
     """Retry a transient remote GDAL read with a newly signed source URL."""
+    single_range = (
+        config.candidate_single_range
+        and urllib.parse.urlparse(url).hostname == "sentinel2l2a01.blob.core.windows.net"
+    )
+    overrides = {
+        "GDAL_HTTP_MULTIRANGE": "NO",
+        "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "NO",
+    } if single_range else {}
     for attempt in range(3):
         try:
             source = _vsicurl(url, config.allowed_hosts, config.request_timeout_seconds)
             _run(
                 ["gdalwarp", *warp_common, "-r", resampling, source, str(destination)],
                 config.command_timeout_seconds,
+                extra_env=overrides,
             )
             return
         except RuntimeError as failure:
             destination.unlink(missing_ok=True)
             if attempt == 2:
                 raise RuntimeError(
-                    f"remote imagery warp failed after 3 attempts: {destination.name}"
+                    f"remote imagery warp failed after 3 attempts: {destination.name}: {failure}"
                 ) from failure
             _invalidate_planetary_token(url)
             time.sleep(2**attempt)
@@ -652,14 +1023,62 @@ def _scene_band_expressions() -> list[str]:
     # Sentinel SCL uses 255 for pixels outside a scene. An exclusion list
     # accidentally treated 255 as clear and published opaque white tiles.
     clear = "((D==2)|(D==4)|(D==5)|(D==6)|(D==7))"
-    return [f"{band}*{clear}" for band in "ABC"] + [f"255*{clear}"]
+    return [f"A*{clear}"] * 3 + [f"255*{clear}"]
 
 
-def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: int) -> Path:
+def _build_masked_scene(
+    warped_rgb: Path, warped_scl: Path, scene: Path, timeout: int
+) -> Path:
+    """Create RGBA with single-expression calls supported by GDAL 3.0."""
+    masked = scene / "masked.tif"
+    bands: list[Path] = []
+    for index, expression in enumerate(_scene_band_expressions(), start=1):
+        output = scene / f"masked-band-{index}.tif"
+        command = [
+            "gdal_calc.py", "-A", str(warped_rgb if index < 4 else warped_scl),
+            "--A_band=" + str(index if index < 4 else 1),
+            "-D", str(warped_scl), "--D_band=1",
+            f"--calc={expression}", "--type=Byte", "--NoDataValue=0",
+            "--co=TILED=YES", "--co=COMPRESS=DEFLATE", f"--outfile={output}",
+        ]
+        _run(command, timeout)
+        bands.append(output)
+    vrt = scene / "masked.vrt"
+    _run(["gdalbuildvrt", "-separate", str(vrt), *(str(band) for band in bands)], timeout)
+    tree = ET.parse(vrt)
+    vrt_bands = tree.findall("./VRTRasterBand")
+    if len(vrt_bands) != 4:
+        raise ReleaseValidationError(f"masked scene VRT has {len(vrt_bands)} bands instead of 4")
+    for band, color in zip(vrt_bands, ("Red", "Green", "Blue", "Alpha")):
+        interpretation = band.find("ColorInterp")
+        if interpretation is None:
+            interpretation = ET.SubElement(band, "ColorInterp")
+        interpretation.text = color
+    tree.write(vrt, encoding="utf-8", xml_declaration=True)
+    _run(
+        ["gdal_translate", "-of", "GTiff", "-co", "TILED=YES", "-co", "COMPRESS=DEFLATE",
+         "-co", "BIGTIFF=IF_SAFER", str(vrt), str(masked)],
+        timeout,
+    )
+    for temporary in (*bands, vrt):
+        temporary.unlink()
+    return masked
+
+
+def _build_scene(
+    config: SyncConfig, candidate: Candidate, work: Path, index: int,
+    bounds_override: tuple[float, float, float, float] | None = None,
+) -> Path:
     scene = work / f"scene-{index:03d}"
     scene.mkdir()
     rgb = scene / "rgb.tif"
     visual_url = candidate.assets.get("visual")
+    google_source = visual_url is not None and urllib.parse.urlparse(visual_url).hostname == "storage.googleapis.com"
+    local_visual = scene / "visual.jp2" if google_source else None
+    local_scl = scene / "scl.jp2" if google_source else None
+    if google_source:
+        _download_google_asset(config, visual_url, local_visual)
+        _download_google_asset(config, candidate.assets["scl"], local_scl)
     if visual_url is not None:
         # Warp the cloud-optimized remote asset directly. Copying every complete
         # 100 km Sentinel scene first exhausts the small production volume before
@@ -714,6 +1133,13 @@ def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: in
             raise RuntimeError(f"candidate does not intersect AOI: {candidate.product_id}")
     else:
         west, south, east, north = aoi_west, aoi_south, aoi_east, aoi_north
+    if bounds_override is not None:
+        if len(bounds_override) != 4 or not all(math.isfinite(value) for value in bounds_override):
+            raise ReleaseValidationError("repair window has invalid bounds")
+        west, south = max(west, bounds_override[0]), max(south, bounds_override[1])
+        east, north = min(east, bounds_override[2]), min(north, bounds_override[3])
+        if west >= east or south >= north:
+            raise ReleaseValidationError("repair window does not intersect source and AOI")
     warp_common = [
         "-t_srs",
         "EPSG:3857",
@@ -740,40 +1166,28 @@ def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: in
         "-co",
         "BIGTIFF=IF_SAFER",
     ]
-    if visual_url is not None:
+    if google_source:
+        _run(
+            ["gdalwarp", *warp_common, "-r", "cubic", str(local_visual), str(warped_rgb)],
+            config.command_timeout_seconds,
+        )
+    elif visual_url is not None:
         _run_remote_warp(config, visual_url, warp_common, "cubic", warped_rgb)
     else:
         _run(
             ["gdalwarp", *warp_common, "-r", "cubic", rgb_source, str(warped_rgb)],
             config.command_timeout_seconds,
         )
-    _run_remote_warp(config, candidate.assets["scl"], warp_common, "near", warped_scl)
-    masked = scene / "masked.tif"
-    _run(
-        [
-            "gdal_calc.py",
-            "-A",
-            str(warped_rgb),
-            "--A_band=1",
-            "-B",
-            str(warped_rgb),
-            "--B_band=2",
-            "-C",
-            str(warped_rgb),
-            "--C_band=3",
-            "-D",
-            str(warped_scl),
-            "--D_band=1",
-            *[f"--calc={expression}" for expression in _scene_band_expressions()],
-            "--type=Byte",
-            "--NoDataValue=0",
-            "--co=TILED=YES",
-            "--co=COMPRESS=DEFLATE",
-            "--co=BIGTIFF=IF_SAFER",
-            f"--outfile={masked}",
-        ],
-        config.command_timeout_seconds,
-    )
+    if google_source:
+        _run(
+            ["gdalwarp", *warp_common, "-r", "near", str(local_scl), str(warped_scl)],
+            config.command_timeout_seconds,
+        )
+        local_visual.unlink()
+        local_scl.unlink()
+    else:
+        _run_remote_warp(config, candidate.assets["scl"], warp_common, "near", warped_scl)
+    masked = _build_masked_scene(warped_rgb, warped_scl, scene, config.command_timeout_seconds)
     warped_rgb.unlink()
     warped_scl.unlink()
     if rgb.exists():
@@ -781,8 +1195,359 @@ def _build_scene(config: SyncConfig, candidate: Candidate, work: Path, index: in
     return masked
 
 
+def _dissolve_historical_cutline(config: SyncConfig, destination: Path) -> Path:
+    """Avoid cancelling pixels where the four coverage envelopes overlap."""
+    if shutil.which("ogr2ogr") is None:
+        raise ReleaseValidationError("ogr2ogr is required for historical imagery cutline")
+    payload = json.loads(config.aoi.read_text())
+    layer = payload.get("name") if isinstance(payload, dict) else None
+    if not isinstance(layer, str) or re.fullmatch(r"[A-Za-z0-9_-]+", layer) is None:
+        raise ReleaseValidationError("historical imagery AOI has no valid layer name")
+    _run(
+        ["ogr2ogr", "-f", "GeoJSON", str(destination), str(config.aoi),
+         "-dialect", "SQLite",
+         "-sql", f'SELECT ST_Union(geometry) AS geometry FROM "{layer}"'],
+        config.command_timeout_seconds,
+    )
+    dissolved = json.loads(destination.read_text())
+    features = dissolved.get("features") if isinstance(dissolved, dict) else None
+    geometry = features[0].get("geometry") if isinstance(features, list) \
+        and len(features) == 1 and isinstance(features[0], dict) else None
+    if not isinstance(geometry, dict) or geometry.get("type") not in ("Polygon", "MultiPolygon") \
+            or not geometry.get("coordinates"):
+        raise ReleaseValidationError("historical imagery cutline is not a single union geometry")
+    return destination
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _json_sha256(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _atomic_json(path: Path, value: Any) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with temporary.open("x") as stream:
+        json.dump(value, stream, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.replace(path)
+
+
+def _gdal_version() -> str:
+    try:
+        return subprocess.check_output(["gdalinfo", "--version"], text=True, timeout=30).strip()
+    except (OSError, subprocess.SubprocessError) as failure:
+        raise ReleaseValidationError("cannot identify GDAL runtime for recovery") from failure
+
+
+def _scene_resume_context(
+    config: SyncConfig, window: WeekWindow, candidates: Sequence[Candidate],
+    source_plan: Mapping[str, Any], *, original_aoi: Path | None = None,
+) -> dict[str, Any]:
+    west, south, east, north = aoi_bounds(config.aoi)
+    scenes = []
+    for index, candidate in enumerate(reversed(candidates)):
+        if candidate.bounds is None:
+            raise ReleaseValidationError("recovery requires explicit scene bounds")
+        left, bottom, right, top = candidate.bounds
+        left, bottom, right, top = max(left, west), max(bottom, south), min(right, east), min(top, north)
+        if left >= right or bottom >= top or not -85 < bottom < top < 85:
+            raise ReleaseValidationError("recovery scene bounds are invalid")
+        def mercator_y(latitude: float) -> float:
+            return 6378137.0 * math.log(math.tan(math.pi / 4 + math.radians(latitude) / 2))
+        xmin = math.floor(6378137.0 * math.radians(left) / 10) * 10
+        xmax = math.ceil(6378137.0 * math.radians(right) / 10) * 10
+        ymin = math.floor(mercator_y(bottom) / 10 + 1e-9) * 10
+        ymax = math.ceil(mercator_y(top) / 10 - 1e-9) * 10
+        scenes.append({
+            "index": index, "productId": candidate.product_id, "observedAt": candidate.observed_at,
+            "candidateSha256": _json_sha256({"assets": dict(candidate.assets), "bounds": candidate.bounds,
+                                             "gridCode": candidate.grid_code, "authorized": candidate.authorized}),
+            "grid": {"size": [(xmax - xmin) // 10, (ymax - ymin) // 10],
+                     "transform": [xmin, 10, 0, ymax, 0, -10]},
+        })
+    return {
+        "schema": 1, "version": window.identifier, "gdalVersion": _gdal_version(),
+        "workerSha256": _file_sha256(Path(__file__).resolve()),
+        "sourcePlanSha256": _json_sha256(source_plan),
+        "aoiSha256": _file_sha256(original_aoi or config.aoi),
+        "cutlineSha256": _file_sha256(config.aoi),
+        "processing": {"epsg": 3857, "pixelMeters": 10, "rgbResampling": "cubic", "sclResampling": "near",
+                       "maskExpressions": _scene_band_expressions(), "candidateSingleRange": True},
+        "scenes": scenes,
+    }
+
+
+def _write_scene_completion(
+    raster: Path, context: Mapping[str, Any], index: int, origin: Mapping[str, Any] | None = None,
+) -> None:
+    _atomic_json(raster.parent / "complete.json", {
+        "contextSha256": _json_sha256(context), "scene": context["scenes"][index],
+        "sha256": _file_sha256(raster), "bytes": raster.stat().st_size,
+        "origin": dict(origin) if origin is not None else {"kind": "generated"},
+    })
+
+
+# Executed by the GDAL Python interpreter; production GDAL 3.0 uses Python 3.6.
+# Keep this script compatible and independent of the worker's Python runtime.
+_RESUME_RASTER_CHECK = r'''
+import json, sys
+import numpy as np
+from osgeo import gdal, osr
+gdal.UseExceptions()
+request = json.load(sys.stdin)
+ds = gdal.Open(request['path'], gdal.GA_ReadOnly)
+if ds is None or ds.GetDriver().ShortName != 'GTiff' or ds.RasterCount != 4:
+    raise ValueError('expected four-band GeoTIFF')
+if [ds.RasterXSize, ds.RasterYSize] != request['grid']['size']:
+    raise ValueError('scene size mismatch')
+if any(abs(a-b) > 1e-6 for a,b in zip(ds.GetGeoTransform(), request['grid']['transform'])):
+    raise ValueError('scene grid mismatch')
+actual = osr.SpatialReference(); actual.ImportFromWkt(ds.GetProjection())
+expected = osr.SpatialReference(); expected.ImportFromEPSG(3857)
+if not actual.IsSame(expected):
+    raise ValueError('scene CRS mismatch')
+if ds.GetFileList() != [request['path']]:
+    raise ValueError('scene depends on sidecar files')
+for i, color in enumerate([gdal.GCI_RedBand,gdal.GCI_GreenBand,gdal.GCI_BlueBand,gdal.GCI_AlphaBand], 1):
+    band = ds.GetRasterBand(i)
+    if band.DataType != gdal.GDT_Byte or band.GetColorInterpretation() != color:
+        raise ValueError('scene band type or interpretation mismatch')
+valid = 0
+blocks = 0
+for y in range(0, ds.RasterYSize, 512):
+    for x in range(0, ds.RasterXSize, 512):
+        w, h = min(512, ds.RasterXSize-x), min(512, ds.RasterYSize-y)
+        pixels = ds.ReadAsArray(x,y,w,h)
+        if pixels is None or pixels.shape != (4,h,w):
+            raise ValueError('incomplete raster block')
+        alpha = pixels[3]
+        if np.any((alpha != 0) & (alpha != 255)):
+            raise ValueError('non-binary alpha')
+        if np.any(pixels[:3, alpha == 0] != 0):
+            raise ValueError('nonzero transparent RGB')
+        valid += int(np.count_nonzero(alpha == 255))
+        blocks += 1
+if valid == 0:
+    raise ValueError('scene has no valid pixels')
+print(json.dumps({'validPixels': valid, 'pixels': ds.RasterXSize*ds.RasterYSize, 'blocks': blocks, 'gdalVersion': gdal.VersionInfo('--version')}))
+'''
+
+
+def _validate_resume_raster(raster: Path, grid: Mapping[str, Any], timeout: int) -> dict[str, Any]:
+    environment = os.environ.copy()
+    environment["GDAL_PAM_ENABLED"] = "NO"
+    try:
+        result = subprocess.run(
+            [os.getenv("QIQIHAR_IMAGERY_GDAL_PYTHON", "python3"), "-c", _RESUME_RASTER_CHECK],
+            input=json.dumps({"path": str(raster), "grid": grid}), env=environment,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=timeout, check=True,
+        )
+        return json.loads(result.stdout)
+    except (subprocess.SubprocessError, OSError, ValueError) as failure:
+        detail = (failure.stderr or "")[-1000:] if isinstance(failure, subprocess.CalledProcessError) else type(failure).__name__
+        detail = re.sub(r"(?:/vsicurl/)?https://[^\s\'\"<>]+", "[remote asset]", detail)
+        raise ReleaseValidationError(f"recovery full-pixel validation failed: {raster.parent.name}: {detail}") from failure
+
+
+def _recovery_regular(path: Path, base: Path) -> Path:
+    if path.is_symlink() or any(parent.is_symlink() for parent in path.parents if parent != base and base in parent.parents):
+        raise ReleaseValidationError("recovery refuses symlink paths")
+    if not path.is_file() or not path.resolve().is_relative_to(base.resolve()):
+        raise ReleaseValidationError("recovery requires contained regular files")
+    return path
+
+
+def _restore_scenes(
+    config: SyncConfig, failed: Path, work: Path, context: Mapping[str, Any],
+) -> dict[int, Path]:
+    failed = failed.absolute()
+    if failed.is_symlink() or failed.parent.resolve() != config.root.resolve() or not failed.name.startswith(".failed-"):
+        raise ReleaseValidationError("recovery requires an explicit quarantined directory under imagery root")
+    _recovery_regular(failed / "FAILED", failed)
+    context_path = failed / "build-context.json"
+    if not context_path.exists():
+        raise ReleaseValidationError("recovery build context missing; legacy artifacts need independent provenance evidence")
+    try:
+        previous = json.loads(_recovery_regular(context_path, failed).read_text())
+        if previous != context:
+            raise ReleaseValidationError("recovery build context mismatch")
+        plan = json.loads(_recovery_regular(failed / "source-plan.json", failed).read_text())
+        if _json_sha256(plan) != context["sourcePlanSha256"]:
+            raise ReleaseValidationError("recovery source plan mismatch")
+        cutline = _recovery_regular(failed / "work" / "cutline-union.geojson", failed)
+        if _file_sha256(cutline) != context["cutlineSha256"]:
+            raise ReleaseValidationError("recovery cutline mismatch")
+        restored = {}
+        audit = {"schema": 1, "source": failed.name, "contextSha256": _json_sha256(context), "scenes": []}
+        for identity in context["scenes"]:
+            index = identity["index"]
+            source = failed / "work" / f"scene-{index:03d}" / "masked.tif"
+            completion = source.parent / "complete.json"
+            if not completion.exists():
+                continue  # Incomplete output is never reused.
+            record = json.loads(_recovery_regular(completion, failed).read_text())
+            source = _recovery_regular(source, failed)
+            if record.get("contextSha256") != audit["contextSha256"] or record.get("scene") != identity:
+                raise ReleaseValidationError("recovery scene identity mismatch")
+            digest = _file_sha256(source)
+            if record.get("sha256") != digest or record.get("bytes") != source.stat().st_size:
+                raise ReleaseValidationError("recovery scene digest mismatch")
+            print(f"imagery recovery validating scene-{index:03d} product={identity['productId']}", file=sys.stderr, flush=True)
+            checked = _validate_resume_raster(source, identity["grid"], config.command_timeout_seconds)
+            if checked.get("gdalVersion") != context["gdalVersion"]:
+                raise ReleaseValidationError("recovery Python GDAL runtime mismatch")
+            require_free_space(config.root, config.minimum_free_bytes + source.stat().st_size)
+            destination = work / source.parent.name / "masked.tif"
+            destination.parent.mkdir()
+            partial = destination.with_suffix(".part")
+            shutil.copyfile(source, partial)  # Never hard-link a quarantined artifact.
+            if _file_sha256(partial) != digest or _file_sha256(source) != digest:
+                raise ReleaseValidationError("recovery digest changed during validation/copy")
+            partial.replace(destination)
+            _write_scene_completion(destination, context, index, record.get("origin"))
+            restored[index] = destination
+            audit["scenes"].append({"index": index, "productId": identity["productId"], "sha256": digest, **checked})
+        if not restored:
+            raise ReleaseValidationError("recovery has no verified scenes; refusing blind full rebuild")
+        _atomic_json(work.parent / "resume-audit.json", audit)
+        return restored
+    except (OSError, ValueError, KeyError, TypeError) as failure:
+        raise ReleaseValidationError("recovery evidence is invalid or unreadable") from failure
+
+
+# One-off evidence pins from the independent 2026-09-26 production audit.
+# These are not producer completion records and never authorize publication.
+_R4G_MIGRATION = {
+    "failedName": ".failed-2026-09-r4-t9s5w865", "version": "2026-09-r4",
+    "reportSha256": "ed025f9021f0c828ea1380a32ddb1ad257addb6104412b8c744a1e821104723b",
+    "originalWorkerSha256": "05b7ad3ee4f0636f87860ba0619e5353f768417020121c8200881e2889450f0e",
+    "checkerWorkerSha256": "4e7e2a99d9d8d6c8d54a19a368553d6118c8418ab26191fe902f82ddde09c6e9",
+    "planFileSha256": "87b70edd5eaf850ab66a7f87edfd08c241cd5e138f17c911fbbfae7e139b70d9",
+    "aoiSha256": "6457202160f92a169b70766275a97984041da49f040a79446170125c4923b072",
+    "cutlineSha256": "8066dc9d3501bd3530f7bf728a1b6507aa1ab127188db38a9f4151adcc2bc0ed",
+    "indices": [*range(16), 17, 18],
+    "processingSha256": "eaa53d55099e6ecc6ff4ce7375c0e1fd833eeae64399a0712140255fe591a695",
+}
+
+
+def _r4g_unit_evidence() -> dict[str, str]:
+    unit = "cofco-four-region-imagery-candidate-r4g-20260926.service"
+    try:
+        output = subprocess.check_output(
+            ["systemctl", "show", unit, "--property=ActiveState,Result,ExecMainStatus,ExecStart"],
+            text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as failure:
+        raise ReleaseValidationError("legacy original unit evidence unavailable") from failure
+    fields = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+    command = fields.get("ExecStart", "")
+    if any(fields.get(k) != v for k, v in {"ActiveState": "failed", "Result": "exit-code", "ExecMainStatus": "1"}.items()) or not all(
+        value in command for value in (
+            "/usr/local/lib/cofco-imagery/weekly_imagery_sync-r4g.py",
+            "--root /var/lib/cofco/imagery", "--aoi /usr/local/lib/cofco-imagery/four-region-aoi.geojson",
+            "--historical-source-plan /usr/local/lib/cofco-imagery/r4e-source-plan.json",
+            "--revision 4 --", "--build-only", "/run/cofco-imagery/sync.lock",
+        )
+    ):
+        raise ReleaseValidationError("legacy original unit identity mismatch")
+    return {"unit": unit, **fields}
+
+
+def _migrate_r4g_scenes(
+    config: SyncConfig, failed: Path, work: Path, context: Mapping[str, Any],
+    report_path: Path, original_worker: Path, plan_path: Path,
+) -> dict[int, Path]:
+    """Explicit, pinned migration of audited old files; never mutates quarantine."""
+    pins = _R4G_MIGRATION
+    failed = failed.absolute()
+    if failed.is_symlink() or failed.parent.resolve() != config.root.resolve() or failed.name != pins["failedName"]:
+        raise ReleaseValidationError("legacy quarantine identity mismatch")
+    try:
+        _recovery_regular(failed / "FAILED", failed)
+        _recovery_regular(report_path, config.root)
+        if _file_sha256(report_path) != pins["reportSha256"]:
+            raise ReleaseValidationError("legacy report digest mismatch")
+        report = json.loads(report_path.read_text())
+        if _json_sha256(context["processing"]) != pins["processingSha256"]:
+            raise ReleaseValidationError("legacy processing contract mismatch")
+        if context["version"] != pins["version"] or report.get("schema") != 1:
+            raise ReleaseValidationError("legacy version mismatch")
+        for key in ("originalWorkerSha256", "checkerWorkerSha256", "planFileSha256", "aoiSha256", "cutlineSha256"):
+            if report.get(key) != pins[key]:
+                raise ReleaseValidationError(f"legacy evidence mismatch: {key}")
+        for key in ("aoiSha256", "cutlineSha256"):
+            if context[key] != pins[key]:
+                raise ReleaseValidationError(f"legacy target mismatch: {key}")
+        if _file_sha256(_recovery_regular(original_worker, original_worker.parent)) != pins["originalWorkerSha256"]:
+            raise ReleaseValidationError("legacy original worker mismatch")
+        if _file_sha256(_recovery_regular(plan_path, plan_path.parent)) != pins["planFileSha256"] or _json_sha256(json.loads(plan_path.read_text())) != context["sourcePlanSha256"]:
+            raise ReleaseValidationError("legacy plan mismatch")
+        cutline = _recovery_regular(failed / "work" / "cutline-union.geojson", failed)
+        if _file_sha256(cutline) != pins["cutlineSha256"]:
+            raise ReleaseValidationError("legacy source cutline mismatch")
+        if (failed / "build-context.json").exists() or not all(report.get(k) is True for k in ("orderAgreesWithOriginalWorker", "nativeRecordsAbsent", "all18Readable")):
+            raise ReleaseValidationError("legacy audit incomplete or native records present")
+        rows = report["scenes"]
+        if [row["scene"]["index"] for row in rows] != pins["indices"]:
+            raise ReleaseValidationError("legacy scene set mismatch")
+        unit = _r4g_unit_evidence()
+        # Validate all identities before copying any output.
+        for row in rows:
+            index = row["scene"]["index"]
+            if row["scene"] != context["scenes"][index] or not all(row.get(k) is True for k in ("mtimeWithinOriginalRun", "fullRasterPass", "unchangedAfterRead")) or row.get("completeRecordExists") is not False:
+                raise ReleaseValidationError("legacy scene identity or audit mismatch")
+        receipt = {"kind": "independent-legacy-audit-copy", "reportSha256": pins["reportSha256"],
+                   "originalWorkerSha256": pins["originalWorkerSha256"], "unitEvidence": unit,
+                   "targetContextSha256": _json_sha256(context), "source": failed.name, "scenes": []}
+        restored = {}
+        for row in rows:
+            identity = row["scene"]; index = identity["index"]
+            source = _recovery_regular(failed / "work" / f"scene-{index:03d}" / "masked.tif", failed)
+            if (source.parent / "complete.json").exists():
+                raise ReleaseValidationError("legacy producer record unexpectedly present")
+            st = source.stat(); digest = _file_sha256(source)
+            if digest != row["sha256"] or st.st_size != row["bytes"] or st.st_mtime_ns != row["mtimeNs"]:
+                raise ReleaseValidationError("legacy source digest or timestamp mismatch")
+            print(f"imagery legacy migration validating scene-{index:03d} product={identity['productId']}", file=sys.stderr, flush=True)
+            checked = _validate_resume_raster(source, identity["grid"], config.command_timeout_seconds)
+            if checked != row["rasterCheck"] or checked.get("gdalVersion") != context["gdalVersion"]:
+                raise ReleaseValidationError("legacy raster audit or GDAL mismatch")
+            require_free_space(config.root, config.minimum_free_bytes + st.st_size)
+            destination = work / source.parent.name / "masked.tif"; destination.parent.mkdir()
+            partial = destination.with_suffix(".part")
+            shutil.copyfile(source, partial)
+            if _file_sha256(partial) != digest or _file_sha256(source) != digest or source.stat().st_mtime_ns != st.st_mtime_ns:
+                raise ReleaseValidationError("legacy digest changed during copy")
+            partial.replace(destination)
+            _atomic_json(destination.parent / "complete.json", {
+                "contextSha256": receipt["targetContextSha256"], "scene": identity,
+                "sha256": digest, "bytes": st.st_size,
+                "origin": {"kind": receipt["kind"], "reportSha256": pins["reportSha256"],
+                           "originalWorkerSha256": pins["originalWorkerSha256"]},
+            })
+            receipt["scenes"].append({"index": index, "sha256": digest, **checked})
+            restored[index] = destination
+        _atomic_json(work.parent / "legacy-migration.json", receipt)
+        return restored
+    except (OSError, ValueError, KeyError, TypeError, IndexError) as failure:
+        raise ReleaseValidationError("legacy evidence invalid or unreadable") from failure
+
+
 def build_release(
-    config: SyncConfig, window: WeekWindow, candidates: Sequence[Candidate], now: datetime
+    config: SyncConfig, window: WeekWindow, candidates: Sequence[Candidate], now: datetime,
+    source_plan: Mapping[str, Any] | None = None,
+    resume_failed: Path | None = None,
+    migrate_r4g_audit: Path | None = None,
+    atomic_source_mosaic: bool = False,
 ) -> Path:
     _check_gdal()
     config.root.mkdir(parents=True, exist_ok=True)
@@ -790,12 +1555,45 @@ def build_release(
     try:
         work = staging / "work"
         work.mkdir()
+        scene_config = config
+        context = None
+        restored: dict[int, Path] = {}
+        if migrate_r4g_audit is not None and (resume_failed is not None or source_plan is None):
+            raise ReleaseValidationError("legacy migration requires exclusive historical candidate mode")
+        if resume_failed is not None and source_plan is None:
+            raise ReleaseValidationError("recovery requires a historical candidate")
+        if source_plan is not None:
+            _prepare_tiling_temp(work)
+            cutline = _dissolve_historical_cutline(config, work / "cutline-union.geojson")
+            scene_config = replace(config, aoi=cutline, candidate_single_range=True)
+            context = _scene_resume_context(scene_config, window, candidates, source_plan, original_aoi=config.aoi)
+            _atomic_json(staging / "build-context.json", context)
+            _atomic_json(staging / "source-plan.json", source_plan)
+            if resume_failed is not None:
+                restored = _restore_scenes(config, resume_failed, work, context)
+            if migrate_r4g_audit is not None:
+                base = Path(__file__).resolve().parent
+                restored = _migrate_r4g_scenes(
+                    config, config.root / _R4G_MIGRATION["failedName"], work, context,
+                    migrate_r4g_audit, base / "weekly_imagery_sync-r4g.py", base / "r4e-source-plan.json",
+                )
         indexed_candidates = list(enumerate(reversed(candidates)))
 
         def build_scene(item: tuple[int, Candidate]) -> Path:
             index, candidate = item
+            if index in restored:
+                return restored[index]
             require_free_space(config.root, config.minimum_free_bytes)
-            return _build_scene(config, candidate, work, index)
+            try:
+                scene = _build_scene(scene_config, candidate, work, index)
+            except RuntimeError as failure:
+                raise RuntimeError(
+                    f"scene-{index:03d} product={candidate.product_id}: {failure}"
+                ) from failure
+            if context is not None:
+                _write_scene_completion(scene, context, index)
+            _log_alpha_coverage(f"scene grid={candidate.grid_code or 'unknown'}", scene)
+            return scene
 
         worker_count = _scene_worker_count(len(indexed_candidates))
         if worker_count == 1:
@@ -817,30 +1615,64 @@ def build_release(
             ],
             config.command_timeout_seconds,
         )
+        # A broad random sample across the VRT reopens hundreds of large source
+        # rasters and can exceed the diagnostic's fixed timeout. Publication is
+        # gated below by actual tile coverage and by release validation.
         mosaic = work / "mosaic.tif"
-        _run(
-            [
-                "gdal_translate",
-                "-of",
-                "GTiff",
-                "-co",
-                "TILED=YES",
-                "-co",
-                "COMPRESS=DEFLATE",
-                "-co",
-                "BIGTIFF=IF_SAFER",
-                str(mosaic_vrt),
-                str(mosaic),
-            ],
-            config.command_timeout_seconds,
-        )
+        if atomic_source_mosaic:
+            scene_table = [
+                {"sceneIndex": position, "productId": candidate.product_id,
+                 "acquiredAt": candidate.observed_at, "maskedRaster": str(scene)}
+                for position, ((_, candidate), scene) in enumerate(zip(indexed_candidates, scenes), 1)
+            ]
+            _atomic_json(work / "atomic-scene-table.json", {"scenesInPriorityOrder": scene_table})
+            _run(
+                [os.environ.get("COFCO_IMAGERY_GDAL_PYTHON", "/usr/bin/python3"),
+                 str(Path(__file__).with_name("atomic_scene_mosaic.py")),
+                 "--grid-vrt", str(mosaic_vrt),
+                 "--scene-table", str(work / "atomic-scene-table.json"),
+                 "--rgba-out", str(mosaic),
+                 "--index-out", str(staging / "scene-index.tif")],
+                max(config.command_timeout_seconds, 8 * 3600),
+            )
+            _atomic_json(staging / "source-index.json", {
+                "schema": 1,
+                "indexRaster": "scene-index.tif",
+                "scenesInPriorityOrder": [
+                    {key: entry[key] for key in ("sceneIndex", "productId", "acquiredAt")}
+                    for entry in scene_table
+                ],
+            })
+        else:
+            _run(
+                [
+                    "gdal_translate",
+                    "-of",
+                    "GTiff",
+                    "-co",
+                    "TILED=YES",
+                    "-co",
+                    "COMPRESS=DEFLATE",
+                    "-co",
+                    "BIGTIFF=IF_SAFER",
+                    str(mosaic_vrt),
+                    str(mosaic),
+                ],
+                config.command_timeout_seconds,
+            )
         require_free_space(config.root, config.minimum_free_bytes)
         tiles = staging / "tiles"
         _build_web_tiles(mosaic, tiles, config)
-        _discard_tiny_webp_tiles(tiles)
+        tile_count = sum(1 for _ in tiles.rglob("*.webp"))
+        removed = _discard_tiny_webp_tiles(tiles, mosaic)
+        print(
+            f"imagery diagnostic webp tiles: generated={tile_count} "
+            f"tiny_removed={removed} retained={tile_count - removed}",
+            file=sys.stderr, flush=True,
+        )
         if not any(tiles.rglob("*.webp")):
             raise ReleaseValidationError("GDAL produced no imagery tiles")
-        _require_nonempty_tile_coverage(tiles, aoi_bounds(config.aoi), config.maximum_zoom)
+        _require_release_tile_coverage(tiles, config.aoi, config.maximum_zoom)
         observed = sorted(candidate.observed_at for candidate in candidates)
         metadata = {
             "version": window.identifier,
@@ -855,18 +1687,45 @@ def build_release(
                 sum(candidate.cloud_percent for candidate in candidates) / len(candidates), 2
             ),
             "status": "CURRENT",
+            "coverageRegionCodes": [
+                feature["properties"]["regionCode"]
+                for feature in json.loads(config.aoi.read_text()).get("features", [])
+                if isinstance(feature, Mapping)
+                and isinstance(feature.get("properties"), Mapping)
+                and isinstance(feature["properties"].get("regionCode"), str)
+            ],
             "sourceProductIds": [candidate.product_id for candidate in candidates],
-            "truthStatement": "Latest available cloud-filtered observation; not live video.",
+            "truthStatement": (
+                "优先使用2026-09-14至2026-09-20采集的Sentinel-2 L2A 10米RGB；"
+                "缺口使用2026-08-01至2026-09-13的历史10米RGB；"
+                "云分类SCL为20米；采集日期因位置而异，非实时影像。"
+                if source_plan is not None else
+                "Latest available cloud-filtered observation; not live video."
+            ),
         }
+        if atomic_source_mosaic:
+            metadata["positionDateIndex"] = "source-index.json"
         (staging / "metadata.json").write_text(
             json.dumps(metadata, ensure_ascii=False, sort_keys=True) + "\n"
         )
+        if source_plan is not None:
+            (staging / "source-plan.json").write_text(
+                json.dumps(source_plan, ensure_ascii=False, sort_keys=True) + "\n"
+            )
         shutil.rmtree(work)
         _write_manifest(staging)
         validate_release(staging)
         return staging
     except BaseException:
-        shutil.rmtree(staging, ignore_errors=True)
+        if source_plan is not None:
+            # Quarantine expensive candidate artifacts for diagnosis/recovery.
+            # A failed candidate must never pass publication validation.
+            (staging / "FAILED").write_text("Candidate build failed; not publishable.\n")
+            failed = staging.with_name(staging.name.replace(".staging-", ".failed-", 1))
+            staging.rename(failed)
+            print(f"failed imagery candidate retained: {failed}", file=sys.stderr, flush=True)
+        else:
+            shutil.rmtree(staging, ignore_errors=True)
         raise
 
 
@@ -886,6 +1745,8 @@ def _write_manifest(path: Path) -> None:
 
 def validate_release(path: Path) -> ReleaseMetadata:
     root = path.resolve()
+    if (root / "FAILED").exists() or root.name.startswith(".failed-"):
+        raise ReleaseValidationError("failed candidate cannot be published")
     metadata_path = root / "metadata.json"
     manifest_path = root / "manifest.sha256"
     if not metadata_path.is_file() or not manifest_path.is_file():
@@ -926,6 +1787,249 @@ def validate_release(path: Path) -> ReleaseMetadata:
     if not metadata.source_product_ids:
         raise ReleaseValidationError("release metadata has no source products")
     return metadata
+
+
+def validate_r4i_repair_baseline(
+    staging: Path, expected_manifest_sha256: str, base_plan_path: Path, delta_path: Path,
+) -> ReleaseMetadata:
+    """Read-only guard for a future isolated repair candidate; never copies or publishes."""
+    if staging.is_symlink() or staging.name != R4I_BASE_STAGE_NAME or not staging.is_dir():
+        raise ReleaseValidationError("r4i repair baseline directory mismatch")
+    if re.fullmatch(r"[0-9a-f]{64}", expected_manifest_sha256) is None:
+        raise ReleaseValidationError("r4i manifest SHA is invalid")
+    manifest = staging / "manifest.sha256"
+    if not manifest.is_file() or _file_sha256(manifest) != expected_manifest_sha256:
+        raise ReleaseValidationError("r4i manifest SHA mismatch")
+    validate_r4j_source_delta(base_plan_path, delta_path)
+    if (staging / "work").exists() or (staging / "FAILED").exists():
+        raise ReleaseValidationError("r4i baseline contains unfinished work")
+    actual: set[str] = set()
+    for path in staging.rglob("*"):
+        if path.is_symlink():
+            raise ReleaseValidationError("r4i baseline contains a symlink")
+        if path.is_file() and path.name != "manifest.sha256":
+            if path.name == "complete.json":
+                raise ReleaseValidationError("r4i baseline contains scene completion state")
+            actual.add(path.relative_to(staging).as_posix())
+    listed = [line.split("  ", 1)[-1] for line in manifest.read_text().splitlines()]
+    if len(listed) != len(set(listed)) or set(listed) != actual:
+        raise ReleaseValidationError("r4i baseline file inventory differs from manifest")
+    metadata = validate_release(staging)
+    if metadata.version != "2026-09-r4":
+        raise ReleaseValidationError("r4i baseline version mismatch")
+    source_plan = json.loads((staging / "source-plan.json").read_text())
+    if _json_sha256(source_plan) != _json_sha256(json.loads(base_plan_path.read_text())):
+        raise ReleaseValidationError("r4i baseline source plan mismatch")
+    product_ids = {feature["id"] for feature in source_plan["features"]}
+    if set(metadata.source_product_ids) != product_ids or len(metadata.source_product_ids) != 189:
+        raise ReleaseValidationError("r4i baseline product list mismatch")
+    return metadata
+
+
+def seed_r4i_repair(
+    root: Path, staging: Path, base_plan_path: Path, delta_path: Path,
+    minimum_free_bytes: int,
+) -> Path:
+    """Copy the guarded r4i baseline into an explicitly unpublishable repair seed."""
+    if staging.resolve().parent != root.resolve():
+        raise ReleaseValidationError("r4i baseline is outside the imagery root")
+    validate_r4i_repair_baseline(staging, R4I_MANIFEST_SHA256, base_plan_path, delta_path)
+    apparent_bytes = sum(path.stat().st_size for path in staging.rglob("*") if path.is_file())
+    required = max(minimum_free_bytes, 2 * apparent_bytes)
+    available = shutil.disk_usage(root).free
+    if available < required:
+        raise ReleaseValidationError(
+            f"insufficient space for isolated repair seed: available={available}, required={required}"
+        )
+    seed = Path(tempfile.mkdtemp(prefix=".failed-2026-09-r4-repair-seed-", dir=root))
+    (seed / "FAILED").write_text("Repair seed incomplete; never publish directly.\n")
+    try:
+        shutil.copytree(staging, seed, dirs_exist_ok=True, copy_function=shutil.copy2)
+        if _file_sha256(seed / "manifest.sha256") != R4I_MANIFEST_SHA256 \
+                or _file_sha256(staging / "manifest.sha256") != R4I_MANIFEST_SHA256:
+            raise ReleaseValidationError("r4i manifest changed while copying repair seed")
+        base_plan = json.loads(base_plan_path.read_text())
+        source_delta = validate_r4j_source_delta(base_plan_path, delta_path)["delta"]
+        _atomic_json(seed / "repair-plan.json", _r4i_repair_plan(base_plan, source_delta))
+    except BaseException:
+        print(f"incomplete repair seed retained: {seed}", file=sys.stderr, flush=True)
+        raise
+    return seed
+
+
+def _r4i_repair_plan(base_plan: Mapping[str, Any], delta: Mapping[str, Any]) -> dict[str, Any]:
+    """Bind only six known holes to source products in an unpublishable seed."""
+    features = base_plan.get("features", [])
+    hulun = [feature for feature in features if feature.get("id") == "S2B_51UXQ_20260914_0_L2A"]
+    if len(hulun) != 1 or delta.get("candidateId") != "S2C_51UYT_20260909_0_L2A":
+        raise ReleaseValidationError("r4i repair sources do not match six-hole plan")
+    _validate_mixed_source_feature(hulun[0], {"planetary-computer": 0, "google-public-sentinel-2-l2a": 0})
+    sources = {
+        delta["candidateId"]: (delta["bbox"], delta["acquiredAt"]),
+        hulun[0]["id"]: (hulun[0]["bbox"], hulun[0]["properties"]["datetime"]),
+    }
+    tiles = []
+    scale = 1 << 14
+
+    def latitude(row: int) -> float:
+        return math.degrees(math.atan(math.sinh(math.pi * (1 - 2 * row / scale))))
+
+    for x, y, product_id in _R4I_REPAIR_HOLES:
+        bounds = [x / scale * 360 - 180, latitude(y + 1),
+                  (x + 1) / scale * 360 - 180, latitude(y)]
+        source_bounds, observed_at = sources[product_id]
+        if not isinstance(source_bounds, list) or len(source_bounds) != 4 or \
+                not (bounds[0] < source_bounds[2] and bounds[2] > source_bounds[0]
+                         and bounds[1] < source_bounds[3] and bounds[3] > source_bounds[1]):
+            raise ReleaseValidationError(f"repair product misses tile 14/{x}/{y}")
+        tiles.append({
+            "z": 14, "x": x, "y": y, "bbox4326": bounds,
+            "productId": product_id, "observedAt": observed_at,
+            "visualResolutionMeters": 10, "sclResolutionMeters": 20,
+            "ancestorPaths": [f"{z}/{x >> (14-z)}/{y >> (14-z)}.webp" for z in range(13, 4, -1)],
+        })
+    return {
+        "schema": 1, "status": "UNPUBLISHABLE_TILE_REPAIR_PLAN_ONLY",
+        "baseManifestSha256": R4I_MANIFEST_SHA256,
+        "basePlanSha256": R4J_BASE_PLAN_SHA256,
+        "deltaSha256": R4J_SOURCE_DELTA_SHA256,
+        "tiles": tiles,
+    }
+
+
+def render_r4i_repair_group(
+    config: SyncConfig, seed: Path, base_plan_path: Path, delta_path: Path, group: str,
+) -> Path:
+    """Render one pinned source window inside a quarantined seed, never the release tiles."""
+    if group not in ("dax", "hulun") or seed.is_symlink() or \
+            seed.parent.resolve() != config.root.resolve() or \
+            not seed.name.startswith(".failed-2026-09-r4-repair-seed-") or \
+            not (seed / "FAILED").is_file():
+        raise ReleaseValidationError("repair render requires an explicit quarantined seed and group")
+    _recovery_regular(seed / "FAILED", seed)
+    manifest = _recovery_regular(seed / "manifest.sha256", seed)
+    if _file_sha256(manifest) != R4I_MANIFEST_SHA256:
+        raise ReleaseValidationError("repair seed manifest mismatch")
+    base_plan = json.loads(base_plan_path.read_text())
+    delta_record = validate_r4j_source_delta(base_plan_path, delta_path)
+    plan = _r4i_repair_plan(base_plan, delta_record["delta"])
+    if json.loads(_recovery_regular(seed / "repair-plan.json", seed).read_text()) != plan or \
+            _json_sha256(json.loads(_recovery_regular(seed / "source-plan.json", seed).read_text())) != _json_sha256(base_plan):
+        raise ReleaseValidationError("repair seed source plan changed")
+    source_id = "S2C_51UYT_20260909_0_L2A" if group == "dax" else "S2B_51UXQ_20260914_0_L2A"
+    selected = [tile for tile in plan["tiles"] if tile["productId"] == source_id]
+    if len(selected) != (5 if group == "dax" else 1):
+        raise ReleaseValidationError("repair group does not match six-hole plan")
+    if group == "dax":
+        candidate = r4j_repair_candidate(config, base_plan_path, delta_path)
+    else:
+        feature = next(feature for feature in base_plan["features"] if feature["id"] == source_id)
+        candidates = rank_candidates(parse_candidates({"features": [feature]}, config.allowed_hosts),
+                                     config.maximum_cloud_percent)
+        if len(candidates) != 1 or candidates[0].product_id != source_id:
+            raise ReleaseValidationError("Hulun repair product is not authorized")
+        candidate = candidates[0]
+    if candidate.observed_at != selected[0]["observedAt"]:
+        raise ReleaseValidationError("repair acquisition time differs from pinned plan")
+    require_free_space(config.root, config.minimum_free_bytes)
+    work = seed / "repair-work" / group
+    work.mkdir(parents=True, exist_ok=False)  # An incomplete render is retained for inspection.
+    bounds = (
+        min(tile["bbox4326"][0] for tile in selected),
+        min(tile["bbox4326"][1] for tile in selected),
+        max(tile["bbox4326"][2] for tile in selected),
+        max(tile["bbox4326"][3] for tile in selected),
+    )
+    cutline = _dissolve_historical_cutline(config, work / "cutline-union.geojson")
+    scene_config = replace(config, aoi=cutline, candidate_single_range=True,
+                           minimum_zoom=14, maximum_zoom=14)
+    masked = _build_scene(scene_config, candidate, work, 0, bounds_override=bounds)
+    tiles = work / "tiles"
+    _build_web_tiles(masked, tiles, scene_config)
+    _discard_tiny_webp_tiles(tiles, masked)
+    rendered = []
+    for tile in selected:
+        path = tiles / "14" / str(tile["x"]) / f'{tile["y"]}.webp'
+        if not _tile_has_imagery(path):
+            raise ReleaseValidationError(f'repair source produced no tile 14/{tile["x"]}/{tile["y"]}')
+        rendered.append({"path": str(path.relative_to(work)), "sha256": _file_sha256(path),
+                         "bytes": path.stat().st_size, "productId": source_id,
+                         "observedAt": candidate.observed_at})
+    _atomic_json(work / "tile-render-complete.json", {
+        "schema": 1, "status": "ISOLATED_TILES_ONLY_NOT_RELEASE_READY",
+        "group": group, "repairPlanSha256": _json_sha256(plan), "tiles": rendered,
+    })
+    return work
+
+
+def validate_r4i_repair_rendered_tiles(
+    root: Path, seed: Path, base_plan_path: Path, delta_path: Path,
+) -> dict[str, Any]:
+    """Read-only gate for all six quarantined z14 tiles before any pyramid merge."""
+    if seed.is_symlink() or seed.parent.resolve() != root.resolve() or \
+            not seed.name.startswith(".failed-2026-09-r4-repair-seed-"):
+        raise ReleaseValidationError("repair validation requires the pinned quarantined seed")
+    _recovery_regular(seed / "FAILED", seed)
+    if _file_sha256(_recovery_regular(seed / "manifest.sha256", seed)) != R4I_MANIFEST_SHA256:
+        raise ReleaseValidationError("repair seed baseline manifest mismatch")
+    base_plan = json.loads(base_plan_path.read_text())
+    delta = validate_r4j_source_delta(base_plan_path, delta_path)["delta"]
+    plan = _r4i_repair_plan(base_plan, delta)
+    if json.loads(_recovery_regular(seed / "repair-plan.json", seed).read_text()) != plan:
+        raise ReleaseValidationError("repair seed plan mismatch")
+    if _json_sha256(json.loads(_recovery_regular(seed / "source-plan.json", seed).read_text())) != _json_sha256(base_plan):
+        raise ReleaseValidationError("repair seed source plan mismatch")
+    expected = {
+        f'tiles/14/{tile["x"]}/{tile["y"]}.webp': tile
+        for tile in plan["tiles"]
+    }
+    if len(expected) != 6:
+        raise ReleaseValidationError("repair plan must contain six distinct tiles")
+    actual: dict[str, dict[str, Any]] = {}
+    for group in ("dax", "hulun"):
+        work = seed / "repair-work" / group
+        record = json.loads(_recovery_regular(work / "tile-render-complete.json", seed).read_text())
+        if record.get("status") != "ISOLATED_TILES_ONLY_NOT_RELEASE_READY" or \
+                record.get("group") != group or record.get("repairPlanSha256") != _json_sha256(plan):
+            raise ReleaseValidationError(f"{group} isolated render record mismatch")
+        items = record.get("tiles")
+        if not isinstance(items, list) or len(items) != (5 if group == "dax" else 1):
+            raise ReleaseValidationError(f"{group} isolated tile count mismatch")
+        for item in items:
+            if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+                raise ReleaseValidationError("isolated tile record is invalid")
+            relative = item["path"]
+            planned = expected.get(relative)
+            if planned is None or relative in actual or \
+                    item.get("productId") != planned["productId"] or \
+                    item.get("observedAt") != planned["observedAt"] or \
+                    (group == "dax") != (planned["productId"] == delta["candidateId"]):
+                raise ReleaseValidationError(f"isolated tile provenance mismatch: {relative}")
+            tile = _recovery_regular(work / relative, seed)
+            if tile.stat().st_size != item.get("bytes") or \
+                    _file_sha256(tile) != item.get("sha256") or not _tile_is_full_webp(tile):
+                raise ReleaseValidationError(f"isolated tile content mismatch: {relative}")
+            if (seed / relative).exists():
+                raise ReleaseValidationError(f"repair tile already merged into seed: {relative}")
+            actual[relative] = item
+    if set(actual) != set(expected):
+        raise ReleaseValidationError("isolated repair tiles do not cover all six holes")
+    return {"status": "SIX_ISOLATED_TILES_VALIDATED_NOT_RELEASE_READY",
+            "repairPlanSha256": _json_sha256(plan), "tiles": sorted(actual)}
+
+
+def _tile_is_full_webp(tile: Path) -> bool:
+    try:
+        result = subprocess.run(
+            ["gdalinfo", "-json", str(tile)], check=True, timeout=30,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            env={**os.environ, "GDAL_PAM_ENABLED": "NO"},
+        )
+        info = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+    return info.get("driverShortName") == "WEBP" and info.get("size") == [256, 256] \
+        and len(info.get("bands", [])) in (3, 4)
 
 
 def publish_release(
@@ -1016,13 +2120,69 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--now", help="UTC ISO instant used for deterministic operation")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--force", action="store_true")
+    parser.add_argument("--revision", type=int, help="positive same-month republication number")
+    parser.add_argument("--build-only", action="store_true", help="validate staging without changing current")
+    parser.add_argument("--historical-source-plan", type=Path,
+                        help="audited one-off September 2026 Sentinel-2 source plan")
+    parser.add_argument("--atomic-source-mosaic", action="store_true",
+                        help="build an isolated same-scene RGBA mosaic and position date index")
+    parser.add_argument("--resume-failed", type=Path, help="strictly validate and copy completed candidate scenes from quarantine")
+    parser.add_argument("--migrate-r4g-audit", type=Path, help="one-off pinned independent r4g migration audit; build-only")
+    parser.add_argument("--seed-r4i-repair", type=Path,
+                        help="copy the pinned successful r4i staging to an unpublishable repair seed")
+    parser.add_argument("--render-r4i-repair-seed", type=Path,
+                        help="render one bounded source window inside an existing unpublishable seed")
+    parser.add_argument("--validate-r4i-repair-seed", type=Path,
+                        help="read-only validation of six isolated tiles; never merges or publishes")
+    parser.add_argument("--repair-group", choices=("dax", "hulun"),
+                        help="one of the two pinned six-hole repair groups")
+    parser.add_argument("--source-delta", type=Path,
+                        help="pinned one-scene identity record for the r4i repair seed")
     arguments = parser.parse_args(argv)
+    if arguments.atomic_source_mosaic and (not arguments.build_only or
+                                            arguments.historical_source_plan is None or
+                                            arguments.seed_r4i_repair is not None or
+                                            arguments.render_r4i_repair_seed is not None or
+                                            arguments.validate_r4i_repair_seed is not None):
+        raise ValueError("atomic source mosaic requires an isolated historical build-only candidate")
+    if arguments.seed_r4i_repair is not None:
+        if (arguments.source_delta is None or arguments.historical_source_plan is None
+                or arguments.revision != 4 or not arguments.build_only
+                or arguments.render_r4i_repair_seed is not None or arguments.validate_r4i_repair_seed is not None
+                or arguments.repair_group is not None
+                or arguments.resume_failed is not None or arguments.migrate_r4g_audit is not None
+                or arguments.force or arguments.dry_run):
+            raise ValueError("r4i repair seed requires exclusive --revision 4 --build-only, base plan and source delta")
+    elif arguments.render_r4i_repair_seed is not None:
+        if (arguments.source_delta is None or arguments.historical_source_plan is None
+                or arguments.repair_group is None or arguments.revision != 4 or not arguments.build_only
+                or arguments.resume_failed is not None or arguments.migrate_r4g_audit is not None
+                or arguments.validate_r4i_repair_seed is not None or arguments.force or arguments.dry_run):
+            raise ValueError("r4i repair render requires exclusive --revision 4 --build-only, seed, plan, delta and group")
+    elif arguments.validate_r4i_repair_seed is not None:
+        if (arguments.source_delta is None or arguments.historical_source_plan is None
+                or arguments.repair_group is not None or arguments.revision != 4 or not arguments.build_only
+                or arguments.resume_failed is not None or arguments.migrate_r4g_audit is not None
+                or arguments.force or arguments.dry_run):
+            raise ValueError("r4i repair validation requires exclusive --revision 4 --build-only, seed, plan and delta")
+    elif arguments.repair_group is not None:
+        raise ValueError("repair group requires --render-r4i-repair-seed")
+    elif arguments.source_delta is not None:
+        raise ValueError("source delta requires --seed-r4i-repair")
+    if arguments.migrate_r4g_audit is not None and (arguments.resume_failed is not None or arguments.historical_source_plan is None or not arguments.build_only):
+        raise ValueError("legacy migration requires exclusive historical source plan and --build-only")
+    if arguments.resume_failed is not None and (arguments.historical_source_plan is None or not arguments.build_only):
+        raise ValueError("recovery requires historical source plan and --build-only")
     now = (
         datetime.fromisoformat(arguments.now.replace("Z", "+00:00"))
         if arguments.now
         else datetime.now(timezone.utc)
     )
     window = complete_month(now)
+    if arguments.revision is not None:
+        if arguments.revision < 2 or arguments.revision > 99:
+            raise ValueError("revision must be between 2 and 99")
+        window = WeekWindow(f"{window.identifier}-r{arguments.revision}", window.start, window.end)
     if arguments.dry_run:
         print(
             json.dumps(
@@ -1039,19 +2199,55 @@ def main(argv: Sequence[str] | None = None) -> int:
         validate_release(current.resolve())
         print(f"monthly imagery already published: {window.identifier}")
         return 0
-    candidates = rank_candidates(
-        search_candidates(config, window.start, window.end), config.maximum_cloud_percent
-    )
-    if not candidates:
-        expanded_start = window.start - timedelta(days=30)
-        candidates = rank_candidates(
-            search_candidates(config, expanded_start, window.end), config.maximum_cloud_percent
+    if arguments.seed_r4i_repair is not None:
+        if window.identifier != "2026-09-r4":
+            raise ValueError("r4i repair seed is limited to September 2026 revision 4")
+        seed = seed_r4i_repair(
+            config.root, arguments.seed_r4i_repair, arguments.historical_source_plan,
+            arguments.source_delta, config.minimum_free_bytes,
         )
-    if not candidates:
-        raise RuntimeError("no authorized cloud-qualified Sentinel-2 product is available")
-    candidates = select_grid_candidates(candidates)
+        print(f"unpublishable r4i repair seed retained: {seed}")
+        return 0
+    if arguments.render_r4i_repair_seed is not None:
+        if window.identifier != "2026-09-r4":
+            raise ValueError("r4i repair render is limited to September 2026 revision 4")
+        work = render_r4i_repair_group(
+            config, arguments.render_r4i_repair_seed, arguments.historical_source_plan,
+            arguments.source_delta, arguments.repair_group,
+        )
+        print(f"unpublishable isolated tile window retained: {work}")
+        return 0
+    if arguments.validate_r4i_repair_seed is not None:
+        if window.identifier != "2026-09-r4":
+            raise ValueError("r4i repair validation is limited to September 2026 revision 4")
+        result = validate_r4i_repair_rendered_tiles(
+            config.root, arguments.validate_r4i_repair_seed,
+            arguments.historical_source_plan, arguments.source_delta,
+        )
+        print(json.dumps(result, sort_keys=True))
+        return 0
+    source_plan = None
+    if arguments.historical_source_plan is not None:
+        if window.identifier != "2026-09-r4" or not arguments.build_only:
+            raise ValueError("the September historical plan requires --revision 4 --build-only")
+        candidates, source_plan = load_historical_source_plan(
+            config, arguments.historical_source_plan, window.identifier
+        )
+    else:
+        candidates = rank_candidates(
+            search_candidates(config, window.start, window.end), config.maximum_cloud_percent
+        )
+        if not candidates:
+            raise RuntimeError("no cloud-qualified Sentinel-2 product exists in the last 30 complete days")
+        candidates = select_grid_candidates(candidates)
     require_free_space(config.root, config.minimum_free_bytes)
-    staging = build_release(config, window, candidates, now)
+    staging = build_release(config, window, candidates, now, source_plan=source_plan,
+                            resume_failed=arguments.resume_failed,
+                            migrate_r4g_audit=arguments.migrate_r4g_audit,
+                            atomic_source_mosaic=arguments.atomic_source_mosaic)
+    if arguments.build_only:
+        print(f"monthly imagery staged and validated: {staging}")
+        return 0
     published = publish_release(config.root, staging, config.backend_reader_uid)
     retain_releases(config.root, keep=config.retention_count)
     print(f"monthly imagery published: {published.name}")
